@@ -95,6 +95,8 @@ import '../constructor/preview/preview-violation-renderer.js';
 
 // Textblock
 import '../constructor/textblock/textblock-core.js';
+import '../constructor/textblock/editor-registry.js';
+import '../constructor/textblock/editable-surface.js';
 import '../constructor/textblock/textblock-editor.js';
 import '../constructor/textblock/textblock-formatting.js';
 import '../constructor/textblock/textblock-toolbar.js';
