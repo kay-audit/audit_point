@@ -248,3 +248,34 @@ class TestFormattersCoverEveryContractLabel:
             f"DOCX build_violation потерял метку поля {field_key!r} — сверь "
             f"с violation_fields.LABELS"
         )
+
+
+# --- Rich-рендер текстовых полей (Task 1.1.2) ---
+#
+# violated/established/кейсы/freeText/reasons/measures/consequences/
+# responsible рендерятся через apply_inline_html (inline HTML → runs) вместо
+# plain add_run. Плейсхолдер картинки и descriptionList-буллеты остаются
+# plain (rich=False) — картинка не должна парсить filename как HTML.
+
+
+def test_docx_violation_field_bold_and_ampersand():
+    v = ViolationSchema(**{**_REFERENCE_VIOLATION_DICT, "violated": "Ромашка &amp; Ко <b>жирное</b>"})
+    doc = Document(); build_violation(doc, v)
+    para = doc.paragraphs[0]
+    assert any(r.text == "жирное" and r.bold for r in para.runs)
+    full = "\n".join(p.text for p in doc.paragraphs)
+    assert "Ромашка & Ко" in full and "&amp;" not in full
+
+
+def test_docx_violation_field_stays_italic():
+    v = ViolationSchema(**{**_REFERENCE_VIOLATION_DICT, "violated": "обычный"})
+    doc = Document(); build_violation(doc, v)
+    body = [r for r in doc.paragraphs[0].runs if r.text.strip() and "Нарушено" not in r.text]
+    assert body and all(r.italic for r in body)
+
+
+def test_docx_image_placeholder_stays_plain():
+    v = ViolationSchema(**{**_REFERENCE_VIOLATION_DICT, "additionalContent": {"enabled": True,
+        "items": [{"id":"i","type":"image","url":"","caption":"","filename":"a<b.png"}]}})
+    doc = Document(); build_violation(doc, v)
+    assert "a<b.png" in "\n".join(p.text for p in doc.paragraphs)

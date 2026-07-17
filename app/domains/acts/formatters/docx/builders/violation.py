@@ -24,6 +24,7 @@ from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, Twips
 
+from app.domains.acts.formatters.docx.builders.inline import apply_inline_html
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
@@ -59,11 +60,11 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
     """Рендерит нарушение в документ (без заголовка и нумерации)."""
     _labeled_paragraph(
         doc, "Нарушено:", violation.violated,
-        italic=True, size_pt=Sizes.violation_pt,
+        italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
     _labeled_paragraph(
         doc, "Установлено:", violation.established,
-        italic=True, size_pt=Sizes.violation_pt,
+        italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
 
     if violation.descriptionList.enabled:
@@ -85,7 +86,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
             if item.type == "case":
                 _labeled_paragraph(
                     doc, f"Кейс {case_number}:", item.content,
-                    italic=True, size_pt=Sizes.violation_pt,
+                    italic=True, size_pt=Sizes.violation_pt, rich=True,
                 )
                 case_number += 1
             elif item.type == "image":
@@ -94,7 +95,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
             elif item.type == "freeText":
                 _labeled_paragraph(
                     doc, "", item.content,
-                    italic=True, size_pt=Sizes.violation_pt,
+                    italic=True, size_pt=Sizes.violation_pt, rich=True,
                 )
                 case_number = 1
 
@@ -106,7 +107,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
         ("Ответственные:", violation.responsible),
     ]:
         if field.enabled and field.content:
-            _labeled_paragraph(doc, label, field.content)
+            _labeled_paragraph(doc, label, field.content, rich=True)
 
 
 def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
@@ -211,10 +212,13 @@ def _labeled_paragraph(
     *,
     italic: bool = False,
     size_pt: int = Sizes.body_pt,
+    rich: bool = False,
 ) -> None:
     """Параграф «Label_underlined body_plain».
 
     italic ставится и на метку, и на тело; size_pt задаёт размер обоих run'ов.
+    rich=True — тело рендерится через apply_inline_html (inline HTML → runs с
+    жирным/курсивом/подчёркиванием) вместо обычного текстового run'а (Task 1.1.2).
     """
     if not body and not label:
         return
@@ -227,6 +231,9 @@ def _labeled_paragraph(
         label_run.underline = True
         if italic:
             label_run.italic = True
+    if rich:
+        apply_inline_html(para, body, base_size_pt=size_pt, base_italic=italic)
+        return
     body_run = para.add_run(body)
     body_run.font.name = Fonts.main
     body_run.font.size = Pt(size_pt)
