@@ -6,6 +6,25 @@ import { getStructureLimits } from '../violation/violation-image-validator.js';
 import { FindBar } from '../search/find-bar.js';
 import { Notifications } from '../../shared/notifications.js';
 import { CorrectorPopover } from '../text-actions/corrector-popover.js';
+import { SURFACE_POLICY } from './editor-registry.js';
+
+/**
+ * Task 0.4: карта data-command → ключ SURFACE_POLICY. Команды без ключа
+ * (bold/italic/underline/strikeThrough/removeFormat) политикой не управляются —
+ * остаются как есть. Размер шрифта (#fontSizeTrigger) — отдельный триггер БЕЗ
+ * data-command, поэтому ключ fontSize из SURFACE_POLICY этим механизмом пока
+ * не применяется (см. отчёт Task 0.4).
+ */
+const COMMAND_POLICY_KEY = {
+    createFootnote: 'footnotes',
+    justifyLeft: 'align',
+    justifyCenter: 'align',
+    justifyRight: 'align',
+    justifyFull: 'align',
+    createLink: 'links',
+    findReplace: 'findReplace',
+    improveText: 'improveText',
+};
 
 Object.assign(TextBlockManager.prototype, {
     /**
@@ -607,6 +626,47 @@ Object.assign(TextBlockManager.prototype, {
         if (startMarker) range.setStartBefore(startMarker);
         const endMarker = this._capsuleAncestor(range.endContainer, editor);
         if (endMarker) range.setEndAfter(endMarker);
+    },
+
+    /**
+     * Task 0.4: включает/выключает кнопки тулбара по политике поверхности
+     * (SURFACE_POLICY[surface.kind]). Ключа нет в политике (неизвестный kind) —
+     * не трогаем кнопки. Команда без записи в COMMAND_POLICY_KEY — тоже не трогаем.
+     * @param {{kind:string}} surface
+     */
+    _applyToolbarPolicy(surface) {
+        if (!this.globalToolbar) return;
+        const policy = SURFACE_POLICY[surface?.kind];
+        if (!policy) return;
+
+        this.globalToolbar.querySelectorAll('.toolbar-btn[data-command]').forEach(btn => {
+            const policyKey = COMMAND_POLICY_KEY[btn.dataset.command];
+            if (!policyKey) return;
+            btn.disabled = policy[policyKey] === false;
+        });
+    },
+
+    /**
+     * Task 0.4: editor-agnostic врезка тулбара к поверхности редактора
+     * (EditableSurface). В Фазе 0 не вызывается из handleEditorFocus — только
+     * определён и покрыт тестом; вплетение — задача контроллера mount/unmount
+     * в Фазе 1.
+     * @param {{kind:string, element:HTMLElement}} surface
+     */
+    attachToolbarTo(surface) {
+        this.setActiveEditor(surface.element);
+        this.showToolbar();
+        this._applyToolbarPolicy(surface);
+        this.updateToolbarState();
+    },
+
+    /**
+     * Task 0.4: обратная операция attachToolbarTo — отвязывает тулбар от
+     * текущей поверхности.
+     */
+    detachToolbar() {
+        this.hideToolbar();
+        this.clearActiveEditor();
     }
 });
 
