@@ -22,6 +22,7 @@ import { makeResizablePanel } from '../../shared/resizable-panel.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
 import { ActSearchEngine } from '../search/act-search-engine.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
+import { EditorRegistry } from '../textblock/editor-registry.js';
 import { correctText } from './text-actions-client.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 
@@ -389,7 +390,10 @@ export const CorrectorPopover = {
         if (ActSearchEngine && typeof ActSearchEngine.invalidateRunsCache === 'function') {
             ActSearchEngine.invalidateRunsCache();
         }
-        textBlockManager.finalizeEdit(this._editor);
+        // Персист через активную поверхность (готовит корректор к rich-полям
+        // нарушений, Фаза 1); если активной поверхности нет — прежний путь.
+        const surface = EditorRegistry.getActive();
+        if (surface) surface.persist(); else textBlockManager.finalizeEdit(this._editor);
         Notifications.success('Текст исправлен');
         this.close();
     },
