@@ -23,6 +23,7 @@ import re
 from functools import lru_cache
 
 import bleach
+import nh3
 from bleach.css_sanitizer import CSSSanitizer
 from bleach.html5lib_shim import Filter
 from bleach.sanitizer import Cleaner
@@ -267,6 +268,76 @@ def sanitize_html(html: str | None) -> str:
         filters=[_BlockStyleFilter, _FontSizeClampFilter],
     )
     return cleaner.clean(html)
+
+
+def _rich_attribute_filter(tag: str, attr: str, value: str) -> str | None:
+    """attribute_filter для nh3.clean (sanitize_rich_html): per-tag правила style.
+
+    nh3 не поддерживает bleach-подобные пост-фильтры токен-потока — вместо
+    _BlockStyleFilter/_FontSizeClampFilter та же логика (TB-1/TB-6) применяется
+    здесь per-атрибут, после общего filter_style_properties. Возврат None
+    снимает атрибут целиком (как del в _BlockStyleFilter).
+    """
+    if attr != "style":
+        return value
+    if tag in _BLOCK_STYLE_TAGS:
+        match = _BLOCK_TEXT_ALIGN_RE.search(value or "")
+        return f"text-align: {match.group(1).lower()}" if match else None
+    tb = _acts_settings().textblocks
+    style = _clamp_font_size_px(
+        _strip_nonpx_font_size(value or ""), tb.font_size_min, tb.font_size_max
+    )
+    style = style.strip(" ;\t\r\n")
+    return style or None
+
+
+def sanitize_rich_html(html: str | None) -> str:
+    """
+    Чистит rich-HTML полей нарушения (описание/меры/последствия и т.п.) до
+    безопасного подмножества через nh3 — allowlist тот же (ACTS__SANITIZER__*),
+    что у sanitize_html и фронтового DOMPurify, но движок другой: nh3
+    (Rust/ammonia) вместо bleach.
+
+    Отдельная функция, а не замена sanitize_html: текстблоки (Option A)
+    остаются на bleach — своя история регрессий (TB-1/TB-6/B-5), рисковать
+    их покрытием ради унификации движка не нужно. sanitize_rich_html — под
+    rich-редактор полей нарушения (1.2.x).
+
+    link_rel=None: без этого nh3 сам добавляет rel="noopener noreferrer" на
+    каждый <a>, а ни bleach (sanitize_html), ни фронтовый DOMPurify этого не
+    делают — по умолчанию получилось бы новое расхождение рендер↔экспорт для
+    ссылочных капсул (data-link-*).
+
+    Неидемпотентна на обычном тексте: "&" сериализуется как "&amp;" (как и в
+    sanitize_html) — ожидаемое поведение HTML-санитайзера, вход/выход всегда
+    HTML, а не plain text.
+
+    Возвращает пустую строку для None/пустых значений; не-строковые значения
+    приводятся к str() (тот же защитный fallback, что в sanitize_html).
+    """
+    if html is None:
+        return ""
+    if not isinstance(html, str):
+        html = str(html)
+    if not html:
+        return ""
+    cfg = _sanitizer_cfg()
+    return nh3.clean(
+        html,
+        tags=set(cfg.allowed_tags),
+        attributes={
+            "a": {"href", "title"},
+            "span": {"class", "style", *cfg.allowed_data_attrs},
+            "div": {"class", "style"},
+            "p": {"class", "style"},
+            "*": {"class"},
+        },
+        attribute_filter=_rich_attribute_filter,
+        filter_style_properties=set(cfg.allowed_css_properties),
+        url_schemes={"http", "https", "mailto"},
+        strip_comments=True,
+        link_rel=None,
+    )
 
 
 def sanitize_plain_text(text: str | None) -> str:

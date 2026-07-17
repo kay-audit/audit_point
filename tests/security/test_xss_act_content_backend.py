@@ -36,7 +36,11 @@ from app.domains.acts.schemas.act_content import (
 )
 from app.domains.acts.schemas.act_content import ViolationDescriptionListSchema
 from app.domains.acts.services.act_content_service import ActContentService
-from app.domains.acts.utils.html_sanitizer import sanitize_html, sanitize_plain_text
+from app.domains.acts.utils.html_sanitizer import (
+    sanitize_html,
+    sanitize_plain_text,
+    sanitize_rich_html,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -109,6 +113,54 @@ class TestSanitizeHtmlDirect:
     def test_non_string_falls_back_to_str(self):
         # Защитный fallback (на случай если Pydantic пропустил неожиданный тип)
         assert sanitize_html(123) == "123"
+
+
+class TestSanitizeRichHtmlDirect:
+    """sanitize_rich_html: nh3-санитайзер для rich-полей нарушения (1.2.3).
+
+    Тот же allowlist настроек, что у sanitize_html, но на nh3 (allowlist ==
+    фронтовый DOMPurify) вместо bleach — см. докстринг sanitize_rich_html.
+    """
+
+    def test_strips_script(self):
+        out = sanitize_rich_html("<p>safe</p><script>alert(1)</script>")
+        assert "<script" not in out and "safe" in out
+
+    def test_strips_img_onerror(self):
+        out = sanitize_rich_html('<img src=x onerror="alert(1)">')
+        assert "<img" not in out and "onerror" not in out
+
+    def test_blocks_javascript_protocol(self):
+        out = sanitize_rich_html('<a href="javascript:alert(1)">x</a>')
+        assert "javascript:" not in out and "x" in out
+
+    def test_https_anchor_no_added_rel(self):
+        out = sanitize_rich_html('<a href="https://e.com" title="t">x</a>')
+        assert 'href="https://e.com"' in out and 'title="t"' in out
+        assert "rel=" not in out
+
+    def test_keeps_link_capsule_attrs(self):
+        out = sanitize_rich_html('<span data-link-id="l1" data-link-url="https://e.com">c</span>')
+        assert 'data-link-id="l1"' in out and 'data-link-url="https://e.com"' in out
+
+    def test_font_size_clamped(self):
+        out = sanitize_rich_html('<span style="font-size: 500px">x</span>')
+        assert "500px" not in out
+        assert "72px" in out  # font_size_max по умолчанию (TextblocksSettings)
+
+    def test_block_keeps_only_text_align(self):
+        out = sanitize_rich_html('<div style="text-align: center; color: red">x</div>')
+        assert "text-align" in out and "center" in out and "color" not in out
+
+    def test_nonallowlisted_css_dropped(self):
+        out = sanitize_rich_html('<span style="position: fixed; color: red">x</span>')
+        assert "position" not in out and "color" in out
+
+    def test_empty_none(self):
+        assert sanitize_rich_html("") == "" and sanitize_rich_html(None) == ""
+
+    def test_ampersand_encoded_nonidempotent(self):
+        assert sanitize_rich_html("Ромашка & Ко") == "Ромашка &amp; Ко"
 
 
 # ── Интеграция: ActContentService.save_content санитизирует все поля ────────
