@@ -43,43 +43,44 @@ class ViolationFieldDescriptor:
     kind: str  # "pair" | "list" | "additional" | "optional_text"
     small: bool
     show_label_in_preview: bool
+    rich: bool  # Поле требует rich-редактора и HTML-санитайзера
 
 
 VIOLATION_FIELDS: tuple[ViolationFieldDescriptor, ...] = (
     ViolationFieldDescriptor(
         key="violated", label="Нарушено", order=0, kind="pair",
-        small=True, show_label_in_preview=True,
+        small=True, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="established", label="Установлено", order=1, kind="pair",
-        small=True, show_label_in_preview=True,
+        small=True, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         # Заголовок убран (решение #12) — список описаний идёт без подписи.
         key="descriptionList", label="", order=2, kind="list",
-        small=True, show_label_in_preview=False,
+        small=True, show_label_in_preview=False, rich=False,
     ),
     ViolationFieldDescriptor(
         key="additionalContent", label="", order=3, kind="additional",
-        small=True, show_label_in_preview=False,
+        small=True, show_label_in_preview=False, rich=False,
     ),
     ViolationFieldDescriptor(
         key="reasons", label="Причины", order=4, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="measures", label="Принятые меры", order=5, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="consequences", label="Последствия", order=6, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         # Канон #11: "Ответственные" (не "Ответственный", как в DOCX-builder'е —
         # выравнивание подписи форматтеров будет отдельной задачей бэкбона).
         key="responsible", label="Ответственные", order=7, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
 )
 
