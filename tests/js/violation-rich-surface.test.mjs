@@ -118,6 +118,30 @@ test('setContent: чистый html (без guard\'ов) — ровно ОДНА
   assert.deepEqual(calls, [{ p: 'violated', val: '<b>чистый текст</b>' }]);
 });
 
+// ── Task 1.3.4-B1: hardening капсул при внешней записи (setContent) ──────────
+
+test('setContent: normalizeMarkers + tooltip вызваны на element', () => {
+  const vm = new ViolationManager();
+  vm.setViolationField = () => true;
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+  s.element = { textContent: '' };
+
+  const normalizeCalls = [];
+  const tooltipCalls = [];
+  const origNormalize = textBlockManager.normalizeMarkers;
+  const origTooltip = textBlockManager._attachInitialTooltipHandlers;
+  textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
+  textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
+  try {
+    s.setContent('<b>x</b>');
+    assert.deepEqual(normalizeCalls, [s.element], 'normalizeMarkers вызван на element');
+    assert.deepEqual(tooltipCalls, [s.element], '_attachInitialTooltipHandlers вызван на element');
+  } finally {
+    textBlockManager.normalizeMarkers = origNormalize;
+    textBlockManager._attachInitialTooltipHandlers = origTooltip;
+  }
+});
+
 // changed=false (косметика: guard-стрип/снятие contenteditable) НЕ означает
 // «строка не изменилась» — _repairCapsulesInRoot меняет строку всегда при
 // наличии капсулы, но changed взводит только на структурной починке

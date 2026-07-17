@@ -73,6 +73,30 @@ function _repairCapsuleHtml(html) {
         : { html: stripped, changed: false };
 }
 
+/**
+ * Task 1.3.4-B1: капсулы (ссылки/сноски), попавшие в DOM через renderActContent
+ * (профиль 'acts' срезает contenteditable — он рантайм-only, не в allowlist'е
+ * бэк-санитайзера), грузятся РЕДАКТИРУЕМЫМИ атомами: каретка заходит внутрь,
+ * Enter у границы клонирует маркер. Ре-применяет ce=false + caret-guard'ы
+ * (normalizeMarkers) и навешивает hover-tooltip (_attachInitialTooltipHandlers) —
+ * зеркало createEditor (textblock-editor.js:65,72), общее для создания поля и
+ * setContent. RO-поля фокус не получают (EditorController.mount не монтируется
+ * в RO-ветке _createRichFieldEditor) — без этого вызова их капсулы были бы
+ * немы (contenteditable редактируемый, без tooltip).
+ * typeof-гварды — как у _repairCapsuleHtml выше: методы — миксин из
+ * textblock-editor.js, который поле нарушения не импортирует напрямую (до
+ * домешивания в граф импортов — no-op, безопасно под node-стабом без него).
+ * @param {HTMLElement} element
+ */
+function _hardenCapsuleField(element) {
+    if (typeof textBlockManager.normalizeMarkers === 'function') {
+        textBlockManager.normalizeMarkers(element);
+    }
+    if (typeof textBlockManager._attachInitialTooltipHandlers === 'function') {
+        textBlockManager._attachInitialTooltipHandlers(element);
+    }
+}
+
 export class ViolationFieldSurface {
     /**
      * @param {Object} violation - Объект нарушения (модель)
@@ -108,6 +132,10 @@ export class ViolationFieldSurface {
         if (report.changed) {
             renderActContent(this.element, report.html);
         }
+        // Task 1.3.4-B1: внешняя запись (формализатор/корректор) может принести
+        // капсулы как обычные span'ы — ре-применяем ce=false/caret-guard'ы и
+        // навешиваем tooltip (см. докстринг _hardenCapsuleField).
+        _hardenCapsuleField(this.element);
     }
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
@@ -160,6 +188,9 @@ export class ViolationContentItemSurface {
         if (report.changed) {
             renderActContent(this.element, report.html);
         }
+        // Task 1.3.4-B1: см. ViolationFieldSurface.setContent — ре-применяем
+        // ce=false/caret-guard'ы и навешиваем tooltip (_hardenCapsuleField).
+        _hardenCapsuleField(this.element);
     }
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
@@ -228,6 +259,18 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
     // читают/пишут именно его.
     surface.element = field;
     renderActContent(field, surface.getContent() || '');
+
+    // Task 1.3.4-B1: чиним уже-битые капсулы старых актов при открытии
+    // (дубль-id и т.п.) — round-trip как в createEditor O1 (textblock-editor.js
+    // :55-58). Только не-RO: RO ничего не пишет обратно в модель (нет
+    // commit/setContent от пользовательского ввода), чинить незачем то, что
+    // никогда не покинет эту DOM-копию.
+    if (!isReadOnly && typeof textBlockManager.validateAndRepairCapsules === 'function') {
+        renderActContent(field, textBlockManager.validateAndRepairCapsules(field.innerHTML));
+    }
+    // ce=false/caret-guard'ы + tooltip — в ОБОИХ режимах: капсула должна быть
+    // атомом и на просмотре (см. докстринг _hardenCapsuleField).
+    _hardenCapsuleField(field);
 
     if (isReadOnly) {
         // Режим просмотра: нередактируемо (зеркало textblock createEditor).

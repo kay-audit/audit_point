@@ -115,6 +115,68 @@ test('_createRichFieldEditor: __lastFootnoteCount=0 при создании (Tas
     assert.equal(out.__lastFootnoteCount, 0);
 });
 
+// ── Task 1.3.4-B1: hardening капсул при загрузке (creation) ──────────────────
+
+test('_createRichFieldEditor: не-RO — validateAndRepairCapsules (round-trip) + normalizeMarkers + tooltip вызваны на field', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    // renderActContent под стабом (нет DOMPurify) правит только textContent —
+    // field.innerHTML остаётся тем, что здесь заранее выставлено; читаем его
+    // же в repair-раунд-трипе, поэтому предзаполняем осмысленной строкой.
+    const seedHtml = '<span class="text-link" data-link-id="1" data-link-url="/x">x</span>';
+    el.innerHTML = seedHtml;
+    const repairCalls = [];
+    const normalizeCalls = [];
+    const tooltipCalls = [];
+    const origRepair = textBlockManager.validateAndRepairCapsules;
+    const origNormalize = textBlockManager.normalizeMarkers;
+    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
+    textBlockManager.validateAndRepairCapsules = (html) => { repairCalls.push(html); return html; };
+    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
+    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
+    try {
+        withMountSpy(() => {
+            const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
+            const out = withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: false }));
+
+            assert.deepEqual(repairCalls, [seedHtml],
+                'validateAndRepairCapsules вызван ровно раз с field.innerHTML (round-trip)');
+            assert.deepEqual(normalizeCalls, [out], 'normalizeMarkers вызван на field');
+            assert.deepEqual(tooltipCalls, [out], '_attachInitialTooltipHandlers вызван на field');
+        });
+    } finally {
+        textBlockManager.validateAndRepairCapsules = origRepair;
+        textBlockManager.normalizeMarkers = origNormalize;
+        textBlockManager._attachInitialTooltipHandlers = origTooltip;
+    }
+});
+
+test('_createRichFieldEditor: RO — normalizeMarkers + tooltip вызваны, validateAndRepairCapsules НЕ вызван', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const repairCalls = [];
+    const normalizeCalls = [];
+    const tooltipCalls = [];
+    const origRepair = textBlockManager.validateAndRepairCapsules;
+    const origNormalize = textBlockManager.normalizeMarkers;
+    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
+    textBlockManager.validateAndRepairCapsules = (html) => { repairCalls.push(html); return html; };
+    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
+    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
+    try {
+        const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
+        const out = withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: true }));
+
+        assert.equal(repairCalls.length, 0, 'RO ничего не пишет обратно в модель — чинить незачем');
+        assert.deepEqual(normalizeCalls, [out], 'normalizeMarkers вызван на field даже в RO (ce=false атом)');
+        assert.deepEqual(tooltipCalls, [out], '_attachInitialTooltipHandlers вызван на field даже в RO (иначе капсула немая)');
+    } finally {
+        textBlockManager.validateAndRepairCapsules = origRepair;
+        textBlockManager.normalizeMarkers = origNormalize;
+        textBlockManager._attachInitialTooltipHandlers = origTooltip;
+    }
+});
+
 // ── ViolationContentItemSurface (кейс/свободный текст) ────────────────────────
 
 test('_makeContentItemSurface: id/kind/rich, getContent из item.content', () => {
@@ -142,6 +204,30 @@ test('ViolationContentItemSurface: commit (element→модель) и setContent
     calls.length = 0;
     s.setContent('<u>внешнее</u>');
     assert.deepEqual(calls, [{ field: 'content', val: '<u>внешнее</u>' }], 'setContent пишет переданный html');
+});
+
+test('ViolationContentItemSurface: setContent — normalizeMarkers + tooltip вызваны на element (Task 1.3.4-B1)', () => {
+    const vm = new ViolationManager();
+    vm.setContentItemField = () => true;
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: '' };
+    const s = vm._makeContentItemSurface(violation, item);
+    s.element = { innerHTML: '', textContent: '' };
+
+    const normalizeCalls = [];
+    const tooltipCalls = [];
+    const origNormalize = textBlockManager.normalizeMarkers;
+    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
+    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
+    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
+    try {
+        s.setContent('<b>x</b>');
+        assert.deepEqual(normalizeCalls, [s.element], 'normalizeMarkers вызван на element');
+        assert.deepEqual(tooltipCalls, [s.element], '_attachInitialTooltipHandlers вызван на element');
+    } finally {
+        textBlockManager.normalizeMarkers = origNormalize;
+        textBlockManager._attachInitialTooltipHandlers = origTooltip;
+    }
 });
 
 test('ViolationContentItemSurface: commit снимает caret-guard\'ы (U+FEFF) перед записью (Task 1.3.4-A)', () => {
