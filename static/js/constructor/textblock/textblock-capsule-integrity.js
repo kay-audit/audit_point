@@ -272,8 +272,11 @@ Object.assign(TextBlockManager.prototype, {
                     range.collapse(false);
                     sel.removeAllRanges(); sel.addRange(range);
                 }
-                this.saveContent(editor.dataset.textBlockId, editor.innerHTML);
-                this._toggleEmptyClass(editor);
+                // Единый сток вместо прямых saveContent+_toggleEmptyClass (Task
+                // 1.3.4-B2): finalizeEdit покрывает те же шаги и ДОПОЛНИТЕЛЬНО мост
+                // персистентности (Task 1.3.4-A) — без него поле нарушения (не
+                // textblock) не попадало бы в модель через этот редирект-путь.
+                this.finalizeEdit(editor);
             }
         }
         // insertCompositionText (IME), historyUndo/Redo, insertFromDrop —

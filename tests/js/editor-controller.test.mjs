@@ -5,6 +5,14 @@
  * тестируем врезку контроллера (реестр + слушатели + порядок), не реальный
  * DOM-тулбар (тот требует document.getElementById('globalTextBlockToolbar')
  * и т.п., см. textblock-toolbar.js).
+ *
+ * Task 1.3.4-B2: аналогично застаблены capsule-lifecycle методы
+ * (installCapsuleObserver/handleEditorBeforeInput/handleEditorKeydown/
+ * handleEditorCopy/attachLinkFootnoteHandlers) — реальные требуют
+ * MutationObserver и живой DOM (querySelectorAll и т.п.), недоступные в
+ * node-стабе. Тестируем ТОЛЬКО факт вызова/навешивания по гейту
+ * rich+kind==='violationField' и снятие на unmount; реальная heal/caret-
+ * логика — Playwright/verify-фаза.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach } from 'node:test';
@@ -14,14 +22,17 @@ import { EditorRegistry } from '../../static/js/constructor/textblock/editor-reg
 import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
 let toolbarLog;
+let capsuleLog;
 
 /**
  * Фейковая поверхность: element с рабочими add/removeEventListener (хранят
  * обработчик и позволяют его дёрнуть через _fire) + commit-спай, пишущий в
  * общий с removeEventListener лог surface.log — так проверяется ПОРЯДОК
- * (commit ДО removeEventListener) внутри unmount.
+ * (commit ДО removeEventListener) внутри unmount. rich=false по умолчанию —
+ * как у всех поверхностей ДО Task 1.3.4-B2 (капсульный гейт на них не должен
+ * срабатывать).
  */
-function fakeSurface(id, kind = 'violationField') {
+function fakeSurface(id, kind = 'violationField', rich = false) {
     const log = [];
     const listeners = {};
     const element = {
@@ -35,15 +46,27 @@ function fakeSurface(id, kind = 'violationField') {
         _fire(type) { listeners[type](); },
         _hasListener(type) { return typeof listeners[type] === 'function'; },
     };
-    return { kind, id, log, element, commit() { log.push('commit'); } };
+    return { kind, id, rich, log, element, commit() { log.push('commit'); } };
 }
 
 beforeEach(() => {
     EditorController.unmount(); // сброс возможного «хвоста» предыдущего теста
     EditorRegistry.clear();
     toolbarLog = [];
+    capsuleLog = [];
     textBlockManager.attachToolbarTo = (surface) => toolbarLog.push(['attach', surface]);
     textBlockManager.detachToolbar = () => toolbarLog.push(['detach']);
+    // Спай ставит на element.__capsuleObserver фейковый observer с disconnect-
+    // спаем — зеркалит реальный контракт installCapsuleObserver достаточно,
+    // чтобы проверить симметрию mount(install)/unmount(disconnect).
+    textBlockManager.installCapsuleObserver = (element) => {
+        capsuleLog.push(['installCapsuleObserver', element]);
+        element.__capsuleObserver = { disconnect: () => capsuleLog.push(['disconnect']) };
+    };
+    textBlockManager.handleEditorBeforeInput = (...args) => capsuleLog.push(['handleEditorBeforeInput', ...args]);
+    textBlockManager.handleEditorKeydown = (...args) => capsuleLog.push(['handleEditorKeydown', ...args]);
+    textBlockManager.handleEditorCopy = (...args) => capsuleLog.push(['handleEditorCopy', ...args]);
+    textBlockManager.attachLinkFootnoteHandlers = () => capsuleLog.push(['attachLinkFootnoteHandlers']);
 });
 
 test('mount: активирует поверхность в реестре, врезает тулбар, навешивает input/blur', () => {
@@ -124,4 +147,58 @@ test('mount(B) при активной A: сначала A.unmount (commit+detac
     assert.deepEqual(toolbarLog, [['detach'], ['attach', b]], 'детач A должен предшествовать attach B');
     assert.equal(EditorRegistry.getActive(), b);
     assert.equal(b.element._hasListener('input'), true);
+});
+
+// ── Task 1.3.4-B2: интерактивный capsule-lifecycle (гейт rich+violationField) ──
+
+test('mount: rich violationField-поверхность — ставит capsule-lifecycle (observer, tooltip, beforeinput/keydown/copy)', () => {
+    const s = fakeSurface('v1', 'violationField', true);
+    EditorController.mount(s);
+
+    assert.deepEqual(capsuleLog[0], ['installCapsuleObserver', s.element]);
+    assert.ok(capsuleLog.some((e) => e[0] === 'attachLinkFootnoteHandlers'),
+        'attachLinkFootnoteHandlers не вызван');
+    assert.equal(s.element._hasListener('beforeinput'), true);
+    assert.equal(s.element._hasListener('keydown'), true);
+    assert.equal(s.element._hasListener('copy'), true);
+});
+
+test('mount: НЕ-violationField поверхность (kind="textblock", rich=true) — capsule-lifecycle НЕ ставится (гейт по kind)', () => {
+    const s = fakeSurface('tb1', 'textblock', true);
+    EditorController.mount(s);
+
+    assert.deepEqual(capsuleLog, [], 'capsule-lifecycle методы не должны звать не-violationField поверхность');
+    assert.equal(s.element._hasListener('beforeinput'), false);
+    assert.equal(s.element._hasListener('keydown'), false);
+    assert.equal(s.element._hasListener('copy'), false);
+});
+
+test('mount: violationField-поверхность БЕЗ rich (rich=false) — capsule-lifecycle НЕ ставится (гейт по rich)', () => {
+    const s = fakeSurface('v1', 'violationField', false);
+    EditorController.mount(s);
+
+    assert.deepEqual(capsuleLog, [], 'capsule-lifecycle методы не должны звать non-rich поверхность');
+    assert.equal(s.element._hasListener('beforeinput'), false);
+});
+
+test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinput/keydown/copy)', () => {
+    const s = fakeSurface('v1', 'violationField', true);
+    EditorController.mount(s);
+    capsuleLog.length = 0; // интересует снятие, не установку
+
+    EditorController.unmount();
+
+    assert.deepEqual(capsuleLog, [['disconnect']]);
+    assert.equal(s.element._hasListener('beforeinput'), false);
+    assert.equal(s.element._hasListener('keydown'), false);
+    assert.equal(s.element._hasListener('copy'), false);
+});
+
+test('unmount: НЕ-violationField поверхность — detach не трогает capsule-lifecycle (его и не было)', () => {
+    const s = fakeSurface('tb1', 'textblock', true);
+    EditorController.mount(s);
+    capsuleLog.length = 0;
+
+    assert.doesNotThrow(() => EditorController.unmount());
+    assert.deepEqual(capsuleLog, []);
 });

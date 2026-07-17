@@ -17,6 +17,9 @@ export const EditorController = {
     _surface: null,
     _onInput: null,
     _onBlur: null,
+    _onBeforeInput: null,
+    _onKeydown: null,
+    _onCopy: null,
 
     /** @param {{kind:string,element:HTMLElement,commit:()=>void}} surface EditableSurface (editable-surface.js) */
     mount(surface) {
@@ -29,6 +32,24 @@ export const EditorController = {
         this._onBlur = () => this.unmount();
         surface.element.addEventListener('input', this._onInput);
         surface.element.addEventListener('blur', this._onBlur);
+
+        // Task 1.3.4-B2: интерактивный capsule-lifecycle — ТОЛЬКО для полей
+        // нарушения (rich + kind='violationField'). Текстблоки сюда не заходят
+        // (свой handleEditorFocus-путь, EditorController.mount на них не зовётся),
+        // будущий kind='cell' — тоже нет, пока для него не заведена своя политика.
+        // attachToolbarTo выше уже вызвал setActiveEditor(surface.element), поэтому
+        // attachLinkFootnoteHandlers() (сигнатура без аргумента — берёт
+        // this.activeEditor) навешивает обработчики на ПРАВИЛЬНЫЙ элемент.
+        if (surface.rich && surface.kind === 'violationField') {
+            textBlockManager.installCapsuleObserver(surface.element); // heal-observer (prevent-then-heal)
+            this._onBeforeInput = (e) => textBlockManager.handleEditorBeforeInput(e, surface.element, null);
+            this._onKeydown = (e) => textBlockManager.handleEditorKeydown(e, surface.element);
+            this._onCopy = (e) => textBlockManager.handleEditorCopy(e, surface.element, false);
+            surface.element.addEventListener('beforeinput', this._onBeforeInput);
+            surface.element.addEventListener('keydown', this._onKeydown);
+            surface.element.addEventListener('copy', this._onCopy);
+            textBlockManager.attachLinkFootnoteHandlers(); // tooltip/dblclick-правка/ПКМ-меню/клик-каретка
+        }
     },
 
     unmount() {
@@ -37,11 +58,20 @@ export const EditorController = {
         surface.commit(); // ДО снятия слушателей — иначе висящий ввод теряется
         surface.element.removeEventListener('input', this._onInput);
         surface.element.removeEventListener('blur', this._onBlur);
+        if (surface.rich && surface.kind === 'violationField') {
+            surface.element.__capsuleObserver?.disconnect();
+            surface.element.removeEventListener('beforeinput', this._onBeforeInput);
+            surface.element.removeEventListener('keydown', this._onKeydown);
+            surface.element.removeEventListener('copy', this._onCopy);
+        }
         textBlockManager.detachToolbar();
         if (EditorRegistry.getActive() === surface) EditorRegistry.clear(); // ownership-guard
         this._surface = null;
         this._onInput = null;
         this._onBlur = null;
+        this._onBeforeInput = null;
+        this._onKeydown = null;
+        this._onCopy = null;
     },
 };
 
