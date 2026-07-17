@@ -164,6 +164,30 @@ test('ViolationContentItemSurface: commit снимает caret-guard\'ы (U+FEFF
     }
 });
 
+// changed=false (косметика) НЕ означает «нечего чистить» — см. докстринг
+// _repairCapsuleHtml (violation-field-surface.js). Модель обязана получать
+// report.html БЕЗУСЛОВНО, независимо от changed (зеркало теста в
+// violation-rich-surface.test.mjs для ViolationFieldSurface).
+test('ViolationContentItemSurface: setContent — модель получает report.html ОДНИМ вызовом даже при changed=false (Task 1.3.4-A)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: '' };
+    const s = vm._makeContentItemSurface(violation, item);
+    const guard = String.fromCharCode(0xFEFF);
+
+    const origReport = textBlockManager._repairCapsulesReport;
+    textBlockManager._repairCapsulesReport = () => ({ html: '<i>чисто</i>', changed: false });
+    try {
+        s.setContent(`${guard}<i contenteditable="true">чисто</i>${guard}`);
+        assert.deepEqual(calls, [{ field: 'content', val: '<i>чисто</i>' }],
+            'модель получает report.html ОДНИМ вызовом независимо от changed');
+    } finally {
+        textBlockManager._repairCapsulesReport = origReport;
+    }
+});
+
 test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {
     const vm = new ViolationManager();
     const calls = [];

@@ -44,19 +44,33 @@ function _readViolationField(violation, path) {
 }
 
 /**
- * Guard-strip (U+FEFF) + validateAndRepairCapsules — зеркало пред-записи в
- * saveContent (textblock-core.js:127-131): капсулы поля нарушения (Task 1.3.4)
- * несут те же caret-guard'ы и подвержены тем же инвариантам (дубль-id,
- * расщеплённый клон, пустой data-*), которые НЕЛЬЗЯ пускать в
- * модель→превью→DOCX. До домешивания капсульного миксина (textblock-editor.js/
- * textblock-capsule-integrity.js) в граф импортов — identity (no-op).
+ * Guard-strip (U+FEFF) + validateAndRepairCapsules-репорт — зеркало пред-записи
+ * в saveContent/handleEditorBlur (textblock-core.js:127-131,
+ * textblock-editor.js:501-508): капсулы поля нарушения (Task 1.3.4) несут те же
+ * caret-guard'ы и подвержены тем же инвариантам (дубль-id, расщеплённый клон,
+ * пустой data-*), которые НЕЛЬЗЯ пускать в модель→превью→DOCX.
+ *
+ * Возвращает {html, changed}: html — ВСЕГДА чистый (guard'ы вычищены и
+ * _repairCapsulesInRoot прогнан), безопасен для записи в модель БЕЗ условий.
+ * changed — признак РЕАЛЬНОЙ структурной починки (дубль-id/расщеплённый клон/
+ * пустая капсула), а НЕ косметики: снятие contenteditable и стрип guard'ов
+ * МЕНЯЮТ строку всегда при наличии капсулы, но changed не взводят
+ * (textblock-capsule-integrity.js:78-89, комментарий «косметика ... changed не
+ * взводим») — сравнивать repaired!==html как признак «нужна доп. запись»
+ * нельзя (здоровая капсула с guard'ами и без структурных проблем даст
+ * changed=false, но строка всё равно отличается). changed нужен ТОЛЬКО для
+ * решения о ДОРОГОМ ре-рендере DOM (guard-стрип невидим — без структурной
+ * починки визуально нечего перерисовывать). До домешивания капсульного
+ * миксина (textblock-editor.js/textblock-capsule-integrity.js) в граф
+ * импортов — identity, changed=false.
  * @param {string} html
- * @returns {string}
+ * @returns {{html: string, changed: boolean}}
  */
 function _repairCapsuleHtml(html) {
     const stripped = textBlockManager._stripGuards ? textBlockManager._stripGuards(html) : html;
-    return textBlockManager.validateAndRepairCapsules
-        ? textBlockManager.validateAndRepairCapsules(stripped) : stripped;
+    return typeof textBlockManager._repairCapsulesReport === 'function'
+        ? textBlockManager._repairCapsulesReport(stripped)
+        : { html: stripped, changed: false };
 }
 
 export class ViolationFieldSurface {
@@ -81,17 +95,18 @@ export class ViolationFieldSurface {
 
     /** Модель → element, С ре-рендером (внешняя запись: формализатор, корректор). */
     setContent(html) {
-        this._manager.setViolationField(this._violation, this._path, html);
-        renderActContent(this.element, html);
         // Task 1.3.4-A: html может прийти с caret-guard'ами/битыми капсулами
-        // (напр. корректор реконструирует текст выделения из живого DOM) — их
-        // нельзя пускать в модель/DOM. Чиним ПОСЛЕ рендера и, если репак реально
-        // что-то поменял, синхронно перезаписываем модель+DOM репаренным
-        // значением. На чистом html — identity (лишней записи нет).
-        const repaired = _repairCapsuleHtml(html);
-        if (repaired !== html) {
-            this._manager.setViolationField(this._violation, this._path, repaired);
-            renderActContent(this.element, repaired);
+        // (напр. корректор реконструирует текст выделения из живого DOM). Модель
+        // ВСЕГДА получает report.html (guard'ы вычищены) — БЕЗУСЛОВНО, ОДНИМ
+        // вызовом (см. докстринг _repairCapsuleHtml: сравнивать по строке
+        // нельзя, changed не про guard-стрип). DOM рендерим переданным html
+        // немедленно; повторный ре-рендер репаренным — только если репак
+        // реально структурно починил капсулу (иначе визуально нечего менять).
+        const report = _repairCapsuleHtml(html);
+        this._manager.setViolationField(this._violation, this._path, report.html);
+        renderActContent(this.element, html);
+        if (report.changed) {
+            renderActContent(this.element, report.html);
         }
     }
 
@@ -100,7 +115,7 @@ export class ViolationFieldSurface {
         // Guard-strip + repair ПЕРЕД записью в модель — зеркало saveContent
         // (textblock-core.js:127-131).
         this._manager.setViolationField(
-            this._violation, this._path, _repairCapsuleHtml(this.element.innerHTML));
+            this._violation, this._path, _repairCapsuleHtml(this.element.innerHTML).html);
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -136,14 +151,14 @@ export class ViolationContentItemSurface {
 
     /** Модель → element, С ре-рендером (внешняя запись). */
     setContent(html) {
-        this._manager.setContentItemField(this._violation, this._item, 'content', html);
+        // Task 1.3.4-A: см. ViolationFieldSurface.setContent — модель ВСЕГДА
+        // получает report.html безусловно, ре-рендер DOM повторно — только при
+        // реальной структурной починке (changed).
+        const report = _repairCapsuleHtml(html);
+        this._manager.setContentItemField(this._violation, this._item, 'content', report.html);
         renderActContent(this.element, html);
-        // Task 1.3.4-A: см. ViolationFieldSurface.setContent — та же защита от
-        // caret-guard'ов/битых капсул в модели.
-        const repaired = _repairCapsuleHtml(html);
-        if (repaired !== html) {
-            this._manager.setContentItemField(this._violation, this._item, 'content', repaired);
-            renderActContent(this.element, repaired);
+        if (report.changed) {
+            renderActContent(this.element, report.html);
         }
     }
 
@@ -151,7 +166,7 @@ export class ViolationContentItemSurface {
     commit() {
         // Guard-strip + repair ПЕРЕД записью — см. ViolationFieldSurface.commit.
         this._manager.setContentItemField(
-            this._violation, this._item, 'content', _repairCapsuleHtml(this.element.innerHTML));
+            this._violation, this._item, 'content', _repairCapsuleHtml(this.element.innerHTML).html);
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного

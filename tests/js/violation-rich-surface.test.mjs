@@ -107,27 +107,7 @@ test('commit: снимает caret-guard\'ы (U+FEFF) из element.innerHTML п�
   }
 });
 
-test('setContent: html с caret-guard\'ами — модель дополнительно перезаписывается репаренным значением', () => {
-  const vm = new ViolationManager();
-  const calls = [];
-  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
-  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
-  const guard = String.fromCharCode(0xFEFF);
-
-  const origStrip = textBlockManager._stripGuards;
-  textBlockManager._stripGuards = (html) => html.split(guard).join('');
-  try {
-    s.setContent(`${guard}<b>x</b>`);
-    assert.deepEqual(calls, [
-      { p: 'violated', val: `${guard}<b>x</b>` },
-      { p: 'violated', val: '<b>x</b>' },
-    ], 'вторая запись — репаренное значение без guard-символов');
-  } finally {
-    textBlockManager._stripGuards = origStrip;
-  }
-});
-
-test('setContent: чистый html (без guard\'ов) — ровно ОДНА запись в модель (repair — identity, доп. записи нет)', () => {
+test('setContent: чистый html (без guard\'ов) — ровно ОДНА запись в модель (repair — identity)', () => {
   const vm = new ViolationManager();
   const calls = [];
   vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
@@ -135,5 +115,62 @@ test('setContent: чистый html (без guard\'ов) — ровно ОДНА
 
   s.setContent('<b>чистый текст</b>');
 
-  assert.deepEqual(calls, [{ p: 'violated', val: '<b>чистый текст</b>' }], 'без guard\'ов повторной записи нет');
+  assert.deepEqual(calls, [{ p: 'violated', val: '<b>чистый текст</b>' }]);
+});
+
+// changed=false (косметика: guard-стрип/снятие contenteditable) НЕ означает
+// «строка не изменилась» — _repairCapsulesInRoot меняет строку всегда при
+// наличии капсулы, но changed взводит только на структурной починке
+// (textblock-capsule-integrity.js:78-89). Сравнивать repaired!==html как
+// повод для записи в модель НЕЛЬЗЯ (см. докстринг _repairCapsuleHtml) — модель
+// обязана получать report.html БЕЗУСЛОВНО, независимо от changed.
+test('setContent: changed=false (только косметика) — модель ВСЕ РАВНО получает report.html, ОДНИМ вызовом', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+
+  const origReport = textBlockManager._repairCapsulesReport;
+  // Косметика: строка отличается от входа (guard'ы вычищены), но changed=false.
+  textBlockManager._repairCapsulesReport = () => ({ html: '<span class="text-link">x</span>', changed: false });
+  try {
+    const guard = String.fromCharCode(0xFEFF);
+    s.setContent(`${guard}<span class="text-link" contenteditable="true">x</span>${guard}`);
+    assert.deepEqual(calls, [{ p: 'violated', val: '<span class="text-link">x</span>' }],
+      'модель получает report.html ОДНИМ вызовом независимо от changed');
+  } finally {
+    textBlockManager._repairCapsulesReport = origReport;
+  }
+});
+
+test('setContent: changed=false — DOM без повторного ре-рендера (первый рендер — переданным html)', () => {
+  const vm = new ViolationManager();
+  vm.setViolationField = () => true;
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+  s.element = { textContent: '' };
+
+  const origReport = textBlockManager._repairCapsulesReport;
+  textBlockManager._repairCapsulesReport = () => ({ html: '<b>чисто</b>', changed: false });
+  try {
+    s.setContent('<b>исходный</b>');
+    assert.equal(s.element.textContent, '<b>исходный</b>', 'без структурной починки повторный рендер избыточен');
+  } finally {
+    textBlockManager._repairCapsulesReport = origReport;
+  }
+});
+
+test('setContent: changed=true — DOM получает повторный ре-рендер репаренным значением', () => {
+  const vm = new ViolationManager();
+  vm.setViolationField = () => true;
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+  s.element = { textContent: '' };
+
+  const origReport = textBlockManager._repairCapsulesReport;
+  textBlockManager._repairCapsulesReport = () => ({ html: '<b>исправлено</b>', changed: true });
+  try {
+    s.setContent('<b>битая капсула</b>');
+    assert.equal(s.element.textContent, '<b>исправлено</b>', 'структурная починка отражается в DOM повторным рендером');
+  } finally {
+    textBlockManager._repairCapsulesReport = origReport;
+  }
 });
