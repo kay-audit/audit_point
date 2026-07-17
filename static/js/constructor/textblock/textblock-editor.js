@@ -432,7 +432,7 @@ Object.assign(TextBlockManager.prototype, {
      * @private
      */
     _makeTextBlockSurface(editor) {
-        return new TextBlockSurface(editor);
+        return new TextBlockSurface(editor, this);
     },
 
     /**
