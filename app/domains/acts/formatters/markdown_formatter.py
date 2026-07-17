@@ -148,7 +148,7 @@ class MarkdownFormatter(BaseFormatter):
             label: Текст метки
             content: Текст поля (может быть пустым)
         """
-        add_required_pair(lines, label, content, wrap_bold)
+        add_required_pair(lines, label, content, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_labeled_section(self, lines: list[str], label: str, data: dict):
         """
@@ -160,7 +160,7 @@ class MarkdownFormatter(BaseFormatter):
             label: Текст метки
             data: Данные секции (dict с enabled/content)
         """
-        add_labeled_section(lines, label, data, wrap_bold)
+        add_labeled_section(lines, label, data, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_description_list(self, lines: list[str], desc_list: dict):
         """
@@ -196,7 +196,7 @@ class MarkdownFormatter(BaseFormatter):
         Returns:
             Следующий номер кейса
         """
-        return add_case(lines, item, case_number, wrap_bold)
+        return add_case(lines, item, case_number, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_image(self, lines: list[str], item: dict):
         r"""
@@ -241,7 +241,7 @@ class MarkdownFormatter(BaseFormatter):
             lines: Список строк для добавления
             item: Данные с текстом
         """
-        add_free_text(lines, item)
+        add_free_text(lines, item, text_conv=HTMLUtils.html_to_markdown)
 
 
 class _MarkdownTreeVisitor:

@@ -195,7 +195,7 @@ class TextFormatter(BaseFormatter):
             label: Текст метки
             content: Текст поля (может быть пустым)
         """
-        add_required_pair(lines, label, content, wrap_plain)
+        add_required_pair(lines, label, content, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_labeled_section(self, lines: list[str], label: str, data: dict):
         """
@@ -207,7 +207,7 @@ class TextFormatter(BaseFormatter):
             label: Текст метки
             data: Данные секции (dict с enabled/content)
         """
-        add_labeled_section(lines, label, data, wrap_plain)
+        add_labeled_section(lines, label, data, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_description_list(self, lines: list[str], desc_list: dict):
         """
@@ -243,7 +243,7 @@ class TextFormatter(BaseFormatter):
         Returns:
             Следующий номер кейса
         """
-        return add_case(lines, item, case_number, wrap_plain)
+        return add_case(lines, item, case_number, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_image(self, lines: list[str], item: dict):
         """
@@ -270,7 +270,7 @@ class TextFormatter(BaseFormatter):
             lines: Список строк для добавления
             item: Данные с текстом
         """
-        add_free_text(lines, item)
+        add_free_text(lines, item, text_conv=HTMLUtils.clean_html)
 
 
 class _TextTreeVisitor:

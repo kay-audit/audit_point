@@ -64,6 +64,7 @@ def format_violation(
 
 def add_required_pair(
     lines: list[str], label: str, content: str, bold_wrap: Callable[[str], str],
+    text_conv: Callable[[str], str] = lambda s: s,
 ) -> None:
     """
     Добавляет обязательное поле (Нарушено/Установлено): метка выводится
@@ -74,13 +75,16 @@ def add_required_pair(
         label: Текст метки
         content: Текст поля (может быть пустым)
         bold_wrap: Токен оформления метки (жирный MD / как есть TXT)
+        text_conv: Конвертер content под формат (HTML→Markdown / HTML→plain);
+            дефолт identity — для колбэков без rich-конвертации
     """
-    lines.append(f"{bold_wrap(f'{label}:')} {content}".rstrip())
+    lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}".rstrip())
     lines.append("")
 
 
 def add_labeled_section(
     lines: list[str], label: str, data: dict, bold_wrap: Callable[[str], str],
+    text_conv: Callable[[str], str] = lambda s: s,
 ) -> None:
     """
     Добавляет опциональную секцию с меткой (Причины/Принятые меры/
@@ -91,13 +95,14 @@ def add_labeled_section(
         label: Текст метки
         data: Данные секции (dict с enabled/content)
         bold_wrap: Токен оформления метки
+        text_conv: Конвертер content под формат; дефолт identity
     """
     if not data.get('enabled', False):
         return
     content = data.get('content', '')
 
     if content:
-        lines.append(f"{bold_wrap(f'{label}:')} {content}")
+        lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}")
         lines.append("")
 
 
@@ -127,6 +132,7 @@ def add_description_list(lines: list[str], desc_list: dict, bullet: str) -> None
 
 def add_case(
     lines: list[str], item: dict, case_number: int, bold_wrap: Callable[[str], str],
+    text_conv: Callable[[str], str] = lambda s: s,
 ) -> int:
     """
     Добавляет кейс с нумерацией.
@@ -136,6 +142,7 @@ def add_case(
         item: Данные кейса
         case_number: Текущий номер кейса
         bold_wrap: Токен оформления метки
+        text_conv: Конвертер content под формат; дефолт identity
 
     Returns:
         Следующий номер кейса
@@ -143,22 +150,25 @@ def add_case(
     # #9/Q1: нумеруются ВСЕ кейсы, включая пустые (метка + пустое тело);
     # счётчик всегда двигается вперёд.
     content = item.get('content', '')
-    lines.append(f"{bold_wrap(f'Кейс {case_number}:')} {content}".rstrip())
+    lines.append(f"{bold_wrap(f'Кейс {case_number}:')} {text_conv(content)}".rstrip())
     lines.append("")
     return case_number + 1
 
 
-def add_free_text(lines: list[str], item: dict) -> None:
+def add_free_text(
+    lines: list[str], item: dict, text_conv: Callable[[str], str] = lambda s: s,
+) -> None:
     """
     Добавляет свободный текст.
 
     Args:
         lines: Список строк для добавления
         item: Данные с текстом
+        text_conv: Конвертер content под формат; дефолт identity
     """
     content = item.get('content', '')
     if content:
-        lines.append(content)
+        lines.append(text_conv(content))
         lines.append("")
 
 

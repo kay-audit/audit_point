@@ -220,3 +220,30 @@ def test_text_required_labels_shown_when_empty():
     out = _txt()._format_violation(v)
     assert "Нарушено:" in out
     assert "Установлено:" in out
+
+
+# --- Task 1.1.3: rich-поля нарушения — HTML→Markdown / HTML→plain через text_conv ---
+
+
+def test_markdown_rich_field_converts_html():
+    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+    out = _md()._format_violation(v)
+    assert "**жирное**" in out and "Ромашка & Ко" in out and "&amp;" not in out
+
+
+def test_text_rich_field_strips_html():
+    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+    out = _txt()._format_violation(v)
+    assert "жирное" in out and "<b>" not in out and "Ромашка & Ко" in out
+
+
+def test_measures_and_case_are_rich():
+    v = dict(_VIOLATION, measures={"enabled": True, "content": "<i>мера</i>"},
+             additionalContent={"enabled": True, "items": [{"type": "case", "content": "<b>кейс</b>"}]})
+    md = _md()._format_violation(v)
+    assert "*мера*" in md and "**кейс**" in md
+
+
+def test_description_list_stays_plain():
+    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
+    assert "<b>пункт</b>" in _md()._format_violation(v)
