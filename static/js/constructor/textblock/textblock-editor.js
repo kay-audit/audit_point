@@ -7,6 +7,8 @@ import { RENDER_CLASSES } from '../render-classes.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { SafeHTML, SAFE_HTML_PROFILES, renderActContent } from '../../shared/sanitize.js';
 import { getStructureLimits } from '../violation/violation-image-validator.js';
+import { TextBlockSurface } from './editable-surface.js';
+import { EditorRegistry } from './editor-registry.js';
 
 Object.assign(TextBlockManager.prototype, {
     /**
@@ -426,10 +428,43 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
+     * Создаёт EditableSurface-обёртку (TextBlockSurface) для DOM-редактора.
+     * @private
+     */
+    _makeTextBlockSurface(editor) {
+        return new TextBlockSurface(editor);
+    },
+
+    /**
+     * Регистрирует поверхность редактора как активную в EditorRegistry — второй
+     * (наряду с this.activeEditor) источник истины «кто сейчас в фокусе», нужный
+     * seam'у EditableSurface. Существующий мост this.activeEditor не заменяется.
+     * @private
+     */
+    _activateSurfaceForEditor(editor) {
+        const surface = this._makeTextBlockSurface(editor);
+        EditorRegistry.setActive(surface);
+        return surface;
+    },
+
+    /**
+     * Ownership-guard: снимает активную поверхность в EditorRegistry, только если
+     * ею всё ещё владеет ИМЕННО этот editor. Без этой проверки стейл-блюр A при
+     * быстром переходе фокуса A→B затирал бы поверхность, которой уже владеет B.
+     * @private
+     */
+    _clearSurfaceIfOwned(editor) {
+        if (EditorRegistry.getActive()?.element === editor) {
+            EditorRegistry.clear();
+        }
+    },
+
+    /**
      * Обработчик фокуса редактора
      */
     handleEditorFocus(editor, textBlock) {
         this.setActiveEditor(editor);
+        this._activateSurfaceForEditor(editor);
         this.showToolbar();
         this.updateToolbarState();
         this.attachLinkFootnoteHandlers();
@@ -513,6 +548,7 @@ Object.assign(TextBlockManager.prototype, {
                 !this.globalToolbar?.contains(document.activeElement)) {
                 this.hideToolbar();
                 this.clearActiveEditor();
+                this._clearSurfaceIfOwned(editor);
             }
         }, 200);
     },
