@@ -4,6 +4,7 @@
  */
 import { PreviewManager } from '../preview/preview.js';
 import { RENDER_CLASSES } from '../render-classes.js';
+import { renderActContent } from '../../shared/sanitize.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
@@ -81,6 +82,11 @@ export class ViolationManager {
      */
     removeViolation(violationId) {
         if (!violationId) return;
+        // Task 1.3.3: узел нарушения разрушается — снимаем контроллер с его
+        // rich-поля, если оно активно (иначе EditorController держал бы
+        // detached-хост со слушателями). Best-effort: `?.` на случай вызова до
+        // домешивания rich-хелперов (violation-field-surface.js) в изоляции.
+        this._teardownActiveRichField?.(violationId);
         this.activeViolations.delete(violationId);
         const controller = this._fileDropControllers.get(violationId);
         if (controller) {
@@ -117,6 +123,14 @@ export class ViolationManager {
      * @returns {HTMLElement} Контейнер с формой нарушения
      */
     createViolationElement(violation, node) {
+        // Task 1.3.3: снимаем контроллер с прежнего rich-поля этого нарушения
+        // перед пересозданием DOM — иначе после replaceChild/innerHTML='' он
+        // держал бы detached-хост со слушателями (commit сохранит последний ввод).
+        this._teardownActiveRichField(violation.id);
+
+        // Режим только чтения определяем один раз — для всех полей карточки.
+        const isReadOnly = AppConfig.readOnlyMode?.isReadOnly;
+
         const section = document.createElement('div');
         section.className = RENDER_CLASSES.VIOLATION_SECTION;
         section.dataset.violationId = violation.id;
@@ -133,27 +147,15 @@ export class ViolationManager {
         violatedLabel.textContent = 'Нарушено:';
         violatedColumn.appendChild(violatedLabel);
 
-        const violatedTextarea = document.createElement('textarea');
-        violatedTextarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        violatedTextarea.placeholder = 'Опишите нарушение...';
-        violatedTextarea.value = violation.violated || '';
-        violatedTextarea.rows = 4;
-
-        // Проверяем режим только чтения
-        const isReadOnly = AppConfig.readOnlyMode?.isReadOnly;
-        if (isReadOnly) {
-            violatedTextarea.readOnly = true;
-            violatedTextarea.classList.add('read-only');
-        } else {
-            // Настраиваем обработку клавиш для сохранения изменений.
-            // Аудит правки фиксируется diff-ом при сохранении (violation-audit.js),
-            // а не per-keystroke — отдельная запись в журнал здесь не нужна.
-            this.setupTextareaHandlers(violatedTextarea, (value) => {
-                this.setViolationField(violation, 'violated', value);
-            });
-        }
-
-        violatedColumn.appendChild(violatedTextarea);
+        // «Нарушено» — rich-поле (contenteditable). Наполняется из модели, формат
+        // переживает ре-рендер; ввод пишется в модель через write-through
+        // контроллера (setViolationField). Аудит — diff при сохранении
+        // (violation-audit.js), не per-keystroke.
+        const violatedField = this._createRichFieldEditor(
+            this._makeViolationSurface(violation, 'violated'),
+            { placeholder: 'Опишите нарушение...', isReadOnly },
+        );
+        violatedColumn.appendChild(violatedField);
 
         // Колонка "Установлено"
         const establishedColumn = document.createElement('div');
@@ -164,25 +166,12 @@ export class ViolationManager {
         establishedLabel.textContent = 'Установлено:';
         establishedColumn.appendChild(establishedLabel);
 
-        const establishedTextarea = document.createElement('textarea');
-        establishedTextarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        establishedTextarea.placeholder = 'Опишите установленное...';
-        establishedTextarea.value = violation.established || '';
-        establishedTextarea.rows = 4;
-
-        // Проверяем режим только чтения
-        if (isReadOnly) {
-            establishedTextarea.readOnly = true;
-            establishedTextarea.classList.add('read-only');
-        } else {
-            // Настраиваем обработку клавиш для сохранения изменений.
-            // Аудит правки — diff при сохранении (violation-audit.js), не per-keystroke.
-            this.setupTextareaHandlers(establishedTextarea, (value) => {
-                this.setViolationField(violation, 'established', value);
-            });
-        }
-
-        establishedColumn.appendChild(establishedTextarea);
+        // «Установлено» — rich-поле (симметрично «Нарушено»).
+        const establishedField = this._createRichFieldEditor(
+            this._makeViolationSurface(violation, 'established'),
+            { placeholder: 'Опишите установленное...', isReadOnly },
+        );
+        establishedColumn.appendChild(establishedField);
 
         columnsContainer.appendChild(violatedColumn);
         columnsContainer.appendChild(establishedColumn);
@@ -217,8 +206,8 @@ export class ViolationManager {
             // violation-узла number вида «Нарушение N», не «5.x»).
             const pointNumber = AppState.findParentNode(node?.id)?.number || '';
             this._addFormalizeButton(section, violation, pointNumber, {
-                violated: violatedTextarea,
-                established: establishedTextarea,
+                violated: violatedField,
+                established: establishedField,
                 reasons: reasonsField,
                 measures: measuresField,
                 consequences: consequencesField,
@@ -266,13 +255,14 @@ export class ViolationManager {
      * @param {Object} fields - Ответ формализатора (плоские строки)
      */
     _applyFormalized(violation, controls, fields) {
-        const setPlain = (name, textarea, value) => {
+        const setPlain = (name, fieldDiv, value) => {
             const v = (value || '').trim();
             if (!v) return;                 // не извлечено — не затираем существующее
             // Запись только через setViolationField — единственную защищённую точку
             // (requireWrite-guard + превью); прямая запись миновала бы её.
             this.setViolationField(violation, name, v);
-            if (textarea) textarea.value = v;
+            // Модель → rich-поле (contenteditable): renderActContent, не .value.
+            if (fieldDiv) renderActContent(fieldDiv, v);
         };
         const setOptional = (name, container, value) => {
             const v = (value || '').trim();
@@ -281,10 +271,10 @@ export class ViolationManager {
             this.setViolationField(violation, `${name}.content`, v);
             const cb = container.querySelector('.violation-field-toggle input[type="checkbox"]');
             const content = container.querySelector('.violation-field-content');
-            const ta = container.querySelector('.violation-field-content textarea');
+            const fieldDiv = container.querySelector('.violation-field-content .violation-field');
             if (cb) cb.checked = true;
             if (content) content.style.display = 'block';
-            if (ta) ta.value = v;
+            if (fieldDiv) renderActContent(fieldDiv, v);
         };
 
         setPlain('violated', controls.violated, fields.violated);
@@ -427,23 +417,13 @@ export class ViolationManager {
             this.renderList(listContainer, violation, fieldName, isReadOnly);
 
         } else if (type === 'text') {
-            const textarea = document.createElement('textarea');
-            textarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-            textarea.placeholder = label ? `Введите ${label.toLowerCase()}...` : '...';
-            textarea.value = violation[fieldName].content || '';
-            textarea.rows = 3;
-
-            if (isReadOnly) {
-                textarea.readOnly = true;
-                textarea.classList.add('read-only');
-            } else {
-                // Настраиваем обработку клавиш
-                this.setupTextareaHandlers(textarea, (value) => {
-                    this.setViolationField(violation, `${fieldName}.content`, value);
-                });
-            }
-
-            contentContainer.appendChild(textarea);
+            // Опциональное текстовое поле (reasons/measures/consequences/
+            // responsible) — rich-поле (contenteditable), путь `${fieldName}.content`.
+            const field = this._createRichFieldEditor(
+                this._makeViolationSurface(violation, `${fieldName}.content`),
+                { placeholder: label ? `Введите ${label.toLowerCase()}...` : '...', isReadOnly },
+            );
+            contentContainer.appendChild(field);
         }
 
         fieldContainer.appendChild(contentContainer);

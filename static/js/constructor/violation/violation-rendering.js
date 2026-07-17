@@ -118,24 +118,21 @@ Object.assign(ViolationManager.prototype, {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'content-item';
 
-        const textarea = document.createElement('textarea');
-        textarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        textarea.placeholder = 'Описание кейса';
-        textarea.value = item.content;
-        textarea.rows = 3;
-
-        if (isReadOnly) {
-            textarea.readOnly = true;
-            textarea.classList.add('read-only');
-        } else {
-            // #18-А: Escape-откат/Enter-переход как у остальных полей нарушения.
-            this.setupTextareaHandlers(textarea, (value) => {
-                this.setContentItemField(violation, item, 'content', value);
-                wrapper.classList.toggle('content-item-wrapper--empty', !value.trim());
+        // Кейс — rich-поле (contenteditable), путь по item через content-item
+        // поверхность; ввод пишется в item.content write-through контроллера.
+        const field = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item),
+            { placeholder: 'Описание кейса', isReadOnly },
+        );
+        if (!isReadOnly) {
+            // Живая подсветка пустого кейса (#9-Г) — только визуальный класс, без
+            // записи модели (её ведёт write-through контроллера через commit).
+            field.addEventListener('input', () => {
+                wrapper.classList.toggle('content-item-wrapper--empty', !field.textContent.trim());
             });
         }
 
-        itemDiv.appendChild(textarea);
+        itemDiv.appendChild(field);
         wrapper.appendChild(label);
         wrapper.appendChild(itemDiv);
 
@@ -264,24 +261,20 @@ Object.assign(ViolationManager.prototype, {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'content-item';
 
-        const textarea = document.createElement('textarea');
-        textarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        textarea.placeholder = 'Произвольный текст';
-        textarea.value = item.content;
-        textarea.rows = 4;
-
-        if (isReadOnly) {
-            textarea.readOnly = true;
-            textarea.classList.add('read-only');
-        } else {
-            // #18-А: Escape-откат/Enter-переход как у остальных полей нарушения.
-            this.setupTextareaHandlers(textarea, (value) => {
-                this.setContentItemField(violation, item, 'content', value);
-                wrapper.classList.toggle('content-item-wrapper--empty', !value.trim());
+        // Свободный текст — rich-поле (contenteditable), путь по item через
+        // content-item поверхность; ввод пишется в item.content контроллером.
+        const field = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item),
+            { placeholder: 'Произвольный текст', isReadOnly },
+        );
+        if (!isReadOnly) {
+            // Живая подсветка пустого текста (#9-Г) — только визуальный класс.
+            field.addEventListener('input', () => {
+                wrapper.classList.toggle('content-item-wrapper--empty', !field.textContent.trim());
             });
         }
 
-        itemDiv.appendChild(textarea);
+        itemDiv.appendChild(field);
         wrapper.appendChild(label);
         wrapper.appendChild(itemDiv);
 

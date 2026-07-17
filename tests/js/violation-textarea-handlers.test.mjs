@@ -6,9 +6,12 @@
  * markAsUnsaved и ложную запись аудита. stopPropagation на Escape гасит
  * всплытие (активная зона вставки не сбрасывается, посторонний тост не уходит).
  *
- * #18-А: setupTextareaHandlers применён к кейсу, свободному тексту и подписи
- * картинки (раньше — голые input-слушатели). Подпись — однострочный <input>,
- * поэтому multiline=false (Shift+Enter для неё бессмыслен).
+ * #18-А (обновлено Task 1.3.3): кейс и свободный текст стали rich-полями
+ * (contenteditable через _createRichFieldEditor + content-item поверхность),
+ * setupTextareaHandlers для них больше НЕ используется — правка идёт write-through
+ * контроллера (commit → setContentItemField). Подпись картинки ОСТАЁТСЯ на
+ * setupTextareaHandlers (однострочный <input>, multiline=false — Shift+Enter
+ * бессмыслен): картинка не rich-поле.
  *
  * Реальные модули конструктора импортируются под node:test через _browser-stub;
  * поля моделируются фейком, записывающим слушателей, чтобы дёргать их вручную.
@@ -148,36 +151,51 @@ test('input (multiline=false): любой Enter сохраняет+blur, Shift+E
 
 // ── #18-А: маршрутизация case/freeText/caption через setupTextareaHandlers ─────
 
-test('#18-А: createCaseElement маршрутизирует правку через setupTextareaHandlers → setContentItemField(content)', () => {
+test('#18-А (Task 1.3.3): createCaseElement идёт через rich-поле (content-item поверхность), commit→setContentItemField, БЕЗ setupTextareaHandlers', () => {
     const vm = new ViolationManager();
-    let captured = null;
-    vm.setupTextareaHandlers = (ta, onUpdate, multiline) => { captured = { onUpdate, multiline }; };
-    const setCalls = [];
-    vm.setContentItemField = (v, item, field, val) => setCalls.push({ field, val });
+    const captured = [];
+    // Спай хоста rich-поля: перехватываем поверхность/опции без создания DOM.
+    vm._createRichFieldEditor = (surface, opts) => { captured.push({ surface, opts }); return { addEventListener() {} }; };
+    let taCalled = 0;
+    vm.setupTextareaHandlers = () => { taCalled++; };
 
     const violation = { id: 'v1' };
     const item = { id: 'c1', type: 'case', content: 'старое' };
     vm.createCaseElement(violation, item, 0, 1, false);
 
-    assert.ok(captured, 'setupTextareaHandlers вызван для кейса');
-    assert.notEqual(captured.multiline, false, 'кейс — многострочная textarea');
-    captured.onUpdate('новое описание');
+    assert.equal(taCalled, 0, 'кейс больше НЕ использует setupTextareaHandlers');
+    assert.equal(captured.length, 1, 'кейс создан через rich-поле');
+    assert.equal(captured[0].surface.id, 'viol:v1:item:c1', 'content-item поверхность по item.id');
+    assert.equal(captured[0].surface.kind, 'violationField');
+    assert.equal(captured[0].opts.isReadOnly, false);
+
+    // Запись в модель — через commit поверхности (element.innerHTML → setContentItemField).
+    const setCalls = [];
+    vm.setContentItemField = (v, item2, field, val) => setCalls.push({ field, val });
+    captured[0].surface.element = { innerHTML: 'новое описание' };
+    captured[0].surface.commit();
     assert.deepEqual(setCalls, [{ field: 'content', val: 'новое описание' }]);
 });
 
-test('#18-А: createFreeTextElement маршрутизирует правку через setupTextareaHandlers → setContentItemField(content)', () => {
+test('#18-А (Task 1.3.3): createFreeTextElement идёт через rich-поле (content-item поверхность), commit→setContentItemField', () => {
     const vm = new ViolationManager();
-    let captured = null;
-    vm.setupTextareaHandlers = (ta, onUpdate) => { captured = { onUpdate }; };
-    const setCalls = [];
-    vm.setContentItemField = (v, item, field, val) => setCalls.push({ field, val });
+    const captured = [];
+    vm._createRichFieldEditor = (surface, opts) => { captured.push({ surface, opts }); return { addEventListener() {} }; };
+    let taCalled = 0;
+    vm.setupTextareaHandlers = () => { taCalled++; };
 
     const violation = { id: 'v1' };
     const item = { id: 't1', type: 'freeText', content: 'старое' };
     vm.createFreeTextElement(violation, item, 0, 1, false);
 
-    assert.ok(captured, 'setupTextareaHandlers вызван для свободного текста');
-    captured.onUpdate('новый текст');
+    assert.equal(taCalled, 0, 'свободный текст больше НЕ использует setupTextareaHandlers');
+    assert.equal(captured.length, 1, 'свободный текст создан через rich-поле');
+    assert.equal(captured[0].surface.id, 'viol:v1:item:t1');
+
+    const setCalls = [];
+    vm.setContentItemField = (v, item2, field, val) => setCalls.push({ field, val });
+    captured[0].surface.element = { innerHTML: 'новый текст' };
+    captured[0].surface.commit();
     assert.deepEqual(setCalls, [{ field: 'content', val: 'новый текст' }]);
 });
 

@@ -128,59 +128,65 @@ test('createCaseElement: пробелы в content тоже считаются �
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'));
 });
 
-test('createCaseElement: ввод текста снимает класс --empty динамически, item.content обновляется', () => {
+// Task 1.3.3: кейс/свободный текст — теперь contenteditable-div .violation-field
+// (не textarea). Живая подсветка пустоты — view-only слушатель input по
+// field.textContent; запись модели (item.content) ведёт write-through контроллера
+// (commit), в этих визуальных тестах не проверяется (см. violation-rich-fields.test.mjs
+// и violation-textarea-handlers.test.mjs).
+function findRichField(created) {
+    return created.find((c) => c.tag === 'div' && c.el.className && c.el.className.includes('violation-field')).el;
+}
+
+test('createCaseElement: ввод текста снимает класс --empty динамически (визуальный класс)', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation();
     const item = { id: 'c1', type: CONTENT_TYPE_CASE, content: '' };
 
     const { result: wrapper, created } = withTrackedDom(() => vm.createCaseElement(violation, item, 0, 1, false));
-    const textarea = created.find((c) => c.tag === 'textarea').el;
+    const field = findRichField(created);
 
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), 'изначально пусто');
 
-    textarea.value = 'Новый текст кейса';
-    textarea.fire('input');
+    field.textContent = 'Новый текст кейса';
+    field.fire('input');
 
-    assert.equal(item.content, 'Новый текст кейса', 'данные записаны через setContentItemField');
     assert.ok(!wrapper.classList.contains('content-item-wrapper--empty'), 'класс снят после ввода текста');
 });
 
-test('createCaseElement: очистка textarea возвращает класс --empty', () => {
+test('createCaseElement: очистка поля возвращает класс --empty', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation();
     const item = { id: 'c1', type: CONTENT_TYPE_CASE, content: 'Было' };
 
     const { result: wrapper, created } = withTrackedDom(() => vm.createCaseElement(violation, item, 0, 1, false));
-    const textarea = created.find((c) => c.tag === 'textarea').el;
+    const field = findRichField(created);
 
     assert.ok(!wrapper.classList.contains('content-item-wrapper--empty'));
 
-    textarea.value = '';
-    textarea.fire('input');
+    field.textContent = '';
+    field.fire('input');
 
-    assert.equal(item.content, '');
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), 'класс возвращается при очистке поля');
 });
 
 // --- createFreeTextElement ---
 
-test('createFreeTextElement: пустой текст получает класс --empty, ввод его снимает', () => {
+test('createFreeTextElement: ввод текста снимает класс --empty динамически (визуальный класс)', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation();
     const item = { id: 'f1', type: CONTENT_TYPE_FREE_TEXT, content: '' };
 
     const { result: wrapper, created } = withTrackedDom(() => vm.createFreeTextElement(violation, item, 0, 1, false));
-    const textarea = created.find((c) => c.tag === 'textarea').el;
+    const field = findRichField(created);
 
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'));
 
-    textarea.value = 'Произвольный текст';
-    textarea.fire('input');
+    field.textContent = 'Произвольный текст';
+    field.fire('input');
 
-    assert.equal(item.content, 'Произвольный текст');
     assert.ok(!wrapper.classList.contains('content-item-wrapper--empty'));
 });
 
