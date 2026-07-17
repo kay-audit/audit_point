@@ -590,8 +590,12 @@ export class DiffEngine {
         }
         // Rich-поля (case/freeText) — word-diff по ВИДИМОМУ тексту, тем же
         // приёмом, что и скалярные поля нарушения (_diffViolations выше).
-        const wordDiff = this._wordDiff(this._stripHtml(oldContent), this._stripHtml(newContent));
-        return { changed: true, detail: { typeChanged, wordDiff } };
+        // formattingOnly — правка только разметки при совпавшем видимом
+        // тексте (паритет со скалярными полями нарушения).
+        const strippedOld = this._stripHtml(oldContent);
+        const strippedNew = this._stripHtml(newContent);
+        const wordDiff = this._wordDiff(strippedOld, strippedNew);
+        return { changed: true, detail: { typeChanged, wordDiff, formattingOnly: strippedOld === strippedNew } };
     }
 
     /**

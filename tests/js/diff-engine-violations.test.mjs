@@ -319,3 +319,23 @@ test('additionalContent case/freeText: word-diff по видимому текс�
     assert.ok(wd.some(p => p.type === 'delete' && p.text === 'старый'));
     assert.ok(wd.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
 });
+
+// --- Review Round 2: formattingOnly для case/freeText (паритет со скалярными
+// полями). Раньше правка ТОЛЬКО форматирования кейса/свободного текста дала бы
+// modified с all-equal word-diff и без явного сигнала — несогласованно с
+// формализмом скалярных полей выше. По образцу тестов rich-поля.
+
+test('additionalContent case/freeText: правка только формата → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: 'кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>кейс</b>' }] } });
+    const entry = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(entry.formattingOnly, true);
+    assert.ok(entry.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('additionalContent case/freeText: правка текста → formattingOnly=false', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>старый</b> кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>новый</b> кейс' }] } });
+    const entry = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(entry.formattingOnly, false);
+});

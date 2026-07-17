@@ -567,7 +567,9 @@ export class DiffRenderer {
     /**
      * Рендер одного элемента доп.контента (кейс / свободный текст / картинка).
      * unchanged/added/removed показывают ВИДИМЫЙ текст (_stripHtml) — контент
-     * планируется rich-HTML, raw-текст показал бы теги буквально.
+     * планируется rich-HTML, raw-текст показал бы теги буквально. modified при
+     * formattingOnly — бейдж «Изменено форматирование» (паритет со скалярными
+     * полями нарушения, см. _renderDiffViolation).
      */
     static _renderContentEntry(container, entry, caseNumber) {
         const item = entry.newItem || entry.oldItem;
@@ -599,6 +601,17 @@ export class DiffRenderer {
             del.textContent = DiffEngine._stripHtml(entry.oldItem?.content || '');
             body.appendChild(del);
         } else if (entry.status === 'modified' && entry.wordDiff) {
+            // Правка только форматирования (видимый текст совпал) — бейдж,
+            // иначе word-diff без вставок/удалений выглядел бы «пустым»
+            // (зеркало _renderDiffViolation). Бейдж — сосед body (ДО неё), а
+            // не её потомок: SafeHTML.set(body, ...) заменил бы innerHTML и
+            // стёр бы бейдж, будь он внутри.
+            if (entry.formattingOnly) {
+                const badge = document.createElement('span');
+                badge.className = 'diff-textblock-format-badge';
+                badge.textContent = 'Изменено форматирование';
+                itemDiv.appendChild(badge);
+            }
             SafeHTML.set(body, this._wordDiffToHtml(entry.wordDiff));
         } else {
             body.textContent = DiffEngine._stripHtml((entry.newItem || entry.oldItem)?.content || '');

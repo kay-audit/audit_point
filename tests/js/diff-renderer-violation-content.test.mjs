@@ -72,7 +72,8 @@ test('_renderDiffViolation: полный дифф (списки + кейс + к�
             additionalContent: {
                 kind: 'additional', changed: true, enabled: true, oldEnabled: true,
                 entries: [
-                    { status: 'modified', reordered: false, oldItem: { id: 'c1', type: 'case', content: 'x' }, newItem: { id: 'c1', type: 'case', content: 'y' }, wordDiff: [{ type: 'delete', text: 'x' }, { type: 'insert', text: 'y' }] },
+                    // formattingOnly: false — та же осознанная фикстура-актуализация, что и у reasons выше (Review Round 2).
+                    { status: 'modified', reordered: false, formattingOnly: false, oldItem: { id: 'c1', type: 'case', content: 'x' }, newItem: { id: 'c1', type: 'case', content: 'y' }, wordDiff: [{ type: 'delete', text: 'x' }, { type: 'insert', text: 'y' }] },
                     { status: 'added', newItem: { id: 'f1', type: 'freeText', content: 'новый текст' } },
                     { status: 'modified', reordered: false, oldItem: { id: 'i1', type: 'image', url: 'a', caption: 'старая', filename: 'p.png', width: 0 }, newItem: { id: 'i1', type: 'image', url: 'b', caption: 'новая', filename: 'p.png', width: 50 }, fields: { url: { old: 'a', new: 'b' }, caption: { old: 'старая', new: 'новая' }, width: { old: 0, new: 50 } } },
                     { status: 'removed', oldItem: { id: 'i2', type: 'image', url: '', caption: '', filename: 'q.png', width: 0 } },
@@ -201,4 +202,43 @@ test('_renderContentEntry (unchanged): видимый текст (_stripHtml), �
     const body = created.find(el => el.className === 'diff-violation-item-body');
     assert.ok(body, 'тело элемента не создано');
     assert.equal(body.textContent, 'кейс без изменений');
+});
+
+// --- Review Round 2: formattingOnly-бейдж для case/freeText (паритет со
+// скалярными полями нарушения выше) --------------------------------------
+
+test('formattingOnly=true у case/freeText → бейдж «Изменено форматирование»', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderContentEntry({ appendChild() {} }, {
+            status: 'modified', formattingOnly: true,
+            oldItem: { id: 'c1', type: 'case', content: 'кейс' },
+            newItem: { id: 'c1', type: 'case', content: '<b>кейс</b>' },
+            wordDiff: [{ type: 'equal', text: 'кейс' }],
+        }, 1);
+    } finally {
+        document.createElement = orig;
+    }
+    const badge = created.find(el => el.className === 'diff-textblock-format-badge');
+    assert.ok(badge, 'бейдж форматирования не создан');
+    assert.equal(badge.textContent, 'Изменено форматирование');
+});
+
+test('formattingOnly=false у case/freeText → бейджа форматирования нет', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderContentEntry({ appendChild() {} }, {
+            status: 'modified', formattingOnly: false,
+            oldItem: { id: 'c1', type: 'case', content: '<b>старый</b> кейс' },
+            newItem: { id: 'c1', type: 'case', content: '<b>новый</b> кейс' },
+            wordDiff: [{ type: 'delete', text: 'старый' }, { type: 'insert', text: 'новый' }],
+        }, 1);
+    } finally {
+        document.createElement = orig;
+    }
+    assert.ok(!created.some(el => el.className === 'diff-textblock-format-badge'));
 });
