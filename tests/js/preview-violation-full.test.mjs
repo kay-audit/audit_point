@@ -206,6 +206,20 @@ test('#11: подпись поля responsible берётся из контра�
     assert.equal(line.label, 'Ответственные');
 });
 
+// --- rich-рендер тела поля (renderActContent, Task 1.1.4) ---
+
+test('rich-тело поля через renderActContent, не createTextNode', () => {
+    const seen = [];
+    const orig = document.createTextNode;
+    document.createTextNode = (t) => { seen.push(String(t)); return orig(t); };
+    try {
+        PreviewViolationRenderer.create(makeViolation({ violated: 'до <b>x</b> после' }));
+    } finally {
+        document.createTextNode = orig;
+    }
+    assert.ok(!seen.some(t => t.includes('<b>')), 'сырой HTML не должен уйти в текст-ноду');
+});
+
 // --- imagePresentationStyle (Б-1.4 / Б-1.6) ---
 
 test('width=50 → width:50%, дефолтный лимит высоты 40% полезной высоты листа = 110.8mm', () => {

@@ -12,6 +12,7 @@
  * freeText — буквально нечего рендерить; паритет с DOCX/MD/TXT, которые его
  * пропускают (см. collectViolationLines).
  */
+import { renderActContent } from '../../shared/sanitize.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
 import {
     CONTENT_TYPE_CASE,
@@ -152,8 +153,12 @@ export class PreviewViolationRenderer {
             labelEl.textContent = `${label}: `;
             line.appendChild(labelEl);
         }
-        // text — пользовательское поле нарушения; вставляем как текст-ноду (без HTML).
-        line.appendChild(document.createTextNode(text));
+        // text — rich-HTML поле нарушения (Task 1.1); рендерим через
+        // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
+        // текст-нодой — иначе сырой HTML показался бы буквально.
+        const bodyEl = document.createElement('span');
+        renderActContent(bodyEl, text);
+        line.appendChild(bodyEl);
         container.appendChild(line);
     }
 
