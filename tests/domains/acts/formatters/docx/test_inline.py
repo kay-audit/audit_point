@@ -298,3 +298,17 @@ def test_strike_nested_with_bold(doc):
     apply_inline_html(p, "<b><s>жирно-зачёркнуто</s></b>", base_size_pt=12)
     assert p.runs[0].bold is True
     assert p.runs[0].font.strike is True
+
+
+def test_base_italic_makes_default_runs_italic(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "обычный <b>жирный</b>", base_size_pt=9, base_italic=True)
+    assert all(r.italic for r in p.runs if r.text)
+    bold = [r for r in p.runs if r.text == "жирный"][0]
+    assert bold.bold and bold.italic
+
+
+def test_base_italic_default_false_unchanged(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "текст", base_size_pt=12)
+    assert not p.runs[0].italic

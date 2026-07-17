@@ -69,19 +69,21 @@ _SIZE_RE = re.compile(r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(px|pt)", re.IGNORECAS
 _STRIKE_RE = re.compile(r"text-decoration(?:-line)?\s*:\s*[^;]*line-through", re.IGNORECASE)
 
 
-def apply_inline_html(paragraph: Paragraph, html: str, base_size_pt: float) -> None:
+def apply_inline_html(
+    paragraph: Paragraph, html: str, base_size_pt: float, *, base_italic: bool = False
+) -> None:
     """Парсит html-фрагмент и добавляет runs в paragraph."""
     if not html:
         return
-    parser = _InlineParser(paragraph, base_size_pt)
+    parser = _InlineParser(paragraph, base_size_pt, base_italic)
     parser.feed(html)
 
 
 class _InlineParser(HTMLParser):
-    def __init__(self, paragraph: Paragraph, base_size_pt: float):
+    def __init__(self, paragraph: Paragraph, base_size_pt: float, base_italic: bool = False):
         super().__init__(convert_charrefs=True)
         self.paragraph = paragraph
-        self.stack: list[_RunState] = [_RunState(size_pt=base_size_pt)]
+        self.stack: list[_RunState] = [_RunState(size_pt=base_size_pt, italic=base_italic)]
         self._hyperlink: OxmlElement | None = None
         # Параллельно стеку span'ов: что делать при их закрытии.
         # ("footnote", текст) | ("link", None) | ("plain", None)
