@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { TextBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 import { ChangelogTracker } from '../../static/js/constructor/changelog-tracker.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
+import { EditorRegistry } from '../../static/js/constructor/textblock/editor-registry.js';
 
 /**
  * Менеджер с записывающими стабами шагов стока: каждый шаг пишет свой маркер в
@@ -132,6 +133,59 @@ test('finalizeEdit: перенумерация ГЛОБАЛЬНАЯ (renumberAll
   mgr.finalizeEdit(passed, { renumber: true });
   assert.deepEqual(captured, ['all'], 'сток зовёт глобальную перенумерацию');
   assert.equal(passed.__lastFootnoteCount, 1, 'кэш числа сносок переданного editor примирён');
+});
+
+// ── Task 1.3.4-A: мост персистентности (finalizeEdit → активная поверхность) ─
+
+test('finalizeEdit: НЕ-textblock editor (getTextBlock вернул null) + активная поверхность владеет им → surface.commit() вызван', () => {
+  const { mgr, editor } = makeManager({ footnoteCount: 0 });
+  editor.__lastFootnoteCount = 0;
+  mgr.getTextBlock = () => null; // блок не найден в state — не текстблок
+  const commits = [];
+  EditorRegistry.setActive({ element: editor, commit: () => commits.push('commit') });
+  try {
+    mgr.finalizeEdit(editor);
+    assert.deepEqual(commits, ['commit'], 'мост коммитит активную поверхность');
+  } finally {
+    EditorRegistry.clear();
+  }
+});
+
+test('finalizeEdit: textblock (getTextBlock находит блок) → мост НЕ трогает активную поверхность (старый путь цел)', () => {
+  const { mgr, editor, calls } = makeManager({ footnoteCount: 0 });
+  editor.__lastFootnoteCount = 0;
+  mgr.getTextBlock = () => ({ id: 'tb1', content: '' }); // блок найден — это текстблок
+  const commits = [];
+  EditorRegistry.setActive({ element: editor, commit: () => commits.push('commit') });
+  try {
+    mgr.finalizeEdit(editor);
+    assert.deepEqual(commits, [], 'мост не зовёт поверхность у настоящего текстблока');
+    assert.deepEqual(calls, ['toggleEmpty', 'save:tb1:<p>hi</p>'], 'обычный сток не задет мостом');
+  } finally {
+    EditorRegistry.clear();
+  }
+});
+
+test('finalizeEdit: НЕ-textblock editor, активной поверхности нет — no-op без исключения', () => {
+  const { mgr, editor } = makeManager({ footnoteCount: 0 });
+  editor.__lastFootnoteCount = 0;
+  mgr.getTextBlock = () => null;
+  EditorRegistry.clear();
+  assert.doesNotThrow(() => mgr.finalizeEdit(editor));
+});
+
+test('finalizeEdit: НЕ-textblock editor, активная поверхность принадлежит ДРУГОМУ editor (ownership-guard) → commit не вызван', () => {
+  const { mgr, editor } = makeManager({ footnoteCount: 0 });
+  editor.__lastFootnoteCount = 0;
+  mgr.getTextBlock = () => null;
+  const commits = [];
+  EditorRegistry.setActive({ element: {}, commit: () => commits.push('commit') }); // другой element
+  try {
+    mgr.finalizeEdit(editor);
+    assert.deepEqual(commits, [], 'чужая поверхность не коммитится');
+  } finally {
+    EditorRegistry.clear();
+  }
 });
 
 // ── Защитный no-op ───────────────────────────────────────────────────────────

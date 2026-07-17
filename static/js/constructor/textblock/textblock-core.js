@@ -5,6 +5,7 @@
 import { PreviewManager } from '../preview/preview.js';
 import { AppState } from '../state/state-core.js';
 import { ChangelogTracker } from '../changelog-tracker.js';
+import { EditorRegistry } from './editor-registry.js';
 
 /**
  * Узел — inline-капсула (ссылка/сноска, contenteditable=false-атом)?
@@ -201,6 +202,19 @@ export class TextBlockManager {
         // (г) Запись в state.content + точечный патч превью (changelog — внутри
         // saveContent, общий для всех путей правки).
         this.saveContent(editor.dataset.textBlockId, editor.innerHTML);
+
+        // (д) Мост персистентности (Task 1.3.4-A): finalizeEdit — сток не только
+        // для текстблоков. Если editor НЕ текстблок (нет привязанного
+        // textBlockId либо блок не найден в state) и именно он сейчас
+        // смонтирован как активная поверхность (EditorRegistry) — коммитим её.
+        // Аддитивно: у текстблока dataset.textBlockId валиден → сюда не заходит
+        // (шаг (г) выше уже сделал saveContent).
+        if (!this.getTextBlock(editor.dataset.textBlockId)) {
+            const active = EditorRegistry.getActive();
+            if (active && active.element === editor) {
+                active.commit();
+            }
+        }
     }
 
     /**

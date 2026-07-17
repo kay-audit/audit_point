@@ -24,6 +24,7 @@ import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
 import { EditorController } from '../../static/js/constructor/textblock/editor-controller.js';
 import { EditorRegistry } from '../../static/js/constructor/textblock/editor-registry.js';
+import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
 /**
  * Фейковый элемент, записывающий className/contentEditable/dataset/classList и
@@ -105,6 +106,15 @@ test('_createRichFieldEditor: read-only — contenteditable=false, класс re
     });
 });
 
+test('_createRichFieldEditor: __lastFootnoteCount=0 при создании (Task 1.3.4-A — гейт finalizeEdit не триггерит renumber на поле без сносок)', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const surface = { kind: 'violationField', element: null, getContent: () => '', commit() {} };
+    const out = withCreateElement(el, () => vm._createRichFieldEditor(surface, {}));
+
+    assert.equal(out.__lastFootnoteCount, 0);
+});
+
 // ── ViolationContentItemSurface (кейс/свободный текст) ────────────────────────
 
 test('_makeContentItemSurface: id/kind/rich, getContent из item.content', () => {
@@ -132,6 +142,26 @@ test('ViolationContentItemSurface: commit (element→модель) и setContent
     calls.length = 0;
     s.setContent('<u>внешнее</u>');
     assert.deepEqual(calls, [{ field: 'content', val: '<u>внешнее</u>' }], 'setContent пишет переданный html');
+});
+
+test('ViolationContentItemSurface: commit снимает caret-guard\'ы (U+FEFF) перед записью (Task 1.3.4-A)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: '' };
+    const s = vm._makeContentItemSurface(violation, item);
+    const guard = String.fromCharCode(0xFEFF);
+
+    const origStrip = textBlockManager._stripGuards;
+    textBlockManager._stripGuards = (html) => html.split(guard).join('');
+    try {
+        s.element = { innerHTML: `${guard}<i>новое</i>${guard}`, textContent: '' };
+        s.commit();
+        assert.deepEqual(calls, [{ field: 'content', val: '<i>новое</i>' }], 'guard-символы вычищены до записи в модель');
+    } finally {
+        textBlockManager._stripGuards = origStrip;
+    }
 });
 
 test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {

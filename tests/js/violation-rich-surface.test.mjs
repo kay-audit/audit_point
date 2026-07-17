@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 // _makeViolationSurface в прототип ViolationManager.
 import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
+import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
 test('_makeViolationSurface: id/kind/rich контракта EditableSurface', () => {
   const vm = new ViolationManager();
@@ -84,4 +85,55 @@ test('persist → делегирует в commit (element.innerHTML в моде�
   s.persist();
 
   assert.deepEqual(calls, [{ p: 'violated', val: '<b>x</b>' }]);
+});
+
+// ── Task 1.3.4-A: guard-strip + repair перед записью в модель ─────────────────
+
+test('commit: снимает caret-guard\'ы (U+FEFF) из element.innerHTML перед записью в модель', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+  const guard = String.fromCharCode(0xFEFF);
+
+  const origStrip = textBlockManager._stripGuards;
+  textBlockManager._stripGuards = (html) => html.split(guard).join('');
+  try {
+    s.element = { innerHTML: `${guard}<b>x</b>${guard}` };
+    s.commit();
+    assert.deepEqual(calls, [{ p: 'violated', val: '<b>x</b>' }], 'guard-символы вычищены до записи в модель');
+  } finally {
+    textBlockManager._stripGuards = origStrip;
+  }
+});
+
+test('setContent: html с caret-guard\'ами — модель дополнительно перезаписывается репаренным значением', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+  const guard = String.fromCharCode(0xFEFF);
+
+  const origStrip = textBlockManager._stripGuards;
+  textBlockManager._stripGuards = (html) => html.split(guard).join('');
+  try {
+    s.setContent(`${guard}<b>x</b>`);
+    assert.deepEqual(calls, [
+      { p: 'violated', val: `${guard}<b>x</b>` },
+      { p: 'violated', val: '<b>x</b>' },
+    ], 'вторая запись — репаренное значение без guard-символов');
+  } finally {
+    textBlockManager._stripGuards = origStrip;
+  }
+});
+
+test('setContent: чистый html (без guard\'ов) — ровно ОДНА запись в модель (repair — identity, доп. записи нет)', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+
+  s.setContent('<b>чистый текст</b>');
+
+  assert.deepEqual(calls, [{ p: 'violated', val: '<b>чистый текст</b>' }], 'без guard\'ов повторной записи нет');
 });

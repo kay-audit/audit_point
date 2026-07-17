@@ -27,6 +27,7 @@ import { RENDER_CLASSES } from '../render-classes.js';
 import { ViolationManager } from './violation-core.js';
 import { EditorController } from '../textblock/editor-controller.js';
 import { EditorRegistry } from '../textblock/editor-registry.js';
+import { textBlockManager } from '../textblock/textblock-core.js';
 
 /**
  * Читает значение поля нарушения по пути мутатора (плоский 'violated' либо
@@ -40,6 +41,22 @@ function _readViolationField(violation, path) {
     const parts = path.split('.');
     if (parts.length === 1) return violation[parts[0]];
     return violation[parts[0]]?.[parts[1]];
+}
+
+/**
+ * Guard-strip (U+FEFF) + validateAndRepairCapsules — зеркало пред-записи в
+ * saveContent (textblock-core.js:127-131): капсулы поля нарушения (Task 1.3.4)
+ * несут те же caret-guard'ы и подвержены тем же инвариантам (дубль-id,
+ * расщеплённый клон, пустой data-*), которые НЕЛЬЗЯ пускать в
+ * модель→превью→DOCX. До домешивания капсульного миксина (textblock-editor.js/
+ * textblock-capsule-integrity.js) в граф импортов — identity (no-op).
+ * @param {string} html
+ * @returns {string}
+ */
+function _repairCapsuleHtml(html) {
+    const stripped = textBlockManager._stripGuards ? textBlockManager._stripGuards(html) : html;
+    return textBlockManager.validateAndRepairCapsules
+        ? textBlockManager.validateAndRepairCapsules(stripped) : stripped;
 }
 
 export class ViolationFieldSurface {
@@ -66,11 +83,24 @@ export class ViolationFieldSurface {
     setContent(html) {
         this._manager.setViolationField(this._violation, this._path, html);
         renderActContent(this.element, html);
+        // Task 1.3.4-A: html может прийти с caret-guard'ами/битыми капсулами
+        // (напр. корректор реконструирует текст выделения из живого DOM) — их
+        // нельзя пускать в модель/DOM. Чиним ПОСЛЕ рендера и, если репак реально
+        // что-то поменял, синхронно перезаписываем модель+DOM репаренным
+        // значением. На чистом html — identity (лишней записи нет).
+        const repaired = _repairCapsuleHtml(html);
+        if (repaired !== html) {
+            this._manager.setViolationField(this._violation, this._path, repaired);
+            renderActContent(this.element, repaired);
+        }
     }
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
-        this._manager.setViolationField(this._violation, this._path, this.element.innerHTML);
+        // Guard-strip + repair ПЕРЕД записью в модель — зеркало saveContent
+        // (textblock-core.js:127-131).
+        this._manager.setViolationField(
+            this._violation, this._path, _repairCapsuleHtml(this.element.innerHTML));
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -108,11 +138,20 @@ export class ViolationContentItemSurface {
     setContent(html) {
         this._manager.setContentItemField(this._violation, this._item, 'content', html);
         renderActContent(this.element, html);
+        // Task 1.3.4-A: см. ViolationFieldSurface.setContent — та же защита от
+        // caret-guard'ов/битых капсул в модели.
+        const repaired = _repairCapsuleHtml(html);
+        if (repaired !== html) {
+            this._manager.setContentItemField(this._violation, this._item, 'content', repaired);
+            renderActContent(this.element, repaired);
+        }
     }
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
-        this._manager.setContentItemField(this._violation, this._item, 'content', this.element.innerHTML);
+        // Guard-strip + repair ПЕРЕД записью — см. ViolationFieldSurface.commit.
+        this._manager.setContentItemField(
+            this._violation, this._item, 'content', _repairCapsuleHtml(this.element.innerHTML));
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -161,6 +200,11 @@ function _makeContentItemSurface(violation, item) {
  */
 function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false } = {}) {
     const field = document.createElement('div');
+    // Task 1.3.4-A: гейт finalizeEdit (шаг б) сравнивает число сносок с кэшем
+    // __lastFootnoteCount — без явного 0 на свежем поле кэш undefined,
+    // footnoteCount(0)!==undefined триггернул бы renumberAllFootnotes на
+    // поле без единой сноски.
+    field.__lastFootnoteCount = 0;
     // violation-field — load-bearing (read-only-проход app.js + read-only.css);
     // violation-textarea — существующий визуальный стиль (рамка/паддинги/фокус).
     field.className = `${RENDER_CLASSES.VIOLATION_FIELD} ${RENDER_CLASSES.VIOLATION_TEXTAREA}`;
