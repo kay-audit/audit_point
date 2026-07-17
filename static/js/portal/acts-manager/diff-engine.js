@@ -296,7 +296,9 @@ export class DiffEngine {
     }
 
     /**
-     * Diff нарушений. Возвращает {vId: {status, fieldDiffs}}
+     * Diff нарушений. Возвращает {vId: {status, fieldDiffs}}. Для 6 скалярных
+     * rich-полей fieldDiffs[field] несёт wordDiff/formattingOnly — word-diff
+     * по видимому тексту, зеркало _diffTextBlocks.
      */
     static _diffViolations(oldViols, newViols) {
         const result = {};
@@ -332,7 +334,19 @@ export class DiffEngine {
                 const oldVal = this._getViolationFieldValue(oldV, field);
                 const newVal = this._getViolationFieldValue(newV, field);
                 if (oldVal !== newVal) {
-                    fieldDiffs[field] = { old: oldVal, new: newVal, changed: true };
+                    // Rich-поля (планируется rich-текст) — сравниваем по
+                    // ВИДИМОМУ тексту, зеркало _diffTextBlocks (:281-291).
+                    // formattingOnly — правка только разметки при совпавшем
+                    // видимом тексте.
+                    const strippedOld = this._stripHtml(oldVal);
+                    const strippedNew = this._stripHtml(newVal);
+                    fieldDiffs[field] = {
+                        old: oldVal,
+                        new: newVal,
+                        changed: true,
+                        wordDiff: this._wordDiff(strippedOld, strippedNew),
+                        formattingOnly: strippedOld === strippedNew,
+                    };
                     hasFieldChanges = true;
                 }
             }
@@ -489,10 +503,10 @@ export class DiffEngine {
      * Структурный дифф доп.контента (additionalContent: {enabled, items:[{id,type,...}]}).
      * Выключенный контент канонизируется как пустой. Матчинг элементов по item.id
      * (стабилен в пределах истории ОДНОГО акта). Классификация:
-     * added/removed/modified/reordered. case/freeText → word-diff по content;
-     * image → строковое сравнение url/caption/filename/width (base64-url НЕ через
-     * word-diff). reordered — по относительному порядку общих id (устойчив к
-     * вставкам/удалениям).
+     * added/removed/modified/reordered. case/freeText → word-diff по видимому
+     * тексту (_stripHtml); image → строковое сравнение url/caption/filename/
+     * width (base64-url НЕ через word-diff). reordered — по относительному
+     * порядку общих id (устойчив к вставкам/удалениям).
      * @returns {{kind, changed, enabled, oldEnabled, entries: Array}}
      */
     static _diffAdditionalContent(oldV, newV) {
@@ -550,7 +564,8 @@ export class DiffEngine {
     /**
      * Сравнение пары элементов доп.контента одного id.
      * image → строковое сравнение метаданных (url — многомегабайтный data-URL,
-     * сравнивается СТРОКОЙ, НЕ через word-diff). case/freeText → word-diff по content.
+     * сравнивается СТРОКОЙ, НЕ через word-diff). case/freeText → word-diff по
+     * видимому тексту (_stripHtml).
      * @returns {{changed: boolean, detail: Object}}
      */
     static _diffContentItem(oldItem, newItem) {
@@ -573,7 +588,10 @@ export class DiffEngine {
         if (oldContent === newContent && !typeChanged) {
             return { changed: false, detail: {} };
         }
-        return { changed: true, detail: { typeChanged, wordDiff: this._wordDiff(oldContent, newContent) } };
+        // Rich-поля (case/freeText) — word-diff по ВИДИМОМУ тексту, тем же
+        // приёмом, что и скалярные поля нарушения (_diffViolations выше).
+        const wordDiff = this._wordDiff(this._stripHtml(oldContent), this._stripHtml(newContent));
+        return { changed: true, detail: { typeChanged, wordDiff } };
     }
 
     /**

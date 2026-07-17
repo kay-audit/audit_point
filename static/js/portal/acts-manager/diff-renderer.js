@@ -5,6 +5,7 @@
 import { SafeHTML, renderActContent } from '../../shared/sanitize.js';
 import { iterateVisibleCells } from '../../constructor/table/grid-merges.js';
 import { VIOLATION_LABELS, CASE_LABEL_TEMPLATE, FREE_TEXT_LABEL } from '../../constructor/violation/violation-fields.js';
+import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
 import { computeAdditionalContentNumbers } from '../../constructor/violation/violation-numbering.js';
 import { CONTENT_TYPE_CASE, CONTENT_TYPE_IMAGE } from '../../constructor/violation/violation-content-item.js';
@@ -349,7 +350,9 @@ export class DiffRenderer {
     }
 
     /**
-     * Рендер нарушения с подсветкой изменённых полей.
+     * Рендер нарушения с подсветкой изменённых полей. Изменённое rich-поле —
+     * word-diff-разметка по видимому тексту (зеркало _renderDiffTextBlock),
+     * бейдж «Изменено форматирование» при formattingOnly.
      */
     static _renderDiffViolation(container, violDiff) {
         const div = document.createElement('div');
@@ -371,21 +374,21 @@ export class DiffRenderer {
             labelEl.textContent = `${VIOLATION_LABELS[field] || field}: `;
             fieldDiv.appendChild(labelEl);
 
-            if (violDiff.fieldDiffs?.[field]?.changed) {
+            const fieldDiff = violDiff.fieldDiffs?.[field];
+            if (fieldDiff?.changed) {
                 fieldDiv.classList.add('diff-field-changed');
-                const oldVal = violDiff.fieldDiffs[field].old || '';
-                const newVal = violDiff.fieldDiffs[field].new || '';
-                if (oldVal) {
-                    const oldSpan = document.createElement('del');
-                    oldSpan.textContent = oldVal;
-                    fieldDiv.appendChild(oldSpan);
-                    fieldDiv.appendChild(document.createTextNode(' → '));
+                // Правка только форматирования (видимый текст совпал) —
+                // бейдж, иначе word-diff без вставок/удалений выглядел бы
+                // «пустым» (зеркало _renderDiffTextBlock).
+                if (fieldDiff.formattingOnly) {
+                    const badge = document.createElement('span');
+                    badge.className = 'diff-textblock-format-badge';
+                    badge.textContent = 'Изменено форматирование';
+                    fieldDiv.appendChild(badge);
                 }
-                const newSpan = document.createElement('ins');
-                newSpan.textContent = newVal;
-                newSpan.style.textDecoration = 'none';
-                newSpan.style.fontWeight = '500';
-                fieldDiv.appendChild(newSpan);
+                const wordDiffEl = document.createElement('span');
+                SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fieldDiff.wordDiff));
+                fieldDiv.appendChild(wordDiffEl);
             } else {
                 fieldDiv.appendChild(document.createTextNode(val));
             }
@@ -561,7 +564,11 @@ export class DiffRenderer {
         }
     }
 
-    /** Рендер одного элемента доп.контента (кейс / свободный текст / картинка). */
+    /**
+     * Рендер одного элемента доп.контента (кейс / свободный текст / картинка).
+     * unchanged/added/removed показывают ВИДИМЫЙ текст (_stripHtml) — контент
+     * планируется rich-HTML, raw-текст показал бы теги буквально.
+     */
     static _renderContentEntry(container, entry, caseNumber) {
         const item = entry.newItem || entry.oldItem;
         if (!item) return;
@@ -585,16 +592,16 @@ export class DiffRenderer {
         body.className = 'diff-violation-item-body';
         if (entry.status === 'added') {
             const ins = document.createElement('ins');
-            ins.textContent = entry.newItem?.content || '';
+            ins.textContent = DiffEngine._stripHtml(entry.newItem?.content || '');
             body.appendChild(ins);
         } else if (entry.status === 'removed') {
             const del = document.createElement('del');
-            del.textContent = entry.oldItem?.content || '';
+            del.textContent = DiffEngine._stripHtml(entry.oldItem?.content || '');
             body.appendChild(del);
         } else if (entry.status === 'modified' && entry.wordDiff) {
             SafeHTML.set(body, this._wordDiffToHtml(entry.wordDiff));
         } else {
-            body.textContent = (entry.newItem || entry.oldItem)?.content || '';
+            body.textContent = DiffEngine._stripHtml((entry.newItem || entry.oldItem)?.content || '');
         }
         itemDiv.appendChild(body);
         container.appendChild(itemDiv);

@@ -273,3 +273,49 @@ test('добавленное нарушение с выключенными desc
     assert.equal(d.fieldDiffs.descriptionList, undefined);
     assert.equal(d.fieldDiffs.additionalContent, undefined);
 });
+
+// --- #1.1.5: word-diff по видимому тексту для скалярных rich-полей ---------
+// Rich-поля нарушения (violated/established/reasons/measures/consequences/
+// responsible) со временем станут rich-HTML (rich-редактор — в планах). Раньше
+// fieldDiffs[field] нёс только {old, new, changed} — сырой HTML/текст без
+// word-diff. Теперь, зеркало _diffTextBlocks (:281-291): при различии считаем
+// wordDiff/formattingOnly по _stripHtml, сохраняя old/new/changed как раньше.
+
+test('rich-поле: правка только форматирования → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    // Адаптация примера из брифа: _wordDiff на РАВНЫХ (после _stripHtml) строках
+    // возвращает не пустой массив, а один сгруппированный op {type:'equal'}
+    // (см. diff-engine-textblock-format.test.mjs) — проверяем отсутствие
+    // insert/delete-частей, а не пустоту массива.
+    const oldV = makeViol({ reasons: { enabled: true, content: 'важный текст' } });
+    const newV = makeViol({ reasons: { enabled: true, content: '<b>важный текст</b>' } });
+    const d = diffOne(oldV, newV);
+    assert.equal(d.status, 'modified');
+    assert.equal(d.fieldDiffs.reasons.formattingOnly, true);
+    assert.ok(d.fieldDiffs.reasons.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('rich-поле: правка текста → word-diff по видимому тексту, formattingOnly=false', () => {
+    const oldV = makeViol({ reasons: { enabled: true, content: '<b>старый</b> текст' } });
+    const newV = makeViol({ reasons: { enabled: true, content: '<b>новый</b> текст' } });
+    const d = diffOne(oldV, newV);
+    assert.equal(d.fieldDiffs.reasons.formattingOnly, false);
+    assert.ok(d.fieldDiffs.reasons.wordDiff.some(p => p.type === 'insert' && p.text.includes('новый')));
+});
+
+test('rich-поле: old/new/changed сохраняются нетронутыми (сырой HTML), wordDiff/formattingOnly — новые поля', () => {
+    const oldV = makeViol({ violated: 'старый <i>текст</i>' });
+    const newV = makeViol({ violated: 'новый <i>текст</i>' });
+    const fd = diffOne(oldV, newV).fieldDiffs.violated;
+    assert.equal(fd.old, 'старый <i>текст</i>');
+    assert.equal(fd.new, 'новый <i>текст</i>');
+    assert.equal(fd.changed, true);
+});
+
+test('additionalContent case/freeText: word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>старый</b> кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>новый</b> кейс' }] } });
+    const wd = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0].wordDiff;
+    assert.ok(wd.some(p => p.type === 'insert' && p.text === 'новый'));
+    assert.ok(wd.some(p => p.type === 'delete' && p.text === 'старый'));
+    assert.ok(wd.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+});

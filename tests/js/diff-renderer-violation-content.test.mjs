@@ -53,7 +53,13 @@ test('_renderDiffViolation: полный дифф (списки + кейс + к�
     const violDiff = {
         status: 'modified',
         fieldDiffs: {
-            reasons: { old: 'старое', new: 'новое', changed: true },
+            // ОСОЗНАННЫЙ апдейт (задача 1.1.5): fieldDiffs теперь несёт
+            // wordDiff/formattingOnly (word-diff по видимому тексту) — раньше
+            // рендер читал только old/new и рисовал del/ins.textContent=raw.
+            reasons: {
+                old: 'старое', new: 'новое', changed: true, formattingOnly: false,
+                wordDiff: [{ type: 'delete', text: 'старое' }, { type: 'insert', text: 'новое' }],
+            },
             descriptionList: {
                 kind: 'list', changed: true, enabled: true, oldEnabled: true,
                 items: [
@@ -80,4 +86,119 @@ test('_renderDiffViolation: полный дифф (списки + кейс + к�
     assert.doesNotThrow(() => {
         DiffRenderer._renderDiffViolation({ appendChild() {} }, violDiff);
     });
+});
+
+// --- #1.1.5: word-diff по видимому тексту для изменённых rich-полей --------
+// ОСОЗНАННОЕ изменение семантики: раньше изменённое скалярное поле нарушения
+// рендерилось как <del>{old}</del> → <ins>{new}</ins> прямым присвоением
+// textContent = fieldDiffs[field].old/new (сырой HTML лёг бы в textContent
+// буквально). Теперь — word-diff-разметка (_wordDiffToHtml + SafeHTML.set,
+// зеркало _renderDiffTextBlock) и бейдж «Изменено форматирование» при
+// formattingOnly. Фикстура `reasons` в смоук-тесте выше — тот же осознанный
+// апдейт (несёт wordDiff/formattingOnly).
+
+/** Собирает все созданные элементы при рендере диффа нарушения (зеркало renderCollecting из diff-engine-textblock-format.test.mjs). */
+function renderViolationCollecting(violDiff) {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => {
+        const el = orig(tag);
+        created.push(el);
+        return el;
+    };
+    try {
+        DiffRenderer._renderDiffViolation({ appendChild() {} }, violDiff);
+    } finally {
+        document.createElement = orig;
+    }
+    return created;
+}
+
+function makeReasonsViolDiff(fieldDiff) {
+    return {
+        status: 'modified',
+        fieldDiffs: { reasons: fieldDiff },
+        newData: { reasons: { enabled: true, content: fieldDiff.new || '' } },
+    };
+}
+
+test('изменённое rich-поле: рендер зовёт _wordDiffToHtml с полевым wordDiff (не raw del/ins.textContent)', () => {
+    const wordDiff = [{ type: 'delete', text: 'старое' }, { type: 'insert', text: 'новое' }];
+    const violDiff = makeReasonsViolDiff({ old: 'старое', new: 'новое', changed: true, formattingOnly: false, wordDiff });
+    const calls = [];
+    const orig = DiffRenderer._wordDiffToHtml;
+    DiffRenderer._wordDiffToHtml = (wd) => { calls.push(wd); return orig.call(DiffRenderer, wd); };
+    try {
+        DiffRenderer._renderDiffViolation({ appendChild() {} }, violDiff);
+    } finally {
+        DiffRenderer._wordDiffToHtml = orig;
+    }
+    assert.equal(calls.length, 1, '_wordDiffToHtml должен вызываться для изменённого поля');
+    assert.deepEqual(calls[0], wordDiff);
+});
+
+test('formattingOnly=true у поля нарушения → бейдж «Изменено форматирование»', () => {
+    const created = renderViolationCollecting(makeReasonsViolDiff({
+        old: 'важный текст', new: 'важный текст', changed: true, formattingOnly: true,
+        wordDiff: [{ type: 'equal', text: 'важный текст' }],
+    }));
+    const badge = created.find(el => el.className === 'diff-textblock-format-badge');
+    assert.ok(badge, 'бейдж форматирования не создан');
+    assert.equal(badge.textContent, 'Изменено форматирование');
+});
+
+test('formattingOnly=false у поля нарушения → бейджа форматирования нет', () => {
+    const created = renderViolationCollecting(makeReasonsViolDiff({
+        old: 'старое', new: 'новое', changed: true, formattingOnly: false,
+        wordDiff: [{ type: 'delete', text: 'старое' }, { type: 'insert', text: 'новое' }],
+    }));
+    assert.ok(!created.some(el => el.className === 'diff-textblock-format-badge'));
+});
+
+// --- _renderContentEntry: added/removed/unchanged показывают видимый текст -
+
+test('_renderContentEntry (added): видимый текст (_stripHtml), не raw HTML', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderContentEntry({ appendChild() {} }, {
+            status: 'added', newItem: { id: 'f1', type: 'freeText', content: '<b>жирный</b> текст' },
+        }, null);
+    } finally {
+        document.createElement = orig;
+    }
+    assert.ok(created.some(el => el.textContent === 'жирный текст'));
+});
+
+test('_renderContentEntry (removed): видимый текст (_stripHtml), не raw HTML', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderContentEntry({ appendChild() {} }, {
+            status: 'removed', oldItem: { id: 'f1', type: 'freeText', content: '<i>курсив</i> удалён' },
+        }, null);
+    } finally {
+        document.createElement = orig;
+    }
+    assert.ok(created.some(el => el.textContent === 'курсив удалён'));
+});
+
+test('_renderContentEntry (unchanged): видимый текст (_stripHtml), не raw HTML', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderContentEntry({ appendChild() {} }, {
+            status: 'unchanged',
+            oldItem: { id: 'c1', type: 'case', content: '<b>кейс</b> без изменений' },
+            newItem: { id: 'c1', type: 'case', content: '<b>кейс</b> без изменений' },
+        }, 1);
+    } finally {
+        document.createElement = orig;
+    }
+    const body = created.find(el => el.className === 'diff-violation-item-body');
+    assert.ok(body, 'тело элемента не создано');
+    assert.equal(body.textContent, 'кейс без изменений');
 });
