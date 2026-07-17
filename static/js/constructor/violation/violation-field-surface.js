@@ -72,6 +72,11 @@ export class ViolationFieldSurface {
     commit() {
         this._manager.setViolationField(this._violation, this._path, this.element.innerHTML);
     }
+
+    /** Полный сток поверхности (контракт EditableSurface). Отдельного
+     * finalize/capsule-heal-шага для полей нарушения нет (капсулы — задача
+     * 1.3.4), поэтому persist делегирует в commit. */
+    persist() { this.commit(); }
 }
 
 /**
@@ -109,6 +114,11 @@ export class ViolationContentItemSurface {
     commit() {
         this._manager.setContentItemField(this._violation, this._item, 'content', this.element.innerHTML);
     }
+
+    /** Полный сток поверхности (контракт EditableSurface). Отдельного
+     * finalize/capsule-heal-шага для полей нарушения нет (капсулы — задача
+     * 1.3.4), поэтому persist делегирует в commit. */
+    persist() { this.commit(); }
 }
 
 /**

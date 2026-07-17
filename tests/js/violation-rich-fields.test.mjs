@@ -134,6 +134,20 @@ test('ViolationContentItemSurface: commit (element→модель) и setContent
     assert.deepEqual(calls, [{ field: 'content', val: '<u>внешнее</u>' }], 'setContent пишет переданный html');
 });
 
+test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: '' };
+    const s = vm._makeContentItemSurface(violation, item);
+
+    s.element = { innerHTML: '<b>x</b>', textContent: '' };
+    s.persist();
+
+    assert.deepEqual(calls, [{ field: 'content', val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
+});
+
 // ── _teardownActiveRichField: снятие контроллера при пересоздании DOM ─────────
 
 test('_teardownActiveRichField: снимает контроллер, если активна поверхность этого нарушения', () => {

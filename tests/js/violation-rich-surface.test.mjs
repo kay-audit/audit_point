@@ -73,3 +73,15 @@ test('commit → element.innerHTML в модель БЕЗ ре-рендера', 
 
   assert.deepEqual(calls, [{ p: 'violated', val: '<b>исправлено</b>' }]);
 });
+
+test('persist → делегирует в commit (element.innerHTML в модель через setViolationField)', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+
+  s.element = { innerHTML: '<b>x</b>' };
+  s.persist();
+
+  assert.deepEqual(calls, [{ p: 'violated', val: '<b>x</b>' }]);
+});
