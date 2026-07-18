@@ -20,6 +20,7 @@ import { Notifications } from '../../shared/notifications.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { makeResizablePanel } from '../../shared/resizable-panel.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
+import { serializeVisibleText } from '../../shared/rich-text.js';
 import { ActSearchEngine } from '../search/act-search-engine.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
 import { EditorRegistry } from '../textblock/editor-registry.js';
@@ -315,28 +316,12 @@ export const CorrectorPopover = {
         }
     },
 
-    // Сериализация DOM-фрагмента в plain-текст, зеркалящая Selection.toString:
-    // текстовые узлы — как есть, <br> → \n, закрытие блочного элемента —
-    // граница-\n (если строка ещё не завершена переводом). Инлайновые узлы
-    // (span-капсулы ссылок/сносок и т.п.) переносов не добавляют.
+    // Сериализация DOM-фрагмента в plain-текст, зеркалящая Selection.toString.
+    // Логика вынесена в shared/rich-text.js (переиспользуется формализатором
+    // и сводом ячеек); метод оставлен обёрткой ради обратной совместимости
+    // вызовов внутри класса и теста-стража.
     _serializeWithBreaks(root) {
-        const BLOCK = /^(?:DIV|P|LI|UL|OL|TR|TABLE|THEAD|TBODY|SECTION|ARTICLE|BLOCKQUOTE|PRE|FIGURE|FIGCAPTION|HEADER|FOOTER|ASIDE|NAV|MAIN|DL|DD|DT|H[1-6])$/;
-        let out = '';
-        const walk = (node) => {
-            for (const child of node.childNodes) {
-                if (child.nodeType === 3) {
-                    out += child.textContent;
-                } else if (child.nodeType === 1) {
-                    if (child.tagName === 'BR') { out += '\n'; continue; }
-                    const block = BLOCK.test(child.tagName);
-                    if (block && out && !out.endsWith('\n')) out += '\n';
-                    walk(child);
-                    if (block && out && !out.endsWith('\n')) out += '\n';
-                }
-            }
-        };
-        walk(root);
-        return out;
+        return serializeVisibleText(root);
     },
 
     // Изменился ли исходный фрагмент с момента отправки на обработку.

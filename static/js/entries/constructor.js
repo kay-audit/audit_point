@@ -14,6 +14,7 @@ import '../shared/notifications.js';
 import '../shared/error-boundary.js';
 import '../shared/escape-stack.js';
 import '../shared/sanitize.js';
+import '../shared/rich-text.js';
 import '../shared/api.js';
 
 // Constructor: storage/lifecycle/changelog
