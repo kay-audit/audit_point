@@ -81,6 +81,9 @@
     resize: vertical;
     min-height: var(--violation-textarea-min-height);
     max-height: var(--violation-textarea-max-height);
+    /* Хост поля — div (contenteditable), не textarea: без явного overflow
+       контент за max-height рисуется под рамкой, а resize не работает. */
+    overflow-y: auto;
     background-color: var(--input-bg);
     transition: all var(--transition-base);
     color: var(--input-text);
