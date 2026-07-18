@@ -17,6 +17,7 @@ export const EditorController = {
     _surface: null,
     _onInput: null,
     _onBlur: null,
+    _onSelectionPing: null,
     _onBeforeInput: null,
     _onKeydown: null,
     _onCopy: null,
@@ -29,10 +30,24 @@ export const EditorController = {
         this._surface = surface;
         EditorRegistry.setActive(surface);
         textBlockManager.attachToolbarTo(surface); // тулбар с политикой по surface.kind
-        this._onInput = () => surface.commit(); // write-through: element → модель на каждый ввод
+        this._onInput = () => {
+            surface.commit(); // write-through: element → модель на каждый ввод
+            // Паритет textblock-пути (БАГ-1): debounce-самолечение живого DOM —
+            // normalizeMarkers пере-расставляет caret-guard'ы у новых границ строк;
+            // без него guard'ы разъезжаются со структурой и навигация у капсул ломается.
+            if (surface.rich && surface.kind === 'violationField') {
+                textBlockManager.handleEditorInput(surface.element, null);
+            }
+        };
         this._onBlur = () => this.unmount();
         surface.element.addEventListener('input', this._onInput);
         surface.element.addEventListener('blur', this._onBlur);
+
+        // БАГ-2: тулбар textblock обновляется по mouseup/keyup → handleSelectionChange —
+        // для ЛЮБОЙ смонтированной поверхности (вне гейта rich+violationField ниже).
+        this._onSelectionPing = () => textBlockManager.handleSelectionChange();
+        surface.element.addEventListener('mouseup', this._onSelectionPing);
+        surface.element.addEventListener('keyup', this._onSelectionPing);
 
         // Task 1.3.4-B2: интерактивный capsule-lifecycle — ТОЛЬКО для полей
         // нарушения (rich + kind='violationField'). Текстблоки сюда не заходят
@@ -61,9 +76,29 @@ export const EditorController = {
     unmount() {
         const surface = this._surface;
         if (!surface) return;
+        if (surface.rich && surface.kind === 'violationField') {
+            // Гигиена ДО commit — зеркало handleEditorBlur (textblock-editor.js:479-537):
+            // висящий save-таймер повторил бы работу после отрыва, «вся капсула как
+            // юнит» должна снять визуальную отметку (её уже не почистит
+            // handleSelectionChange — фокус ушёл), незавершённая IME-композиция должна
+            // слиться, осиротевший якорь размера — не утечь в модель через commit ниже.
+            if (surface.element.saveTimeout) {
+                clearTimeout(surface.element.saveTimeout);
+                surface.element.saveTimeout = null;
+            }
+            textBlockManager._clearNodeSelected(surface.element);
+            if (typeof textBlockManager._flushComposition === 'function') {
+                textBlockManager._flushComposition(surface.element);
+            }
+            if (typeof textBlockManager._cleanOrphanSizeAnchors === 'function') {
+                textBlockManager._cleanOrphanSizeAnchors(surface.element, { ignoreCaret: true });
+            }
+        }
         surface.commit(); // ДО снятия слушателей — иначе висящий ввод теряется
         surface.element.removeEventListener('input', this._onInput);
         surface.element.removeEventListener('blur', this._onBlur);
+        surface.element.removeEventListener('mouseup', this._onSelectionPing);
+        surface.element.removeEventListener('keyup', this._onSelectionPing);
         if (surface.rich && surface.kind === 'violationField') {
             surface.element.__capsuleObserver?.disconnect();
             surface.element.removeEventListener('beforeinput', this._onBeforeInput);
@@ -76,6 +111,7 @@ export const EditorController = {
         this._surface = null;
         this._onInput = null;
         this._onBlur = null;
+        this._onSelectionPing = null;
         this._onBeforeInput = null;
         this._onKeydown = null;
         this._onCopy = null;

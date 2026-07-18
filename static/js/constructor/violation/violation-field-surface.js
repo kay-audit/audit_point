@@ -272,6 +272,12 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
     // атомом и на просмотре (см. докстринг _hardenCapsuleField).
     _hardenCapsuleField(field);
 
+    // Placeholder (.textblock-editor--empty ставится JS-тоглом, CSS B-26) — на
+    // свежесозданном поле класс иначе не появится и подсказка не видна.
+    if (!isReadOnly && typeof textBlockManager._toggleEmptyClass === 'function') {
+        textBlockManager._toggleEmptyClass(field);
+    }
+
     if (isReadOnly) {
         // Режим просмотра: нередактируемо (зеркало textblock createEditor).
         // read-only-проход app.js ищет contenteditable="true" — здесь его нет,
