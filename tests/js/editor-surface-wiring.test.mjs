@@ -115,3 +115,60 @@ test('handleEditorBlur (реальный отложенный guard): перех
 
     assert.equal(EditorRegistry.getActive().id, 'B', 'стейл-таймер A затёр активную поверхность B');
 });
+
+// ── I-1 (финальный ревью): клавиатурные шорткаты сносок/ссылок уважают SURFACE_POLICY ──
+// Кнопки тулбара уже гасились по политике (_applyToolbarPolicy, textblock-toolbar.js);
+// Ctrl+Shift+F/K обходили её и создавали сноску/ссылку даже там, где политика запрещает
+// (footnotes:false у violationField). handleEditorKeydown теперь читает SURFACE_POLICY
+// активной поверхности из EditorRegistry — реальный обработчик (textblock-editor.js),
+// не стаб.
+
+/** Фейковое Ctrl+Shift+<code> keydown-событие; preventDefault пишет в общий журнал calls. */
+function fakeShortcutEvent(code, calls) {
+    return { ctrlKey: true, shiftKey: true, code, preventDefault() { calls.push('prevent'); } };
+}
+
+test('handleEditorKeydown: Ctrl+Shift+F в violationField (footnotes:false) — сноска не создаётся, шорткат проглочен', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.createOrEditFootnote = () => calls.push('footnote');
+    EditorRegistry.setActive({ kind: 'violationField' });
+
+    mgr.handleEditorKeydown(fakeShortcutEvent('KeyF', calls), fakeEditor('v1'));
+
+    assert.deepEqual(calls, ['prevent'],
+        'сноска не должна создаваться в поле нарушения (запрет политики), браузерный дефолт — подавлен');
+});
+
+test('handleEditorKeydown: Ctrl+Shift+F в textblock (footnotes:true) — сноска создаётся (симметрия, поведение не меняется)', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.createOrEditFootnote = () => calls.push('footnote');
+    EditorRegistry.setActive({ kind: 'textblock' });
+
+    mgr.handleEditorKeydown(fakeShortcutEvent('KeyF', calls), fakeEditor('tb1'));
+
+    assert.deepEqual(calls, ['prevent', 'footnote']);
+});
+
+test('handleEditorKeydown: Ctrl+Shift+F без активной поверхности — сноска создаётся (default-allow, старое поведение)', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.createOrEditFootnote = () => calls.push('footnote');
+    // EditorRegistry очищен в beforeEach — активной поверхности нет.
+
+    mgr.handleEditorKeydown(fakeShortcutEvent('KeyF', calls), fakeEditor('tb1'));
+
+    assert.deepEqual(calls, ['prevent', 'footnote']);
+});
+
+test('handleEditorKeydown: Ctrl+Shift+K в violationField (links:true) — ссылка создаётся (гейт симметричен, поведение не меняется)', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.createOrEditLink = () => calls.push('link');
+    EditorRegistry.setActive({ kind: 'violationField' });
+
+    mgr.handleEditorKeydown(fakeShortcutEvent('KeyK', calls), fakeEditor('v1'));
+
+    assert.deepEqual(calls, ['prevent', 'link']);
+});

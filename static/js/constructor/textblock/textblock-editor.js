@@ -8,7 +8,7 @@ import { AppConfig } from '../../shared/app-config.js';
 import { SafeHTML, SAFE_HTML_PROFILES, renderActContent } from '../../shared/sanitize.js';
 import { getStructureLimits } from '../violation/violation-image-validator.js';
 import { TextBlockSurface } from './editable-surface.js';
-import { EditorRegistry } from './editor-registry.js';
+import { EditorRegistry, SURFACE_POLICY } from './editor-registry.js';
 
 Object.assign(TextBlockManager.prototype, {
     /**
@@ -1175,6 +1175,17 @@ Object.assign(TextBlockManager.prototype, {
     handleEditorKeydown(e, editor, textBlock) {
         // Все горячие клавиши: Ctrl+Shift+* (e.code — независимо от раскладки)
         if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+            // Политика активной поверхности (SURFACE_POLICY): кнопки тулбара уже
+            // гасятся по kind (_applyToolbarPolicy, textblock-toolbar.js) —
+            // клавиатурные шорткаты сносок/ссылок должны подчиняться той же
+            // политике, иначе Ctrl+Shift+F в поле нарушения создаёт сноску в
+            // обход запрета (footnotes:false у violationField). Блокируем
+            // ТОЛЬКО когда ключ политики ЯВНО false; нет активной поверхности/
+            // kind или ключа в политике — старое поведение (default-allow).
+            // preventDefault для KeyK/KeyF зовём безусловно (см. кейсы ниже) —
+            // шорткат проглатывается целиком даже под запретом, иначе сработает
+            // браузерный дефолт.
+            const surfacePolicy = SURFACE_POLICY[EditorRegistry.getActive()?.kind];
             switch (e.code) {
                 case 'KeyB':
                     e.preventDefault();
@@ -1198,11 +1209,11 @@ Object.assign(TextBlockManager.prototype, {
                     break;
                 case 'KeyK':
                     e.preventDefault();
-                    this.createOrEditLink();
+                    if (surfacePolicy?.links !== false) this.createOrEditLink();
                     break;
                 case 'KeyF':
                     e.preventDefault();
-                    this.createOrEditFootnote();
+                    if (surfacePolicy?.footnotes !== false) this.createOrEditFootnote();
                     break;
                 case 'KeyA':
                     e.preventDefault();
