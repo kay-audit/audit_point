@@ -312,3 +312,55 @@ def test_base_italic_default_false_unchanged(doc):
     p = doc.add_paragraph()
     apply_inline_html(p, "текст", base_size_pt=12)
     assert not p.runs[0].italic
+
+
+def test_trailing_br_in_content_div_not_doubled(doc):
+    """Репро БАГ-3: хвостовой br в строке + пустая строка — в редакторе a/пусто/b."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div><div><br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 2  # был 3 → в Word две пустые строки
+
+
+def test_trailing_br_before_block_close_invisible(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 1
+
+
+def test_leading_empty_div_single_break(doc):
+    """Пустая строка В НАЧАЛЕ поля: пусто/b = один перенос."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div><br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 1  # было 2
+
+
+def test_trailing_br_at_fragment_end_dropped(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div>", base_size_pt=12)
+    assert _count_breaks(p) == 0
+
+
+def test_double_br_then_content_two_breaks(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "a<br><br>b", base_size_pt=12)
+    assert _count_breaks(p) == 2
+
+
+def test_deferred_break_flushes_before_empty_anchor_footnote(doc):
+    """БАГ-3: <br> перед footnote-якорем БЕЗ текста материализуется до вставки
+    номера сноски — иначе перенос "уехал" бы после него (footnoteReference
+    вставляется в paragraph.add_run() напрямую, минуя _add_run/_flush_soft_break,
+    если не флешить явно перед add_footnote)."""
+    p = doc.add_paragraph()
+    apply_inline_html(
+        p,
+        'x<br><span class="text-footnote" data-footnote-text="прим"></span>tail',
+        base_size_pt=12,
+    )
+    assert _count_breaks(p) == 1
+    tags = [
+        el.tag.rsplit("}", 1)[-1]
+        for el in p._p.iter()
+        if el.tag.rsplit("}", 1)[-1] in ("br", "footnoteReference")
+    ]
+    assert tags == ["br", "footnoteReference"]

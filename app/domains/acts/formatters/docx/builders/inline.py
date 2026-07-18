@@ -77,6 +77,7 @@ def apply_inline_html(
         return
     parser = _InlineParser(paragraph, base_size_pt, base_italic)
     parser.feed(html)
+    parser.close()
 
 
 class _InlineParser(HTMLParser):
@@ -108,6 +109,13 @@ class _InlineParser(HTMLParser):
         # может быть placeholder'ом пустого блока (<div><br></div>) — тогда его
         # НЕ дублируем. Флаг сбрасывается на первом же реальном контенте/переносе.
         self._boundary_break_pending = False
+        # Обычный <br> не превращается в w:br НЕМЕДЛЕННО, а откладывается.
+        # Браузер не рисует строку для <br> в хвосте непустого блока
+        # (<div>a<br></div> = одна строка «a») — решение "нужен ли перенос"
+        # переносится на момент СЛЕДУЮЩЕГО вывода: реальный контент
+        # материализует его (_flush_soft_break), граница блока замещает его
+        # своим переносом (тихий сброс), конец фрагмента роняет его молча.
+        self._soft_break_pending = False
 
     @property
     def state(self) -> _RunState:
@@ -146,6 +154,10 @@ class _InlineParser(HTMLParser):
                 self._add_break()
                 # #6: перенос уже стоит; placeholder-<br> пустого блока не дублируем.
                 self._boundary_break_pending = True
+                # Отложенный хвостовой <br> предыдущего блока замещён этим
+                # переносом-границей — сбрасываем БЕЗ материализации, иначе
+                # получили бы два переноса вместо одного.
+                self._soft_break_pending = False
             self.stack.append(current)
         else:
             self.stack.append(current)
@@ -212,6 +224,11 @@ class _InlineParser(HTMLParser):
                 # вставки Word) дал бы растяжимую щель между якорем и номером
                 # под justify — срезаем его перед добавлением сноски.
                 self._strip_trailing_anchor_space()
+                # footnoteReference вставляется напрямую через paragraph.add_run(),
+                # минуя _add_run — отложенный <br> перед безтекстовым якорем
+                # иначе не материализовался бы, и номер сноски "прилип" бы
+                # к предыдущей строке.
+                self._flush_soft_break()
                 add_footnote(self.paragraph, payload)
                 # Номер сноски только что вставлен — следующий текстовый run
                 # должен начинаться с неразрывного пробела (BUG-5).
@@ -224,6 +241,12 @@ class _InlineParser(HTMLParser):
     def handle_data(self, data):
         if data:
             self._add_run(data)
+
+    def close(self) -> None:
+        """Конец фрагмента: хвостовой отложенный <br> невидим (как в браузере
+        для <br> в конце непустого блока) — молча роняем его без break'а."""
+        super().close()
+        self._soft_break_pending = False
 
     def _add_run(self, text: str) -> None:
         # Защита (гибрид Варианта 2): caret-guard'ы (U+FEFF) — рантайм-only во
@@ -247,6 +270,8 @@ class _InlineParser(HTMLParser):
         # #6: \u043F\u043E\u0448\u0451\u043B \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u0432\u0438\u0434\u0438\u043C\u044B\u0439 \u043A\u043E\u043D\u0442\u0435\u043D\u0442 \u2014 \u0441\u043D\u0438\u043C\u0430\u0435\u043C \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u0435 placeholder-<br>
         # (\u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 <br> \u0443\u0436\u0435 \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0438\u0439 \u043F\u0435\u0440\u0435\u043D\u043E\u0441, \u0430 \u043D\u0435 \u043F\u0443\u0441\u0442\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430 \u0431\u043B\u043E\u043A\u0430).
         self._boundary_break_pending = False
+        # Перед новым видимым run'ом материализуем отложенный <br>.
+        self._flush_soft_break()
         self._produced_output = True
         # Вне <a> используем высокоуровневый API python-docx — он создаёт
         # `w:r` с привычным порядком элементов (важно для обратной совместимости
@@ -309,12 +334,33 @@ class _InlineParser(HTMLParser):
         блока уже дала визуальный разрыв этой пустой строки, поэтому <br> НЕ
         дублируем (иначе одна пустая строка превращалась бы в две). Несколько
         пустых блоков подряд остаются несколькими пустыми строками: у каждого
-        своя граница-перенос. Обычный <br> (мягкий перенос, <br><br>) — как был.
+        своя граница-перенос.
+
+        Иначе (обычный <br>) перенос НЕ добавляется немедленно — браузер не
+        рисует строку для <br> в хвосте непустого блока (<div>a<br></div> =
+        одна строка «a»), а contenteditable часто оставляет такой хвостовой
+        <br> после правок. Поэтому решение откладывается (_soft_break_pending)
+        до следующего вывода: реальный контент материализует его
+        (_flush_soft_break), граница блока замещает его своим переносом (тихий
+        сброс), конец фрагмента роняет его молча (close()). Два <br> подряд —
+        первый флешится реальным переносом (иначе оба слились бы в один при
+        следующей материализации), второй взводится заново.
         """
         if self._boundary_break_pending:
             self._boundary_break_pending = False
             return
-        self._add_break()
+        self._flush_soft_break()
+        self._soft_break_pending = True
+
+    def _flush_soft_break(self) -> None:
+        """Материализует отложенный <br> перед новым видимым контентом.
+
+        Без материализации перенос между отложенным <br> и следующим run'ом/
+        ссылкой/номером сноски потерялся бы — контент "прилип" бы к предыдущей
+        строке вместо начала новой."""
+        if self._soft_break_pending:
+            self._soft_break_pending = False
+            self._add_break()
 
     def _add_break(self) -> None:
         """Реальный OOXML-перенос строки (<w:br/>).
