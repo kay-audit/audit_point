@@ -193,6 +193,7 @@ test('mount: rich violationField-поверхность — ставит capsule
     assert.equal(s.element._hasListener('keydown'), true);
     assert.equal(s.element._hasListener('copy'), true);
     assert.equal(s.element._hasListener('cut'), true, 'cut не навешен (CORE-4: guard\'ы утекут в клипборд)');
+    assert.equal(s.element._hasListener('paste'), true, 'paste не навешен (вставка через textblock-путь)');
 });
 
 test('mount: НЕ-violationField поверхность (kind="textblock", rich=true) — capsule-lifecycle НЕ ставится (гейт по kind)', () => {
@@ -204,6 +205,7 @@ test('mount: НЕ-violationField поверхность (kind="textblock", rich=
     assert.equal(s.element._hasListener('keydown'), false);
     assert.equal(s.element._hasListener('copy'), false);
     assert.equal(s.element._hasListener('cut'), false);
+    assert.equal(s.element._hasListener('paste'), false);
 });
 
 test('mount: violationField-поверхность БЕЗ rich (rich=false) — capsule-lifecycle НЕ ставится (гейт по rich)', () => {
@@ -212,9 +214,10 @@ test('mount: violationField-поверхность БЕЗ rich (rich=false) — 
 
     assert.deepEqual(capsuleLog, [], 'capsule-lifecycle методы не должны звать non-rich поверхность');
     assert.equal(s.element._hasListener('beforeinput'), false);
+    assert.equal(s.element._hasListener('paste'), false);
 });
 
-test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinput/keydown/copy/cut)', () => {
+test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinput/keydown/copy/cut/paste)', () => {
     const s = fakeSurface('v1', 'violationField', true);
     EditorController.mount(s);
     capsuleLog.length = 0; // интересует снятие, не установку
@@ -226,6 +229,7 @@ test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinp
     assert.equal(s.element._hasListener('keydown'), false);
     assert.equal(s.element._hasListener('copy'), false);
     assert.equal(s.element._hasListener('cut'), false);
+    assert.equal(s.element._hasListener('paste'), false);
 });
 
 test('unmount: НЕ-violationField поверхность — detach не трогает capsule-lifecycle (его и не было)', () => {
@@ -237,7 +241,7 @@ test('unmount: НЕ-violationField поверхность — detach не тро
     assert.deepEqual(capsuleLog, []);
 });
 
-// ── Task 2: паритет обработчиков rich-поля с текстблоком (БАГ-1, БАГ-2) ──
+// ── Task 2: паритет обработчиков rich-поля с текстблоком (БАГ-1, БАГ-2, paste) ──
 
 test('mount: mouseup/keyup вызывают textBlockManager.handleSelectionChange (БАГ-2, для ЛЮБОЙ поверхности)', () => {
     const s = fakeSurface('v1'); // rich=false — тулбар должен обновляться по каретке независимо от гейта
@@ -250,6 +254,16 @@ test('mount: mouseup/keyup вызывают textBlockManager.handleSelectionChan
     s.element._fire('keyup');
 
     assert.deepEqual(parityLog, [['handleSelectionChange'], ['handleSelectionChange']]);
+});
+
+test('mount: rich violationField — paste вызывает textBlockManager.handleEditorPaste(e, element, null)', () => {
+    const s = fakeSurface('v1', 'violationField', true);
+    EditorController.mount(s);
+
+    const fakeEvent = { type: 'paste' };
+    s.element._fire('paste', fakeEvent);
+
+    assert.deepEqual(parityLog, [['handleEditorPaste', fakeEvent, s.element, null]]);
 });
 
 test('mount: rich violationField — input вызывает commit() И textBlockManager.handleEditorInput(element, null) (БАГ-1)', () => {

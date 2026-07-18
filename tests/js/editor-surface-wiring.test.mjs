@@ -172,3 +172,79 @@ test('handleEditorKeydown: Ctrl+Shift+K в violationField (links:true) — сс�
 
     assert.deepEqual(calls, ['prevent', 'link']);
 });
+
+// ── Task 2 (паритет с textblock): гейт сносок в _reconstructPastedCapsules ────
+// Зеркало гейта KeyK/KeyF выше: капсула-сноска во вставленном через СВОЙ буфер
+// (data-aw-clip round-trip) фрагменте под запретом политики (footnotes:false у
+// violationField) выпадает из фрагмента ЦЕЛИКОМ — без текстового fallback;
+// ссылка реконструируется как обычно (её политика не касается).
+
+/** Фейковая капсула ссылки/сноски: поля, которые читает _reconstructPastedCapsules. */
+function fakeCapsuleEl({ isLink, text, url, footnoteBody, parent }) {
+    const classes = new Set([isLink ? 'text-link' : 'text-footnote']);
+    const attrs = isLink ? { 'data-link-url': url } : { 'data-footnote-text': footnoteBody };
+    return {
+        parentNode: parent,
+        textContent: text,
+        classList: { contains: (c) => classes.has(c) },
+        hasAttribute: (k) => k in attrs,
+        getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    };
+}
+
+/** Фейк-родитель: replaceChild/removeChild мутируют переданный массив children по ссылке на узел. */
+function fakeParent(children) {
+    return {
+        replaceChild(node, old) {
+            const i = children.indexOf(old);
+            if (i !== -1) children[i] = node;
+        },
+        removeChild(old) {
+            const i = children.indexOf(old);
+            if (i !== -1) children.splice(i, 1);
+        },
+    };
+}
+
+test('_reconstructPastedCapsules: violationField (footnotes:false) — сноска выпадает целиком, ссылка реконструируется', () => {
+    const mgr = makeManager();
+    const footnoteCalls = [];
+    mgr.createLinkMarker = (text, url) => ({ tag: 'link-marker', text, url });
+    mgr.createFootnoteMarker = (text, body) => { footnoteCalls.push([text, body]); return { tag: 'footnote-marker' }; };
+    const origValidate = window.validateLinkUrl;
+    window.validateLinkUrl = (url) => ({ ok: true, url });
+    EditorRegistry.setActive({ kind: 'violationField' });
+
+    const children = [];
+    const parent = fakeParent(children);
+    const link = fakeCapsuleEl({ isLink: true, text: 'ссылка', url: '/x', parent });
+    const footnote = fakeCapsuleEl({ isLink: false, text: '1', footnoteBody: 'тело', parent });
+    children.push(link, footnote);
+
+    try {
+        mgr._reconstructPastedCapsules({ querySelectorAll: () => [link, footnote] });
+    } finally {
+        window.validateLinkUrl = origValidate;
+    }
+
+    assert.deepEqual(footnoteCalls, [], 'createFootnoteMarker не должен вызываться под запретом политики');
+    assert.deepEqual(children, [{ tag: 'link-marker', text: 'ссылка', url: '/x' }],
+        'сноска удалена из фрагмента целиком, ссылка реконструирована как обычно');
+});
+
+test('_reconstructPastedCapsules: textblock (footnotes:true) — сноска реконструируется (существующее поведение)', () => {
+    const mgr = makeManager();
+    const footnoteCalls = [];
+    mgr.createFootnoteMarker = (text, body) => { footnoteCalls.push([text, body]); return { tag: 'footnote-marker' }; };
+    EditorRegistry.setActive({ kind: 'textblock' });
+
+    const children = [];
+    const parent = fakeParent(children);
+    const footnote = fakeCapsuleEl({ isLink: false, text: '1', footnoteBody: 'тело', parent });
+    children.push(footnote);
+
+    mgr._reconstructPastedCapsules({ querySelectorAll: () => [footnote] });
+
+    assert.deepEqual(footnoteCalls, [['1', 'тело']], 'сноска реконструируется как обычно (политика разрешает)');
+    assert.deepEqual(children, [{ tag: 'footnote-marker' }]);
+});

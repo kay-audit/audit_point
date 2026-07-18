@@ -22,6 +22,7 @@ export const EditorController = {
     _onKeydown: null,
     _onCopy: null,
     _onCut: null,
+    _onPaste: null,
 
     /** @param {{kind:string,element:HTMLElement,commit:()=>void}} surface EditableSurface (editable-surface.js) */
     mount(surface) {
@@ -65,10 +66,16 @@ export const EditorController = {
             // guard'ы (U+FEFF) утекали бы в клипборд. isCut=true — тот же метод, что
             // и copy, плюс удаление выделения нативной командой (см. handleEditorCopy).
             this._onCut = (e) => textBlockManager.handleEditorCopy(e, surface.element, true);
+            // Паритет вставки (I-1): свой путь реконструкции капсул + гейт сносок по
+            // SURFACE_POLICY (handleEditorPaste → _reconstructPastedCapsules) — без
+            // этого в поле льётся сырой browser-HTML, а сноски вставлялись бы в обход
+            // запрета политики.
+            this._onPaste = (e) => textBlockManager.handleEditorPaste(e, surface.element, null);
             surface.element.addEventListener('beforeinput', this._onBeforeInput);
             surface.element.addEventListener('keydown', this._onKeydown);
             surface.element.addEventListener('copy', this._onCopy);
             surface.element.addEventListener('cut', this._onCut);
+            surface.element.addEventListener('paste', this._onPaste);
             textBlockManager.attachLinkFootnoteHandlers(); // tooltip/dblclick-правка/ПКМ-меню/клик-каретка
         }
     },
@@ -100,6 +107,7 @@ export const EditorController = {
         surface.element.removeEventListener('mouseup', this._onSelectionPing);
         surface.element.removeEventListener('keyup', this._onSelectionPing);
         if (surface.rich && surface.kind === 'violationField') {
+            surface.element.removeEventListener('paste', this._onPaste);
             surface.element.__capsuleObserver?.disconnect();
             surface.element.removeEventListener('beforeinput', this._onBeforeInput);
             surface.element.removeEventListener('keydown', this._onKeydown);
@@ -116,6 +124,7 @@ export const EditorController = {
         this._onKeydown = null;
         this._onCopy = null;
         this._onCut = null;
+        this._onPaste = null;
     },
 };
 

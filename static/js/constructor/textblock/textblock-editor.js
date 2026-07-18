@@ -847,16 +847,24 @@ Object.assign(TextBlockManager.prototype, {
      * (DOMPurify data-атрибуты не проверяет). Невалидная/пустая капсула (нет
      * текста, пустой/битый URL, пустое тело сноски) разворачивается в plain-text.
      * validateLinkUrl лежит в window (избегаем циклического импорта с
-     * links-footnotes.js).
+     * links-footnotes.js). Гейт сносок (I-1, паттерн — KeyK/KeyF в
+     * handleEditorKeydown): под запретом политики (SURFACE_POLICY...
+     * footnotes===false, напр. violationField) капсула-сноска выпадает из
+     * фрагмента ЦЕЛИКОМ, без текстового fallback — ссылки гейт не касается.
      * @param {HTMLElement} root
      */
     _reconstructPastedCapsules(root) {
+        const footnotesBlocked = SURFACE_POLICY[EditorRegistry.getActive()?.kind]?.footnotes === false;
         const caps = root.querySelectorAll(
             '.text-link, .text-footnote, [data-link-url], [data-footnote-text]');
         caps.forEach(el => {
             if (!el.parentNode) return; // уже заменён (вложенный случай)
             const text = el.textContent || '';
             const isLink = el.classList.contains('text-link') || el.hasAttribute('data-link-url');
+            if (!isLink && footnotesBlocked) {
+                el.parentNode.removeChild(el); // целиком, без текста-фолбэка
+                return;
+            }
             let replacement = null;
             if (isLink) {
                 const verdict = window.validateLinkUrl
