@@ -163,6 +163,14 @@ class TestSanitizeRichHtmlDirect:
     def test_ampersand_encoded_nonidempotent(self):
         assert sanitize_rich_html("Ромашка & Ко") == "Ромашка &amp; Ко"
 
+    def test_style_stripped_from_anchor(self):
+        out = sanitize_rich_html('<a href="https://e.com" style="color:red">x</a>')
+        assert "style" not in out and 'href="https://e.com"' in out
+
+    def test_data_url_scheme_blocked(self):
+        out = sanitize_rich_html('<a href="data:text/html,<script>alert(1)</script>">x</a>')
+        assert "data:" not in out and "x" in out
+
 
 # ── Интеграция: ActContentService.save_content санитизирует все поля ────────
 
