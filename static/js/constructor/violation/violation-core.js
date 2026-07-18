@@ -4,12 +4,24 @@
  */
 import { PreviewManager } from '../preview/preview.js';
 import { RENDER_CLASSES } from '../render-classes.js';
-import { renderActContent } from '../../shared/sanitize.js';
+import { renderActContent, SafeHTML } from '../../shared/sanitize.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
+
+/**
+ * Адаптер записи формализатора: переводит ПЛОСКУЮ строку LLM в rich HTML —
+ * экранирует спецсимволы и переносы `\n` → `<br>` (зеркало `_insertCorrected`
+ * в corrector-popover.js). Без этого `\n` не отрисовался бы, а `&`/`<` из
+ * текста LLM попали бы в rich-модель как невалидный HTML.
+ * @param {string} v - Плоское значение поля от формализатора
+ * @returns {string} HTML для setViolationField/renderActContent
+ */
+function plainToRichHtml(v) {
+    return SafeHTML.escapeHtml(v).replace(/\n/g, '<br>');
+}
 
 export class ViolationManager {
     constructor() {
@@ -258,23 +270,26 @@ export class ViolationManager {
         const setPlain = (name, fieldDiv, value) => {
             const v = (value || '').trim();
             if (!v) return;                 // не извлечено — не затираем существующее
+            // Плоская строка LLM → rich HTML (экранирование + \n → <br>) ДО записи.
+            const html = plainToRichHtml(v);
             // Запись только через setViolationField — единственную защищённую точку
             // (requireWrite-guard + превью); прямая запись миновала бы её.
-            this.setViolationField(violation, name, v);
+            this.setViolationField(violation, name, html);
             // Модель → rich-поле (contenteditable): renderActContent, не .value.
-            if (fieldDiv) renderActContent(fieldDiv, v);
+            if (fieldDiv) renderActContent(fieldDiv, html);
         };
         const setOptional = (name, container, value) => {
             const v = (value || '').trim();
             if (!v) return;
+            const html = plainToRichHtml(v);
             this.setViolationField(violation, `${name}.enabled`, true);
-            this.setViolationField(violation, `${name}.content`, v);
-            const cb = container.querySelector('.violation-field-toggle input[type="checkbox"]');
-            const content = container.querySelector('.violation-field-content');
-            const fieldDiv = container.querySelector('.violation-field-content .violation-field');
+            this.setViolationField(violation, `${name}.content`, html);
+            const cb = container?.querySelector('.violation-field-toggle input[type="checkbox"]');
+            const content = container?.querySelector('.violation-field-content');
+            const fieldDiv = container?.querySelector('.violation-field-content .violation-field');
             if (cb) cb.checked = true;
             if (content) content.style.display = 'block';
-            if (fieldDiv) renderActContent(fieldDiv, v);
+            if (fieldDiv) renderActContent(fieldDiv, html);
         };
 
         setPlain('violated', controls.violated, fields.violated);
