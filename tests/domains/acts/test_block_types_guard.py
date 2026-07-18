@@ -11,9 +11,9 @@
 - (б, в, г) семантически: фикстура-акт с одним блоком данного типа
   прогоняется через DOCX-, markdown- и text-форматтеры, маркер контента
   блока обязан попасть в вывод;
-- (д) textblock.content проходит sanitize_act_data (грязный HTML вычищается,
-  текст остаётся); violation.violated/established — plain-text поля,
-  sanitize_act_data их НЕ трогает, хранятся дословно.
+- (д) textblock.content и violation.violated/established (rich-поля —
+  VIOLATION_FIELDS.rich) проходят sanitize_act_data: грязный HTML
+  вычищается, текст остаётся.
 
 Новый тип, добавленный в LEAF_BLOCK_TYPES, провалит параметризацию
 (нет фикстуры → явный fail с подсказкой), пока не появятся payload
@@ -193,7 +193,7 @@ class TestFormattersCoverEveryLeafType:
 
 
 class TestSanitizerCoversHtmlFields:
-    """(д) textblock.content чистится; violation.violated/established — дословно."""
+    """(д) textblock.content и violation.violated/established чистятся sanitize_act_data."""
 
     DIRTY = f"<script>alert(1)</script><b>{MARKER}</b>"
 
@@ -208,8 +208,8 @@ class TestSanitizerCoversHtmlFields:
         assert "<script>" not in content, "textblock.content не прошёл санитизацию"
         assert MARKER in content, "санитайзер не должен терять легитимный текст"
 
-    def test_violation_html_fields_stored_verbatim(self):
-        """violation.violated/established — plain-text, sanitize_act_data не трогает."""
+    def test_violation_rich_fields_sanitized(self):
+        """violation.violated/established — rich-поля, sanitize_act_data их чистит."""
         data = _make_act_data(NODE_TYPE_VIOLATION)
         violation = data["violations"][f"{NODE_TYPE_VIOLATION}_1"]
         violation["violated"] = self.DIRTY
@@ -221,6 +221,7 @@ class TestSanitizerCoversHtmlFields:
         result = model.violations[f"{NODE_TYPE_VIOLATION}_1"]
         for field_name in ("violated", "established"):
             value = getattr(result, field_name)
-            assert value == self.DIRTY, (
-                f"violation.{field_name} должен храниться дословно"
+            assert "<script>" not in value, (
+                f"violation.{field_name} не прошёл санитизацию"
             )
+            assert MARKER in value, "санитайзер не должен терять легитимный текст"

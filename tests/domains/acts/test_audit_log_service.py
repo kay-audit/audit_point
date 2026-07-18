@@ -569,8 +569,12 @@ class TestRestoreVersionPreSnapshot:
         Иначе несанитизированный HTML из текущего контента (записанного
         в обход save_content или до ужесточения) лёг бы в историю и при
         повторном restore такого снимка вернулся бы в БД (stored XSS).
-        Ячейки таблиц и plain-text поля нарушения при этом НЕ трогаются
-        (инвариант «всё на текст» / «нарушения хранятся дословно», #3).
+        Ячейки таблиц и plain-text поля нарушения (дескрипторы rich=False —
+        descriptionList.items[], additionalContent.items[].caption/filename/
+        url) при этом НЕ трогаются (инвариант «всё на текст» / «плоские поля
+        хранятся дословно», #3). Rich-поля нарушения (violated/established/
+        reasons/measures/consequences/responsible) чистятся так же, как
+        textBlock/tree — см. VIOLATION_FIELDS.rich.
         """
         svc, versions_repo = self._make_service()
         versions_repo.get_version.return_value = {
@@ -630,15 +634,15 @@ class TestRestoreVersionPreSnapshot:
         tb = pre["textblocks"]["tb1"]
         assert "<iframe" not in tb["content"]
         assert "<b>жирный</b>" in tb["content"]
-        # Нарушение: plain-text поля хранятся дословно (не HTML — не чистятся)
+        # Нарушение: rich-поля санитизируются, plain — дословно (не чистятся)
         v = pre["violations"]["v1"]
-        assert v["violated"] == '<img src=x onerror="alert(1)">текст'
+        assert v["violated"] == "текст"
         assert v["descriptionList"]["items"][0] == "<script>x</script>пункт"
         item = v["additionalContent"]["items"][0]
         assert item["caption"] == "<b>подпись</b>"
         assert item["filename"] == "<script>f</script>имя.png"
         assert item["url"] == "data:image/png;base64,AAAA"
-        assert v["reasons"]["content"] == "<svg onload=x></svg>причина"
+        assert v["reasons"]["content"] == "причина"
         # Ячейки таблиц — дословно (инвариант B8)
         cell = pre["tables"]["t1"]["grid"][0][0]
         assert cell["content"] == "<script>в ячейке — дословно</script>"

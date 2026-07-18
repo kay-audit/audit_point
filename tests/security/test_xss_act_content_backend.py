@@ -3,19 +3,20 @@ XSS-санитизация content-полей акта на бэкенде.
 
 Гарантирует, что ActContentService.save_content вычищает опасные
 теги/атрибуты до записи в БД: <script>, <img onerror>, <svg onload>,
-<iframe srcdoc>, javascript:-URL — для textBlock.content и узлов дерева
-(реальный HTML, рендерится через innerHTML). Whitelist разрешает
-p/b/i/span/a/... и атрибуты {a:href,title; span:class,style;
-div/p:class,style; *:class}.
+<iframe srcdoc>, javascript:-URL — для textBlock.content, узлов дерева
+(реальный HTML, рендерится через innerHTML) и rich-полей нарушения
+(violated/established, reasons/measures/consequences/responsible.content,
+additionalContent.items[] типов case/freeText — по реестру
+VIOLATION_FIELDS.rich, см. TestSaveContentViolationRichFieldsSanitized).
+Whitelist разрешает p/b/i/span/a/... и атрибуты {a:href,title;
+span:class,style; div/p:class,style; *:class}.
 
-Plain-text поля нарушения (violated/established, descriptionList.items[],
-additionalContent.items[].content/caption/filename, reasons/measures/
-consequences/responsible.content) через bleach НЕ гоняются — нигде не
-рендерятся как innerHTML, поэтому хранятся дословно (см.
-TestSaveContentViolationFieldsStoredVerbatim).
+Plain-text поля нарушения (descriptionList.items[], additionalContent.
+items[].caption/filename/url) через санитайзер НЕ гоняются — нигде не
+рендерятся как innerHTML, поэтому хранятся дословно (см. те же тесты).
 
-Тесты дополнительно покрывают utils/html_sanitizer.sanitize_html
-напрямую (быстрые сценарии без поднятия сервиса).
+Тесты дополнительно покрывают utils/html_sanitizer.sanitize_html/
+sanitize_rich_html напрямую (быстрые сценарии без поднятия сервиса).
 """
 
 from __future__ import annotations
@@ -315,89 +316,87 @@ class TestSaveContentSanitizesTextBlocks:
         assert 'href="https://example.com"' in sanitized
 
 
-class TestSaveContentViolationFieldsStoredVerbatim:
-    """save_content НЕ прогоняет plain-text поля нарушения через bleach.
+class TestSaveContentViolationRichFieldsSanitized:
+    """save_content прогоняет RICH-поля нарушения через sanitize_rich_html.
 
-    Поля нарушения нигде не рендерятся как innerHTML: форма — textarea/input,
-    превью — textContent/createTextNode, DOCX — add_run литерально, MD/TXT —
-    plain, diff — textContent/_escapeHtml. Санитизация была не нужна и вредна:
-    "Ромашка & Ко" превращалось в "Ромашка &amp; Ко", а часть текста вида
-    "a<b и c>d" терялась безвозвратно. Хранится дословно.
+    Фиксирует НОВУЮ семантику (флип): rich-поля нарушения (violated/
+    established, reasons/measures/consequences/responsible,
+    additionalContent.items[] типов case/freeText) теперь реальный HTML,
+    рендерящийся как innerHTML (rich-редактор, §9 паритет) — санитизируются
+    как любой другой HTML-контент (см. докстринг sanitize_act_data).
+    Plain-поля (descriptionList.items[], additionalContent.items[].caption/
+    filename/url) остаются дословными. Старый класс
+    TestSaveContentViolationFieldsStoredVerbatim фиксировал ДО-rich
+    поведение (ВСЕ поля нарушения дословны) — заменён этим классом.
     """
 
-    async def test_full_field_set_roundtrip_verbatim(self):
-        """Round-trip: весь набор plain-text полей нарушения — дословно."""
+    async def test_violated_established_sanitized(self):
         svc, _ = _make_service()
-        data = _data_with_violation(
-            violated="Ромашка & Ко",
-            established="доля < 5%",
-            add_item_html="кейс & <тег>",
-            field_html="условие a<b и c>d",
-        )
-        data.violations["v1"].descriptionList = ViolationDescriptionListSchema(
-            enabled=True,
-            items=["пункт < 5%"],
-        )
-        data.violations["v1"].additionalContent.items[0].caption = "подпись & <b>"
+        data = _data_with_violation(violated="<p>ok</p><script>alert(1)</script>",
+                                     established='<img onerror="x" src=y>вред')
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         v = data.violations["v1"]
-        assert v.violated == "Ромашка & Ко"
-        assert v.established == "доля < 5%"
-        assert v.reasons.content == "условие a<b и c>d"
-        assert v.measures.content == "условие a<b и c>d"
-        assert v.consequences.content == "условие a<b и c>d"
-        assert v.responsible.content == "условие a<b и c>d"
-        assert v.additionalContent.items[0].content == "кейс & <тег>"
-        assert v.additionalContent.items[0].caption == "подпись & <b>"
-        assert v.descriptionList.items == ["пункт < 5%"]
+        assert "<script" not in v.violated and "<p>ok</p>" in v.violated
+        assert "onerror" not in v.established and "<img" not in v.established and "вред" in v.established
 
-    async def test_violated_and_established_stored_verbatim(self):
+    async def test_optional_fields_sanitized(self):
+        """reasons/measures/consequences/responsible.content санитизируются."""
         svc, _ = _make_service()
-        raw_violated = "<p>ok</p><script>x</script>"
-        raw_established = '<img onerror="x" src=y>'
-        data = _data_with_violation(
-            violated=raw_violated,
-            established=raw_established,
-        )
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        v = data.violations["v1"]
-        assert v.violated == raw_violated
-        assert v.established == raw_established
-
-    async def test_additional_content_items_stored_verbatim(self):
-        svc, _ = _make_service()
-        raw = '<p>note</p><iframe srcdoc="x"></iframe>'
-        data = _data_with_violation(add_item_html=raw)
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        item = data.violations["v1"].additionalContent.items[0]
-        assert item.content == raw
-
-    async def test_optional_fields_stored_verbatim(self):
-        """reasons/measures/consequences/responsible.content — дословно."""
-        svc, _ = _make_service()
-        raw = '<p>r</p><svg onload="alert(1)"></svg>'
+        raw = '<b>причина</b><svg onload="x"></svg>'
         data = _data_with_violation(field_html=raw)
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         v = data.violations["v1"]
         for fname in ("reasons", "measures", "consequences", "responsible"):
-            assert getattr(v, fname).content == raw
+            content = getattr(v, fname).content
+            assert "<svg" not in content and "onload" not in content
+            assert "<b>причина</b>" in content
 
-    async def test_description_list_items_stored_verbatim(self):
-        """5.2.3: строки descriptionList.items хранятся дословно (plain-поле, не HTML)."""
+    async def test_case_freetext_content_sanitized(self):
+        """additionalContent item (type=case) — content санитизируется."""
+        svc, _ = _make_service()
+        raw = '<p>кейс</p><iframe srcdoc="x"></iframe>'
+        data = _data_with_violation(add_item_html=raw)
+        data.violations["v1"].additionalContent.items[0].type = "case"
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        item = data.violations["v1"].additionalContent.items[0]
+        assert "<iframe" not in item.content and "srcdoc" not in item.content
+        assert "<p>кейс</p>" in item.content
+
+    async def test_allowlisted_formatting_survives(self):
+        """Разрешённые тег/CSS/ссылка нарушения переживают санитизацию."""
+        svc, _ = _make_service()
+        raw = '<span style="font-size: 20px">крупно</span><a href="https://e.com">l</a>'
+        data = _data_with_violation(violated=raw)
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        v = data.violations["v1"]
+        assert "font-size" in v.violated and "20px" in v.violated
+        assert 'href="https://e.com"' in v.violated
+
+    async def test_ampersand_html_encoded_not_corruption(self):
+        """"&" → "&amp;" — корректное HTML-хранение rich-поля, не порча текста."""
+        svc, _ = _make_service()
+        data = _data_with_violation(violated="Ромашка & Ко")
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        assert data.violations["v1"].violated == "Ромашка &amp; Ко"
+
+    async def test_description_list_verbatim(self):
+        """descriptionList.items — plain-поле, санитайзер его не касается."""
         svc, _ = _make_service()
         data = _data_with_violation()
         raw_items = [
-            "обычный пункт",
+            "обычный",
             "<script>alert(1)</script>опасный",
-            '<b>жирный</b> уходит как текст',
+            "a<b и c>d",
         ]
         data.violations["v1"].descriptionList = ViolationDescriptionListSchema(
             enabled=True,
@@ -408,37 +407,25 @@ class TestSaveContentViolationFieldsStoredVerbatim:
 
         assert data.violations["v1"].descriptionList.items == raw_items
 
-    async def test_caption_and_filename_stored_verbatim(self):
-        """5.2.3: caption/filename элементов additionalContent хранятся дословно."""
+    async def test_image_caption_filename_url_verbatim(self):
+        """caption/filename/url элемента additionalContent — plain, дословно."""
         svc, _ = _make_service()
         data = _data_with_violation()
-        raw_caption = '<img src=x onerror="alert(1)">подпись'
-        raw_filename = "<script>x</script>файл.png"
+        raw_caption = '<img src=x onerror="a">подпись'
+        raw_filename = "<script>x</script>ф.png"
+        url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
         item = data.violations["v1"].additionalContent.items[0]
+        item.type = "image"
         item.caption = raw_caption
         item.filename = raw_filename
+        item.url = url
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         item = data.violations["v1"].additionalContent.items[0]
         assert item.caption == raw_caption
         assert item.filename == raw_filename
-
-    async def test_image_url_not_bleached(self):
-        """url НЕ прогоняется через bleach — его валидирует схема (data:image-whitelist).
-
-        bleach исказил бы base64-данные (например, экранированием), а
-        корректность формата уже гарантирована ViolationContentItemSchema.
-        """
-        svc, _ = _make_service()
-        data = _data_with_violation()
-        url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
-        item = data.violations["v1"].additionalContent.items[0]
-        item.url = url
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        assert data.violations["v1"].additionalContent.items[0].url == url
+        assert item.url == url
 
 
 class TestSanitizePlainTextDirect:
