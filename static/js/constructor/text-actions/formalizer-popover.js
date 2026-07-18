@@ -28,6 +28,7 @@ import { Notifications } from '../../shared/notifications.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { makeResizablePanel } from '../../shared/resizable-panel.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
+import { serializeVisibleText } from '../../shared/rich-text.js';
 import { formalizeViolation } from './text-actions-client.js';
 
 // Поля превью в порядке карточки (Принятые меры — под Причинами, как в форме).
@@ -77,15 +78,17 @@ export const FormalizerPopover = {
      * Собирает свободный текст нарушения из уже заполненных полей карточки для
      * (пере)формализации. Порядок — как в карточке; плоский текст без ярлыков
      * полей (формализатор раскладывает сам). Опциональные блоки берём только
-     * включёнными и непустыми; «Нарушено»/«Установлено» — если непусты.
-     * Чтение: карточку НЕ меняет.
+     * включёнными и непустыми; «Нарушено»/«Установлено» — если непусты. Поля
+     * модели — rich HTML: каждое значение перед сборкой проходит через
+     * `this._richToPlain` (адаптер чтения rich→plain), иначе в тексте для LLM
+     * оказались бы HTML-теги. Чтение: карточку НЕ меняет.
      * @param {Object} violation
      * @returns {string}
      */
     _gatherSource(violation) {
         if (!violation) return '';
         const parts = [];
-        const push = (s) => { const t = (s || '').trim(); if (t) parts.push(t); };
+        const push = (html) => { const t = this._richToPlain(html || '').trim(); if (t) parts.push(t); };
         push(violation.violated);
         push(violation.established);
         for (const key of ['reasons', 'measures', 'consequences', 'responsible']) {
@@ -93,6 +96,27 @@ export const FormalizerPopover = {
             if (f && f.enabled) push(f.content);
         }
         return parts.join('\n\n');
+    },
+
+    /**
+     * Адаптер чтения формализатора: переводит rich HTML-строку поля модели в
+     * видимый plain-текст. Парсит строку во временный элемент и прогоняет
+     * через serializeVisibleText (br/границы блоков → \n, инлайн-капсулы
+     * ссылок/сносок — видимым текстом как есть), затем снимает caret-guard'ы
+     * (U+FEFF) — они живут в DOM/модели капсул, но в текст для LLM попадать
+     * не должны. Строка модели на этом этапе уже прошла санитайзер при
+     * записи — это чтение, а не рендер в UI, повторный DOMPurify не нужен.
+     * Overridable — тест-шов (`_gatherSource` зовёт через `this._richToPlain`):
+     * реальный DOM-парсинг HTML-строки недоступен под node-стабом (innerHTML
+     * не парсится), юнит-тесты подменяют метод; разбор настоящих строк — в
+     * Playwright (Task 1.6.3).
+     * @param {string} html - HTML-значение поля модели
+     * @returns {string} Видимый plain-текст без caret-guard'ов
+     */
+    _richToPlain(html) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+        return serializeVisibleText(tmp).replace(/\uFEFF/g, '');
     },
 
     close() {
