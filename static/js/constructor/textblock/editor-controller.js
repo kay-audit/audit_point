@@ -20,6 +20,7 @@ export const EditorController = {
     _onBeforeInput: null,
     _onKeydown: null,
     _onCopy: null,
+    _onCut: null,
 
     /** @param {{kind:string,element:HTMLElement,commit:()=>void}} surface EditableSurface (editable-surface.js) */
     mount(surface) {
@@ -45,9 +46,14 @@ export const EditorController = {
             this._onBeforeInput = (e) => textBlockManager.handleEditorBeforeInput(e, surface.element, null);
             this._onKeydown = (e) => textBlockManager.handleEditorKeydown(e, surface.element);
             this._onCopy = (e) => textBlockManager.handleEditorCopy(e, surface.element, false);
+            // CORE-4: cut без обработчика сериализует буфер ДО beforeinput нативно —
+            // guard'ы (U+FEFF) утекали бы в клипборд. isCut=true — тот же метод, что
+            // и copy, плюс удаление выделения нативной командой (см. handleEditorCopy).
+            this._onCut = (e) => textBlockManager.handleEditorCopy(e, surface.element, true);
             surface.element.addEventListener('beforeinput', this._onBeforeInput);
             surface.element.addEventListener('keydown', this._onKeydown);
             surface.element.addEventListener('copy', this._onCopy);
+            surface.element.addEventListener('cut', this._onCut);
             textBlockManager.attachLinkFootnoteHandlers(); // tooltip/dblclick-правка/ПКМ-меню/клик-каретка
         }
     },
@@ -63,6 +69,7 @@ export const EditorController = {
             surface.element.removeEventListener('beforeinput', this._onBeforeInput);
             surface.element.removeEventListener('keydown', this._onKeydown);
             surface.element.removeEventListener('copy', this._onCopy);
+            surface.element.removeEventListener('cut', this._onCut);
         }
         textBlockManager.detachToolbar();
         if (EditorRegistry.getActive() === surface) EditorRegistry.clear(); // ownership-guard
@@ -72,6 +79,7 @@ export const EditorController = {
         this._onBeforeInput = null;
         this._onKeydown = null;
         this._onCopy = null;
+        this._onCut = null;
     },
 };
 

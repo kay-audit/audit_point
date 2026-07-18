@@ -151,7 +151,7 @@ test('mount(B) при активной A: сначала A.unmount (commit+detac
 
 // ── Task 1.3.4-B2: интерактивный capsule-lifecycle (гейт rich+violationField) ──
 
-test('mount: rich violationField-поверхность — ставит capsule-lifecycle (observer, tooltip, beforeinput/keydown/copy)', () => {
+test('mount: rich violationField-поверхность — ставит capsule-lifecycle (observer, tooltip, beforeinput/keydown/copy/cut)', () => {
     const s = fakeSurface('v1', 'violationField', true);
     EditorController.mount(s);
 
@@ -161,6 +161,7 @@ test('mount: rich violationField-поверхность — ставит capsule
     assert.equal(s.element._hasListener('beforeinput'), true);
     assert.equal(s.element._hasListener('keydown'), true);
     assert.equal(s.element._hasListener('copy'), true);
+    assert.equal(s.element._hasListener('cut'), true, 'cut не навешен (CORE-4: guard\'ы утекут в клипборд)');
 });
 
 test('mount: НЕ-violationField поверхность (kind="textblock", rich=true) — capsule-lifecycle НЕ ставится (гейт по kind)', () => {
@@ -171,6 +172,7 @@ test('mount: НЕ-violationField поверхность (kind="textblock", rich=
     assert.equal(s.element._hasListener('beforeinput'), false);
     assert.equal(s.element._hasListener('keydown'), false);
     assert.equal(s.element._hasListener('copy'), false);
+    assert.equal(s.element._hasListener('cut'), false);
 });
 
 test('mount: violationField-поверхность БЕЗ rich (rich=false) — capsule-lifecycle НЕ ставится (гейт по rich)', () => {
@@ -181,7 +183,7 @@ test('mount: violationField-поверхность БЕЗ rich (rich=false) — 
     assert.equal(s.element._hasListener('beforeinput'), false);
 });
 
-test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinput/keydown/copy)', () => {
+test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinput/keydown/copy/cut)', () => {
     const s = fakeSurface('v1', 'violationField', true);
     EditorController.mount(s);
     capsuleLog.length = 0; // интересует снятие, не установку
@@ -192,6 +194,7 @@ test('unmount: снимает capsule-lifecycle (observer.disconnect + beforeinp
     assert.equal(s.element._hasListener('beforeinput'), false);
     assert.equal(s.element._hasListener('keydown'), false);
     assert.equal(s.element._hasListener('copy'), false);
+    assert.equal(s.element._hasListener('cut'), false);
 });
 
 test('unmount: НЕ-violationField поверхность — detach не трогает capsule-lifecycle (его и не было)', () => {
