@@ -573,8 +573,9 @@ class TestRestoreVersionPreSnapshot:
         descriptionList.items[], additionalContent.items[].caption/filename/
         url) при этом НЕ трогаются (инвариант «всё на текст» / «плоские поля
         хранятся дословно», #3). Rich-поля нарушения (violated/established/
-        reasons/measures/consequences/responsible) чистятся так же, как
-        textBlock/tree — см. VIOLATION_FIELDS.rich.
+        reasons/measures/consequences/responsible, additionalContent.items[]
+        типов case/freeText) чистятся так же, как textBlock/tree — см.
+        VIOLATION_FIELDS.rich.
         """
         svc, versions_repo = self._make_service()
         versions_repo.get_version.return_value = {
@@ -610,6 +611,10 @@ class TestRestoreVersionPreSnapshot:
                         {"id": "i1", "type": "image", "url": "data:image/png;base64,AAAA",
                          "content": "", "caption": "<b>подпись</b>",
                          "filename": "<script>f</script>имя.png"},
+                        {"id": "i2", "type": "case",
+                         "content": '<p>кейс</p><iframe srcdoc="x"></iframe>'},
+                        {"id": "i3", "type": "freeText",
+                         "content": '<b>текст</b><svg onload="x"></svg>'},
                     ]},
                     "reasons": {"enabled": True, "content": "<svg onload=x></svg>причина"},
                 },
@@ -642,6 +647,13 @@ class TestRestoreVersionPreSnapshot:
         assert item["caption"] == "<b>подпись</b>"
         assert item["filename"] == "<script>f</script>имя.png"
         assert item["url"] == "data:image/png;base64,AAAA"
+        # additionalContent case/freeText — rich, санитизируются по типу item
+        case_item = v["additionalContent"]["items"][1]
+        assert "<iframe" not in case_item["content"] and "srcdoc" not in case_item["content"]
+        assert "<p>кейс</p>" in case_item["content"]
+        freetext_item = v["additionalContent"]["items"][2]
+        assert "<svg" not in freetext_item["content"] and "onload" not in freetext_item["content"]
+        assert "<b>текст</b>" in freetext_item["content"]
         assert v["reasons"]["content"] == "причина"
         # Ячейки таблиц — дословно (инвариант B8)
         cell = pre["tables"]["t1"]["grid"][0][0]

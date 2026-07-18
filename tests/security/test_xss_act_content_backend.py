@@ -356,17 +356,25 @@ class TestSaveContentViolationRichFieldsSanitized:
             assert "<b>причина</b>" in content
 
     async def test_case_freetext_content_sanitized(self):
-        """additionalContent item (type=case) — content санитизируется."""
+        """additionalContent item (type=case И type=freeText) — content санитизируется."""
         svc, _ = _make_service()
-        raw = '<p>кейс</p><iframe srcdoc="x"></iframe>'
-        data = _data_with_violation(add_item_html=raw)
+        raw_case = '<p>кейс</p><iframe srcdoc="x"></iframe>'
+        raw_free = '<b>текст</b><svg onload="x"></svg>'
+        data = _data_with_violation(add_item_html=raw_case)
         data.violations["v1"].additionalContent.items[0].type = "case"
+        data.violations["v1"].additionalContent.items.append(
+            ViolationContentItemSchema(id="i2", type="freeText", content=raw_free)
+        )
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        item = data.violations["v1"].additionalContent.items[0]
-        assert "<iframe" not in item.content and "srcdoc" not in item.content
-        assert "<p>кейс</p>" in item.content
+        items = data.violations["v1"].additionalContent.items
+        case_item = items[0]
+        assert "<iframe" not in case_item.content and "srcdoc" not in case_item.content
+        assert "<p>кейс</p>" in case_item.content
+        freetext_item = items[1]
+        assert "<svg" not in freetext_item.content and "onload" not in freetext_item.content
+        assert "<b>текст</b>" in freetext_item.content
 
     async def test_allowlisted_formatting_survives(self):
         """Разрешённые тег/CSS/ссылка нарушения переживают санитизацию."""
