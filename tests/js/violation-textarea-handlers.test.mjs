@@ -6,12 +6,12 @@
  * markAsUnsaved и ложную запись аудита. stopPropagation на Escape гасит
  * всплытие (активная зона вставки не сбрасывается, посторонний тост не уходит).
  *
- * #18-А (обновлено Task 1.3.3): кейс и свободный текст стали rich-полями
- * (contenteditable через _createRichFieldEditor + content-item поверхность),
- * setupTextareaHandlers для них больше НЕ используется — правка идёт write-through
- * контроллера (commit → setContentItemField). Подпись картинки ОСТАЁТСЯ на
- * setupTextareaHandlers (однострочный <input>, multiline=false — Shift+Enter
- * бессмыслен): картинка не rich-поле.
+ * #18-А (обновлено Task 1.3.3, Task 6): кейс, свободный текст И подпись
+ * картинки — rich-поля (contenteditable через _createRichFieldEditor +
+ * content-item поверхность), setupTextareaHandlers для них больше НЕ
+ * используется — правка идёт write-through контроллера (commit →
+ * setContentItemField). setupTextareaHandlers остаётся actual только для
+ * пунктов descriptionList (плоский plain-текст, не item additionalContent).
  *
  * Реальные модули конструктора импортируются под node:test через _browser-stub;
  * поля моделируются фейком, записывающим слушателей, чтобы дёргать их вручную.
@@ -149,7 +149,7 @@ test('input (multiline=false): любой Enter сохраняет+blur, Shift+E
     assert.equal(e2.prevented, true);
 });
 
-// ── #18-А: маршрутизация case/freeText/caption через setupTextareaHandlers ─────
+// ── #18-А: маршрутизация case/freeText/caption через rich-поле ────────────────
 
 test('#18-А (Task 1.3.3): createCaseElement идёт через rich-поле (content-item поверхность), commit→setContentItemField, БЕЗ setupTextareaHandlers', () => {
     const vm = new ViolationManager();
@@ -199,20 +199,29 @@ test('#18-А (Task 1.3.3): createFreeTextElement идёт через rich-пол
     assert.deepEqual(setCalls, [{ field: 'content', val: 'новый текст' }]);
 });
 
-test('#18-А: createImageElement маршрутизирует подпись через setupTextareaHandlers (multiline=false) → setContentItemField(caption)', () => {
+test('Task 6: createImageElement маршрутизирует подпись через rich-поле (content-item поверхность, field=caption), commit→setContentItemField, БЕЗ setupTextareaHandlers', () => {
     const vm = new ViolationManager();
     const captured = [];
-    vm.setupTextareaHandlers = (ta, onUpdate, multiline) => captured.push({ onUpdate, multiline });
-    const setCalls = [];
-    vm.setContentItemField = (v, item, field, val) => setCalls.push({ field, val });
+    vm._createRichFieldEditor = (surface, opts) => { captured.push({ surface, opts }); return { classList: { add() {} } }; };
+    let taCalled = 0;
+    vm.setupTextareaHandlers = () => { taCalled++; };
 
     const violation = { id: 'v1' };
     const item = { id: 'img1', type: 'image', url: '', caption: 'подпись', filename: 'f.png', width: 0 };
     vm.createImageElement(violation, item, 0, 1, false);
 
-    assert.equal(captured.length, 1, 'подпись картинки идёт через setupTextareaHandlers');
-    assert.equal(captured[0].multiline, false, 'подпись — однострочный input, multiline=false');
-    captured[0].onUpdate('новая подпись');
+    assert.equal(taCalled, 0, 'подпись картинки больше НЕ использует setupTextareaHandlers');
+    assert.equal(captured.length, 1, 'подпись создана через rich-поле');
+    assert.equal(captured[0].surface.id, 'viol:v1:item:img1:caption', 'content-item поверхность с суффиксом :caption');
+    assert.equal(captured[0].surface.kind, 'violationField');
+    assert.equal(captured[0].opts.placeholder, 'Подпись к изображению');
+    assert.equal(captured[0].opts.isReadOnly, false);
+
+    // Запись в модель — через commit поверхности (element.innerHTML → setContentItemField(..., 'caption', ...)).
+    const setCalls = [];
+    vm.setContentItemField = (v, item2, field, val) => setCalls.push({ field, val });
+    captured[0].surface.element = { innerHTML: 'новая подпись' };
+    captured[0].surface.commit();
     assert.deepEqual(setCalls, [{ field: 'caption', val: 'новая подпись' }]);
 });
 

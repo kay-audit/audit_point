@@ -4,7 +4,6 @@
  */
 
 import { ViolationManager } from './violation-core.js';
-import { RENDER_CLASSES } from '../render-classes.js';
 import { AppConfig } from '../../shared/app-config.js';
 import {
     CONTENT_TYPE_CASE,
@@ -181,22 +180,14 @@ Object.assign(ViolationManager.prototype, {
         filenameDiv.className = 'image-filename';
         filenameDiv.textContent = item.filename;
 
-        const captionInput = document.createElement('input');
-        captionInput.type = 'text';
-        captionInput.className = RENDER_CLASSES.VIOLATION_LIST_INPUT;
-        captionInput.placeholder = 'Подпись к изображению';
-        captionInput.value = item.caption;
-
-        if (isReadOnly) {
-            captionInput.readOnly = true;
-            captionInput.classList.add('read-only');
-        } else {
-            // #18-А: подпись — однострочный input, multiline=false
-            // (Shift+Enter для неё бессмыслен). Escape откатывает подпись.
-            this.setupTextareaHandlers(captionInput, (value) => {
-                this.setContentItemField(violation, item, 'caption', value);
-            }, false);
-        }
+        // Подпись — rich-поле (Task 6, contenteditable), путь по item.caption
+        // через content-item поверхность (field='caption'); compact-модификатор
+        // держит поле низким (однострочная подпись — не полноразмерная textarea).
+        const captionField = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item, 'caption'),
+            { placeholder: 'Подпись к изображению', isReadOnly },
+        );
+        captionField.classList.add('violation-textarea--compact');
 
         // Селект ширины картинки (Б-1.4): % полезной ширины листа, 0 — авто
         // (натуральный размер с потолком по ширине). Пишет item.width —
@@ -231,7 +222,7 @@ Object.assign(ViolationManager.prototype, {
 
         itemDiv.appendChild(imgContainer);
         itemDiv.appendChild(filenameDiv);
-        itemDiv.appendChild(captionInput);
+        itemDiv.appendChild(captionField);
         itemDiv.appendChild(widthControl);
 
         wrapper.appendChild(label);

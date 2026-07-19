@@ -154,28 +154,39 @@ export class ViolationFieldSurface {
 
 /**
  * Поверхность текстового элемента дополнительного контента (кейс/свободный
- * текст). Отличается от ViolationFieldSurface точкой записи: коммитит в
- * item.content через setContentItemField (мутатор элементов контента), а не в
- * поле карточки через setViolationField. kind='violationField' — та же политика
- * тулбара (базовое форматирование без сносок).
+ * текст/подпись картинки). Отличается от ViolationFieldSurface точкой записи:
+ * коммитит в item[field] через setContentItemField (мутатор элементов
+ * контента), а не в поле карточки через setViolationField. kind='violationField'
+ * — та же политика тулбара (базовое форматирование без сносок).
+ *
+ * field (Task 6) — какое поле item'а несёт rich-текст: 'content' у кейса/
+ * свободного текста (дефолт, существующие вызовы не передают field), 'caption'
+ * у подписи картинки. id для НЕ-content поля несёт суффикс `:<field>`
+ * (`viol:<vid>:item:<iid>:caption`) — 'content' оставлен без суффикса ради
+ * обратной совместимости существующих id (тесты/снапшоты); префикс
+ * `viol:<id>:` для _teardownActiveRichField продолжает матчить в обоих случаях.
  */
 export class ViolationContentItemSurface {
     /**
      * @param {Object} violation - Объект нарушения (модель)
-     * @param {Object} item - Элемент additionalContent.items[] (кейс/текст)
+     * @param {Object} item - Элемент additionalContent.items[] (кейс/текст/картинка)
      * @param {ViolationManager} manager - Владелец setContentItemField
+     * @param {string} [field='content'] - Поле item'а ('content' | 'caption')
      */
-    constructor(violation, item, manager) {
+    constructor(violation, item, manager, field = 'content') {
         this._violation = violation;
         this._item = item;
         this._manager = manager;
-        this.id = `viol:${violation.id}:item:${item.id}`;
+        this._field = field;
+        this.id = field === 'content'
+            ? `viol:${violation.id}:item:${item.id}`
+            : `viol:${violation.id}:item:${item.id}:${field}`;
         this.kind = 'violationField';
         this.rich = true;
         this.element = null;
     }
 
-    getContent() { return this._item.content; }
+    getContent() { return this._item[this._field]; }
 
     /** Модель → element, С ре-рендером (внешняя запись). */
     setContent(html) {
@@ -183,7 +194,7 @@ export class ViolationContentItemSurface {
         // получает report.html безусловно, ре-рендер DOM повторно — только при
         // реальной структурной починке (changed).
         const report = _repairCapsuleHtml(html);
-        this._manager.setContentItemField(this._violation, this._item, 'content', report.html);
+        this._manager.setContentItemField(this._violation, this._item, this._field, report.html);
         renderActContent(this.element, html);
         if (report.changed) {
             renderActContent(this.element, report.html);
@@ -197,7 +208,7 @@ export class ViolationContentItemSurface {
     commit() {
         // Guard-strip + repair ПЕРЕД записью — см. ViolationFieldSurface.commit.
         this._manager.setContentItemField(
-            this._violation, this._item, 'content', _repairCapsuleHtml(this.element.innerHTML).html);
+            this._violation, this._item, this._field, _repairCapsuleHtml(this.element.innerHTML).html);
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -221,14 +232,16 @@ function _makeViolationSurface(violation, path) {
 }
 
 /**
- * Фабрика поверхности текстового элемента доп. контента (кейс/свободный текст).
- * Как _makeViolationSurface, но для item.content — see ViolationContentItemSurface.
+ * Фабрика поверхности текстового элемента доп. контента (кейс/свободный текст/
+ * подпись картинки). Как _makeViolationSurface, но для item[field] — see
+ * ViolationContentItemSurface.
  * @param {Object} violation - Объект нарушения
  * @param {Object} item - Элемент additionalContent.items[]
+ * @param {string} [field='content'] - Поле item'а ('content' | 'caption')
  * @returns {ViolationContentItemSurface}
  */
-function _makeContentItemSurface(violation, item) {
-    return new ViolationContentItemSurface(violation, item, this);
+function _makeContentItemSurface(violation, item, field = 'content') {
+    return new ViolationContentItemSurface(violation, item, this, field);
 }
 
 /**

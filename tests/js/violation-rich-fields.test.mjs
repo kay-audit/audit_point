@@ -189,6 +189,48 @@ test('_makeContentItemSurface: id/kind/rich, getContent из item.content', () =
     assert.equal(s.getContent(), 'кейс');
 });
 
+// ── Task 6: параметр field (подпись картинки) ─────────────────────────────────
+
+test('_makeContentItemSurface: field="caption" — id с суффиксом :caption, getContent из item.caption', () => {
+    const vm = new ViolationManager();
+    const s = vm._makeContentItemSurface({ id: 'v1' }, { id: 'i1', content: '', caption: 'подпись' }, 'caption');
+
+    assert.equal(s.id, 'viol:v1:item:i1:caption', 'id несёт суффикс поля (префикс viol:<id>: для teardown цел)');
+    assert.equal(s.kind, 'violationField');
+    assert.equal(s.rich, true);
+    assert.equal(s.getContent(), 'подпись', 'читает item.caption, не item.content');
+});
+
+test('ViolationContentItemSurface: field="caption" — commit/setContent пишут через setContentItemField(..., "caption", ...)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'i1', content: '', caption: '' };
+    const s = vm._makeContentItemSurface(violation, item, 'caption');
+
+    s.element = { innerHTML: '<b>новая подпись</b>', textContent: '' };
+    s.commit();
+    assert.deepEqual(calls, [{ field: 'caption', val: '<b>новая подпись</b>' }], 'commit пишет в caption, не в content');
+
+    calls.length = 0;
+    s.setContent('<i>внешняя подпись</i>');
+    assert.deepEqual(calls, [{ field: 'caption', val: '<i>внешняя подпись</i>' }], 'setContent пишет в caption');
+});
+
+test('_makeContentItemSurface: без field (кейс/свободный текст) — id/getContent/commit как раньше (content, без суффикса)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const s = vm._makeContentItemSurface({ id: 'v1' }, { id: 'c1', content: 'кейс', caption: 'не тронь' });
+
+    assert.equal(s.id, 'viol:v1:item:c1', 'без суффикса — обратная совместимость существующих id');
+    assert.equal(s.getContent(), 'кейс');
+    s.element = { innerHTML: '<i>x</i>', textContent: '' };
+    s.commit();
+    assert.deepEqual(calls, [{ field: 'content', val: '<i>x</i>' }]);
+});
+
 test('ViolationContentItemSurface: commit (element→модель) и setContent (модель→element) → setContentItemField', () => {
     const vm = new ViolationManager();
     const calls = [];

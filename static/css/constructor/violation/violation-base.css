@@ -90,6 +90,12 @@
     line-height: var(--line-height-normal);
 }
 
+/* Компактный вариант (Task 6): подпись под фото — однострочное поле, а не
+   полноразмерная textarea. */
+.violation-textarea--compact {
+    min-height: 2.5rem;
+}
+
 /* Подсветка границы при наведении */
 .violation-textarea:hover {
     border-color: var(--input-border-hover);
