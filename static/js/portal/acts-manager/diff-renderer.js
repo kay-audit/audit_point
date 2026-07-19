@@ -662,7 +662,22 @@ export class DiffRenderer {
             const strong = document.createElement('strong');
             strong.textContent = `${attrLabels[key]}: `;
             line.appendChild(strong);
-            this.appendOldNewPair(line, fields[key].old, fields[key].new);
+            if (key === 'caption' && fields[key].wordDiff) {
+                // Task 6: caption — rich-поле, word-diff по видимому тексту
+                // вместо сырых HTML-строк (зеркало _renderDiffViolation) —
+                // appendOldNewPair показал бы <b>-теги буквально.
+                if (fields[key].formattingOnly) {
+                    const badge = document.createElement('span');
+                    badge.className = 'diff-textblock-format-badge';
+                    badge.textContent = 'Изменено форматирование';
+                    line.appendChild(badge);
+                }
+                const wordDiffEl = document.createElement('span');
+                SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fields[key].wordDiff));
+                line.appendChild(wordDiffEl);
+            } else {
+                this.appendOldNewPair(line, fields[key].old, fields[key].new);
+            }
             itemDiv.appendChild(line);
         }
     }
@@ -698,7 +713,10 @@ export class DiffRenderer {
         if (item && item.caption) {
             const cap = document.createElement('div');
             cap.className = 'diff-violation-caption';
-            cap.textContent = item.caption;
+            // Task 6: caption — rich-поле, показываем ВИДИМЫЙ текст (_stripHtml),
+            // не сырой HTML буквально — паритет с добавленным/удалённым/
+            // неизменным case/freeText (см. докстринг _renderContentEntry).
+            cap.textContent = DiffEngine._stripHtml(item.caption);
             container.appendChild(cap);
         }
     }

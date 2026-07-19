@@ -174,6 +174,17 @@ def test_image_caption_italic_centered_below(doc):
     assert all(r.font.size == Pt(Sizes.violation_pt) for r in cap_runs)
 
 
+def test_image_caption_bold_html_renders_bold_run(doc):
+    """Task 6: жирный фрагмент rich-подписи → bold run (не текст тегов), базовые курсив/размер сохраняются."""
+    build_violation(doc, _v_with_items(_img_item(caption="<b>важно</b>: подпись")))
+    cap_para = next(p for p in doc.paragraphs if "подпись" in p.text)
+    assert "<b>" not in cap_para.text
+    bold_run = next(r for r in cap_para.runs if r.text.strip() == "важно")
+    assert bold_run.bold is True
+    assert bold_run.italic is True
+    assert bold_run.font.size == Pt(Sizes.violation_pt)
+
+
 def test_broken_base64_renders_placeholder(doc):
     """Битый base64 → текстовый плейсхолдер «Изображение: …», без исключения."""
     build_violation(doc, _v_with_items(

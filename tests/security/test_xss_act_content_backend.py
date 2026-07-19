@@ -12,8 +12,10 @@ Whitelist разрешает p/b/i/span/a/... и атрибуты {a:href,title;
 span:class,style; div/p:class,style; *:class}.
 
 Plain-text поля нарушения (descriptionList.items[], additionalContent.
-items[].caption/filename/url) через санитайзер НЕ гоняются — нигде не
+items[].filename/url) через санитайзер НЕ гоняются — нигде не
 рендерятся как innerHTML, поэтому хранятся дословно (см. те же тесты).
+additionalContent.items[].caption (тип image) — rich-поле (Task 6,
+rich-редактор подписи), санитизируется как case/freeText.content.
 
 Тесты дополнительно покрывают utils/html_sanitizer.sanitize_html/
 sanitize_rich_html напрямую (быстрые сценарии без поднятия сервиса).
@@ -332,8 +334,9 @@ class TestSaveContentViolationRichFieldsSanitized:
     additionalContent.items[] типов case/freeText) теперь реальный HTML,
     рендерящийся как innerHTML (rich-редактор, §9 паритет) — санитизируются
     как любой другой HTML-контент (см. докстринг sanitize_act_data).
-    Plain-поля (descriptionList.items[], additionalContent.items[].caption/
-    filename/url) остаются дословными. Старый класс
+    additionalContent.items[] типа image — caption (Task 6, rich-редактор
+    подписи) санитизируется так же. Plain-поля (descriptionList.items[],
+    additionalContent.items[].filename/url) остаются дословными. Старый класс
     TestSaveContentViolationFieldsStoredVerbatim фиксировал ДО-rich
     поведение (ВСЕ поля нарушения дословны) — заменён этим классом.
     """
@@ -423,25 +426,53 @@ class TestSaveContentViolationRichFieldsSanitized:
 
         assert data.violations["v1"].descriptionList.items == raw_items
 
-    async def test_image_caption_filename_url_verbatim(self):
-        """caption/filename/url элемента additionalContent — plain, дословно."""
+    async def test_image_filename_url_verbatim(self):
+        """filename/url элемента additionalContent — plain, дословно."""
         svc, _ = _make_service()
         data = _data_with_violation()
-        raw_caption = '<img src=x onerror="a">подпись'
         raw_filename = "<script>x</script>ф.png"
         url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
         item = data.violations["v1"].additionalContent.items[0]
         item.type = "image"
-        item.caption = raw_caption
         item.filename = raw_filename
         item.url = url
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         item = data.violations["v1"].additionalContent.items[0]
-        assert item.caption == raw_caption
         assert item.filename == raw_filename
         assert item.url == url
+
+    async def test_image_caption_sanitized(self):
+        """caption элемента additionalContent (image) — rich, санитизируется (Task 6).
+
+        Allowlisted-тег (<b>) переживает санитизацию, опасный payload
+        (<img onerror>) вырезается — зеркало test_case_freetext_content_sanitized.
+        """
+        svc, _ = _make_service()
+        data = _data_with_violation()
+        raw_caption = '<b>подпись</b><img src=x onerror="a">'
+        item = data.violations["v1"].additionalContent.items[0]
+        item.type = "image"
+        item.caption = raw_caption
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        item = data.violations["v1"].additionalContent.items[0]
+        assert "<b>подпись</b>" in item.caption
+        assert "<img" not in item.caption and "onerror" not in item.caption
+
+    async def test_image_caption_none_stays_none(self):
+        """caption=None (легаси-данные без подписи) — санитайзер не подменяет на ''."""
+        svc, _ = _make_service()
+        data = _data_with_violation()
+        item = data.violations["v1"].additionalContent.items[0]
+        item.type = "image"
+        item.caption = None
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        assert data.violations["v1"].additionalContent.items[0].caption is None
 
 
 class TestSanitizePlainTextDirect:

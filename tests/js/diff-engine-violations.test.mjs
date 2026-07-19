@@ -159,6 +159,47 @@ test('additionalContent: смена подписи/ширины картинки
     assert.equal(e.fields.url, undefined);
 });
 
+// --- Task 6: caption картинки — rich-поле, word-diff по видимому тексту
+// (зеркало case/freeText выше), а не строковое сравнение как у filename/width.
+
+test('additionalContent: caption картинки — word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>старая</b> подпись', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>новая</b> подпись', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified');
+    const wd = e.fields.caption.wordDiff;
+    assert.ok(wd.some(p => p.type === 'insert' && p.text === 'новая'));
+    assert.ok(wd.some(p => p.type === 'delete' && p.text === 'старая'));
+    assert.ok(wd.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+    // old/new сохранены сырыми (рендерер решает, показывать их напрямую или нет).
+    assert.equal(e.fields.caption.old, '<b>старая</b> подпись');
+    assert.equal(e.fields.caption.new, '<b>новая</b> подпись');
+});
+
+test('additionalContent: caption картинки — правка только формата → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'подпись', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>подпись</b>', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified');
+    assert.equal(e.fields.caption.formattingOnly, true);
+    assert.ok(e.fields.caption.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('additionalContent: caption картинки — правка текста → formattingOnly=false', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>старая</b>', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>новая</b>', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.fields.caption.formattingOnly, false);
+});
+
+test('additionalContent: caption картинки без изменений — fields.caption не выставляется', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'та же', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'та же', filename: 'p.png', width: 60 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified', 'width изменился — элемент изменён');
+    assert.equal(e.fields.caption, undefined, 'caption не менялась — поля caption в fields нет');
+});
+
 test('additionalContent: огромный base64-url НЕ гоняется через _wordDiff (строковое сравнение, без зависания)', () => {
     const bigA = 'data:image/png;base64,' + 'A'.repeat(3_000_000);
     const bigB = 'data:image/png;base64,' + 'B'.repeat(3_000_000);

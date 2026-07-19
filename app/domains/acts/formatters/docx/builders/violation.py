@@ -145,12 +145,14 @@ def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
         )
 
     if item.caption:
+        # Task 6: подпись — rich-HTML (rich-редактор), парсится тем же
+        # inline-парсером, что и остальные rich-поля нарушения; базовые
+        # размер/курсив — прежние свойства run'а (см. тест-паритет
+        # test_image_caption_italic_centered_below), внешний вид plain-
+        # подписи не меняется.
         cap_para = doc.add_paragraph()
         cap_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        cap_run = cap_para.add_run(item.caption)
-        cap_run.font.name = Fonts.main
-        cap_run.font.size = Pt(Sizes.violation_pt)
-        cap_run.italic = True
+        apply_inline_html(cap_para, item.caption, base_size_pt=Sizes.violation_pt, base_italic=True)
 
 
 def _decode_data_url(url: str) -> bytes | None:

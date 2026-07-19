@@ -504,9 +504,11 @@ export class DiffEngine {
      * Выключенный контент канонизируется как пустой. Матчинг элементов по item.id
      * (стабилен в пределах истории ОДНОГО акта). Классификация:
      * added/removed/modified/reordered. case/freeText → word-diff по видимому
-     * тексту (_stripHtml); image → строковое сравнение url/caption/filename/
-     * width (base64-url НЕ через word-diff). reordered — по относительному
-     * порядку общих id (устойчив к вставкам/удалениям).
+     * тексту (_stripHtml); image → строковое сравнение url/filename/width
+     * (base64-url НЕ через word-diff); caption (Task 6, rich-поле) — тоже
+     * word-diff по видимому тексту, зеркало case/freeText (см. _diffContentItem).
+     * reordered — по относительному порядку общих id (устойчив к вставкам/
+     * удалениям).
      * @returns {{kind, changed, enabled, oldEnabled, entries: Array}}
      */
     static _diffAdditionalContent(oldV, newV) {
@@ -564,21 +566,37 @@ export class DiffEngine {
     /**
      * Сравнение пары элементов доп.контента одного id.
      * image → строковое сравнение метаданных (url — многомегабайтный data-URL,
-     * сравнивается СТРОКОЙ, НЕ через word-diff). case/freeText → word-diff по
-     * видимому тексту (_stripHtml).
+     * сравнивается СТРОКОЙ, НЕ через word-diff); caption (Task 6, rich-поле) —
+     * отдельно, word-diff по видимому тексту (_stripHtml), зеркало
+     * case/freeText-ветки ниже — raw HTML в fields.caption.old/new НЕ рендерят
+     * напрямую (см. diff-renderer._renderImageEntry). case/freeText → word-diff
+     * по видимому тексту (_stripHtml).
      * @returns {{changed: boolean, detail: Object}}
      */
     static _diffContentItem(oldItem, newItem) {
         if ((newItem && newItem.type) === 'image') {
             const fields = {};
             let changed = false;
-            for (const key of ['url', 'caption', 'filename', 'width']) {
+            for (const key of ['url', 'filename', 'width']) {
                 const oldFv = (oldItem && oldItem[key] != null) ? oldItem[key] : '';
                 const newFv = (newItem && newItem[key] != null) ? newItem[key] : '';
                 if (String(oldFv) !== String(newFv)) {
                     fields[key] = { old: oldFv, new: newFv };
                     changed = true;
                 }
+            }
+            const oldCaption = (oldItem && oldItem.caption) || '';
+            const newCaption = (newItem && newItem.caption) || '';
+            if (oldCaption !== newCaption) {
+                const strippedOld = this._stripHtml(oldCaption);
+                const strippedNew = this._stripHtml(newCaption);
+                fields.caption = {
+                    old: oldCaption,
+                    new: newCaption,
+                    wordDiff: this._wordDiff(strippedOld, strippedNew),
+                    formattingOnly: strippedOld === strippedNew,
+                };
+                changed = true;
             }
             return { changed, detail: { fields } };
         }

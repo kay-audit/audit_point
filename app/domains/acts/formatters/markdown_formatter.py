@@ -207,16 +207,24 @@ class MarkdownFormatter(BaseFormatter):
         теряться при непустом url). Пустой url (черновик) → текстовый
         fallback `*filename*` (с подписью, если есть).
 
-        filename/caption хранятся дословно (без bleach, T4) — экранируем их
-        через MarkdownUtils.escape_inline (backslash экранируется первым,
-        иначе `\]`/`\"` в тексте пользователя гасят экранирование и позволяют
-        «впрыснуть» поддельную ссылку/картинку в экспорт, #7).
+        filename хранится дословно (без bleach, T4) — экранируем через
+        MarkdownUtils.escape_inline (backslash экранируется первым, иначе
+        `\]`/`\"` в тексте пользователя гасят экранирование и позволяют
+        «впрыснуть» поддельную ссылку/картинку в экспорт, #7). caption —
+        rich-HTML (Task 6, rich-редактор подписи): конвертируется в markdown
+        через HTMLUtils.html_to_markdown (как кейс/свободный текст, без
+        дополнительного экранирования — сама markdown-разметка **bold**/
+        *italic* должна дойти до вывода). В alt результат ДОПОЛНИТЕЛЬНО
+        экранируется по '[]' — та же защита #7, теперь от структурного
+        разрыва `![...]` содержимым caption.
 
         Args:
             lines: Список строк для добавления
             item: Данные изображения
         """
-        caption = item.get('caption', '')
+        # caption может быть None (легаси-данные без подписи, Task 6) —
+        # html_to_markdown падает на None (нет собственного null-guard).
+        caption = HTMLUtils.html_to_markdown(item.get('caption') or '')
         filename = item.get('filename', '')
         url = item.get('url', '')
 
@@ -225,9 +233,8 @@ class MarkdownFormatter(BaseFormatter):
             title = MarkdownUtils.escape_inline(filename, '"')
             lines.append(f'![{alt}]({url} "{title}")')
         elif caption:
-            caption_esc = MarkdownUtils.escape_inline(caption, '*[]')
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
-            lines.append(f"*{filename_esc}* - {caption_esc}")
+            lines.append(f"*{filename_esc}* - {caption}")
         else:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
             lines.append(f"*{filename_esc}*")

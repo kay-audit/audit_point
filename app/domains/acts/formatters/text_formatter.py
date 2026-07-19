@@ -249,11 +249,16 @@ class TextFormatter(BaseFormatter):
         """
         Добавляет ссылку на изображение.
 
+        caption — rich-HTML (Task 6, rich-редактор подписи), конвертируется в
+        видимый текст через HTMLUtils.clean_html (как кейс/свободный текст).
+
         Args:
             lines: Список строк для добавления
             item: Данные изображения
         """
-        caption = item.get('caption', '')
+        # caption может быть None (легаси-данные без подписи, Task 6) —
+        # clean_html падает на None (нет собственного null-guard).
+        caption = HTMLUtils.clean_html(item.get('caption') or '')
         filename = item.get('filename', '')
 
         if caption:

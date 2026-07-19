@@ -190,7 +190,31 @@ def test_markdown_image_caption_with_bracket_escaped_in_alt():
     assert '![рост\\] на 10%](data:image/png;base64,AAAA "pic.png")' in out
 
 
-# --- TXT: те же правила #9/#14 (картинка #16 в TXT не трогается) ---
+# --- Task 6: caption — rich-поле (rich-редактор подписи), паритет MD/TXT ---
+
+
+def test_markdown_image_caption_is_rich():
+    """<b> в caption → **bold** в alt (html_to_markdown, как кейс/свободный текст)."""
+    v = _violation_with_items([{
+        "type": "image",
+        "url": "data:image/png;base64,AAAA",
+        "caption": "<b>важно</b>",
+        "filename": "pic.png",
+    }])
+    out = _md()._format_violation(v)
+    assert '![**важно**](data:image/png;base64,AAAA "pic.png")' in out
+
+
+def test_markdown_image_caption_none_falls_back_to_filename():
+    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": None, "filename": "draft.png",
+    }])
+    out = _md()._format_violation(v)
+    assert "*draft.png*" in out
+
+
+# --- TXT: те же правила #9/#14 (картинка #16 — caption теперь rich, Task 6) ---
 
 
 def test_text_empty_first_case_shifts_next_to_case_2():
@@ -220,6 +244,25 @@ def test_text_required_labels_shown_when_empty():
     out = _txt()._format_violation(v)
     assert "Нарушено:" in out
     assert "Установлено:" in out
+
+
+def test_text_image_caption_is_rich():
+    """<b> в caption → видимый текст без тегов (clean_html, как кейс/свободный текст)."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": "<b>важно</b>", "filename": "pic.png",
+    }])
+    out = _txt()._format_violation(v)
+    assert "Изображение: pic.png - важно" in out
+    assert "<b>" not in out
+
+
+def test_text_image_caption_none_falls_back_to_filename_only():
+    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": None, "filename": "draft.png",
+    }])
+    out = _txt()._format_violation(v)
+    assert "Изображение: draft.png" in out
 
 
 # --- Task 1.1.3: rich-поля нарушения — HTML→Markdown / HTML→plain через text_conv ---

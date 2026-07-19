@@ -240,7 +240,10 @@ export class PreviewViolationRenderer {
         if (!item.caption) return;
         const caption = document.createElement('div');
         caption.className = 'preview-violation-caption';
-        caption.textContent = item.caption;
+        // Task 6: подпись — rich-HTML (rich-редактор), рендерим через
+        // renderActContent (профиль 'acts'), а не textContent — иначе
+        // форматирование показалось бы буквальными тегами.
+        renderActContent(caption, item.caption);
         container.appendChild(caption);
     }
 }

@@ -2,15 +2,16 @@
 Санитизация HTML-контента пользовательских полей акта.
 
 Защищает от XSS: textBlock.content, узлы дерева (node.content) и rich-поля
-нарушения (violated/established, reasons/measures/consequences/responsible,
-additionalContent.items[] типов case/freeText — состав см.
-``violation_fields.VIOLATION_FIELDS``, флаг ``rich``) — везде реальный HTML,
-который рендерится через innerHTML на фронте и парсится inline.py при
-DOCX-экспорте. textBlock/tree чистит sanitize_html (bleach), rich-поля
-нарушения — sanitize_rich_html (nh3, см. его докстринг).
+нарушения (violated/established, reasons/measures/consequences/responsible —
+состав см. ``violation_fields.VIOLATION_FIELDS``, флаг ``rich``;
+additionalContent.items[] типов case/freeText — поле content, типа image —
+поле caption, Task 6) — везде реальный HTML, который рендерится через
+innerHTML на фронте и парсится inline.py при DOCX-экспорте. textBlock/tree
+чистит sanitize_html (bleach), rich-поля нарушения — sanitize_rich_html
+(nh3, см. его докстринг).
 
 Plain-text поля нарушения (descriptionList.items[],
-additionalContent.items[].caption/filename/url) через этот модуль НЕ
+additionalContent.items[].filename/url) через этот модуль НЕ
 чистятся: нигде не рендерятся как innerHTML (превью — textContent, DOCX —
 add_run литерально), поэтому bleach/nh3 там не нужны и вредны — портили бы
 текст («&» → «&amp;») и могли терять его часть («a<b» трактовался как
@@ -380,9 +381,10 @@ def _sanitize_violation_obj(v) -> None:
 
     Реестр-driven обход VIOLATION_FIELDS: чистятся только поля с rich=True
     (violated/established/reasons/measures/consequences/responsible), через
-    sanitize_rich_html. Plain-поля (descriptionList.items[], caption/filename/
-    url элементов additionalContent) не трогаются — см. докстринг
-    sanitize_act_data.
+    sanitize_rich_html. Отдельно — rich-поля элементов additionalContent (не в
+    реестре, item-level): content у case/freeText, caption у image (Task 6).
+    Plain-поля (descriptionList.items[], filename/url элементов
+    additionalContent) не трогаются — см. докстринг sanitize_act_data.
     """
     for f in VIOLATION_FIELDS:
         if not f.rich:
@@ -395,10 +397,14 @@ def _sanitize_violation_obj(v) -> None:
 
     # additionalContent — дескриптор rich=False (контейнер), но его
     # case/freeText-элементы несут rich-текст и чистятся по типу item,
-    # независимо от флага контейнера; caption/filename/url — plain, не трогаем.
+    # независимо от флага контейнера; у image caption теперь тоже rich
+    # (Task 6, rich-редактор подписи) — может быть None (легаси-данные без
+    # подписи), тогда не трогаем; filename/url — plain, не трогаем.
     for it in v.additionalContent.items:
         if it.type in ("case", "freeText"):
             it.content = sanitize_rich_html(it.content)
+        elif it.type == "image" and it.caption is not None:
+            it.caption = sanitize_rich_html(it.caption)
 
 
 def _sanitize_violation_dict(v: dict) -> None:
@@ -422,6 +428,8 @@ def _sanitize_violation_dict(v: dict) -> None:
         for it in items:
             if isinstance(it, dict) and it.get("type") in ("case", "freeText"):
                 it["content"] = sanitize_rich_html(it.get("content"))
+            elif isinstance(it, dict) and it.get("type") == "image" and it.get("caption") is not None:
+                it["caption"] = sanitize_rich_html(it.get("caption"))
 
 
 def sanitize_act_data(data) -> None:
@@ -433,11 +441,11 @@ def sanitize_act_data(data) -> None:
     - tree nodes[*].content (рекурсивно — узлы могут содержать HTML)
     - violations[*] — rich-поля по реестру VIOLATION_FIELDS (violated/
       established/reasons/measures/consequences/responsible,
-      additionalContent.items[] типов case/freeText) через sanitize_rich_html
-      (см. _sanitize_violation_obj).
+      additionalContent.items[] типов case/freeText, типа image — caption,
+      Task 6) через sanitize_rich_html (см. _sanitize_violation_obj).
 
     Plain-text поля нарушения (descriptionList.items[], additionalContent.
-    items[].caption/filename) СОЗНАТЕЛЬНО не трогаются: нигде не рендерятся
+    items[].filename) СОЗНАТЕЛЬНО не трогаются: нигде не рендерятся
     как innerHTML, bleach/nh3 там только портили бы текст и теряли его часть
     (см. модульный docstring и TestSaveContentViolationRichFieldsSanitized).
 

@@ -75,7 +75,9 @@ test('_renderDiffViolation: полный дифф (списки + кейс + к�
                     // formattingOnly: false — та же осознанная фикстура-актуализация, что и у reasons выше (Review Round 2).
                     { status: 'modified', reordered: false, formattingOnly: false, oldItem: { id: 'c1', type: 'case', content: 'x' }, newItem: { id: 'c1', type: 'case', content: 'y' }, wordDiff: [{ type: 'delete', text: 'x' }, { type: 'insert', text: 'y' }] },
                     { status: 'added', newItem: { id: 'f1', type: 'freeText', content: 'новый текст' } },
-                    { status: 'modified', reordered: false, oldItem: { id: 'i1', type: 'image', url: 'a', caption: 'старая', filename: 'p.png', width: 0 }, newItem: { id: 'i1', type: 'image', url: 'b', caption: 'новая', filename: 'p.png', width: 50 }, fields: { url: { old: 'a', new: 'b' }, caption: { old: 'старая', new: 'новая' }, width: { old: 0, new: 50 } } },
+                    // caption несёт wordDiff/formattingOnly (Task 6, rich-поле) — та же
+                    // осознанная фикстура-актуализация, что у reasons/case выше.
+                    { status: 'modified', reordered: false, oldItem: { id: 'i1', type: 'image', url: 'a', caption: 'старая', filename: 'p.png', width: 0 }, newItem: { id: 'i1', type: 'image', url: 'b', caption: 'новая', filename: 'p.png', width: 50 }, fields: { url: { old: 'a', new: 'b' }, caption: { old: 'старая', new: 'новая', wordDiff: [{ type: 'delete', text: 'старая' }, { type: 'insert', text: 'новая' }], formattingOnly: false }, width: { old: 0, new: 50 } } },
                     { status: 'removed', oldItem: { id: 'i2', type: 'image', url: '', caption: '', filename: 'q.png', width: 0 } },
                 ],
             },
@@ -241,4 +243,76 @@ test('formattingOnly=false у case/freeText → бейджа форматиро�
         document.createElement = orig;
     }
     assert.ok(!created.some(el => el.className === 'diff-textblock-format-badge'));
+});
+
+// --- Task 6: caption картинки — word-diff вместо сырых old/new строк -------
+// (зеркало formattingOnly-блока выше для case/freeText/скалярных полей).
+
+function makeCaptionImageEntry(fieldDiff) {
+    return {
+        status: 'modified',
+        oldItem: { id: 'i1', type: 'image', url: 'u', caption: fieldDiff.old, filename: 'p.png', width: 0 },
+        newItem: { id: 'i1', type: 'image', url: 'u', caption: fieldDiff.new, filename: 'p.png', width: 0 },
+        fields: { caption: fieldDiff },
+    };
+}
+
+/** Собирает все созданные элементы при рендере _renderImageEntry. */
+function renderImageEntryCollecting(entry) {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderImageEntry({ appendChild() {} }, entry);
+    } finally {
+        document.createElement = orig;
+    }
+    return created;
+}
+
+test('_renderImageEntry: caption с wordDiff → рендер зовёт _wordDiffToHtml с полевым wordDiff (не raw old/new)', () => {
+    const wordDiff = [{ type: 'delete', text: 'старая' }, { type: 'insert', text: 'новая' }];
+    const entry = makeCaptionImageEntry({ old: '<b>старая</b>', new: '<b>новая</b>', wordDiff, formattingOnly: false });
+    const calls = [];
+    const orig = DiffRenderer._wordDiffToHtml;
+    DiffRenderer._wordDiffToHtml = (wd) => { calls.push(wd); return orig.call(DiffRenderer, wd); };
+    try {
+        DiffRenderer._renderImageEntry({ appendChild() {} }, entry);
+    } finally {
+        DiffRenderer._wordDiffToHtml = orig;
+    }
+    assert.equal(calls.length, 1, '_wordDiffToHtml должен вызываться для caption с wordDiff');
+    assert.deepEqual(calls[0], wordDiff);
+});
+
+test('_renderImageEntry: caption formattingOnly=true → бейдж «Изменено форматирование»', () => {
+    const created = renderImageEntryCollecting(makeCaptionImageEntry({
+        old: 'важно', new: '<b>важно</b>', wordDiff: [{ type: 'equal', text: 'важно' }], formattingOnly: true,
+    }));
+    const badge = created.find(el => el.className === 'diff-textblock-format-badge');
+    assert.ok(badge, 'бейдж форматирования не создан');
+    assert.equal(badge.textContent, 'Изменено форматирование');
+});
+
+test('_renderImageEntry: caption formattingOnly=false → бейджа форматирования нет', () => {
+    const created = renderImageEntryCollecting(makeCaptionImageEntry({
+        old: '<b>старая</b>', new: '<b>новая</b>',
+        wordDiff: [{ type: 'delete', text: 'старая' }, { type: 'insert', text: 'новая' }],
+        formattingOnly: false,
+    }));
+    assert.ok(!created.some(el => el.className === 'diff-textblock-format-badge'));
+});
+
+test('_appendImagePreview: caption — видимый текст (_stripHtml), не сырой HTML буквально', () => {
+    const collected = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); collected.push(el); return el; };
+    try {
+        DiffRenderer._appendImagePreview({ appendChild() {} }, { url: '', caption: '<b>важно</b>', filename: 'p.png' });
+    } finally {
+        document.createElement = orig;
+    }
+    const cap = collected.find(el => el.className === 'diff-violation-caption');
+    assert.ok(cap, 'подпись не создана');
+    assert.equal(cap.textContent, 'важно', 'видимый текст без тегов');
 });

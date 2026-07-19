@@ -188,6 +188,34 @@ test('image-элемент попадает в модель строк цели�
     assert.equal(image.item, item);
 });
 
+// --- Task 6: подпись — rich-HTML, рендерится через renderActContent -------
+
+test('_appendCaption: рендерит caption через renderActContent (innerHTML), не textContent буквально с тегами', () => {
+    const origDOMPurify = window.DOMPurify;
+    // Идентити-фейк: достаточно отличить innerHTML (renderActContent) от
+    // textContent (старое поведение) — сами правила allowlist'а проверены
+    // в sanitize-render-act-content.test.mjs/sanitize-profiles.test.mjs.
+    window.DOMPurify = { sanitize: (html) => String(html) };
+    try {
+        let appended = null;
+        const container = { appendChild: (el) => { appended = el; } };
+        PreviewViolationRenderer._appendCaption(container, { caption: '<b>важно</b>' });
+
+        assert.ok(appended, 'подпись добавлена в контейнер');
+        assert.equal(appended.className, 'preview-violation-caption');
+        assert.equal(appended.innerHTML, '<b>важно</b>', 'renderActContent пишет innerHTML — форматирование не превращается в буквальный текст тегов');
+    } finally {
+        window.DOMPurify = origDOMPurify;
+    }
+});
+
+test('_appendCaption: пустая/отсутствующая caption — ничего не добавляется', () => {
+    let appended = null;
+    const container = { appendChild: (el) => { appended = el; } };
+    PreviewViolationRenderer._appendCaption(container, { caption: '' });
+    assert.equal(appended, null);
+});
+
 test('опциональные поля выводятся полностью при enabled', () => {
     const lines = collectViolationLines(makeViolation({
         reasons: { enabled: true, content: LONG },
