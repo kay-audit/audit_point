@@ -69,12 +69,12 @@ test('CASE_LABEL_TEMPLATE и FREE_TEXT_LABEL — точные значения',
   assert.equal(FREE_TEXT_LABEL, '');
 });
 
-test('rich-флаг ровно на 6 текстовых полях (синхрон с бэком violation_fields.py)', () => {
+test('rich-флаг на 6 текстовых полях + descriptionList (Task 7); синхрон с бэком violation_fields.py', () => {
   assert.deepEqual(
     VIOLATION_FIELDS.filter(f => f.rich).map(f => f.key),
-    ['violated', 'established', 'reasons', 'measures', 'consequences', 'responsible']
+    ['violated', 'established', 'descriptionList', 'reasons', 'measures', 'consequences', 'responsible']
   );
-  assert.equal(VIOLATION_FIELDS.find(f => f.key === 'descriptionList').rich, undefined);
+  assert.equal(VIOLATION_FIELDS.find(f => f.key === 'descriptionList').rich, true);
   assert.equal(VIOLATION_FIELDS.find(f => f.key === 'additionalContent').rich, undefined);
 });
 

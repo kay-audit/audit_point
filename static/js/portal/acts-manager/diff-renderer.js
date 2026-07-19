@@ -517,6 +517,12 @@ export class DiffRenderer {
      * Рендер диффа списка описаний: <ul> с пер-элементной подсветкой
      * added/removed/modified. Заголовка нет (паритет с collectViolationLines —
      * descriptionList без метки, решение #12).
+     *
+     * Пункт — rich-поле (Task 7): added/removed/unchanged показывают ВИДИМЫЙ
+     * текст (_stripHtml) — raw HTML показал бы теги буквально (зеркало
+     * _renderContentEntry для case/freeText). modified — word-diff по видимому
+     * тексту + бейдж «Изменено форматирование» при formattingOnly (зеркало
+     * скалярных rich-полей нарушения, _renderDiffViolation).
      */
     static _renderDescriptionListDiff(container, dlDiff) {
         const ul = document.createElement('ul');
@@ -526,16 +532,24 @@ export class DiffRenderer {
             li.className = `diff-desclist-item diff-${item.status}`;
             if (item.status === 'added') {
                 const ins = document.createElement('ins');
-                ins.textContent = item.new || '';
+                ins.textContent = DiffEngine._stripHtml(item.new || '');
                 li.appendChild(ins);
             } else if (item.status === 'removed') {
                 const del = document.createElement('del');
-                del.textContent = item.old || '';
+                del.textContent = DiffEngine._stripHtml(item.old || '');
                 li.appendChild(del);
             } else if (item.status === 'modified') {
-                SafeHTML.set(li, this._wordDiffToHtml(item.wordDiff));
+                if (item.formattingOnly) {
+                    const badge = document.createElement('span');
+                    badge.className = 'diff-textblock-format-badge';
+                    badge.textContent = 'Изменено форматирование';
+                    li.appendChild(badge);
+                }
+                const wordDiffEl = document.createElement('span');
+                SafeHTML.set(wordDiffEl, this._wordDiffToHtml(item.wordDiff));
+                li.appendChild(wordDiffEl);
             } else {
-                li.textContent = item.new ?? item.old ?? '';
+                li.textContent = DiffEngine._stripHtml(item.new ?? item.old ?? '');
             }
             ul.appendChild(li);
         }

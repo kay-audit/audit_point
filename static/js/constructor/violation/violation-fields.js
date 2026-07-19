@@ -10,8 +10,10 @@
  * `rich` (Task 1.3.2) — поле редактируется через rich-поверхность
  * (ViolationFieldSurface, violation-field-surface.js) и требует HTML-
  * санитайзера; true на 6 текстовых полях (violated/established/reasons/
- * measures/consequences/responsible). У descriptionList/additionalContent
- * флаг отсутствует (список/картинки — свой UI, не текстовый rich-редактор).
+ * measures/consequences/responsible) И на descriptionList (Task 7 —
+ * ViolationListItemSurface, свой UI со списком пунктов, но каждый пункт
+ * теперь rich-текст). У additionalContent флаг отсутствует (картинки/кейсы —
+ * контейнер разных типов, rich разбирается по типу item'а, не контейнера).
  *
  * ВАЖНО: набор синхронизируется ВРУЧНУЮ с бэкенд-реестром
  * app/domains/acts/violation_fields.py (как block_types.py ↔ block-types.js):
@@ -23,7 +25,7 @@
 export const VIOLATION_FIELDS = Object.freeze([
   Object.freeze({ key: 'violated', label: 'Нарушено', order: 0, kind: 'pair', small: true, showLabelInPreview: true, rich: true }),
   Object.freeze({ key: 'established', label: 'Установлено', order: 1, kind: 'pair', small: true, showLabelInPreview: true, rich: true }),
-  Object.freeze({ key: 'descriptionList', label: '', order: 2, kind: 'list', small: true, showLabelInPreview: false }),
+  Object.freeze({ key: 'descriptionList', label: '', order: 2, kind: 'list', small: true, showLabelInPreview: false, rich: true }),
   Object.freeze({ key: 'additionalContent', label: '', order: 3, kind: 'additional', small: true, showLabelInPreview: false }),
   Object.freeze({ key: 'reasons', label: 'Причины', order: 4, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),
   Object.freeze({ key: 'measures', label: 'Принятые меры', order: 5, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),

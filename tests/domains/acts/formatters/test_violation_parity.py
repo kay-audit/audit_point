@@ -253,9 +253,9 @@ class TestFormattersCoverEveryContractLabel:
 # --- Rich-рендер текстовых полей (Task 1.1.2) ---
 #
 # violated/established/кейсы/freeText/reasons/measures/consequences/
-# responsible рендерятся через apply_inline_html (inline HTML → runs) вместо
-# plain add_run. Плейсхолдер картинки и descriptionList-буллеты остаются
-# plain (rich=False) — картинка не должна парсить filename как HTML.
+# responsible/descriptionList-буллеты (Task 7) рендерятся через
+# apply_inline_html (inline HTML → runs) вместо plain add_run. Плейсхолдер
+# картинки остаётся plain — картинка не должна парсить filename как HTML.
 
 
 def test_docx_violation_field_bold_and_ampersand():

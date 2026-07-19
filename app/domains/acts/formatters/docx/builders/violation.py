@@ -75,10 +75,11 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
         for item in violation.descriptionList.items:
             bullet = doc.add_paragraph(style="List Bullet")
             bullet.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            run = bullet.add_run(item)
-            run.font.name = Fonts.main
-            run.font.size = Pt(Sizes.violation_pt)
-            run.italic = True
+            # Task 7: пункт — rich-HTML (rich-редактор); apply_inline_html
+            # парсит инлайн-разметку в runs, базовые размер/курсив — прежние
+            # свойства run'а (паритет с test_description_list_bullets_9pt_italic),
+            # внешний вид plain-пунктов не меняется.
+            apply_inline_html(bullet, item, base_size_pt=Sizes.violation_pt, base_italic=True)
 
     # additionalContent (case / image / freeText). Нумеруются ВСЕ кейсы, включая
     # пустые (метка + пустое тело); счётчик сбрасывается на любом не-кейсе —

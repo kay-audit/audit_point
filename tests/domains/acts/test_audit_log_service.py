@@ -569,13 +569,13 @@ class TestRestoreVersionPreSnapshot:
         Иначе несанитизированный HTML из текущего контента (записанного
         в обход save_content или до ужесточения) лёг бы в историю и при
         повторном restore такого снимка вернулся бы в БД (stored XSS).
-        Ячейки таблиц и plain-text поля нарушения (дескрипторы rich=False —
-        descriptionList.items[], additionalContent.items[].filename/url) при
-        этом НЕ трогаются (инвариант «всё на текст» / «плоские поля хранятся
-        дословно», #3). Rich-поля нарушения (violated/established/
-        reasons/measures/consequences/responsible, additionalContent.items[]
-        типов case/freeText, типа image — caption, Task 6) чистятся так же,
-        как textBlock/tree — см. VIOLATION_FIELDS.rich.
+        Ячейки таблиц и plain-text поле нарушения (дескриптор rich=False —
+        additionalContent.items[].filename/url) при этом НЕ трогаются
+        (инвариант «всё на текст» / «плоские поля хранятся дословно», #3).
+        Rich-поля нарушения (violated/established/reasons/measures/
+        consequences/responsible, descriptionList.items[] — Task 7,
+        additionalContent.items[] типов case/freeText, типа image — caption,
+        Task 6) чистятся так же, как textBlock/tree — см. VIOLATION_FIELDS.rich.
         """
         svc, versions_repo = self._make_service()
         versions_repo.get_version.return_value = {
@@ -606,7 +606,7 @@ class TestRestoreVersionPreSnapshot:
                     "violated": '<img src=x onerror="alert(1)">текст',
                     "established": "",
                     "descriptionList": {"enabled": True,
-                                        "items": ["<script>x</script>пункт"]},
+                                        "items": ["<b>важно</b><script>x</script>пункт"]},
                     "additionalContent": {"enabled": True, "items": [
                         {"id": "i1", "type": "image", "url": "data:image/png;base64,AAAA",
                          "content": "", "caption": '<b>подпись</b><img src=x onerror="a">',
@@ -642,7 +642,11 @@ class TestRestoreVersionPreSnapshot:
         # Нарушение: rich-поля санитизируются, plain — дословно (не чистятся)
         v = pre["violations"]["v1"]
         assert v["violated"] == "текст"
-        assert v["descriptionList"]["items"][0] == "<script>x</script>пункт"
+        # descriptionList.items[] — rich-поле (Task 7): allowlisted-тег
+        # переживает санитизацию, опасный payload вырезается.
+        desc_item = v["descriptionList"]["items"][0]
+        assert "<b>важно</b>" in desc_item and "пункт" in desc_item
+        assert "<script" not in desc_item
         # additionalContent image.caption — rich (Task 6): allowlisted-тег
         # переживает санитизацию, опасный payload вырезается; filename/url
         # остаются plain (дословно).

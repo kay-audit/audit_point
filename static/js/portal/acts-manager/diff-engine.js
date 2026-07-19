@@ -464,7 +464,9 @@ export class DiffEngine {
     /**
      * Структурный дифф списка описаний (descriptionList: {enabled, items:[str]}).
      * Выключенный список канонизируется как пустой (в акте не показан).
-     * Пер-элементный diff по позиции: added/removed/modified (modified → word-diff).
+     * Пер-элементный diff по позиции: added/removed/modified (modified → word-diff
+     * по видимому тексту + formattingOnly, Task 7 — пункты стали rich-полем,
+     * зеркало case/freeText).
      * @returns {{kind, changed, enabled, oldEnabled, items: Array}}
      */
     static _diffDescriptionList(oldV, newV) {
@@ -490,7 +492,18 @@ export class DiffEngine {
                 items.push({ status: 'removed', old: oldItem });
                 changed = true;
             } else if (oldItem !== newItem) {
-                items.push({ status: 'modified', old: oldItem, new: newItem, wordDiff: this._wordDiff(oldItem, newItem) });
+                // Пункт — rich-поле (Task 7): word-diff по ВИДИМОМУ тексту
+                // (_stripHtml), зеркало case/freeText (_diffContentItem) —
+                // detect-modified остаётся по сырому значению (см. там же),
+                // formattingOnly — правка только разметки при совпавшем
+                // видимом тексте (паритет со скалярными rich-полями).
+                const strippedOld = this._stripHtml(oldItem);
+                const strippedNew = this._stripHtml(newItem);
+                items.push({
+                    status: 'modified', old: oldItem, new: newItem,
+                    wordDiff: this._wordDiff(strippedOld, strippedNew),
+                    formattingOnly: strippedOld === strippedNew,
+                });
                 changed = true;
             } else {
                 items.push({ status: 'unchanged', old: oldItem, new: newItem });

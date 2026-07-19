@@ -98,7 +98,7 @@ class TestRichFlag:
         expected = {
             "violated": True,
             "established": True,
-            "descriptionList": False,
+            "descriptionList": True,
             "additionalContent": False,
             "reasons": True,
             "measures": True,

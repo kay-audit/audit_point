@@ -90,6 +90,37 @@ test('descriptionList: выключенный список в обеих вер�
     assert.equal(d.fieldDiffs.descriptionList, undefined);
 });
 
+// --- Task 7: пункт descriptionList — rich-поле, word-diff по видимому тексту
+// (зеркало case/freeText выше), а не по сырому HTML.
+
+test('descriptionList: изменение пункта — word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['<b>старый</b> пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>новый</b> пункт'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.status, 'modified');
+    assert.ok(item.wordDiff.some(p => p.type === 'insert' && p.text === 'новый'));
+    assert.ok(item.wordDiff.some(p => p.type === 'delete' && p.text === 'старый'));
+    assert.ok(item.wordDiff.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+    // old/new сохранены сырыми (рендерер решает, показывать их напрямую или нет).
+    assert.equal(item.old, '<b>старый</b> пункт');
+    assert.equal(item.new, '<b>новый</b> пункт');
+});
+
+test('descriptionList: правка только формата пункта → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>пункт</b>'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.formattingOnly, true);
+    assert.ok(item.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('descriptionList: правка текста пункта → formattingOnly=false', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['<b>старый</b> пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>новый</b> пункт'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.formattingOnly, false);
+});
+
 // --- additionalContent: case / freeText -------------------------------------
 
 test('additionalContent: изменение кейса → modified + word-diff', () => {

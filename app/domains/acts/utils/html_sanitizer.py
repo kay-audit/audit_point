@@ -2,17 +2,16 @@
 Санитизация HTML-контента пользовательских полей акта.
 
 Защищает от XSS: textBlock.content, узлы дерева (node.content) и rich-поля
-нарушения (violated/established, reasons/measures/consequences/responsible —
-состав см. ``violation_fields.VIOLATION_FIELDS``, флаг ``rich``;
-additionalContent.items[] типов case/freeText — поле content, типа image —
-поле caption, Task 6) — везде реальный HTML, который рендерится через
-innerHTML на фронте и парсится inline.py при DOCX-экспорте. textBlock/tree
-чистит sanitize_html (bleach), rich-поля нарушения — sanitize_rich_html
-(nh3, см. его докстринг).
+нарушения (violated/established, reasons/measures/consequences/responsible,
+descriptionList.items[] — Task 7 — состав см.
+``violation_fields.VIOLATION_FIELDS``, флаг ``rich``; additionalContent.items[]
+типов case/freeText — поле content, типа image — поле caption, Task 6) —
+везде реальный HTML, который рендерится через innerHTML на фронте и парсится
+inline.py при DOCX-экспорте. textBlock/tree чистит sanitize_html (bleach),
+rich-поля нарушения — sanitize_rich_html (nh3, см. его докстринг).
 
-Plain-text поля нарушения (descriptionList.items[],
-additionalContent.items[].filename/url) через этот модуль НЕ
-чистятся: нигде не рендерятся как innerHTML (превью — textContent, DOCX —
+Plain-text поля нарушения (additionalContent.items[].filename/url) через
+этот модуль НЕ чистятся: нигде не рендерятся как innerHTML (DOCX —
 add_run литерально), поэтому bleach/nh3 там не нужны и вредны — портили бы
 текст («&» → «&amp;») и могли терять его часть («a<b» трактовался как
 начало тега).
@@ -380,10 +379,11 @@ def _sanitize_violation_obj(v) -> None:
     """Чистит rich-поля одного нарушения (объектная форма — ViolationSchema).
 
     Реестр-driven обход VIOLATION_FIELDS: чистятся только поля с rich=True
-    (violated/established/reasons/measures/consequences/responsible), через
-    sanitize_rich_html. Отдельно — rich-поля элементов additionalContent (не в
-    реестре, item-level): content у case/freeText, caption у image (Task 6).
-    Plain-поля (descriptionList.items[], filename/url элементов
+    (violated/established/reasons/measures/consequences/responsible —
+    скаляр/optional_text; descriptionList.items[] — Task 7, каждый пункт
+    отдельно), через sanitize_rich_html. Отдельно — rich-поля элементов
+    additionalContent (не в реестре, item-level): content у case/freeText,
+    caption у image (Task 6). Plain-поля (filename/url элементов
     additionalContent) не трогаются — см. докстринг sanitize_act_data.
     """
     for f in VIOLATION_FIELDS:
@@ -394,6 +394,9 @@ def _sanitize_violation_obj(v) -> None:
         elif f.kind == "optional_text":
             sub = getattr(v, f.key)
             sub.content = sanitize_rich_html(sub.content)
+        elif f.kind == "list":
+            sub = getattr(v, f.key)
+            sub.items = [sanitize_rich_html(item) for item in sub.items]
 
     # additionalContent — дескриптор rich=False (контейнер), но его
     # case/freeText-элементы несут rich-текст и чистятся по типу item,
@@ -421,6 +424,10 @@ def _sanitize_violation_dict(v: dict) -> None:
             sub = v.get(f.key)
             if isinstance(sub, dict) and "content" in sub:
                 sub["content"] = sanitize_rich_html(sub.get("content"))
+        elif f.kind == "list":
+            sub = v.get(f.key)
+            if isinstance(sub, dict) and isinstance(sub.get("items"), list):
+                sub["items"] = [sanitize_rich_html(item) for item in sub["items"]]
 
     additional = v.get("additionalContent")
     items = additional.get("items") if isinstance(additional, dict) else None
@@ -441,13 +448,14 @@ def sanitize_act_data(data) -> None:
     - tree nodes[*].content (рекурсивно — узлы могут содержать HTML)
     - violations[*] — rich-поля по реестру VIOLATION_FIELDS (violated/
       established/reasons/measures/consequences/responsible,
-      additionalContent.items[] типов case/freeText, типа image — caption,
-      Task 6) через sanitize_rich_html (см. _sanitize_violation_obj).
+      descriptionList.items[] — Task 7, additionalContent.items[] типов
+      case/freeText, типа image — caption, Task 6) через sanitize_rich_html
+      (см. _sanitize_violation_obj).
 
-    Plain-text поля нарушения (descriptionList.items[], additionalContent.
-    items[].filename) СОЗНАТЕЛЬНО не трогаются: нигде не рендерятся
-    как innerHTML, bleach/nh3 там только портили бы текст и теряли его часть
-    (см. модульный docstring и TestSaveContentViolationRichFieldsSanitized).
+    Plain-text поле additionalContent.items[].filename СОЗНАТЕЛЬНО не
+    трогается: нигде не рендерится как innerHTML, bleach/nh3 там только
+    портили бы текст и теряли его часть (см. модульный docstring и
+    TestSaveContentViolationRichFieldsSanitized).
 
     url элементов additionalContent тоже не чистится: его формат
     (data:image-whitelist + лимит длины) валидирует ViolationContentItemSchema,

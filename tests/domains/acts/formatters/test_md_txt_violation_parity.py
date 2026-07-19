@@ -287,6 +287,14 @@ def test_measures_and_case_are_rich():
     assert "*мера*" in md and "**кейс**" in md
 
 
-def test_description_list_stays_plain():
+def test_markdown_description_list_is_rich():
+    """Task 7: <b> в пункте → **bold** в markdown (html_to_markdown, как кейс/свободный текст)."""
     v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
-    assert "<b>пункт</b>" in _md()._format_violation(v)
+    assert "**пункт**" in _md()._format_violation(v)
+
+
+def test_text_description_list_is_rich():
+    """Task 7: <b> в пункте → видимый текст без тегов (clean_html)."""
+    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
+    out = _txt()._format_violation(v)
+    assert "пункт" in out and "<b>" not in out

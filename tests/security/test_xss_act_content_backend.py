@@ -6,16 +6,17 @@ XSS-санитизация content-полей акта на бэкенде.
 <iframe srcdoc>, javascript:-URL — для textBlock.content, узлов дерева
 (реальный HTML, рендерится через innerHTML) и rich-полей нарушения
 (violated/established, reasons/measures/consequences/responsible.content,
-additionalContent.items[] типов case/freeText — по реестру
-VIOLATION_FIELDS.rich, см. TestSaveContentViolationRichFieldsSanitized).
-Whitelist разрешает p/b/i/span/a/... и атрибуты {a:href,title;
-span:class,style; div/p:class,style; *:class}.
+descriptionList.items[] — Task 7, additionalContent.items[] типов
+case/freeText — по реестру VIOLATION_FIELDS.rich, см.
+TestSaveContentViolationRichFieldsSanitized). Whitelist разрешает
+p/b/i/span/a/... и атрибуты {a:href,title; span:class,style;
+div/p:class,style; *:class}.
 
-Plain-text поля нарушения (descriptionList.items[], additionalContent.
-items[].filename/url) через санитайзер НЕ гоняются — нигде не
-рендерятся как innerHTML, поэтому хранятся дословно (см. те же тесты).
-additionalContent.items[].caption (тип image) — rich-поле (Task 6,
-rich-редактор подписи), санитизируется как case/freeText.content.
+Plain-text поле additionalContent.items[].filename/url через санитайзер
+НЕ гоняется — нигде не рендерится как innerHTML, поэтому хранится дословно
+(см. те же тесты). additionalContent.items[].caption (тип image) —
+rich-поле (Task 6, rich-редактор подписи), санитизируется как
+case/freeText.content.
 
 Тесты дополнительно покрывают utils/html_sanitizer.sanitize_html/
 sanitize_rich_html напрямую (быстрые сценарии без поднятия сервиса).
@@ -40,6 +41,7 @@ from app.domains.acts.schemas.act_content import (
 from app.domains.acts.schemas.act_content import ViolationDescriptionListSchema
 from app.domains.acts.services.act_content_service import ActContentService
 from app.domains.acts.utils.html_sanitizer import (
+    _sanitize_violation_dict,
     sanitize_html,
     sanitize_plain_text,
     sanitize_rich_html,
@@ -331,14 +333,15 @@ class TestSaveContentViolationRichFieldsSanitized:
 
     Фиксирует НОВУЮ семантику (флип): rich-поля нарушения (violated/
     established, reasons/measures/consequences/responsible,
-    additionalContent.items[] типов case/freeText) теперь реальный HTML,
-    рендерящийся как innerHTML (rich-редактор, §9 паритет) — санитизируются
-    как любой другой HTML-контент (см. докстринг sanitize_act_data).
-    additionalContent.items[] типа image — caption (Task 6, rich-редактор
-    подписи) санитизируется так же. Plain-поля (descriptionList.items[],
-    additionalContent.items[].filename/url) остаются дословными. Старый класс
-    TestSaveContentViolationFieldsStoredVerbatim фиксировал ДО-rich
-    поведение (ВСЕ поля нарушения дословны) — заменён этим классом.
+    descriptionList.items[] — Task 7, additionalContent.items[] типов
+    case/freeText) теперь реальный HTML, рендерящийся как innerHTML
+    (rich-редактор, §9 паритет) — санитизируются как любой другой
+    HTML-контент (см. докстринг sanitize_act_data). additionalContent.items[]
+    типа image — caption (Task 6, rich-редактор подписи) санитизируется так
+    же. Plain-поле additionalContent.items[].filename/url остаётся
+    дословным. Старый класс TestSaveContentViolationFieldsStoredVerbatim
+    фиксировал ДО-rich поведение (ВСЕ поля нарушения дословны) — заменён
+    этим классом.
     """
 
     async def test_violated_established_sanitized(self):
@@ -408,23 +411,42 @@ class TestSaveContentViolationRichFieldsSanitized:
 
         assert data.violations["v1"].violated == "Ромашка &amp; Ко"
 
-    async def test_description_list_verbatim(self):
-        """descriptionList.items — plain-поле, санитайзер его не касается."""
+    async def test_description_list_sanitized(self):
+        """descriptionList.items — rich-поле (Task 7), каждый пункт санитизируется."""
         svc, _ = _make_service()
         data = _data_with_violation()
-        raw_items = [
-            "обычный",
-            "<script>alert(1)</script>опасный",
-            "a<b и c>d",
-        ]
         data.violations["v1"].descriptionList = ViolationDescriptionListSchema(
             enabled=True,
-            items=list(raw_items),
+            items=[
+                "<p>обычный</p>",
+                "<script>alert(1)</script>опасный",
+                "<b>a</b>d",
+            ],
         )
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        assert data.violations["v1"].descriptionList.items == raw_items
+        items = data.violations["v1"].descriptionList.items
+        assert items[0] == "<p>обычный</p>"
+        assert "<script" not in items[1] and "опасный" in items[1]
+        assert items[2] == "<b>a</b>d"
+
+    def test_description_list_sanitized_dict_form(self):
+        """Зеркало обj-теста выше для dict-формы (_sanitize_violation_dict,
+        restore pre-snapshot путь, pbe-6) — items чистятся так же."""
+        v = {
+            "id": "v1", "nodeId": "n1",
+            "descriptionList": {
+                "enabled": True,
+                "items": ["<p>обычный</p>", "<script>alert(1)</script>опасный"],
+            },
+        }
+
+        _sanitize_violation_dict(v)
+
+        items = v["descriptionList"]["items"]
+        assert items[0] == "<p>обычный</p>"
+        assert "<script" not in items[1] and "опасный" in items[1]
 
     async def test_image_filename_url_verbatim(self):
         """filename/url элемента additionalContent — plain, дословно."""

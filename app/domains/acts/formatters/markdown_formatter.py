@@ -166,11 +166,14 @@ class MarkdownFormatter(BaseFormatter):
         """
         Добавляет список описаний.
 
+        Пункты — rich-поле (Task 7, rich-редактор): HTML конвертируется в
+        markdown через HTMLUtils.html_to_markdown (как кейс/свободный текст).
+
         Args:
             lines: Список строк для добавления
             desc_list: Данные списка с items
         """
-        add_description_list(lines, desc_list, "- ")
+        add_description_list(lines, desc_list, "- ", text_conv=HTMLUtils.html_to_markdown)
 
     def _add_additional_content(self, lines: list[str], additional_content: dict):
         """

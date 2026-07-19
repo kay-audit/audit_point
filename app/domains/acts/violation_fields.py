@@ -59,8 +59,10 @@ VIOLATION_FIELDS: tuple[ViolationFieldDescriptor, ...] = (
     ),
     ViolationFieldDescriptor(
         # Заголовок убран (решение #12) — список описаний идёт без подписи.
+        # rich=True (Task 7): пункты списка — rich-редактор, HTML-санитайзер
+        # (sanitize_rich_html per-item, см. html_sanitizer._sanitize_violation_obj/_dict).
         key="descriptionList", label="", order=2, kind="list",
-        small=True, show_label_in_preview=False, rich=False,
+        small=True, show_label_in_preview=False, rich=True,
     ),
     ViolationFieldDescriptor(
         key="additionalContent", label="", order=3, kind="additional",

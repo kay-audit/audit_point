@@ -85,6 +85,18 @@ def test_description_list_bullets_9pt_italic(doc):
     assert all(r.italic for r in bullet_runs)
 
 
+def test_description_list_bullet_bold_html_renders_bold_run(doc):
+    """Task 7: жирный фрагмент rich-пункта → bold run (не текст тегов), базовые курсив/размер сохраняются."""
+    violation = _v(descriptionList={"enabled": True, "items": ["<b>важно</b>: пункт"]})
+    build_violation(doc, violation)
+    bullet_para = next(p for p in doc.paragraphs if "пункт" in p.text)
+    assert "<b>" not in bullet_para.text
+    bold_run = next(r for r in bullet_para.runs if r.text.strip() == "важно")
+    assert bold_run.bold is True
+    assert bold_run.italic is True
+    assert bold_run.font.size == Pt(Sizes.violation_pt)
+
+
 def test_reasons_block_stays_12pt_non_italic(doc):
     """Причины/Принятые меры/Последствия/Ответственные — 12pt без курсива."""
     build_violation(doc, _v())

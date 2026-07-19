@@ -183,7 +183,11 @@ export class PreviewViolationRenderer {
                                : 'preview-violation-desclist';
         for (const item of items) {
             const li = document.createElement('li');
-            li.textContent = item;
+            // Task 7: пункт — rich-HTML поле нарушения; рендерим через
+            // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT и
+            // _addLine выше), не текст-нодой — иначе сырой HTML показался бы
+            // буквально.
+            renderActContent(li, item);
             list.appendChild(li);
         }
         container.appendChild(list);

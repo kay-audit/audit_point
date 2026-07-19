@@ -106,7 +106,10 @@ def add_labeled_section(
         lines.append("")
 
 
-def add_description_list(lines: list[str], desc_list: dict, bullet: str) -> None:
+def add_description_list(
+    lines: list[str], desc_list: dict, bullet: str,
+    text_conv: Callable[[str], str] = lambda s: s,
+) -> None:
     """
     Добавляет список описаний.
 
@@ -114,6 +117,9 @@ def add_description_list(lines: list[str], desc_list: dict, bullet: str) -> None
         lines: Список строк для добавления
         desc_list: Данные списка с items
         bullet: Префикс буллита под формат (MD «- », TXT «  • »)
+        text_conv: Конвертер пункта под формат (HTML→Markdown / HTML→plain,
+            Task 7 — пункты стали rich-полем); дефолт identity — для
+            колбэков без rich-конвертации
     """
     if not desc_list.get('enabled', False):
         return
@@ -126,7 +132,7 @@ def add_description_list(lines: list[str], desc_list: dict, bullet: str) -> None
     # #15/Q1: рендерятся ВСЕ пункты, включая пустые (пустой → пустой буллит),
     # единообразно с превью и DOCX (пользователь выбрал не прятать).
     for item in items:
-        lines.append(f"{bullet}{item}")
+        lines.append(f"{bullet}{text_conv(item)}")
     lines.append("")
 
 

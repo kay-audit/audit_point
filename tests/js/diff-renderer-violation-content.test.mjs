@@ -206,6 +206,73 @@ test('_renderContentEntry (unchanged): видимый текст (_stripHtml), �
     assert.equal(body.textContent, 'кейс без изменений');
 });
 
+// --- Task 7: пункт descriptionList — rich-поле, зеркало _renderContentEntry ---
+
+test('_renderDescriptionListDiff (added/removed/unchanged): видимый текст (_stripHtml), не raw HTML', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderDescriptionListDiff({ appendChild() {} }, {
+            kind: 'list', changed: true, enabled: true, oldEnabled: true,
+            items: [
+                { status: 'added', new: '<b>жирный</b> добавлен' },
+                { status: 'removed', old: '<i>курсив</i> удалён' },
+                { status: 'unchanged', old: '<b>без</b> изменений', new: '<b>без</b> изменений' },
+            ],
+        });
+    } finally {
+        document.createElement = orig;
+    }
+    // Зеркало _renderContentEntry-тестов: textContent проставляется прямо на
+    // элемент (ins/del/li) — стаб не считает его из потомков, поэтому ищем
+    // по всем созданным элементам, а не по li-обёртке.
+    assert.ok(created.some(el => el.textContent === 'жирный добавлен'));
+    assert.ok(created.some(el => el.textContent === 'курсив удалён'));
+    assert.ok(created.some(el => el.textContent === 'без изменений'));
+});
+
+test('_renderDescriptionListDiff (modified): formattingOnly=true → бейдж «Изменено форматирование»', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    try {
+        DiffRenderer._renderDescriptionListDiff({ appendChild() {} }, {
+            kind: 'list', changed: true, enabled: true, oldEnabled: true,
+            items: [{
+                status: 'modified', old: 'важно', new: '<b>важно</b>', formattingOnly: true,
+                wordDiff: [{ type: 'equal', text: 'важно' }],
+            }],
+        });
+    } finally {
+        document.createElement = orig;
+    }
+    const badge = created.find(el => el.className === 'diff-textblock-format-badge');
+    assert.ok(badge, 'бейдж форматирования не создан');
+    assert.equal(badge.textContent, 'Изменено форматирование');
+});
+
+test('_renderDescriptionListDiff (modified): formattingOnly=false → бейджа форматирования нет, word-diff зовётся', () => {
+    const created = [];
+    const orig = document.createElement;
+    document.createElement = (tag) => { const el = orig(tag); created.push(el); return el; };
+    const wordDiff = [{ type: 'delete', text: 'старый' }, { type: 'insert', text: 'новый' }];
+    const origWordDiffToHtml = DiffRenderer._wordDiffToHtml;
+    const calls = [];
+    DiffRenderer._wordDiffToHtml = (wd) => { calls.push(wd); return origWordDiffToHtml.call(DiffRenderer, wd); };
+    try {
+        DiffRenderer._renderDescriptionListDiff({ appendChild() {} }, {
+            kind: 'list', changed: true, enabled: true, oldEnabled: true,
+            items: [{ status: 'modified', old: '<b>старый</b>', new: '<b>новый</b>', formattingOnly: false, wordDiff }],
+        });
+    } finally {
+        document.createElement = orig;
+        DiffRenderer._wordDiffToHtml = origWordDiffToHtml;
+    }
+    assert.ok(!created.some(el => el.className === 'diff-textblock-format-badge'));
+    assert.deepEqual(calls, [wordDiff]);
+});
+
 // --- Review Round 2: formattingOnly-бейдж для case/freeText (паритет со
 // скалярными полями нарушения выше) --------------------------------------
 
