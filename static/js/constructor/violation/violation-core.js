@@ -495,11 +495,17 @@ export class ViolationManager {
 
             if (!isReadOnly) {
                 deleteBtn.addEventListener('click', () => {
+                    // Teardown ПЕРЕД removeViolationListItem (splice), не после
+                    // (ревью Issue 1): unmount коммитит смонтированную поверхность
+                    // БЕЗУСЛОВНО, а ViolationListItemSurface адресует по индексу —
+                    // если смонтирован более ПОЗДНИЙ пункт этого же нарушения
+                    // (фокус на нём не снят), commit ДО splice пишет по его
+                    // текущему (ещё валидному) индексу; commit ПОСЛЕ splice попал
+                    // бы по устаревшему индексу в уже сдвинутый массив (фантомный
+                    // дубль / перезапись чужого пункта). Зеркало createViolationElement
+                    // (:141) — teardown строго до мутации/пересборки.
+                    this._teardownActiveRichField(violation.id);
                     if (this.removeViolationListItem(violation, fieldName, index)) {
-                        // Список пере-рендеривается целиком — снимаем контроллер с
-                        // активного rich-поля ЭТОГО нарушения ПЕРЕД пере-рендером
-                        // (зеркало addButton выше/createViolationElement).
-                        this._teardownActiveRichField(violation.id);
                         this.renderList(container, violation, fieldName, isReadOnly);
                     }
                 });

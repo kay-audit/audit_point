@@ -23,6 +23,7 @@ import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
 import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
 import { EditorController } from '../../static/js/constructor/textblock/editor-controller.js';
+import { EditorRegistry } from '../../static/js/constructor/textblock/editor-registry.js';
 import {
     CONTENT_TYPE_CASE,
     CONTENT_TYPE_FREE_TEXT,
@@ -335,5 +336,51 @@ test('renderList: после удаления пункта 0 — поверхн�
             'commit пишет в правильный (текущий) индекс 0, а не в устаревший 1');
     } finally {
         EditorController.mount = origMount;
+    }
+});
+
+// --- Ревью Issue 1: teardown ДОЛЖЕН идти ДО мутации (splice), не после ------
+// Сценарий из ревью: поверхность ПОЗДНЕГО пункта смонтирована (активна в
+// EditorRegistry) БЕЗ промежуточного blur, пользователь удаляет БОЛЕЕ РАННИЙ
+// пункт того же списка. _teardownActiveRichField коммитит смонтированную
+// поверхность через EditorController.unmount — если это происходит ПОСЛЕ
+// splice (старый порядок), commit пишет по устаревшему (пред-сплайс) индексу
+// в УЖЕ сдвинутый массив: индекс 3 в массиве длины 3 — это `items[3] = ...`,
+// JS-массив тихо ДОБАВЛЯЕТ фантомный 4-й элемент вместо записи в существующий
+// пункт. Правильный порядок (teardown → commit ДО splice) не даёт этому
+// возникнуть. Реальный EditorController.mount/тулбар — вне scope node-теста
+// (см. докстринг файла, Playwright); здесь unmount заменён на его
+// СУЩЕСТВЕННОЕ для этого сценария поведение (commit активной поверхности) —
+// тот же приём, что в остальных _teardownActiveRichField-тестах
+// (violation-rich-fields.test.mjs), которые тоже подменяют unmount целиком.
+test('renderList: удаление раннего пункта при смонтированной (без blur) поверхности позднего — commit уходит в правильный пред-сплайс индекс, без фантомного дубля', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = { id: 'v1', descriptionList: { enabled: true, items: ['первый', 'второй', 'третий', 'четвёртый'] } };
+    const container = { innerHTML: '', appendChild() {} };
+
+    const { created } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
+    const deleteButtons = created
+        .filter((c) => c.tag === 'button' && c.el.className === 'violation-list-delete-btn')
+        .map((c) => c.el);
+    assert.equal(deleteButtons.length, 4, 'по кнопке удаления на пункт');
+
+    // Поверхность ПОЗДНЕГО пункта (index 3, 'четвёртый') активна — как если
+    // бы пользователь был сфокусирован на ней в момент клика на удаление.
+    const lateSurface = vm._makeViolationListItemSurface(violation, 'descriptionList', 3);
+    lateSurface.element = { innerHTML: 'четвёртый — правится в фокусе' };
+    EditorRegistry.setActive(lateSurface);
+    const origUnmount = EditorController.unmount;
+    EditorController.unmount = () => { EditorRegistry.getActive()?.commit(); EditorRegistry.clear(); };
+    try {
+        // Удаляем ПЕРВЫЙ пункт (index 0) — НЕ тот, что смонтирован.
+        withTrackedDom(() => deleteButtons[0].fire('click'));
+
+        assert.deepEqual(violation.descriptionList.items, [
+            'второй', 'третий', 'четвёртый — правится в фокусе',
+        ], 'commit смонтированной поверхности ушёл в правильный (пред-сплайс) пункт 3 — без фантомного дубля и без потери правки');
+    } finally {
+        EditorController.unmount = origUnmount;
+        EditorRegistry.clear();
     }
 });
