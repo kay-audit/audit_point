@@ -49,6 +49,49 @@ class TestNestedSpanLinks:
         assert out == "**якорь** (сноска: прим)"
 
 
+class TestBlockBoundaries:
+    """Границы <div>/<p> → переносы строк (Задача 5).
+
+    Раньше вырезание тегов убирало границы блоков без следа — многострочное
+    rich-поле схлопывалось в одну строку («<div>a</div><div>b</div>» → «ab»).
+    """
+
+    def test_clean_html_blank_line_placeholder_between_blocks(self):
+        src = "<div>a</div><div><br></div><div>b</div>"
+        assert HTMLUtils.clean_html(src) == "a\n\nb"
+
+    def test_markdown_blank_line_placeholder_between_blocks(self):
+        src = "<div>a</div><div><br></div><div>b</div>"
+        assert HTMLUtils.html_to_markdown(src) == "a  \n  \nb"
+
+    def test_clean_html_two_blocks_join_with_newline(self):
+        src = "<div>a</div><div>b</div>"
+        assert HTMLUtils.clean_html(src) == "a\nb"
+
+    def test_markdown_two_blocks_join_with_newline(self):
+        src = "<div>a</div><div>b</div>"
+        assert HTMLUtils.html_to_markdown(src) == "a  \nb"
+
+    def test_clean_html_trailing_br_before_close_not_doubled(self):
+        # <br> прямо перед закрытием блока невидим в браузере — перенос уже
+        # даёт граница блока, второй (от самого <br>) не должен добавляться.
+        src = "<div>a<br></div><div>b</div>"
+        assert HTMLUtils.clean_html(src) == "a\nb"
+
+    def test_markdown_trailing_br_before_close_not_doubled(self):
+        src = "<div>a<br></div><div>b</div>"
+        assert HTMLUtils.html_to_markdown(src) == "a  \nb"
+
+    def test_clean_html_leading_empty_block_keeps_leading_newline(self):
+        # Ведущая пустая строка поля легитимна — rstrip хвостовой, не ведущий.
+        src = "<div><br></div><div>b</div>"
+        assert HTMLUtils.clean_html(src) == "\nb"
+
+    def test_markdown_leading_empty_block_keeps_leading_newline(self):
+        src = "<div><br></div><div>b</div>"
+        assert HTMLUtils.html_to_markdown(src) == "  \nb"
+
+
 class TestSimpleCasesUnchanged:
     def test_plain_link_without_nesting(self):
         src = f'{_LINK}текст</span>'

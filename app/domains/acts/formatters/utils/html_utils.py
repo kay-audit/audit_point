@@ -106,8 +106,20 @@ class HTMLUtils:
         Returns:
             Очищенный plain text
         """
-        # Замена <br> на переносы строк
-        clean = re.sub(r"<br\s*/?>", "\n", content, flags=re.IGNORECASE)
+        # <br> непосредственно перед закрытием блока (div/p) невидим в
+        # браузере (в т.ч. placeholder пустой строки <div><br></div>) —
+        # перенос даст сама граница блока (ниже), поэтому такой <br>
+        # вырезаем ДО общей замены <br> -> \n, иначе строка задвоится.
+        clean = re.sub(
+            r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
+        )
+
+        # Замена оставшихся <br> на переносы строк
+        clean = re.sub(r"<br\s*/?>", "\n", clean, flags=re.IGNORECASE)
+
+        # Границы блоков (div/p) -> перенос строки; открывающие теги
+        # вырезает общий стрип тегов ниже.
+        clean = re.sub(r"</(?:div|p)>", "\n", clean, flags=re.IGNORECASE)
 
         # Спец-span'ы редактора: ссылка → «текст (url)», сноска →
         # «якорь (сноска: текст)» — иначе данные атрибутов теряются.
@@ -117,7 +129,11 @@ class HTMLUtils:
         clean = re.sub(r"<[^>]+>", "", clean)
 
         # Декодирование HTML-сущностей (&nbsp;, &lt; и т.д.)
-        return html.unescape(clean)
+        clean = html.unescape(clean)
+
+        # Хвостовые переносы от последней границы блока убираем; ведущий
+        # перенос (пустая первая строка поля) — легитимен, не трогаем.
+        return clean.rstrip()
 
     @staticmethod
     def html_to_markdown(content: str) -> str:
@@ -136,8 +152,19 @@ class HTMLUtils:
         Returns:
             Markdown-текст
         """
+        # <br> непосредственно перед закрытием блока (div/p) невидим в
+        # браузере — перенос даст граница блока (ниже), вырезаем ДО общей
+        # замены <br> -> hard break, иначе строка задвоится.
+        result = re.sub(
+            r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
+        )
+
         # <br> -> Markdown hard break
-        result = re.sub(r"<br\s*/?>", "  \n", content, flags=re.IGNORECASE)
+        result = re.sub(r"<br\s*/?>", "  \n", result, flags=re.IGNORECASE)
+
+        # Границы блоков (div/p) -> Markdown hard break; открывающие теги
+        # вырезает общий стрип тегов ниже.
+        result = re.sub(r"</(?:div|p)>", "  \n", result, flags=re.IGNORECASE)
 
         # Спец-span'ы редактора: ссылка → [текст](url), сноска —
         # inline «якорь (сноска: текст)» (без блока сносок: конвертер
@@ -167,7 +194,11 @@ class HTMLUtils:
         result = re.sub(r"<[^>]+>", "", result)
 
         # Декодирование HTML-сущностей
-        return html.unescape(result)
+        result = html.unescape(result)
+
+        # Хвостовые переносы от последней границы блока убираем; ведущий
+        # перенос (пустая первая строка поля) — легитимен, не трогаем.
+        return result.rstrip()
 
     @staticmethod
     def extract_style_property(
