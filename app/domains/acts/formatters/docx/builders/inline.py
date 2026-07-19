@@ -503,6 +503,17 @@ class BlockSegment:
     html: str
 
 
+# text-align сегмента → выравнивание Word. Общая карта для потребителей
+# split_block_segments (formatter._render_textblock, violation._labeled_paragraph);
+# дефолт (align=None либо нераспознанное значение) — justify, через .get().
+ALIGNMENT_MAP = {
+    "left": WD_ALIGN_PARAGRAPH.LEFT,
+    "center": WD_ALIGN_PARAGRAPH.CENTER,
+    "right": WD_ALIGN_PARAGRAPH.RIGHT,
+    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+}
+
+
 def split_block_segments(html: str) -> list[BlockSegment]:
     """Режет content на верхнеуровневые сегменты-абзацы для DOCX.
 

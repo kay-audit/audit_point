@@ -697,7 +697,7 @@ DOCX-модель текстблока — **два уровня**. Верхни
 `split_block_segments` режет `content` на сегменты-абзацы
 (`BlockSegment{alignment, html}`) — каждый верхнеуровневый `<div>`/`<p>`
 → **отдельный `w:p`** со своим выравниванием
-(`formatter.py::_render_textblock`, `_TB_ALIGNMENT_MAP`, дефолт
+(`formatter.py::_render_textblock`, `inline.py::ALIGNMENT_MAP`, дефолт
 `JUSTIFY`). Нижний:
 `app/domains/acts/formatters/docx/builders/inline.py::apply_inline_html`
 (`HTMLParser`-наследник `_InlineParser`) стримит **внутренности** одного

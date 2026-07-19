@@ -394,3 +394,78 @@ def test_scale_picture_wide_image_not_capped_by_height():
     _scale_picture(shape, width_percent=100, max_height_percent=40)
     assert shape.width == usable_w
     assert shape.height == usable_w // 10
+
+
+# --- БАГ-4: per-line выравнивание rich-полей нарушения ---
+
+def _paras_containing(doc, text):
+    """Абзацы документа, чей текст содержит подстроку text."""
+    return [p for p in doc.paragraphs if text in p.text]
+
+
+class TestRichFieldPerLineAlignment:
+    """rich-поля (Нарушено/Установлено/Причины/...) режутся на строки тем же
+    split_block_segments, что и текстблок (прецедент — _render_textblock):
+    каждая верхнеуровневая строка со своим text-align — свой w:p."""
+
+    def test_center_line_becomes_centered_paragraph(self, doc):
+        """Строка с text-align: center внутри поля — отдельный center-абзац."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True,
+            content='<div>обычная</div><div style="text-align: center">по центру</div>',
+        )))
+        paras = _paras_containing(doc, "по центру")
+        assert len(paras) == 1
+        assert paras[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+    def test_default_stays_justify(self, doc):
+        """Строка без text-align — прежний дефолт justify."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True, content="обычный текст без разметки",
+        )))
+        paras = _paras_containing(doc, "Причины:")
+        assert len(paras) == 1
+        assert paras[0].alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    def test_label_only_on_first_paragraph(self, doc):
+        """«Причины:» выводится один раз — на первом абзаце; продолжение без метки."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True,
+            content='<div>первая</div><div style="text-align: center">вторая</div>',
+        )))
+        label_paras = _paras_containing(doc, "Причины:")
+        assert len(label_paras) == 1
+        assert "первая" in label_paras[0].text
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert "Причины:" not in second.text
+        assert second.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        # Метка сохраняет текущее форматирование (test_labels_are_underlined,
+        # test_reasons_block_stays_12pt_non_italic): подчёркнута, 12pt, без курсива.
+        label_run, _ = _runs_for_label(doc, "Причины:")
+        assert label_run.underline is True
+        assert label_run.font.size == Pt(Sizes.body_pt)
+        assert not label_run.italic
+
+    def test_size_italic_preserved_on_continuation(self, doc):
+        """9pt+italic у «Нарушено:» сохраняется на 2-м (continuation) абзаце."""
+        build_violation(doc, _v(
+            violated='<div>первая</div><div style="text-align: right">вторая</div>',
+        ))
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert second.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+        body_run = next(r for r in second.runs if r.text == "вторая")
+        assert body_run.font.size == Pt(Sizes.violation_pt)
+        assert body_run.italic is True
+
+    def test_no_extra_spacing_between_segments(self, doc):
+        """space_after == Pt(0) у всех бывших строк-границ, кроме последней
+        (прецедент _render_textblock: строки поля не растягиваются в разные абзацы)."""
+        build_violation(doc, _v(
+            violated="<div>раз</div><div>два</div><div>три</div>",
+        ))
+        first = next(p for p in doc.paragraphs if "раз" in p.text)
+        second = next(p for p in doc.paragraphs if p.text == "два")
+        third = next(p for p in doc.paragraphs if p.text == "три")
+        assert first.paragraph_format.space_after == Pt(0)
+        assert second.paragraph_format.space_after == Pt(0)
+        assert third.paragraph_format.space_after is None

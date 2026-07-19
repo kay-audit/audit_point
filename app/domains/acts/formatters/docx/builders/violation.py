@@ -24,7 +24,11 @@ from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, Twips
 
-from app.domains.acts.formatters.docx.builders.inline import apply_inline_html
+from app.domains.acts.formatters.docx.builders.inline import (
+    ALIGNMENT_MAP,
+    apply_inline_html,
+    split_block_segments,
+)
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
@@ -219,6 +223,10 @@ def _labeled_paragraph(
     italic ставится и на метку, и на тело; size_pt задаёт размер обоих run'ов.
     rich=True — тело рендерится через apply_inline_html (inline HTML → runs с
     жирным/курсивом/подчёркиванием) вместо обычного текстового run'а (Task 1.1.2).
+    Несколько верхнеуровневых строк поля (per-line text-align, БАГ-4) —
+    каждая строка своим w:p со своим выравниванием (прецедент — formatter.
+    _render_textblock через тот же split_block_segments/ALIGNMENT_MAP);
+    метка выводится только на первом абзаце.
     """
     if not body and not label:
         return
@@ -232,7 +240,26 @@ def _labeled_paragraph(
         if italic:
             label_run.italic = True
     if rich:
-        apply_inline_html(para, body, base_size_pt=size_pt, base_italic=italic)
+        segments = split_block_segments(body)
+        if len(segments) <= 1:
+            seg = segments[0] if segments else None
+            if seg is not None:
+                para.alignment = ALIGNMENT_MAP.get(seg.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+                apply_inline_html(para, seg.html, base_size_pt=size_pt, base_italic=italic)
+            else:
+                apply_inline_html(para, body, base_size_pt=size_pt, base_italic=italic)
+            return
+        paras = [para]
+        para.alignment = ALIGNMENT_MAP.get(segments[0].alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+        apply_inline_html(para, segments[0].html, base_size_pt=size_pt, base_italic=italic)
+        for seg in segments[1:]:
+            extra = doc.add_paragraph()
+            extra.alignment = ALIGNMENT_MAP.get(seg.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            apply_inline_html(extra, seg.html, base_size_pt=size_pt, base_italic=italic)
+            paras.append(extra)
+        for p_ in paras[:-1]:
+            # Бывшие границы строк поля: без межабзацного просвета (прецедент _render_textblock).
+            p_.paragraph_format.space_after = Pt(0)
         return
     body_run = para.add_run(body)
     body_run.font.name = Fonts.main

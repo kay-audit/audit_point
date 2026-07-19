@@ -14,6 +14,7 @@ from app.domains.acts.formatters.docx.builders.cover import build_cover_block
 from app.domains.acts.formatters.docx.builders.header_footer import apply_header_footer
 from app.domains.acts.formatters.docx.builders.inline import (
     _PX_TO_PT,
+    ALIGNMENT_MAP,
     apply_inline_html,
     split_block_segments,
 )
@@ -40,13 +41,8 @@ from app.domains.acts.formatters.docx.styles import (
 _DEFAULT_TB_FONT_SIZE_PX = 16
 
 # px → pt (16px → 12pt) — единый источник в builders/inline.py (_PX_TO_PT).
-
-_TB_ALIGNMENT_MAP = {
-    "left": WD_ALIGN_PARAGRAPH.LEFT,
-    "center": WD_ALIGN_PARAGRAPH.CENTER,
-    "right": WD_ALIGN_PARAGRAPH.RIGHT,
-    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
-}
+# Карта text-align → выравнивание Word — там же (ALIGNMENT_MAP), рядом с
+# split_block_segments (общий потребитель — и текстблок, и rich-поля нарушения).
 
 
 class DocxFormatter:
@@ -100,7 +96,7 @@ class DocxFormatter:
         """Текстблок: верхнеуровневые блочные элементы content → отдельные w:p.
 
         Выравнивание — per-line из style="text-align" каждого верхнеуровневого
-        <div>/<p> через _TB_ALIGNMENT_MAP (TB-1: источник истины — HTML). Блок
+        <div>/<p> через ALIGNMENT_MAP (TB-1: источник истины — HTML). Блок
         без text-align и контент вне блочной разметки (голый текст/span — легаси)
         получают
         дефолт JUSTIFY — как прежний «нетронутый» рендер; <br> внутри блока
@@ -138,7 +134,7 @@ class DocxFormatter:
         paragraphs = []
         for segment in segments:
             para = doc.add_paragraph()
-            para.alignment = _TB_ALIGNMENT_MAP.get(
+            para.alignment = ALIGNMENT_MAP.get(
                 segment.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY
             )
             # Пустой сегмент (<div><br></div>) — пустая строка-абзац;
