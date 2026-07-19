@@ -90,8 +90,8 @@
     line-height: var(--line-height-normal);
 }
 
-/* Компактный вариант (Task 6): подпись под фото — однострочное поле, а не
-   полноразмерная textarea. */
+/* Компактный вариант: однострочное поле, а не полноразмерная textarea
+   (подпись под фото — Task 6; пункт списка описания — Task 7). */
 .violation-textarea--compact {
     min-height: 2.5rem;
 }

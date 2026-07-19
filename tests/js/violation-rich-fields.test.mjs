@@ -4,6 +4,9 @@
  *    наполнение из модели, focus→mount, read-only-ветка);
  *  - ViolationContentItemSurface: поверхность кейса/свободного текста
  *    (commit/setContent → setContentItemField);
+ *  - ViolationListItemSurface (Task 7): поверхность пункта списка описаний
+ *    (commit/persist → setViolationListItem по индексу, БЕЗ setContent —
+ *    ничто не пишет в пункт списка программно, см. её докстринг);
  *  - _teardownActiveRichField: снятие контроллера при пересоздании DOM нарушения;
  *  - createViolationElement: 6 текстовых полей карточки идут через rich-поле с
  *    корректными путями поверхности.
@@ -330,6 +333,72 @@ test('ViolationContentItemSurface: persist делегирует в commit (eleme
     assert.deepEqual(calls, [{ field: 'content', val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
 });
 
+// ── Task 7: ViolationListItemSurface (пункт списка описаний) ─────────────────
+
+test('_makeViolationListItemSurface: id/kind/rich, getContent из items[index]', () => {
+    const vm = new ViolationManager();
+    const violation = { id: 'v1', descriptionList: { items: ['первый', 'второй'] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 1);
+
+    assert.equal(s.id, 'viol:v1:list:descriptionList:1');
+    assert.equal(s.kind, 'violationField');
+    assert.equal(s.rich, true);
+    assert.equal(s.getContent(), 'второй', 'читает items[index], не items[0]');
+});
+
+test('ViolationListItemSurface: commit (element→модель) → setViolationListItem по (violation, fieldName, index)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
+    const violation = { id: 'v1', descriptionList: { items: [''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+
+    s.element = { innerHTML: '<b>новый</b> пункт' };
+    s.commit();
+
+    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 0, val: '<b>новый</b> пункт' }]);
+});
+
+test('ViolationListItemSurface: commit снимает caret-guard\'ы (U+FEFF) перед записью (Task 1.3.4-A, зеркало ViolationContentItemSurface)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
+    const violation = { id: 'v1', descriptionList: { items: [''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+    const guard = String.fromCharCode(0xFEFF);
+
+    const origStrip = textBlockManager._stripGuards;
+    textBlockManager._stripGuards = (html) => html.split(guard).join('');
+    try {
+        s.element = { innerHTML: `${guard}<i>пункт</i>${guard}` };
+        s.commit();
+        assert.deepEqual(calls, ['<i>пункт</i>'], 'guard-символы вычищены до записи в модель');
+    } finally {
+        textBlockManager._stripGuards = origStrip;
+    }
+});
+
+test('ViolationListItemSurface: persist делегирует в commit — ОБЯЗАТЕЛЕН для корректора (прецедент фикса 1.3.3)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
+    const violation = { id: 'v1', descriptionList: { items: [''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+
+    s.element = { innerHTML: '<b>x</b>' };
+    s.persist();
+
+    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 0, val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
+});
+
+test('ViolationListItemSurface: без setContent — пункт списка не пишется программно (формализатор/корректор его не трогают, см. докстринг)', () => {
+    const vm = new ViolationManager();
+    const violation = { id: 'v1', descriptionList: { items: [''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+
+    assert.equal(typeof s.setContent, 'undefined');
+});
+
 // ── _teardownActiveRichField: снятие контроллера при пересоздании DOM ─────────
 
 test('_teardownActiveRichField: снимает контроллер, если активна поверхность этого нарушения', () => {
@@ -388,7 +457,7 @@ test('createViolationElement: 6 текстовых полей карточки �
             'viol:v1:violated', 'viol:v1:established',
             'viol:v1:reasons.content', 'viol:v1:measures.content',
             'viol:v1:consequences.content', 'viol:v1:responsible.content',
-        ], 'violated/established + 4 опциональных текстовых поля (descriptionList — список, не rich)');
+        ], 'violated/established + 4 опциональных текстовых поля (descriptionList — список, свой ViolationListItemSurface по индексу, не через createViolationElement)');
         assert.ok(surfaces.every((s) => s.kind === 'violationField' && s.ro === true));
     } finally {
         AppConfig.readOnlyMode = prev;

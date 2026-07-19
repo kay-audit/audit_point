@@ -1,5 +1,5 @@
 /**
- * Поверхности и хост rich-полей нарушения (Task 1.3.2 → 1.3.3).
+ * Поверхности и хост rich-полей нарушения (Task 1.3.2 → 1.3.3, Task 7).
  *
  * Task 1.3.2 — поверхности по контракту EditableSurface (editable-surface.js):
  *  - ViolationFieldSurface — текстовые поля карточки (violated/established/
@@ -8,13 +8,19 @@
  *    текст), запись через setContentItemField.
  * Обе — воплощения контракта после TextBlockSurface (тот остаётся образцом).
  *
+ * Task 7 — ViolationListItemSurface: пункт списка описаний (descriptionList),
+ * запись по индексу через setViolationListItem. У неё нет setContent — ничто
+ * не пишет в пункт списка программно (формализатор раскладывает только 6
+ * именованных текстовых полей карточки, см. _applyFormalized); persist
+ * ОБЯЗАТЕЛЕН — корректор принимает правку через EditorRegistry.getActive().persist().
+ *
  * Два режима записи в модель (см. EditorController, editor-controller.js):
  *  - commit()     — element → модель, БЕЗ ре-рендера (обычный ввод, каретка жива);
  *  - setContent() — модель → element, С ре-рендером (внешняя запись: формализатор,
  *    корректор, improve-text).
- * Обе операции идут ТОЛЬКО через мутаторы (setViolationField/setContentItemField) —
- * единственные защищённые точки записи (requireWrite-guard + превью,
- * violation-mutations.js). Прямая запись в модель здесь запрещена.
+ * Обе операции идут ТОЛЬКО через мутаторы (setViolationField/setContentItemField/
+ * setViolationListItem) — единственные защищённые точки записи (requireWrite-guard +
+ * превью, violation-mutations.js). Прямая запись в модель здесь запрещена.
  *
  * Task 1.3.3 — хост поля (_createRichFieldEditor) и снятие контроллера при
  * пересоздании DOM (_teardownActiveRichField): живой contenteditable, монтирующий
@@ -218,6 +224,53 @@ export class ViolationContentItemSurface {
 }
 
 /**
+ * Поверхность пункта списка описаний нарушения (Task 7). Отличается от
+ * ViolationContentItemSurface точкой записи: коммитит по индексу через
+ * setViolationListItem (мутатор списка), а не item[field] через
+ * setContentItemField. Индексная адресация — surface держит
+ * (violation, fieldName, index); при add/remove пунктов список
+ * пере-рендеривается целиком (renderList, violation-core.js), и КАЖДЫЙ
+ * пункт получает НОВУЮ поверхность с текущим индексом — застревания старых
+ * индексов нет (пере-рендер идёт ПОСЛЕ _teardownActiveRichField).
+ */
+export class ViolationListItemSurface {
+    /**
+     * @param {Object} violation - Объект нарушения (модель)
+     * @param {string} fieldName - Имя поля-списка ('descriptionList' | ...)
+     * @param {number} index - Индекс пункта
+     * @param {ViolationManager} manager - Владелец setViolationListItem
+     */
+    constructor(violation, fieldName, index, manager) {
+        this._violation = violation;
+        this._fieldName = fieldName;
+        this._index = index;
+        this._manager = manager;
+        this.id = `viol:${violation.id}:list:${fieldName}:${index}`;
+        this.kind = 'violationField';
+        this.rich = true;
+        this.element = null;
+    }
+
+    getContent() { return this._violation[this._fieldName].items[this._index]; }
+
+    /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
+    commit() {
+        // Guard-strip + repair ПЕРЕД записью в модель — зеркало
+        // ViolationFieldSurface.commit/ViolationContentItemSurface.commit.
+        this._manager.setViolationListItem(
+            this._violation, this._fieldName, this._index,
+            _repairCapsuleHtml(this.element.innerHTML).html);
+    }
+
+    /** Полный сток поверхности (контракт EditableSurface). ОБЯЗАТЕЛЕН: корректор
+     * принимает правку через EditorRegistry.getActive().persist() (см. _accept в
+     * corrector-popover.js) — без persist приятие правки в пункте списка упадёт
+     * (прецедент фикса 1.3.3). Отдельного finalize/capsule-heal-шага для полей
+     * нарушения нет, поэтому persist делегирует в commit. */
+    persist() { this.commit(); }
+}
+
+/**
  * Фабрика поверхности поля нарушения. Мешается в прототип ViolationManager
  * (как violationMutations, violation-mutations.js) — `this` внутри вызова
  * `vm._makeViolationSurface(...)` это `vm`; setViolationField резолвится в
@@ -242,6 +295,18 @@ function _makeViolationSurface(violation, path) {
  */
 function _makeContentItemSurface(violation, item, field = 'content') {
     return new ViolationContentItemSurface(violation, item, this, field);
+}
+
+/**
+ * Фабрика поверхности пункта списка описаний (Task 7). Как _makeViolationSurface,
+ * но адресация по индексу — см. ViolationListItemSurface.
+ * @param {Object} violation - Объект нарушения
+ * @param {string} fieldName - Имя поля-списка ('descriptionList' | ...)
+ * @param {number} index - Индекс пункта
+ * @returns {ViolationListItemSurface}
+ */
+function _makeViolationListItemSurface(violation, fieldName, index) {
+    return new ViolationListItemSurface(violation, fieldName, index, this);
 }
 
 /**
@@ -327,9 +392,11 @@ function _teardownActiveRichField(violationId) {
 Object.assign(ViolationManager.prototype, {
     _makeViolationSurface,
     _makeContentItemSurface,
+    _makeViolationListItemSurface,
     _createRichFieldEditor,
     _teardownActiveRichField,
 });
 
 window.ViolationFieldSurface = ViolationFieldSurface;
 window.ViolationContentItemSurface = ViolationContentItemSurface;
+window.ViolationListItemSurface = ViolationListItemSurface;

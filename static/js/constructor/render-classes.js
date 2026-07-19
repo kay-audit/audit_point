@@ -24,6 +24,4 @@ export const RENDER_CLASSES = {
     VIOLATION_FIELD: 'violation-field',
     /** Визуальный стиль текстового поля нарушения (рамка/паддинги/фокус). */
     VIOLATION_TEXTAREA: 'violation-textarea',
-    /** Поле пункта списка описаний нарушения — live-запись в state на input. */
-    VIOLATION_LIST_INPUT: 'violation-list-input',
 };

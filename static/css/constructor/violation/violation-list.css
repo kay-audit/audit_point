@@ -72,33 +72,12 @@
     flex-shrink: 0;
 }
 
-/* Поле ввода элемента списка */
-.violation-list-input {
+/* Поле пункта списка — rich-хост (Task 7, .violation-field.violation-textarea,
+   см. violation-base.css); flex:1 растягивает его в ряду .violation-list-item
+   (было отдельное правило под <input>, снято вместе с ним; зеркало
+   .content-item .violation-textarea в violation-additional-content.css). */
+.violation-list-item .violation-textarea {
     flex: 1;
-    padding: var(--spacing-sm) var(--spacing);
-    border: var(--border-width-thin) solid var(--input-border);
-    border-radius: var(--radius);
-    font-family: var(--font-family-base);
-    font-size: var(--font-size-sm);
-    background-color: var(--input-bg);
-    transition: all var(--transition-base);
-    color: var(--input-text);
-}
-
-/* Подсветка границы при наведении */
-.violation-list-input:hover {
-    border-color: var(--input-border-hover);
-}
-
-/* Акцент при фокусе на поле */
-.violation-list-input:focus {
-    outline: none;
-    border-color: var(--input-border-focus);
-    box-shadow: var(--input-shadow-focus);
-}
-
-.violation-list-input::placeholder {
-    color: var(--input-placeholder);
 }
 
 /* Кнопка удаления элемента списка */
@@ -138,9 +117,10 @@
 }
 
 /* Подсветка пустого пункта списка описаний (#9-Г, Wave 2): не блокирующий
-   визуальный сигнал — пунктирная рамка предупреждающего цвета на поле ввода.
-   Класс тоггалится в JS (renderList, violation-core.js). */
-.violation-list-item--empty .violation-list-input {
+   визуальный сигнал — пунктирная рамка предупреждающего цвета на поле.
+   Класс тоггалится в JS (renderList, violation-core.js). Таргет — rich-хост
+   (Task 7, .violation-textarea; было отдельное правило под <input>). */
+.violation-list-item--empty .violation-textarea {
     border-style: dashed;
     border-color: var(--warning);
 }

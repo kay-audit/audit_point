@@ -22,6 +22,7 @@ import { AppConfig } from '../../static/js/shared/app-config.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
 import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
+import { EditorController } from '../../static/js/constructor/textblock/editor-controller.js';
 import {
     CONTENT_TYPE_CASE,
     CONTENT_TYPE_FREE_TEXT,
@@ -202,7 +203,15 @@ test('createFreeTextElement: заполненный текст — без кла
 });
 
 // --- renderList (descriptionList) ---
-
+//
+// Task 7: пункт списка — теперь тоже contenteditable-div .violation-field
+// (не <input>), зеркало createCaseElement/createFreeTextElement выше. Живая
+// подсветка пустоты — тот же view-only слушатель input по field.textContent;
+// запись модели (items[index]) ведёт write-through контроллера (commit
+// ViolationListItemSurface), в этих визуальных тестах не проверяется (см.
+// violation-rich-fields.test.mjs). Escape-ревёрт не переносится — Escape в
+// rich-поле = blur, как во всех rich-полях (без отдельного теста здесь, как
+// и у case/freeText выше).
 test('renderList: пустой пункт descriptionList получает класс violation-list-item--empty', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
@@ -211,7 +220,9 @@ test('renderList: пустой пункт descriptionList получает кл�
     const container = { innerHTML: '', appendChild() {} };
 
     const { created } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
-    const rows = created.filter((c) => c.tag === 'div').map((c) => c.el);
+    const rows = created
+        .filter((c) => c.tag === 'div' && c.el.className && c.el.className.split(' ').includes('violation-list-item'))
+        .map((c) => c.el);
 
     assert.equal(rows.length, 2);
     assert.ok(rows[0].classList.contains('violation-list-item--empty'), 'пустой пункт подсвечен');
@@ -235,13 +246,15 @@ test('renderList: не-строковые пункты ([null, число]) ре
 
     // Оба пункта отрисованы; главное — без TypeError на .trim(). String(null)='null',
     // String(5)='5' — непустые строки, поэтому подсветка --empty не ставится.
-    const rows = created.filter((c) => c.tag === 'div').map((c) => c.el);
+    const rows = created
+        .filter((c) => c.tag === 'div' && c.el.className && c.el.className.split(' ').includes('violation-list-item'))
+        .map((c) => c.el);
     assert.equal(rows.length, 2);
     assert.ok(!rows[0].classList.contains('violation-list-item--empty'));
     assert.ok(!rows[1].classList.contains('violation-list-item--empty'));
 });
 
-test('renderList: ввод текста в пустой пункт снимает класс, данные пишутся в items[]', () => {
+test('renderList: ввод текста в пустой пункт снимает класс --empty динамически (визуальный класс)', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation();
@@ -249,39 +262,78 @@ test('renderList: ввод текста в пустой пункт снимае�
     const container = { innerHTML: '', appendChild() {} };
 
     const { created } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
-    const row = created.find((c) => c.tag === 'div').el;
-    const input = created.find((c) => c.tag === 'input').el;
+    const row = created.find((c) => c.tag === 'div' && c.el.className && c.el.className.split(' ').includes('violation-list-item')).el;
+    const field = findRichField(created);
 
     assert.ok(row.classList.contains('violation-list-item--empty'));
 
-    input.value = 'Причина один';
-    input.fire('input');
+    field.textContent = 'Причина один';
+    field.fire('input');
 
-    assert.equal(violation.descriptionList.items[0], 'Причина один');
-    assert.ok(!row.classList.contains('violation-list-item--empty'));
+    assert.ok(!row.classList.contains('violation-list-item--empty'), 'класс снят после ввода текста');
 });
 
-test('renderList: Escape восстанавливает исходное значение и корректно тоггалит класс обратно', () => {
+test('renderList: очистка пункта возвращает класс --empty', () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation();
-    violation.descriptionList.items = [''];
+    violation.descriptionList.items = ['Заполнено'];
     const container = { innerHTML: '', appendChild() {} };
 
     const { created } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
-    const row = created.find((c) => c.tag === 'div').el;
-    const input = created.find((c) => c.tag === 'input').el;
+    const row = created.find((c) => c.tag === 'div' && c.el.className && c.el.className.split(' ').includes('violation-list-item')).el;
+    const field = findRichField(created);
 
-    // Фокус запоминает исходное значение ('').
-    input.fire('focus');
-    input.value = 'Черновик, который отменят';
-    input.fire('input');
-    assert.ok(!row.classList.contains('violation-list-item--empty'), 'после ввода класс снят');
+    assert.ok(!row.classList.contains('violation-list-item--empty'));
 
-    // Escape восстанавливает исходное ('') — класс --empty должен вернуться.
-    input.fire('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    field.textContent = '';
+    field.fire('input');
 
-    assert.equal(input.value, '', 'input.value откачен к исходному');
-    assert.equal(violation.descriptionList.items[0], '', 'данные откачены');
-    assert.ok(row.classList.contains('violation-list-item--empty'), 'класс возвращается после Escape');
+    assert.ok(row.classList.contains('violation-list-item--empty'), 'класс возвращается при очистке поля');
+});
+
+// --- Task 7: индексная адресация переживает удаление пункта --------------
+// При удалении пункта список пере-рендеривается целиком (после
+// _teardownActiveRichField) — КАЖДЫЙ оставшийся пункт получает НОВУЮ
+// поверхность с ТЕКУЩИМ (пост-удаление) индексом. Проверяем сценарий из
+// брифа: удаление пункта 0 → правка бывшего пункта 1 (сдвинувшегося на
+// index 0) пишет в правильный индекс, а не застревает на старом (1).
+
+test('renderList: после удаления пункта 0 — поверхность бывшего пункта 1 адресует ТЕКУЩИЙ индекс (0), commit пишет туда же', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = { id: 'v1', descriptionList: { enabled: true, items: ['первый', 'второй'] } };
+    const container = { innerHTML: '', appendChild() {} };
+
+    const { created: created1 } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
+    const deleteButtons = created1
+        .filter((c) => c.tag === 'button' && c.el.className === 'violation-list-delete-btn')
+        .map((c) => c.el);
+    assert.equal(deleteButtons.length, 2, 'по кнопке удаления на пункт');
+
+    // Удаляем ПЕРВЫЙ пункт ('первый') — 'второй' сдвигается на index 0,
+    // список пере-рендеривается (deleteBtn.click → _teardownActiveRichField
+    // → renderList заново).
+    const { created: created2 } = withTrackedDom(() => deleteButtons[0].fire('click'));
+    assert.deepEqual(violation.descriptionList.items, ['второй'], 'первый пункт удалён, второй сдвинулся на index 0');
+
+    const field = findRichField(created2);
+    const mounts = [];
+    const origMount = EditorController.mount;
+    EditorController.mount = (s) => mounts.push(s);
+    try {
+        field.fire('focus');
+        assert.equal(mounts.length, 1, 'focus монтирует поверхность на НОВОЕ поле');
+        const surface = mounts[0];
+        assert.equal(surface.id, 'viol:v1:list:descriptionList:0',
+            'новая поверхность адресует ТЕКУЩИЙ индекс (0), а не бывший индекс (1) — застревания нет');
+
+        surface.element = field;
+        field.innerHTML = 'второй изменён';
+        surface.commit();
+        assert.equal(violation.descriptionList.items[0], 'второй изменён',
+            'commit пишет в правильный (текущий) индекс 0, а не в устаревший 1');
+    } finally {
+        EditorController.mount = origMount;
+    }
 });

@@ -422,6 +422,11 @@ export class ViolationManager {
             if (!isReadOnly) {
                 addButton.addEventListener('click', () => {
                     if (this.addViolationListItem(violation, fieldName)) {
+                        // Список пере-рендеривается целиком — снимаем контроллер с
+                        // активного rich-поля ЭТОГО нарушения ПЕРЕД пере-рендером,
+                        // иначе после innerHTML='' он держал бы detached-хост со
+                        // слушателями (зеркало createViolationElement).
+                        this._teardownActiveRichField(violation.id);
                         this.renderList(listContainer, violation, fieldName, isReadOnly);
                     }
                 });
@@ -446,7 +451,11 @@ export class ViolationManager {
     }
 
     /**
-     * Отрисовывает маркированный список элементов
+     * Отрисовывает маркированный список элементов. Пункт — rich-поле
+     * (Task 7, contenteditable через _createRichFieldEditor), как остальные
+     * текстовые поля нарушения; write-through в модель ведёт EditorController
+     * (commit на input), Escape в rich-поле = blur (ревёрта нет — как во
+     * всех rich-полях, паритет с case/freeText/caption).
      * @param {HTMLElement} container - Контейнер для списка
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldName - Имя поля со списком
@@ -463,44 +472,18 @@ export class ViolationManager {
             // типы внутри items, иначе .trim() кинул бы TypeError и уронил рендер карточки.
             itemContainer.classList.toggle('violation-list-item--empty', !String(item).trim());
 
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.className = RENDER_CLASSES.VIOLATION_LIST_INPUT;
-            input.value = item;
-            input.placeholder = `Пункт ${index + 1}`;
+            const field = this._createRichFieldEditor(
+                this._makeViolationListItemSurface(violation, fieldName, index),
+                { placeholder: `Пункт ${index + 1}`, isReadOnly },
+            );
+            field.classList.add('violation-textarea--compact');
 
-            if (isReadOnly) {
-                input.readOnly = true;
-                input.classList.add('read-only');
-            } else {
-                let originalValue = item;
-
-                // Обновляем массив при вводе
-                input.addEventListener('input', () => {
-                    this.setViolationListItem(violation, fieldName, index, input.value);
-                    itemContainer.classList.toggle('violation-list-item--empty', !input.value.trim());
-                });
-
-                // Обработка горячих клавиш для элементов списка
-                input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
-                        // Enter — сохранить и снять фокус
-                        e.preventDefault();
-                        input.blur();
-                    } else if (e.key === 'Escape') {
-                        // Escape — отменить изменения
-                        e.preventDefault();
-                        input.value = originalValue;
-                        violation[fieldName].items[index] = originalValue;
-                        itemContainer.classList.toggle('violation-list-item--empty', !String(originalValue).trim());
-                        input.blur();
-                        PreviewManager.updateBlock('violation', violation.id);
-                    }
-                });
-
-                // Запоминаем исходное значение
-                input.addEventListener('focus', () => {
-                    originalValue = input.value;
+            if (!isReadOnly) {
+                // Живая подсветка пустоты (#9-Г) — только визуальный класс, без
+                // записи модели (её ведёт write-through контроллера через commit,
+                // зеркало createCaseElement/createFreeTextElement).
+                field.addEventListener('input', () => {
+                    itemContainer.classList.toggle('violation-list-item--empty', !field.textContent.trim());
                 });
             }
 
@@ -513,12 +496,16 @@ export class ViolationManager {
             if (!isReadOnly) {
                 deleteBtn.addEventListener('click', () => {
                     if (this.removeViolationListItem(violation, fieldName, index)) {
+                        // Список пере-рендеривается целиком — снимаем контроллер с
+                        // активного rich-поля ЭТОГО нарушения ПЕРЕД пере-рендером
+                        // (зеркало addButton выше/createViolationElement).
+                        this._teardownActiveRichField(violation.id);
                         this.renderList(container, violation, fieldName, isReadOnly);
                     }
                 });
             }
 
-            itemContainer.appendChild(input);
+            itemContainer.appendChild(field);
             itemContainer.appendChild(deleteBtn);
             container.appendChild(itemContainer);
         });
