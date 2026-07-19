@@ -225,7 +225,7 @@ class _InlineParser(HTMLParser):
                 # под justify — срезаем его перед добавлением сноски.
                 self._strip_trailing_anchor_space()
                 # footnoteReference вставляется напрямую через paragraph.add_run(),
-                # минуя _add_run — отложенный <br> перед безтекстовым якорем
+                # минуя _add_run — отложенный <br> перед бестекстовым якорем
                 # иначе не материализовался бы, и номер сноски "прилип" бы
                 # к предыдущей строке.
                 self._flush_soft_break()
@@ -431,6 +431,11 @@ class _InlineParser(HTMLParser):
         метода записи add_hyperlink нет. К тому же ссылка-капсула несёт свои
         run'ы с форматированием (цвет, кегль EXP-1, начертание) — простой
         текст+URL их бы не выразил."""
+        # Отложенный <br> материализуется здесь, ДО смены self._hyperlink —
+        # иначе он попал бы в _add_break() уже с НОВЫМ значением контекста
+        # (перенос между двумя ссылками вложился бы во вторую вместо уровня
+        # параграфа).
+        self._flush_soft_break()
         href = href.strip()
         hyperlink = OxmlElement("w:hyperlink")
         if href.startswith("#"):
@@ -447,6 +452,10 @@ class _InlineParser(HTMLParser):
         return True
 
     def _close_hyperlink(self) -> None:
+        # Отложенный <br>, вставленный ВНУТРИ ссылки (до </a>), материализуется
+        # здесь, ДО сброса self._hyperlink — иначе он "утёк" бы наружу на
+        # уровень параграфа вместо того, чтобы остаться внутри w:hyperlink.
+        self._flush_soft_break()
         self._hyperlink = None
 
 
