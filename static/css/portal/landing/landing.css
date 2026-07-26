@@ -48,24 +48,23 @@
     margin: 0;
 }
 
+/* Кнопка «Фильтры» использует нативный .btn .btn-secondary, дополнительных
+   стилей не нужно — проектные токены покрывают оформление. Но добавим
+   выравнивание svg/icon внутри кнопки (gap) и состояние active. */
 .workflow-filter-btn {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-lg);
-    border-radius: var(--radius-md);
-    border: var(--border-width-thin) solid var(--border-light);
-    background: var(--bg-primary);
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-    transition: all var(--duration-fast);
 }
 
-.workflow-filter-btn:hover {
-    background: var(--gray-50);
-    border-color: var(--primary-light);
-    color: var(--primary);
+.workflow-filter-btn svg {
+    flex-shrink: 0;
+}
+
+.workflow-filter-btn--active {
+    background: var(--gray-100, #f6f7fa);
+    color: var(--primary, #3563e9);
+    border-color: var(--primary-light, #c0d3ff);
 }
 
 .workflow-content {
@@ -277,28 +276,35 @@
     white-space: nowrap;
 }
 
-/* ===== Фильтры «Мои проекты» ===== */
+/* ===== Фильтры «Мои проекты» (выезжающая панель; стиль — admin-search) ===== */
 .workflow-filters {
     display: none;
-    padding: var(--spacing-md);
-    margin-bottom: var(--spacing-md);
-    background: var(--bg-secondary, #f6f7fa);
-    border: var(--border-width-thin) solid var(--border-light);
-    border-radius: var(--radius-md, 6px);
+    flex-direction: column;
     gap: var(--spacing-md);
-    flex-wrap: wrap;
-    align-items: flex-end;
+    padding: var(--spacing-lg);
+    margin-bottom: var(--spacing-lg);
+    background: var(--bg-secondary, #f6f7fa);
+    border: var(--border-width-thin) solid var(--border-light, #d0d4dd);
+    border-radius: var(--radius-md, 8px);
 }
 
 .workflow-filters--open {
     display: flex;
 }
 
+.workflow-filters-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--spacing-md);
+}
+
 .workflow-filter {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    min-width: 140px;
+    min-width: 180px;
+    flex: 1 1 180px;
 }
 
 .workflow-filter > label {
@@ -307,43 +313,19 @@
     font-weight: var(--font-weight-medium, 500);
 }
 
-.workflow-filter select,
-.workflow-filter input {
-    height: 32px;
-    padding: 0 var(--spacing-sm, 8px);
-    border: var(--border-width-thin) solid var(--border-light, #d0d4dd);
-    border-radius: var(--radius-sm, 4px);
-    background: var(--bg-primary, #fff);
-    color: var(--text-primary, #1a202c);
-    font-size: var(--font-size-sm, 14px);
-}
-
-.workflow-filter select:focus,
-.workflow-filter input:focus {
-    outline: none;
-    border-color: var(--primary, #3563e9);
-    box-shadow: 0 0 0 2px rgba(53, 99, 233, 0.15);
+.workflow-filter .admin-search-input,
+.workflow-filter select.admin-search-input,
+.workflow-filter input.admin-search-input {
+    /* admin-search-input — общий класс; у него 10px 16px padding,
+       border-radius 8px, font-size 0.9rem — нам подходит. */
+    width: 100%;
 }
 
 .workflow-filter-reset {
-    align-self: flex-end;
-    background: transparent;
-    color: var(--text-secondary, #6a7184);
-    border: var(--border-width-thin) solid var(--border-light, #d0d4dd);
-    border-radius: var(--radius-sm, 4px);
-    height: 32px;
-    padding: 0 var(--spacing-md, 12px);
-    font-size: var(--font-size-sm, 14px);
-    cursor: pointer;
-}
-
-.workflow-filter-reset:hover {
-    background: var(--bg-primary, #fff);
-    color: var(--text-primary, #1a202c);
+    flex: 0 0 auto;
 }
 
 .workflow-filter-summary {
-    width: 100%;
     font-size: var(--font-size-xs, 12px);
     color: var(--text-muted, #6a7184);
     margin-top: var(--spacing-xs, 4px);

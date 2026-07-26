@@ -61,7 +61,8 @@ export class LandingPage {
         });
 
         // Кнопка «Фильтры» — открывает/закрывает панель фильтров
-        const filterBtn = document.querySelector('.workflow-filter-btn');
+        const filterBtn = document.getElementById('workflowFilterBtn')
+            || document.querySelector('.workflow-filter-btn');
         if (filterBtn) {
             filterBtn.addEventListener('click', () => {
                 const panel = document.getElementById('workflowFilters');

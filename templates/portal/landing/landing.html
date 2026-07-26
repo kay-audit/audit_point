@@ -17,38 +17,42 @@
     <section class="workflow-panel">
         <div class="workflow-header">
             <h3 class="workflow-title">Мои проекты</h3>
-            <button class="workflow-filter-btn">
+            <button class="btn btn-secondary workflow-filter-btn" id="workflowFilterBtn" type="button">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
                           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                Фильтры
+                <span>Фильтры</span>
             </button>
         </div>
 
         <div class="workflow-content">
-            <!-- Панель фильтров (открывается по кнопке «Фильтры») -->
+            <!-- Панель фильтров (открывается по кнопке «Фильтры»). Использует
+                 классы .btn/.admin-search-input из проекта для консистентности. -->
             <div class="workflow-filters" id="workflowFilters">
-                <div class="workflow-filter">
-                    <label for="filterStatus">Статус</label>
-                    <select id="filterStatus">
-                        <option value="">Все</option>
-                        <option value="active">В работе</option>
-                        <option value="pending">Ожидание</option>
-                        <option value="completed">Завершён</option>
-                    </select>
+                <div class="workflow-filters-row">
+                    <div class="workflow-filter">
+                        <label for="filterStatus">Статус</label>
+                        <select id="filterStatus" class="admin-search-input">
+                            <option value="">Все</option>
+                            <option value="active">В работе</option>
+                            <option value="pending">Ожидание</option>
+                            <option value="completed">Завершён</option>
+                        </select>
+                    </div>
+                    <div class="workflow-filter">
+                        <label for="filterKm">Номер КМ (содержит)</label>
+                        <input type="text" id="filterKm" class="admin-search-input"
+                               placeholder="например, КМ-99-10">
+                    </div>
+                    <div class="workflow-filter">
+                        <label for="filterRole">Роль в проекте</label>
+                        <select id="filterRole" class="admin-search-input">
+                            <option value="">Все</option>
+                        </select>
+                    </div>
+                    <button type="button" class="btn btn-secondary workflow-filter-reset" id="filterResetBtn">Сбросить</button>
                 </div>
-                <div class="workflow-filter">
-                    <label for="filterKm">Номер КМ (содержит)</label>
-                    <input type="text" id="filterKm" placeholder="например, КМ-99-10">
-                </div>
-                <div class="workflow-filter">
-                    <label for="filterRole">Роль в проекте</label>
-                    <select id="filterRole">
-                        <option value="">Все</option>
-                    </select>
-                </div>
-                <button type="button" class="workflow-filter-reset" id="filterResetBtn">Сбросить</button>
                 <div class="workflow-filter-summary" id="filterSummary"></div>
             </div>
 
