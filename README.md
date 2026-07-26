@@ -79,6 +79,30 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005
 
 Схема базы данных создается автоматически при первом запуске.
 
+### 4. Первый вход
+
+После запуска откройте `http://localhost:8005/login` — вы попадёте на форму
+логина. На первом старте **auth-домен автоматически**:
+
+1. Создаёт записи в `t_db_oarb_audit_act_auth_credentials` для всех
+   пользователей из справочника `t_db_oarb_ua_user`.
+2. Назначает пароли:
+   - пользователям с ролью «Админ» — пароль `admin` (MVP-выбор, осознанный);
+   - остальным — случайные 12-символьные (буквы + цифры).
+3. Сбрасывает сгенерированные пароли в файл `secrets.txt` в корне проекта
+   (он в `.gitignore`, в репозиторий не попадает). Формат строк:
+   `<username>\t<role>\t<password>`.
+
+> **Пароли известны только в `secrets.txt`.** Если файл потерян — придётся
+> сбросить пароли через `python scripts/reset_all_passwords.py` (требуется
+> `AUTH__FERNET_KEY` в `.env`; генерируется командой
+> `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+
+Для **разработки** (без логин-формы) можно положиться на фолбэк:
+`JUPYTERHUB_USER` в `.env` / переменной окружения (из неё извлекаются
+цифры табельного номера). Используется только если сессионной cookie
+нет — основной путь аутентификации в проде это логин-форма.
+
 ## Документация
 
 Доки сгруппированы по папкам в [`docs/`](docs/). Начните с [developer-guide](docs/guides/developer-guide.md) — это основной справочник.
@@ -144,7 +168,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005
 | Префикс таблиц | `DATABASE__TABLE_PREFIX` | Общий префикс таблиц приложения для PG и GP (`t_db_oarb_audit_act_`) |
 | Greenplum | `DATABASE__GP__HOST`, `DATABASE__GP__SCHEMA` | Настройки GP (при `DATABASE__TYPE=greenplum`) |
 | Безопасность | `SECURITY__MAX_REQUEST_SIZE`, `SECURITY__RATE_LIMIT_PER_MINUTE` | Лимиты запросов |
-| AI-чат | `CHAT__API_BASE`, `CHAT__API_KEY`, `CHAT__MODEL` | OpenAI-совместимый LLM API (опционально) |
+| Авторизация | `AUTH__SESSION_COOKIE_NAME`, `AUTH__SESSION_TTL_HOURS`, `AUTH__SESSION_COOKIE_SECURE`, `AUTH__FERNET_KEY`, `AUTH__LOGIN_MAX_ATTEMPTS_PER_MINUTE`, `AUTH__AVATAR_*` | Cookie-сессии, Fernet-шифрование паролей (`AUTH__FERNET_KEY` опционально — без него «Показать свой пароль» недоступно), лимиты логина и аватара |
+| AI-чат | `CHAT__API_BASE`, `CHAT__API_KEY`, `CHAT__MODEL` | OpenAI-совместимый LLM API (опционально). Секрет можно не хранить в файле, а сослаться на env: `CHAT__API_KEY=${JPY_API_TOKEN}` |
 | Блокировки | `ACTS__LOCK__DURATION_MINUTES`, `ACTS__LOCK__INACTIVITY_TIMEOUT_MINUTES` | Управление блокировками актов |
 | Аудит-лог | `ACTS__AUDIT_LOG__RETENTION_DAYS`, `ACTS__AUDIT_LOG__MAX_DIFF_ELEMENTS` | Хранение логов и лимиты diff |
 | Фактуры | `ACTS__INVOICE__HIVE_SCHEMA`, `ACTS__INVOICE__GP_SCHEMA` | Схемы для привязки фактур |
@@ -167,9 +192,11 @@ FastAPI Application
     ├── Shared API (auth, system, roles)
     ├── Domain Plugin Registry
     │   ├── acts/ — CRUD, блокировки, содержимое, экспорт, фактуры, аудит-лог
+    │   ├── auth/ — cookie-сессии, логин-форма, профиль (ФИО/должность/аватар), сброс паролей, Fernet-шифрование
     │   ├── admin/ — роли, справочник пользователей
     │   ├── chat/ — AI-ассистент (POST + polling, conversation persistence, function-calling, канал к внешнему агенту)
     │   ├── ck_*/ — верификация метрик (ck_fin_res, ck_client_exp)
+    │   ├── sqlagent/ — Text-to-SQL через iframe
     │   └── ua_data/ — справочные данные УА (словари процессов, ТБ, подразделений)
     └── Database Layer
         ├── asyncpg Connection Pool
@@ -206,10 +233,16 @@ app/
 │   │   ├── schemas/        — Pydantic-модели
 │   │   ├── formatters/     — экспорт (TXT, MD, DOCX)
 │   │   └── migrations/     — SQL-схемы (PostgreSQL, Greenplum)
+│   ├── auth/               — авторизация: cookie-сессии, логин-форма, профиль (ФИО/должность/аватар), сброс паролей (admin), Fernet-шифрование паролей
+│   │   ├── api/            — REST API (/login, /logout, /me, /me/change-password, /me/password, /me/avatar, /admin/users/...)
+│   │   ├── routes/         — HTML-роут /login
+│   │   ├── services/       — AuthService (bcrypt-верификация, Fernet-encrypt/decrypt)
+│   │   └── repositories/   — доступ к t_db_oarb_audit_act_auth_credentials
 │   ├── admin/              — администрирование (роли, справочник пользователей)
 │   ├── chat/               — AI-ассистент (conversations, messages, files, actions)
 │   ├── ck_fin_res/         — ЦК Финансовый результат (верификация метрик FR)
 │   ├── ck_client_exp/      — ЦК Клиентский опыт (верификация метрик CS)
+│   ├── sqlagent/           — SQL-агент (Text-to-SQL через iframe на sidecar-процесс)
 │   └── ua_data/            — справочники УА (процессы, ТБ, подразделения)
 ├── schemas/                — общие модели (errors)
 └── formatters/             — общие утилиты форматирования
@@ -228,12 +261,14 @@ templates/
 
 | URL | Описание |
 |-----|----------|
-| `/` | Главная страница (workspace) с AI-чатом |
+| `/login` | Логин-форма (cookie-сессия `aw_session`, TTL из `AUTH__SESSION_TTL_HOURS`) |
+| `/` | Главная страница (workspace) с AI-чатом и панелью «Мои проекты» |
 | `/acts` | Менеджер актов — карточки, создание (с autocomplete участников), дублирование, удаление |
 | `/constructor?act_id=X` | Конструктор актов — двухшаговый редактор (структура + содержимое) |
-| `/admin` | Панель администрирования — управление ролями и пользователями |
+| `/admin` | Панель администрирования — управление ролями и пользователями (только роль «Админ») |
 | `/ck-fin-res` | ЦК Фин.Рез. — верификация метрик финансового результата |
 | `/ck-client-experience` | ЦК Клиентский опыт — верификация метрик клиентского опыта |
+| `/sqlagent` | SQL-агент (Text-to-SQL), встраивается через iframe (нужен поднятый sidecar-процесс на `SQLAGENT__SIDECAR_PORT`) |
 
 ## API документация
 
@@ -246,16 +281,16 @@ templates/
 
 | Префикс | Описание |
 |---------|----------|
-| `/api/v1/auth/` | Авторизация (JupyterHub/Kerberos) |
+| `/api/v1/auth/` | Логин/логаут (`/login`, `/logout`), `/me` (текущий пользователь), `/me/password` (Fernet-расшифровка собственного пароля), `/me/change-password`, `/me/avatar` GET/PUT/DELETE. Сессия — cookie `aw_session`, TTL из `AUTH__SESSION_TTL_HOURS`. Dev-fallback: `JUPYTERHUB_USER` env |
 | `/api/v1/chat/` | AI-ассистент с function-calling |
 | `/api/v1/system/` | Health check, версия |
-| `/api/v1/acts/` | CRUD актов, блокировки, метаданные |
+| `/api/v1/acts/` | CRUD актов, блокировки, метаданные, панель «Мои проекты» (`/my-projects`) |
 | `/api/v1/acts/{id}/content` | Содержимое акта (дерево, таблицы, текстблоки, нарушения) |
 | `/api/v1/acts/export/` | Экспорт и скачивание документов |
 | `/api/v1/acts/invoice/` | Управление фактурами |
 | `/api/v1/acts/{id}/audit-log` | Журнал операций и версии содержимого |
 | `/api/v1/acts/users/` | Поиск пользователей для аудиторской группы |
-| `/api/v1/admin/` | Управление ролями и пользователями |
+| `/api/v1/admin/` | Управление ролями и пользователями (включая создание пользователей и сброс их паролей) |
 | `/api/v1/ck-fin-res/` | ЦК Фин.Рез. — CRUD записей FR-валидации, справочники |
 | `/api/v1/ck-client-exp/` | ЦК Клиентский опыт — CRUD записей CS-валидации, справочники |
 
