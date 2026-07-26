@@ -185,6 +185,14 @@ async def change_password(body: ChangePasswordRequest, request: Request):
             await svc.change_password(username, body.old_password, body.new_password)
         except InvalidOldPasswordError as e:
             raise HTTPException(status_code=400, detail=str(e))
+    # Дамп в secrets.txt для отслеживания актуального пароля.
+    from app.domains.auth._lifecycle import log_password_change
+    log_password_change(
+        username=username,
+        new_password=body.new_password,
+        actor=username,
+        action="self-change",
+    )
     return {"changed": True, "detail": "Пароль изменён; залогиньтесь заново"}
 
 
@@ -273,13 +281,21 @@ async def admin_reset_password(
     request: Request,
 ):
     """Сброс пароля пользователя (только админ). Возвращает новый пароль один раз."""
-    await _require_admin(request)
+    admin_username = await _require_admin(request)
     async with get_db() as conn:
         svc = AuthService(conn)
         try:
             pwd = await svc.reset_password(username, body.new_password)
         except UserNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+    # Дамп в secrets.txt для отслеживания актуального пароля.
+    from app.domains.auth._lifecycle import log_password_change
+    log_password_change(
+        username=username,
+        new_password=pwd,
+        actor=admin_username,
+        action="admin-reset",
+    )
     return AdminResetPasswordResponse(username=username, new_password=pwd)
 
 

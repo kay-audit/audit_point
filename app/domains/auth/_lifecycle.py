@@ -123,6 +123,41 @@ async def _append_secrets_file(rows: list[tuple[str, str, str]]) -> None:
         f.write("\n".join(body))
 
 
+def log_password_change(
+    username: str,
+    new_password: str,
+    *,
+    actor: str,
+    action: str,
+) -> None:
+    """Дописывает в secrets.txt строку об изменении пароля.
+
+    Срабатывает после self-change-password и admin reset-password —
+    файл всегда отражает актуальные пароли. Без Fernet-шифрования
+    (пароль в открытом виде, как в начальной seed-секции) — файл
+    защищён только .gitignore.
+
+    Формат строки:
+        # <timestamp>  <username>  changed_by=<actor>  action=<self-change|admin-reset>
+        <username>	<new_password>
+    """
+    SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    block = [
+        "",
+        f"# {timestamp}  {username}  changed_by={actor}  action={action}",
+        f"{username}\t{new_password}",
+        "",
+    ]
+    try:
+        with open(SECRETS_FILE, "a", encoding="utf-8") as f:
+            f.write("\n".join(block))
+    except OSError as e:
+        # Не блокируем операцию смены пароля из-за IO-проблем с файлом.
+        # Если secrets.txt недоступен — будет видно в логе.
+        logger.warning("Не удалось дописать в secrets.txt: %s", e)
+
+
 async def reset_all_passwords() -> dict:
     """Полный сброс всех credentials (только для админа; используется при
     восстановлении). Генерирует новые пароли и дописывает их в secrets.txt."""
