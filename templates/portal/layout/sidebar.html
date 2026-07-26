@@ -35,7 +35,10 @@
         </a>
         {% endif %}
 
-        <!-- Доменные элементы (авто-генерация из nav_groups) -->
+        <!-- Доменные элементы (авто-генерация из nav_groups).
+             Если у пользователя НЕТ роли в этом домене — добавляем
+             .sidebar-nav-item--locked. JS в landing-page.js перехватывает
+             клик и показывает «обратитесь к администратору». -->
         {% for group in nav_groups %}
         {% if group.group %}
         <div class="sidebar-nav-group">
@@ -43,11 +46,22 @@
         </div>
         {% endif %}
         {% for item in group.nav_items %}
-        <a href="{{ item.url }}" class="sidebar-nav-item {{ 'active' if active_page == item.active_page else '' }}" title="{{ item.label }}" data-domain="{{ item.chat_domains[0] if item.chat_domains else '' }}">
+        {% set item_domain = item.chat_domains[0] if item.chat_domains else '' %}
+        {% set has_access = is_admin or (item_domain == '') or (item_domain in user_domains) %}
+        <a href="{{ item.url }}"
+           class="sidebar-nav-item {{ 'active' if active_page == item.active_page else '' }} {{ '' if has_access else 'sidebar-nav-item--locked' }}"
+           {% if not has_access %}aria-disabled="true" tabindex="0"{% endif %}
+           title="{{ item.label }}{{ '' if has_access else ' (нет доступа)' }}"
+           data-domain="{{ item_domain }}">
             <svg class="sidebar-nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
                 {{ item.icon_svg|safe }}
             </svg>
             <span class="sidebar-nav-label">{{ item.label }}</span>
+            {% if not has_access %}
+            <svg class="sidebar-nav-lock" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {% endif %}
         </a>
         {% endfor %}
         {% endfor %}

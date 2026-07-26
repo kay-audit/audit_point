@@ -1,0 +1,78 @@
+/* ===== «Нет доступа» ===== */
+
+.no-access-page {
+    min-height: calc(100vh - 57px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+    box-sizing: border-box;
+    background: var(--bg-secondary, #f6f7fa);
+}
+
+.no-access-card {
+    width: 100%;
+    max-width: 480px;
+    background: var(--bg-primary, #fff);
+    border-radius: 12px;
+    padding: 2.5rem 2rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+    text-align: center;
+}
+
+.no-access-icon {
+    color: var(--text-muted, #6a7184);
+    margin-bottom: 1.5rem;
+    display: flex;
+    justify-content: center;
+}
+
+.no-access-title {
+    font-size: 1.35rem;
+    font-weight: 600;
+    color: var(--text-primary, #1a202c);
+    margin: 0 0 0.75rem;
+    line-height: 1.3;
+}
+
+.no-access-text {
+    font-size: 0.95rem;
+    color: var(--text-secondary, #4a5168);
+    margin: 0.4rem 0;
+    line-height: 1.5;
+}
+
+.no-access-text--hint {
+    color: var(--text-muted, #6a7184);
+    font-style: italic;
+}
+
+.no-access-username {
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted, #6a7184);
+}
+
+.no-access-username code {
+    background: var(--bg-secondary, #f6f7fa);
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+.no-access-back {
+    display: inline-block;
+    margin-top: 1.5rem;
+    padding: 0.6rem 1.2rem;
+    background: var(--primary, #3563e9);
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: background 0.15s;
+}
+
+.no-access-back:hover {
+    background: var(--primary-hover, #2a4fc7);
+}

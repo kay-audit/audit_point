@@ -1,0 +1,32 @@
+<!-- Универсальная страница «нет доступа» — наследуется от base_portal. -->
+<!-- Используется, когда пользователь залогинен, но не имеет роли в этом домене. -->
+{% extends "portal/base_portal.html" %}
+
+{% block title %}{{ topbar_title }} — нет доступа{% endblock %}
+
+{% block content %}
+<div class="no-access-page">
+    <div class="no-access-card">
+        <div class="no-access-icon">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </div>
+        <h1 class="no-access-title">Раздел «{{ topbar_title }}» недоступен</h1>
+        <p class="no-access-text">
+            У вашей учётной записи нет роли для работы с этим разделом.
+        </p>
+        <p class="no-access-text no-access-text--hint">
+            Для получения доступа обратитесь к администратору.
+        </p>
+        {% if username %}
+        <p class="no-access-username">Вы вошли как <code>{{ username }}</code></p>
+        {% endif %}
+        <a href="/" class="no-access-back">← Вернуться на рабочее пространство</a>
+    </div>
+</div>
+{% endblock %}
+
+{# Скрываем content-блоки (чат, modal), чтобы no-access страница была «чистой» #}
+{% block modal_chat %}{% endblock %}

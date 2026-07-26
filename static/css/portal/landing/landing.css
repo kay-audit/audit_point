@@ -137,6 +137,11 @@
     color: var(--info);
 }
 
+.project-card-status.status-completed {
+    background: var(--gray-200);
+    color: var(--text-secondary);
+}
+
 .project-card-body {
     margin-bottom: var(--spacing-lg);
 }
@@ -187,6 +192,56 @@
 .project-card-date {
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
+}
+
+/* Кликабельная карточка проекта (ведёт в конструктор) */
+.project-card--link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.project-card--link:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.project-card-role {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+}
+
+.project-card-role-label {
+    color: var(--text-secondary);
+}
+
+.project-card-role-value {
+    color: var(--text-primary);
+    font-weight: var(--font-weight-semibold);
+    background: var(--primary-subtle);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+}
+
+.project-card-role-badge {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    background: var(--gray-100);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    border: var(--border-width-thin) solid var(--border-light);
+}
+
+.project-card-who {
+    margin-top: var(--spacing-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    font-style: italic;
+}
 }
 
 /* Заглушка workflow */

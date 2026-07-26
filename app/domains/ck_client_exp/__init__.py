@@ -16,9 +16,13 @@ def _build_domain():
         api_routers=get_api_routers(),
         html_routers=get_html_routers(),
         settings_class=CkClientExpSettings,
+        # public_api=True: реестр не вешает require_domain_access на роутеры —
+        # иначе HTML всегда отдаёт 403 для не-членов домена. Своя проверка в
+        # routes/portal.py при отсутствии роли рисует «нет доступа».
+        public_api=True,
         dependencies={
-            "admin": "роли и доступ к домену для проверки прав на верификацию метрик",
-            "ua_data": "справочник подразделений (IDictionaryRepository) для связки записей с act_sub_number_id",
+            "admin": "роли и доступ к домену",
+            "ua_data": "справочник подразделений для связки",
         },
         chat_tools=get_chat_tools(),
         nav_items=[

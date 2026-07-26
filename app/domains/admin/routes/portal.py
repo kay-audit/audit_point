@@ -3,17 +3,21 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import get_user_roles
 from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts, get_nav_items_for_user
 from app.core.templating import get_templates
 
 templates = get_templates()
-
 router = APIRouter()
 
 
 @router.get("/admin", response_class=HTMLResponse)
-async def show_admin_page(request: Request, roles: list[dict] = Depends(get_user_roles)):
+async def show_admin_page(
+    request: Request,
+    roles: list[dict] = Depends(get_user_roles),
+    username: str = Depends(get_username),
+):
     """
     Страница администрирования.
 
@@ -34,6 +38,8 @@ async def show_admin_page(request: Request, roles: list[dict] = Depends(get_user
             "topbar_title": "Администрирование",
             "nav_groups": get_nav_items_for_user(roles),
             "is_admin": True,
+            "user_domains": ["admin"],
+            "username": username,
             "chat_domains": get_chat_domains_for_page("admin"),
             "knowledge_bases": get_knowledge_bases_as_dicts(),
         }

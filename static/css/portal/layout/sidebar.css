@@ -184,6 +184,35 @@
     cursor: not-allowed;
 }
 
+/* Заблокированный пункт меню: пользователь не имеет роли в этом домене.
+   Рендерится серым, с иконкой замка, клик → «обратитесь к администратору»
+   (обрабатывает landing-page.js::_setupSidebarLockedItems). */
+.sidebar-nav-item--locked {
+    opacity: 0.45;
+    cursor: not-allowed;
+    color: var(--text-muted);
+    pointer-events: auto;  /* клик обрабатывается JS, не блокируем */
+}
+
+.sidebar-nav-item--locked:hover {
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    /* Явно отменяем hover-эффекты активного пункта */
+    border-right-color: transparent;
+    transform: none;
+}
+
+.sidebar-nav-item--locked .sidebar-nav-icon {
+    opacity: 0.7;
+}
+
+.sidebar-nav-lock {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    margin-left: auto;
+    padding-right: var(--spacing-xs);
+}
+
 .sidebar-nav-item.active {
     background: var(--primary-subtle);
     color: var(--primary);

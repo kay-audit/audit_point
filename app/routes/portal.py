@@ -32,20 +32,24 @@ async def show_landing(request: Request):
     Роли загружаются опционально — при ошибке показываем все nav items.
     """
     is_admin = False
+    user_domains: set[str] = set()
     try:
-        from app.api.v1.endpoints.auth import extract_username_digits, get_current_user_from_env
+        # ИСПОЛЬЗУЕМ СЕССИОННУЮ COOKIE (а не JUPYTERHUB_USER) — иначе все
+        # залогиненные пользователи видели бы ВСЕ nav items (включая ЦК и
+        # Админ-панель), потому что fallback get_current_user_from_env()
+        # читает только env var.
+        from app.api.v1.deps.auth_deps import get_current_username
         from app.api.v1.deps.role_deps import get_user_roles
 
-        header_user = request.headers.get("x-jupyterhub-user")
-        if header_user:
-            username = extract_username_digits(header_user)
-        else:
-            username = get_current_user_from_env()
-
+        username = await get_current_username(request)
         if username:
             roles = await get_user_roles(username=username)
-            nav_groups = get_nav_items_for_user(roles)
             is_admin = any(r["name"] == "Админ" for r in roles)
+            user_domains = {r.get("domain_name") for r in roles if r.get("domain_name")}
+            # В landing ВСЕГДА показываем все nav items, чтобы ЦК и прочие
+            # были видны (locked) — иначе фильтр их уберёт совсем.
+            # Другие страницы продолжают использовать get_nav_items_for_user.
+            nav_groups = get_nav_items_grouped()
         else:
             nav_groups = get_nav_items_grouped()
     except Exception:
@@ -60,6 +64,7 @@ async def show_landing(request: Request):
             "topbar_title": "Рабочее пространство",
             "nav_groups": nav_groups,
             "is_admin": is_admin,
+            "user_domains": sorted(user_domains),
             "chat_domains": None,
             "knowledge_bases": get_knowledge_bases_as_dicts(),
         }
