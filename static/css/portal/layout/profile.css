@@ -256,42 +256,39 @@
 }
 
 .profile-popup-pwd-row {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.2rem;
+    display: none; /* больше не используется: пара «Показать/Сменить» живёт
+                     в общем .profile-popup-actions внизу формы */
 }
 
 .profile-popup-pwd-show {
-    background: transparent;
-    border: 1px dashed var(--color-border, #d0d4dd);
-    color: var(--color-text-muted, #6a7184);
-    padding: 0.3rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: all 0.1s;
-}
-
-.profile-popup-pwd-show:hover {
-    border-color: var(--color-primary, #3563e9);
-    color: var(--color-primary, #3563e9);
+    /* Наследует всё из .btn .btn-warning. Локальные переопределения —
+       только высота/паддинги под общий ритм формы. */
+    flex: 1;
+    height: 38px;
+    padding: 0 0.6rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 5px;
 }
 
 .profile-popup-submit {
-    margin-top: 0.4rem;
+    /* Кнопка «Сменить»/«Загрузить» в профиле. Использует .btn-warning
+       (светло-оранжевый) — единый стиль с парной кнопкой в .profile-popup-actions. */
+    flex: 1;
     height: 38px;
-    background: var(--color-primary, #3563e9);
-    color: #fff;
-    border: none;
-    border-radius: 5px;
-    font-size: 0.9rem;
+    padding: 0 0.6rem;
+    font-size: 0.85rem;
     font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
+    border-radius: 5px;
+    /* Override базового .btn (нет трансформации при hover внутри попапа,
+       чтобы кнопки не «прыгали» при наведении). */
+    box-shadow: none;
+    transform: none;
 }
 
 .profile-popup-submit:hover:not(:disabled) {
-    background: var(--color-primary-hover, #2a4fc7);
+    box-shadow: none;
+    transform: none;
 }
 
 .profile-popup-submit:disabled {
@@ -300,33 +297,32 @@
 }
 
 .profile-popup-ghost {
-    background: transparent;
-    color: var(--color-text-muted, #6a7184);
-    border: 1px solid var(--color-border, #d0d4dd);
-    border-radius: 5px;
+    /* Парная кнопка «Удалить» — тот же .btn-warning, что и «Загрузить».
+       Подсвечивается как потенциально опасная, но без агрессивного красного. */
+    flex: 1;
     height: 38px;
-    font-size: 0.9rem;
-    cursor: pointer;
+    padding: 0 0.6rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 5px;
+    box-shadow: none;
+    transform: none;
 }
 
 .profile-popup-ghost:hover {
-    background: var(--color-input-bg, #f6f7fa);
-    color: var(--color-text-strong, #0e1320);
+    box-shadow: none;
+    transform: none;
 }
 
 .profile-popup-actions {
     display: flex;
     gap: 0.5rem;
     margin-top: 0.4rem;
+    align-items: stretch;
 }
 
-.profile-popup-actions .profile-popup-submit {
-    flex: 1;
-}
-
-.profile-popup-actions .profile-popup-ghost {
-    flex: 0 0 auto;
-    padding: 0 0.8rem;
+.profile-popup-actions > .btn {
+    margin: 0;
 }
 
 .profile-popup-logout {

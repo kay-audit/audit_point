@@ -48,7 +48,7 @@
         {% for item in group.nav_items %}
         {% set item_domain = item.chat_domains[0] if item.chat_domains else '' %}
         {% set has_access = is_admin or (item_domain == '') or (item_domain in user_domains) %}
-        <a href="{{ item.url }}"
+        <a href="{{ item.url if has_access else '#' }}"
            class="sidebar-nav-item {{ 'active' if active_page == item.active_page else '' }} {{ '' if has_access else 'sidebar-nav-item--locked' }}"
            {% if not has_access %}aria-disabled="true" tabindex="0"{% endif %}
            title="{{ item.label }}{{ '' if has_access else ' (нет доступа)' }}"

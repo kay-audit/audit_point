@@ -26,7 +26,6 @@ export class LandingPage {
         console.log('LandingPage: инициализация');
 
         this._setupNavigation();
-        this._setupSidebarLockedItems();
         this._loadMyProjects();
         LandingSettingsManager.init();
         ChatManager.init();
@@ -94,21 +93,12 @@ export class LandingPage {
     /**
      * Блокирует клики по sidebar-элементам, к которым у пользователя нет
      * доступа. Вместо перехода — уведомление «обратитесь к администратору».
+     *
+     * Логика перенесена в `PortalSidebar._setupLockedItems()` — единый хук
+     * на все portal-страницы, чтобы на /acts, /sqlagent, /ck_*_* клик по
+     * серому пункту с замком не уезжал на чужой раздел.
      * @private
      */
-    static _setupSidebarLockedItems() {
-        const items = document.querySelectorAll('.sidebar-nav-item.sidebar-nav-item--locked');
-        items.forEach((item) => {
-            item.addEventListener('click', (event) => {
-                event.preventDefault();
-                const label = item.querySelector('.sidebar-nav-label')?.textContent
-                    || item.getAttribute('title') || 'этот раздел';
-                Notifications.info(
-                    `Для получения доступа к «${label}» обратитесь к администратору`
-                );
-            });
-        });
-    }
 
     /**
      * Загружает список проектов для боковой панели и рендерит карточки.

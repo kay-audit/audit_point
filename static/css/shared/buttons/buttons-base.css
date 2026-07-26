@@ -2,7 +2,7 @@
  * Базовые стили кнопок
  *
  * Определяет общие стили для всех кнопок приложения.
- * Предоставляет базовые варианты: primary, secondary, success, danger, ghost.
+ * Предоставляет базовые варианты: primary, secondary, success, warning, danger, ghost.
  */
 
 /* Базовый класс для всех кнопок */
@@ -119,6 +119,26 @@
 
 .btn-danger:active:not(:disabled) {
     background: var(--button-danger-active);
+}
+
+/* Кнопка предупреждения (светло-оранжевая, для второстепенных действий,
+ * которые должны привлекать внимание: «Сменить пароль», «Удалить аватар» и т.п.)
+ * Используется в профильном попапе рядом с primary-кнопками — пара
+ * primary/warning читается как «основное действие / требует внимания». */
+.btn-warning {
+    background: var(--warning-subtle, #fef3e7);
+    color: var(--warning-hover, #c5853d);
+    border-color: var(--warning-light, #e5b36f);
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: var(--warning-light, #e5b36f);
+    color: var(--text-on-primary, #fff);
+}
+
+.btn-warning:active:not(:disabled) {
+    background: var(--warning, #d89849);
+    color: var(--text-on-primary, #fff);
 }
 
 /* Призрачная кнопка (прозрачная) */

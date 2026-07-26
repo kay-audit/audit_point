@@ -30,10 +30,22 @@
             const me = await r.json();
             currentMe = me;
             if (me.authenticated) {
-                nameEl.textContent = me.fullname || "Пользователь";
-                roleEl.textContent = me.job || "";
-                loginEl.textContent = me.username ? `Логин: ${me.username}` : "";
-                loginEl.style.display = me.username ? "" : "none";
+                // Сервер уже отрендерил ФИО/должность/логин в topbar (см. templating.py
+                // и templates/portal/layout/topbar.html). Здесь обновляем только если
+                // /me вернул непустое значение — иначе не затираем серверный рендер
+                // пустой строкой (это и был «флик» на /acts, /sqlagent, /ck_*_*).
+                if (nameEl && me.fullname && me.fullname.trim()) {
+                    nameEl.textContent = me.fullname;
+                } else if (nameEl && !nameEl.textContent.trim()) {
+                    nameEl.textContent = "Пользователь";
+                }
+                if (roleEl) {
+                    roleEl.textContent = me.job || "";
+                }
+                if (loginEl) {
+                    loginEl.textContent = me.username ? `Логин: ${me.username}` : "";
+                    loginEl.style.display = me.username ? "" : "none";
+                }
                 if (me.avatar_available) {
                     avatarEl.innerHTML = "";
                     const img = document.createElement("img");
@@ -110,13 +122,13 @@
                                 <span>Новый пароль</span>
                                 <input type="password" name="new_password" required minlength="1" autocomplete="new-password">
                             </label>
-                            <div class="profile-popup-pwd-row">
-                                <button type="button" class="profile-popup-pwd-show" id="profileShowOwnPwd">
+                            <div class="profile-popup-error" id="profilePwdError" hidden></div>
+                            <div class="profile-popup-actions">
+                                <button type="button" class="btn btn-warning profile-popup-pwd-show" id="profileShowOwnPwd">
                                     Показать свой пароль
                                 </button>
+                                <button type="submit" class="btn btn-warning profile-popup-submit">Сменить</button>
                             </div>
-                            <div class="profile-popup-error" id="profilePwdError" hidden></div>
-                            <button type="submit" class="profile-popup-submit">Сменить</button>
                         </form>
                     </div>
 
@@ -129,8 +141,8 @@
                             </label>
                             <div class="profile-popup-error" id="profileAvatarError" hidden></div>
                             <div class="profile-popup-actions">
-                                <button type="submit" class="profile-popup-submit">Загрузить</button>
-                                <button type="button" class="profile-popup-ghost" id="profileDeleteAvatarBtn">Удалить</button>
+                                <button type="submit" class="btn btn-warning profile-popup-submit">Загрузить</button>
+                                <button type="button" class="btn btn-warning profile-popup-ghost" id="profileDeleteAvatarBtn">Удалить</button>
                             </div>
                         </form>
                     </div>

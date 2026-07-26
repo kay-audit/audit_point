@@ -6,8 +6,8 @@
  */
 import { LandingPage } from './landing/landing-page.js';
 import { AppConfig } from '../shared/app-config.js';
-import { AuthManager } from '../shared/auth.js';
 import { ChatModalManager } from '../shared/chat/chat-modal.js';
+import { Notifications } from '../shared/notifications.js';
 
 export class PortalSidebar {
     static _storageKey = 'sidebar_collapsed';
@@ -20,9 +20,48 @@ export class PortalSidebar {
         this._setupToggle();
         this._setupNavigation();
         this._setupChatButton();
-        this._loadUserInfo();
+        this._setupLockedItems();
 
         console.log('PortalSidebar: инициализация завершена');
+    }
+
+    /**
+     * Перехватывает клики по заблокированным пунктам sidebar (`.sidebar-nav-item--locked`).
+     *
+     * На landing логика дублировалась в LandingPage._setupSidebarLockedItems,
+     * но на других страницах (acts-manager, sql-agent, ck_*_*) обработчик не
+     * висел — клик по серой ссылке с замком уезжал на чужой раздел. Теперь
+     * хук живёт в PortalSidebar.init() и работает на всех страницах с sidebar.
+     *
+     * Дополнительно: чтобы ссылка не уезжала даже без JS, атрибут href при
+     * рендере заменяется на «#» (см. template sidebar.html). Здесь дублируем
+     * защиту: preventDefault + Notifications.info с подсказкой.
+     *
+     * @private
+     */
+    static _setupLockedItems() {
+        const items = document.querySelectorAll(
+            '.sidebar-nav-item.sidebar-nav-item--locked'
+        );
+        items.forEach((item) => {
+            item.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const label = item.querySelector('.sidebar-nav-label')?.textContent?.trim()
+                    || item.getAttribute('title') || 'этот раздел';
+                if (Notifications && typeof Notifications.info === 'function') {
+                    Notifications.info(
+                        `Для получения доступа к «${label}» обратитесь к администратору`
+                    );
+                }
+            });
+            item.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    item.click();
+                }
+            });
+        });
     }
 
     /**
@@ -60,8 +99,12 @@ export class PortalSidebar {
      * @private
      */
     static _setupNavigation() {
-        // Навигация по активным ссылкам
-        const navLinks = document.querySelectorAll('.sidebar-nav a.sidebar-nav-item');
+        // Навигация по активным ссылкам. Заблокированные пункты
+        // (sidebar-nav-item--locked) пропускаем — ими занимается
+        // _setupLockedItems(): preventDefault + Notifications.info.
+        const navLinks = document.querySelectorAll(
+            '.sidebar-nav a.sidebar-nav-item:not(.sidebar-nav-item--locked)'
+        );
         navLinks.forEach(link => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -104,23 +147,6 @@ export class PortalSidebar {
                 ChatModalManager.open();
             }
         });
-    }
-
-    /**
-     * Загружает информацию о текущем пользователе в topbar
-     * @private
-     */
-    static _loadUserInfo() {
-        try {
-            const username = AuthManager.getCurrentUser();
-            const userNameElement = document.getElementById('currentUserName');
-
-            if (userNameElement && username) {
-                userNameElement.textContent = username;
-            }
-        } catch (error) {
-            console.error('PortalSidebar: ошибка загрузки информации о пользователе:', error);
-        }
     }
 
 }
