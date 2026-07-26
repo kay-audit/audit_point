@@ -6,6 +6,7 @@
  * - Панель «Мои проекты» (GET /api/v1/acts/my-projects) — рендерит карточки
  *   актов, в которых пользователь участвует; для админа — все акты.
  *   Клик по карточке ведёт в конструктор (как кнопка «Открыть» в Управлении актами).
+ *   Фильтры по статусу / номеру КМ / роли — открываются по кнопке «Фильтры».
  * - AI-чат ассистент
  */
 import { AppConfig } from '../../shared/app-config.js';
@@ -15,6 +16,8 @@ import { Notifications } from '../../shared/notifications.js';
 
 export class LandingPage {
     static _chatCollapsed = false;
+    static _allProjects = [];   // кэш загруженных проектов (для фильтрации)
+    static _isAdmin = false;
 
     /**
      * Инициализирует landing page
@@ -40,7 +43,7 @@ export class LandingPage {
     }
 
     /**
-     * Настраивает topbar-кнопки (кроме настроек).
+     * Настраивает topbar-кнопки (кроме настроек) и фильтры «Мои проекты».
      * @private
      */
     static _setupNavigation() {
@@ -57,10 +60,32 @@ export class LandingPage {
             });
         });
 
+        // Кнопка «Фильтры» — открывает/закрывает панель фильтров
         const filterBtn = document.querySelector('.workflow-filter-btn');
         if (filterBtn) {
             filterBtn.addEventListener('click', () => {
-                console.log('Фильтры проектов (функция в разработке)');
+                const panel = document.getElementById('workflowFilters');
+                if (panel) {
+                    const isOpen = panel.classList.toggle('workflow-filters--open');
+                    filterBtn.classList.toggle('workflow-filter-btn--active', isOpen);
+                }
+            });
+        }
+
+        // Применить / сбросить фильтры
+        const statusSel = document.getElementById('filterStatus');
+        const kmInput = document.getElementById('filterKm');
+        const roleSel = document.getElementById('filterRole');
+        [statusSel, kmInput, roleSel].forEach((el) => {
+            if (el) el.addEventListener('input', () => this._applyFilters());
+        });
+        const resetBtn = document.getElementById('filterResetBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                if (statusSel) statusSel.value = '';
+                if (kmInput) kmInput.value = '';
+                if (roleSel) roleSel.value = '';
+                this._applyFilters();
             });
         }
     }
@@ -105,23 +130,104 @@ export class LandingPage {
             // Убираем loading-индикатор
             if (loading) loading.remove();
 
-            if (!data.items || data.items.length === 0) {
+            this._allProjects = data.items || [];
+            this._isAdmin = !!data.is_admin;
+
+            // Заполняем select ролей из реальных данных
+            this._populateRoleFilter();
+
+            if (this._allProjects.length === 0) {
                 if (empty) empty.hidden = false;
                 return;
             }
 
-            // Рендерим карточки
-            const fragment = document.createDocumentFragment();
-            for (const p of data.items) {
-                fragment.appendChild(this._renderProjectCard(p, data.is_admin));
-            }
-            container.appendChild(fragment);
+            this._renderProjects(this._allProjects);
         } catch (err) {
             console.error('LandingPage: не удалось загрузить проекты', err);
             if (loading) {
                 loading.querySelector('.workflow-placeholder-text').textContent =
                     'Не удалось загрузить список проектов';
             }
+        }
+    }
+
+    /**
+     * Заполняет select фильтра по ролям уникальными значениями из данных.
+     * @private
+     */
+    static _populateRoleFilter() {
+        const roleSel = document.getElementById('filterRole');
+        if (!roleSel) return;
+        const current = roleSel.value;
+        const seen = new Set();
+        // Стандартный набор ролей — отображаем независимо от наличия в данных
+        ['Администратор', 'Куратор', 'Руководитель', 'Редактор', 'Участник', 'AppendixRef']
+            .forEach((r) => seen.add(r));
+        this._allProjects.forEach((p) => { if (p.my_role) seen.add(p.my_role); });
+        // Перестраиваем options
+        roleSel.innerHTML = '<option value="">Все</option>' +
+            Array.from(seen).sort().map((r) => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('');
+        roleSel.value = current;
+    }
+
+    /**
+     * Рендерит массив проектов в контейнер.
+     * @private
+     */
+    static _renderProjects(items) {
+        const container = document.getElementById('myProjectsList');
+        const empty = document.getElementById('myProjectsEmpty');
+        if (!container) return;
+        // Очищаем текущие карточки (но НЕ loading-индикатор, если он ещё есть)
+        const cards = container.querySelectorAll('.project-card');
+        cards.forEach((c) => c.remove());
+        if (empty) empty.hidden = true;
+
+        if (!items || items.length === 0) {
+            if (empty) empty.hidden = false;
+            this._updateFilterSummary(0, 0);
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (const p of items) {
+            fragment.appendChild(this._renderProjectCard(p, this._isAdmin));
+        }
+        container.appendChild(fragment);
+        this._updateFilterSummary(items.length, this._allProjects.length);
+    }
+
+    /**
+     * Применяет текущие значения фильтров к _allProjects и перерисовывает.
+     * @private
+     */
+    static _applyFilters() {
+        const statusSel = document.getElementById('filterStatus');
+        const kmInput = document.getElementById('filterKm');
+        const roleSel = document.getElementById('filterRole');
+        const status = statusSel ? statusSel.value : '';
+        const km = (kmInput ? kmInput.value : '').trim().toLowerCase();
+        const role = roleSel ? roleSel.value : '';
+        const filtered = this._allProjects.filter((p) => {
+            if (status && p.status !== status) return false;
+            if (km && !String(p.km_number).toLowerCase().includes(km)) return false;
+            if (role && p.my_role !== role) return false;
+            return true;
+        });
+        this._renderProjects(filtered);
+    }
+
+    /**
+     * Обновляет текст «показано X из Y» под фильтрами.
+     * @private
+     */
+    static _updateFilterSummary(shown, total) {
+        const el = document.getElementById('filterSummary');
+        if (!el) return;
+        if (shown === total) {
+            el.textContent = `Показано: ${total}`;
+        } else {
+            el.textContent = `Показано: ${shown} из ${total}`;
         }
     }
 
@@ -136,6 +242,7 @@ export class LandingPage {
         card.setAttribute('data-act-id', String(p.id));
         card.setAttribute('data-km', p.km_number);
         card.setAttribute('data-role', p.my_role);
+        card.setAttribute('data-status', p.status);
         card.title = `Открыть «${p.inspection_name}» в конструкторе (акт #${p.id})`;
 
         // Статус (active/pending/completed) — простая эвристика по датам
@@ -151,10 +258,15 @@ export class LandingPage {
             ? `Просрочен: ${formatDate(p.inspection_end_date)}`
             : `Дедлайн: ${formatDate(p.inspection_end_date)}`;
 
-        // ФИО + должность владельца/участника (для админа = свои данные,
-        // для не-админа = то, что записано в team_member)
-        const whoLine = p.my_full_name
-            ? `<div class="project-card-who">${escapeHtml(p.my_full_name)} · ${escapeHtml(p.my_position || '')}</div>`
+        // Роль в проекте — овальный бейдж светло-жёлтого цвета (как «В работе»).
+        // Для админа показываем доп. плашку «видит все».
+        const roleBadge = `
+            <span class="project-card-role-badge" data-role="${escapeHtml(p.my_role)}">
+                ${escapeHtml(p.my_role)}
+            </span>
+        `;
+        const adminBadge = isAdmin
+            ? '<span class="project-card-admin-badge">видит все</span>'
             : '';
 
         card.innerHTML = `
@@ -164,12 +276,10 @@ export class LandingPage {
             </div>
             <div class="project-card-body">
                 <p class="project-card-description">${escapeHtml(p.km_number)} · г. ${escapeHtml(p.city || '—')}</p>
-                <div class="project-card-role">
-                    <span class="project-card-role-label">Ваша роль:</span>
-                    <span class="project-card-role-value">${escapeHtml(p.my_role)}</span>
-                    ${isAdmin ? '<span class="project-card-role-badge">видит все проекты</span>' : ''}
+                <div class="project-card-badges">
+                    ${roleBadge}
+                    ${adminBadge}
                 </div>
-                ${whoLine}
             </div>
             <div class="project-card-footer">
                 <div class="project-card-meta">

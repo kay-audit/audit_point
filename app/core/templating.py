@@ -1,12 +1,16 @@
 """Singleton Jinja2Templates для всех роутов приложения."""
 
+import logging
 import subprocess
 from functools import lru_cache
 from pathlib import Path
 
+from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from app.core.config import get_settings
+
+logger = logging.getLogger("audit_workstation.templating")
 
 
 def _resolve_app_version() -> str:
@@ -53,6 +57,43 @@ def _versioned(url: str, version: str) -> str:
     """
     sep = "&" if "?" in url else "?"
     return f"{url}{sep}v={version}"
+
+
+async def get_current_user_dict(request: Request) -> dict | None:
+    """Возвращает инфу о текущем пользователе (из сессионной cookie).
+
+    None если не залогинен или при ошибке. Используется в render_template
+    для прокидывания current_user в контекст шаблона (ФИО/должность/логин
+    в topbar — единообразно на всех страницах).
+    """
+    try:
+        from app.api.v1.deps.auth_deps import get_current_username
+        from app.db.connection import get_db
+        from app.domains.auth.services.auth_service import AuthService
+
+        username = await get_current_username(request)
+        if not username:
+            return None
+        async with get_db() as conn:
+            svc = AuthService(conn)
+            return await svc.build_me(username)
+    except Exception as e:
+        logger.debug("get_current_user_dict failed: %s", e)
+        return None
+
+
+async def render_template(request: Request, template_name: str, context: dict | None = None,
+                          **response_kwargs):
+    """Обёртка над templates.TemplateResponse: автоматически добавляет
+    current_user (FIO/должность/логин) в контекст, чтобы topbar был
+    единообразным на всех страницах.
+    """
+    from starlette.responses import HTMLResponse
+    templates = get_templates()
+    context = dict(context or {})
+    if "current_user" not in context:
+        context["current_user"] = await get_current_user_dict(request)
+    return templates.TemplateResponse(request, template_name, context, **response_kwargs)
 
 
 @lru_cache(maxsize=1)

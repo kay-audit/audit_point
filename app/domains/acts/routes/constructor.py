@@ -13,13 +13,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.api.v1.deps.auth_deps import get_username
 from app.core.config import get_settings
 from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts
-from app.core.templating import get_templates
+from app.core.templating import render_template
 from app.db.connection import get_db
 from app.domains.acts.repositories import ActAccessRepository
 
 settings = get_settings()
 logger = logging.getLogger("audit_workstation.domains.acts.routes.constructor")
-templates = get_templates()
 
 router = APIRouter()
 
@@ -58,7 +57,7 @@ async def show_constructor(
             )
             return RedirectResponse(url="/acts", status_code=302)
 
-        return templates.TemplateResponse(
+        return await render_template(
             request,
             "constructor/constructor.html",
             {

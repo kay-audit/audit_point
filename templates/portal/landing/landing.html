@@ -27,6 +27,31 @@
         </div>
 
         <div class="workflow-content">
+            <!-- Панель фильтров (открывается по кнопке «Фильтры») -->
+            <div class="workflow-filters" id="workflowFilters">
+                <div class="workflow-filter">
+                    <label for="filterStatus">Статус</label>
+                    <select id="filterStatus">
+                        <option value="">Все</option>
+                        <option value="active">В работе</option>
+                        <option value="pending">Ожидание</option>
+                        <option value="completed">Завершён</option>
+                    </select>
+                </div>
+                <div class="workflow-filter">
+                    <label for="filterKm">Номер КМ (содержит)</label>
+                    <input type="text" id="filterKm" placeholder="например, КМ-99-10">
+                </div>
+                <div class="workflow-filter">
+                    <label for="filterRole">Роль в проекте</label>
+                    <select id="filterRole">
+                        <option value="">Все</option>
+                    </select>
+                </div>
+                <button type="button" class="workflow-filter-reset" id="filterResetBtn">Сбросить</button>
+                <div class="workflow-filter-summary" id="filterSummary"></div>
+            </div>
+
             <!-- Карточки проектов: рендерим из /api/v1/acts/my-projects -->
             <div class="workflow-projects" id="myProjectsList">
                 <div class="workflow-placeholder" id="myProjectsLoading">

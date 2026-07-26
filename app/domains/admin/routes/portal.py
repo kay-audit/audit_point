@@ -6,9 +6,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import get_user_roles
 from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts, get_nav_items_for_user
-from app.core.templating import get_templates
+from app.core.templating import render_template
 
-templates = get_templates()
 router = APIRouter()
 
 
@@ -30,7 +29,7 @@ async def show_admin_page(
     if not is_admin:
         return RedirectResponse(url="/portal/acts", status_code=303)
 
-    return templates.TemplateResponse(
+    return await render_template(
         request,
         "portal/admin/admin.html",
         {

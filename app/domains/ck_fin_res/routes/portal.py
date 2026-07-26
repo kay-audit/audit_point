@@ -6,9 +6,8 @@ from fastapi.responses import HTMLResponse
 from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import get_user_roles
 from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts, get_nav_items_for_user
-from app.core.templating import get_templates
+from app.core.templating import render_template
 
-templates = get_templates()
 router = APIRouter()
 
 DOMAIN_NAME = "ck_fin_res"
@@ -34,7 +33,7 @@ async def show_ck_fin_res(
     user_domains = sorted({r.get("domain_name") for r in roles if r.get("domain_name")})
 
     if not _user_has_access(roles):
-        return templates.TemplateResponse(
+        return await render_template(
             request,
             "portal/no_access.html",
             {
@@ -49,7 +48,7 @@ async def show_ck_fin_res(
             },
         )
 
-    return templates.TemplateResponse(
+    return await render_template(
         request,
         "portal/ck/ck_fin_res.html",
         {

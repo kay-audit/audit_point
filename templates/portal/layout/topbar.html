@@ -35,7 +35,9 @@
             </svg>
         </button>
 
-        <!-- Профиль пользователя -->
+        <!-- Профиль пользователя (ФИО/должность/логин — единообразно
+             на всех страницах: рендерим из server-side current_user,
+             JS только обновляет аватар). -->
         <div class="topbar-user-profile" id="topbarUserProfile" tabindex="0" role="button"
              aria-haspopup="dialog" aria-label="Открыть профиль">
             <div class="topbar-user-avatar" id="topbarUserAvatar">
@@ -45,9 +47,12 @@
                 </svg>
             </div>
             <div class="topbar-user-info">
-                <div class="topbar-user-name" id="currentUserName">Загрузка...</div>
-                <div class="topbar-user-role" id="currentUserRole">Сотрудник</div>
-                <div class="topbar-user-login" id="currentUserLogin"></div>
+                <div class="topbar-user-name"
+                     id="currentUserName">{% if current_user and current_user.authenticated %}{{ current_user.fullname or "Пользователь" }}{% else %}—{% endif %}</div>
+                <div class="topbar-user-role"
+                     id="currentUserRole">{% if current_user and current_user.authenticated %}{{ current_user.job or "" }}{% else %}—{% endif %}</div>
+                <div class="topbar-user-login"
+                     id="currentUserLogin">{% if current_user and current_user.authenticated and current_user.username %}Логин: {{ current_user.username }}{% endif %}</div>
             </div>
         </div>
     </div>

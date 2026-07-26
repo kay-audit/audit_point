@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from app.core.navigation import get_knowledge_bases_as_dicts, get_nav_items_for_user, get_nav_items_grouped
-from app.core.templating import get_templates
+from app.core.templating import get_templates, render_template
 
 logger = logging.getLogger("audit_workstation.routes.portal")
 
@@ -56,7 +56,7 @@ async def show_landing(request: Request):
         logger.debug("Не удалось загрузить роли для landing, показываем все nav items")
         nav_groups = get_nav_items_grouped()
 
-    return templates.TemplateResponse(
+    return await render_template(
         request,
         "portal/landing/landing.html",
         {

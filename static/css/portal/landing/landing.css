@@ -242,6 +242,119 @@
     color: var(--text-muted);
     font-style: italic;
 }
+
+/* Контейнер бейджей под описанием проекта (роль + админ) */
+.project-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+}
+
+/* Овальный бейдж роли в проекте (светло-жёлтый, как «В работе»). */
+.project-card-role-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: var(--font-size-xs, 12px);
+    font-weight: var(--font-weight-medium, 500);
+    color: #8a6d00;             /* тёмно-жёлтый текст */
+    background: #fff7d6;         /* светло-жёлтый фон */
+    border: 1px solid #f0d77a;   /* жёлтая рамка */
+    white-space: nowrap;
+}
+
+.project-card-admin-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: var(--font-size-xs, 12px);
+    font-weight: var(--font-weight-medium, 500);
+    color: var(--primary, #3563e9);
+    background: var(--primary-subtle, #e3eaff);
+    border: 1px solid #c0d3ff;
+    white-space: nowrap;
+}
+
+/* ===== Фильтры «Мои проекты» ===== */
+.workflow-filters {
+    display: none;
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+    background: var(--bg-secondary, #f6f7fa);
+    border: var(--border-width-thin) solid var(--border-light);
+    border-radius: var(--radius-md, 6px);
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+    align-items: flex-end;
+}
+
+.workflow-filters--open {
+    display: flex;
+}
+
+.workflow-filter {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 140px;
+}
+
+.workflow-filter > label {
+    font-size: var(--font-size-xs, 12px);
+    color: var(--text-secondary, #4a5168);
+    font-weight: var(--font-weight-medium, 500);
+}
+
+.workflow-filter select,
+.workflow-filter input {
+    height: 32px;
+    padding: 0 var(--spacing-sm, 8px);
+    border: var(--border-width-thin) solid var(--border-light, #d0d4dd);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-primary, #fff);
+    color: var(--text-primary, #1a202c);
+    font-size: var(--font-size-sm, 14px);
+}
+
+.workflow-filter select:focus,
+.workflow-filter input:focus {
+    outline: none;
+    border-color: var(--primary, #3563e9);
+    box-shadow: 0 0 0 2px rgba(53, 99, 233, 0.15);
+}
+
+.workflow-filter-reset {
+    align-self: flex-end;
+    background: transparent;
+    color: var(--text-secondary, #6a7184);
+    border: var(--border-width-thin) solid var(--border-light, #d0d4dd);
+    border-radius: var(--radius-sm, 4px);
+    height: 32px;
+    padding: 0 var(--spacing-md, 12px);
+    font-size: var(--font-size-sm, 14px);
+    cursor: pointer;
+}
+
+.workflow-filter-reset:hover {
+    background: var(--bg-primary, #fff);
+    color: var(--text-primary, #1a202c);
+}
+
+.workflow-filter-summary {
+    width: 100%;
+    font-size: var(--font-size-xs, 12px);
+    color: var(--text-muted, #6a7184);
+    margin-top: var(--spacing-xs, 4px);
+}
+
+.workflow-no-projects {
+    width: 100%;
+    text-align: center;
+    padding: var(--spacing-2xl, 24px);
+    color: var(--text-muted, #6a7184);
+}
 }
 
 /* Заглушка workflow */
