@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import time
@@ -28,6 +29,27 @@ if TYPE_CHECKING:
     from app.domains.chat.services.orchestrator import Orchestrator
 
 logger = logging.getLogger("audit_workstation.domains.chat.tool_executor")
+
+
+# Контекстная переменная с username текущего запроса.
+# Оркестратор выставляет её перед каждым вызовом tool-handler'а
+# (см. execute_tool_call ниже) — handler'ы, которым нужен контекст
+# пользователя (например, acts.create_act — нужно знать, кто создаёт акт),
+# читают её через get_current_chat_user(). Это позволяет не менять
+# сигнатуру handler'ов и оставаться совместимым с уже зарегистрированными
+# ChatTool-инструментами.
+_current_chat_user_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_chat_user", default=None,
+)
+
+
+def get_current_chat_user() -> str | None:
+    """Username текущего запроса, выставленный оркестратором.
+
+    Возвращает None вне контекста chat-сессии (например, при вызове handler-а
+    из фоновой задачи или из тестов).
+    """
+    return _current_chat_user_var.get()
 
 
 async def execute_tool_call(
@@ -78,6 +100,10 @@ async def execute_tool_call(
     started = time.perf_counter()
     status = "success"
     error_message: str | None = None
+    # Пробрасываем username в handler через ContextVar, чтобы tool мог
+    # идентифицировать автора действия (например, acts.create_act пишет
+    # created_by = <этот username>). Сбрасываем обратно в finally.
+    user_token = _current_chat_user_var.set(getattr(orch, "_current_user_id", None))
     try:
         result = await asyncio.wait_for(
             chat_tool.handler(**converted_args),
@@ -117,6 +143,7 @@ async def execute_tool_call(
             "Сообщите администратору."
         )
     finally:
+        _current_chat_user_var.reset(user_token)
         latency_ms = int((time.perf_counter() - started) * 1000)
         await orch._record_tool_metric(
             tool_name=tool_name,
