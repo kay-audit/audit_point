@@ -396,3 +396,49 @@ class AdminRepository(BaseRepository):
             username,
         )
         return dict(row) if row else None
+
+    async def upsert_user_in_directory(
+        self,
+        username: str,
+        fullname: str,
+        job: str = "",
+        tn: str = "",
+        email: str = "",
+        branch: str = "",
+    ) -> dict:
+        """Создаёт пользователя в справочнике или обновляет поля существующего.
+
+        Используется админом для онбординга пользователей, которых нет в
+        EDW/Hive (или для правки их полей). ON CONFLICT (username) DO UPDATE
+        — идемпотентно: повторный вызов с теми же полями безопасен.
+
+        Возвращает dict с обновлёнными полями (read-back после upsert).
+        """
+        await self.conn.execute(
+            f"""
+            INSERT INTO {self.user_table}
+                (username, fullname, job, tn, email, branch)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (username) DO UPDATE
+              SET fullname = EXCLUDED.fullname,
+                  job      = EXCLUDED.job,
+                  tn       = EXCLUDED.tn,
+                  email    = EXCLUDED.email,
+                  branch   = EXCLUDED.branch
+            """,
+            username, fullname, job, tn, email, branch,
+        )
+        row = await self.conn.fetchrow(
+            f"""
+            SELECT username,
+                   COALESCE(fullname, '') AS fullname,
+                   COALESCE(job, '') AS job,
+                   COALESCE(tn, '') AS tn,
+                   COALESCE(email, '') AS email,
+                   COALESCE(branch, '') AS branch
+            FROM {self.user_table}
+            WHERE username = $1
+            """,
+            username,
+        )
+        return dict(row)

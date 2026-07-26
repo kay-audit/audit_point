@@ -85,7 +85,7 @@ class ChatDomainSettings(BaseModel):
     """Настройки AI-ассистента и чата."""
 
     # Профиль провайдера LLM
-    profile: Literal["openrouter", "sglang", "openai", "gigachat"] = "sglang"
+    profile: Literal["openrouter", "sglang", "openai", "gigachat", "minimax"] = "minimax"
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     # LLM
@@ -105,7 +105,7 @@ class ChatDomainSettings(BaseModel):
     # пропускает поля с default=None при подъёме .env-loader'а, и они
     # становятся required (вместо желаемых Optional). default_factory
     # обходит эту особенность.
-    fallback_profile: Literal["openrouter", "sglang", "openai", "gigachat"] | None = Field(
+    fallback_profile: Literal["openrouter", "sglang", "openai", "gigachat", "minimax"] | None = Field(
         default_factory=lambda: None,
         description=(
             "Профиль провайдера для fallback при сбое primary. "

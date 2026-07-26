@@ -36,8 +36,9 @@
         </button>
 
         <!-- Профиль пользователя -->
-        <div class="topbar-user-profile">
-            <div class="topbar-user-avatar">
+        <div class="topbar-user-profile" id="topbarUserProfile" tabindex="0" role="button"
+             aria-haspopup="dialog" aria-label="Открыть профиль">
+            <div class="topbar-user-avatar" id="topbarUserAvatar">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                     <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
                           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -45,7 +46,8 @@
             </div>
             <div class="topbar-user-info">
                 <div class="topbar-user-name" id="currentUserName">Загрузка...</div>
-                <div class="topbar-user-role">Сотрудник</div>
+                <div class="topbar-user-role" id="currentUserRole">Сотрудник</div>
+                <div class="topbar-user-login" id="currentUserLogin"></div>
             </div>
         </div>
     </div>

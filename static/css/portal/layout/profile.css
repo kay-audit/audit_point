@@ -1,0 +1,348 @@
+/* ===== Topbar user profile (right side) =====
+ * Topbar в проекте — светлый (--bg-primary: #ffffff), текст тёмный.
+ * Цвета подобраны под существующий sidebar.css (.topbar-user-name и т.п.).
+ */
+
+.topbar-user-profile {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0.5rem 0.3rem 0.7rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s;
+    user-select: none;
+    outline: none;
+}
+
+.topbar-user-profile:hover,
+.topbar-user-profile:focus-visible {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.topbar-user-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--primary-subtle, rgba(53, 99, 233, 0.12));
+    color: var(--primary, #3563e9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.topbar-user-avatar img.topbar-user-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.topbar-user-info {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    min-width: 0;
+}
+
+.topbar-user-name {
+    color: var(--text-primary, #1a202c);
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+.topbar-user-role {
+    color: var(--text-secondary, #4a5168);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+.topbar-user-login {
+    color: var(--text-secondary, #4a5168);
+    font-size: 0.7rem;
+    font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+/* ===== Profile popup overlay ===== */
+
+.profile-popup-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 1rem;
+    box-sizing: border-box;
+}
+
+.profile-popup {
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    background: var(--color-surface, #ffffff);
+    border-radius: 12px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+    color: var(--color-text, #1a1f2e);
+}
+
+.profile-popup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--color-border, #e6e8ee);
+}
+
+.profile-popup-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--color-text-strong, #0e1320);
+}
+
+.profile-popup-close {
+    border: none;
+    background: transparent;
+    font-size: 1.6rem;
+    line-height: 1;
+    color: var(--color-text-muted, #6a7184);
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: background 0.1s;
+}
+
+.profile-popup-close:hover {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.profile-popup-body {
+    padding: 1rem 1.5rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.profile-popup-section {
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--color-border, #e6e8ee);
+}
+
+.profile-popup-section:first-of-type {
+    border-top: none;
+    padding-top: 0;
+}
+
+.profile-popup-section-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0 0 0.6rem;
+    color: var(--color-text-strong, #0e1320);
+}
+
+.profile-popup-user {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}
+
+.profile-popup-user-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--color-input-bg, #f6f7fa);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-muted, #6a7184);
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.profile-popup-user-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.profile-popup-user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.profile-popup-user-name {
+    font-weight: 600;
+    color: var(--color-text-strong, #0e1320);
+    font-size: 0.95rem;
+}
+
+.profile-popup-user-job {
+    font-size: 0.85rem;
+    color: var(--color-text-muted, #6a7184);
+}
+
+.profile-popup-user-login {
+    font-size: 0.8rem;
+    color: var(--color-text-muted, #6a7184);
+}
+
+.profile-popup-user-login code {
+    background: var(--color-input-bg, #f6f7fa);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+.profile-popup-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.profile-popup-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.profile-popup-form label > span {
+    font-size: 0.8rem;
+    color: var(--color-text-muted, #4a5168);
+    font-weight: 500;
+}
+
+.profile-popup-form input {
+    height: 36px;
+    padding: 0 0.6rem;
+    border: 1px solid var(--color-border, #d0d4dd);
+    border-radius: 5px;
+    font-size: 0.9rem;
+    background: var(--color-input-bg, #ffffff);
+    box-sizing: border-box;
+}
+
+.profile-popup-form input:focus {
+    outline: none;
+    border-color: var(--color-primary, #3563e9);
+    box-shadow: 0 0 0 2px rgba(53, 99, 233, 0.15);
+}
+
+.profile-popup-error {
+    color: #c0392b;
+    background: rgba(192, 57, 43, 0.08);
+    border: 1px solid rgba(192, 57, 43, 0.2);
+    border-radius: 5px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.85rem;
+}
+
+.profile-popup-pwd-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.2rem;
+}
+
+.profile-popup-pwd-show {
+    background: transparent;
+    border: 1px dashed var(--color-border, #d0d4dd);
+    color: var(--color-text-muted, #6a7184);
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+
+.profile-popup-pwd-show:hover {
+    border-color: var(--color-primary, #3563e9);
+    color: var(--color-primary, #3563e9);
+}
+
+.profile-popup-submit {
+    margin-top: 0.4rem;
+    height: 38px;
+    background: var(--color-primary, #3563e9);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.profile-popup-submit:hover:not(:disabled) {
+    background: var(--color-primary-hover, #2a4fc7);
+}
+
+.profile-popup-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.profile-popup-ghost {
+    background: transparent;
+    color: var(--color-text-muted, #6a7184);
+    border: 1px solid var(--color-border, #d0d4dd);
+    border-radius: 5px;
+    height: 38px;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.profile-popup-ghost:hover {
+    background: var(--color-input-bg, #f6f7fa);
+    color: var(--color-text-strong, #0e1320);
+}
+
+.profile-popup-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+}
+
+.profile-popup-actions .profile-popup-submit {
+    flex: 1;
+}
+
+.profile-popup-actions .profile-popup-ghost {
+    flex: 0 0 auto;
+    padding: 0 0.8rem;
+}
+
+.profile-popup-logout {
+    width: 100%;
+    height: 40px;
+    background: transparent;
+    color: #c0392b;
+    border: 1px solid rgba(192, 57, 43, 0.4);
+    border-radius: 5px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.profile-popup-logout:hover {
+    background: rgba(192, 57, 43, 0.08);
+    border-color: #c0392b;
+}

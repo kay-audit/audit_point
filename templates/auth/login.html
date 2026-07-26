@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход — {{ topbar_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/shared/portal.css') | versioned }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/auth/login.css') | versioned }}">
+</head>
+<body class="login-body">
+    <div class="login-card">
+        <div class="login-card-header">
+            <h1 class="login-title">Audit Workstation</h1>
+            <p class="login-subtitle">Войдите в систему</p>
+        </div>
+        <form id="loginForm" class="login-form" autocomplete="on">
+            <label class="login-label">
+                <span>Логин</span>
+                <input type="text" name="username" id="loginUsername"
+                       autocomplete="username" required maxlength="50"
+                       placeholder="например, 22494524">
+            </label>
+            <label class="login-label">
+                <span>Пароль</span>
+                <input type="password" name="password" id="loginPassword"
+                       autocomplete="current-password" required minlength="1"
+                       maxlength="255" placeholder="Введите пароль">
+                <button type="button" class="login-toggle-pwd"
+                        id="loginTogglePwd" title="Показать/скрыть пароль">👁</button>
+            </label>
+            <div class="login-error" id="loginError" hidden></div>
+            <button type="submit" class="login-submit" id="loginSubmitBtn">Войти</button>
+        </form>
+        <div class="login-hint" id="loginHint">
+            <p>Логин — числовой идентификатор (например, табельный номер).
+               Пароль выдаётся администратором.</p>
+        </div>
+    </div>
+    <script type="module" src="{{ url_for('static', path='js/auth/login.js') | versioned }}"></script>
+</body>
+</html>

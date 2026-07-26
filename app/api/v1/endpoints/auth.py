@@ -1,117 +1,32 @@
 """
-API эндпоинты для авторизации.
+API-эндпоинты для авторизации (LEGACY-модуль).
+
+Все актуальные эндпоинты auth (/login, /logout, /me, /me/password,
+/me/change-password, /me/avatar, /admin/users/{u}/reset-password и пр.)
+теперь живут в app/domains/auth/api/ и регистрируются через domain_registry
+под префиксом /api/v1/auth/.
+
+Этот файл оставлен ради обратной совместимости: re-экспортирует хелперы,
+которые импортирует app/routes/portal.py (extract_username_digits,
+get_current_user_from_env). Сами эндпоинты удалены, чтобы не было
+дубликатов путей в OpenAPI.
 """
+from __future__ import annotations
 
-import logging
-import os
-import re
+# Re-exports для обратной совместимости
+from app.api.v1.deps.auth_deps import (  # noqa: F401
+    extract_username_digits,
+    get_current_user_from_env,
+    get_current_username,
+    get_username,
+)
 
-from fastapi import APIRouter, HTTPException
+# Старый AuthResponse модель — оставлен для импорта в legacy-коде.
 from pydantic import BaseModel
 
-from app.core.config import get_settings
 
-logger = logging.getLogger("audit_workstation.api.auth")
-router = APIRouter()
-
-
-class AuthResponse(BaseModel):
-    """Ответ с информацией об авторизации."""
+class AuthResponse(BaseModel):  # noqa: D401
+    """Legacy-совместимая модель ответа /me."""
     authenticated: bool
     username: str | None = None
     display_name: str | None = None
-
-
-def extract_username_digits(raw_username: str) -> str:
-    """
-    Извлекает только цифры из username.
-
-    Примеры:
-        '22494524_omega-sbrf-ru' -> '22494524'
-        '12345678' -> '12345678'
-
-    Args:
-        raw_username: Исходный username
-
-    Returns:
-        Только цифры из username
-
-    Raises:
-        HTTPException: 401 если формат username некорректен
-    """
-    # Берем часть до первого подчеркивания или всю строку
-    base_part = raw_username.split('_')[0]
-
-    # Извлекаем только цифры
-    digits = re.sub(r'\D', '', base_part)
-
-    # Валидация формата: табельный номер от 5 до 20 цифр
-    if not digits or len(digits) < 5 or len(digits) > 20:
-        raise HTTPException(
-            status_code=401,
-            detail="Некорректный формат имени пользователя"
-        )
-
-    return digits
-
-
-def get_current_user_from_env(truncate = True) -> str | None:
-    """
-    Получает текущего пользователя из переменных окружения.
-
-    Приоритет:
-    1. JUPYTERHUB_USER (устанавливается JupyterHub)
-    2. Значение из .env (для разработки)
-
-    Returns:
-        Username (только цифры) или None
-    """
-    settings = get_settings()
-
-    # Сначала проверяем реальную переменную окружения (JupyterHub)
-    raw_username = os.environ.get('JUPYTERHUB_USER')
-
-    # Если нет — берем из настроек (.env)
-    if not raw_username:
-        raw_username = settings.jupyterhub_user
-
-    if not raw_username or raw_username == 'unknown_user':
-        return None
-
-    # Извлекаем только цифры
-    if truncate:
-        username = extract_username_digits(raw_username)
-    else:
-        username = raw_username
-
-    if not username:
-        logger.warning(f"Не удалось извлечь цифры из username: {raw_username}")
-        return None
-
-    return username
-
-
-@router.get("/me", response_model=AuthResponse)
-async def get_current_user():
-    """
-    Возвращает информацию о текущем авторизованном пользователе.
-
-    Используется фронтендом для проверки авторизации при загрузке страницы.
-    """
-    username = get_current_user_from_env()
-
-    if not username:
-        logger.warning("Попытка доступа без авторизации")
-        return AuthResponse(
-            authenticated=False,
-            username=None,
-            display_name=None
-        )
-
-    logger.info(f"Авторизован пользователь: {username}")
-
-    return AuthResponse(
-        authenticated=True,
-        username=username,
-        display_name=f"Пользователь {username}"
-    )

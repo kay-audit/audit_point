@@ -10,6 +10,7 @@
 
     <!-- Основные стили -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/entry/portal.css') | versioned }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/portal/layout/profile.css') | versioned }}">
     {% block extra_css %}{% endblock %}
 </head>
 <body>
@@ -50,6 +51,10 @@
      Каждый импортируемый модуль публикует свои классы на window — inline-скрипты
      в init_script-блоке шаблонов видят AuthManager, PortalSidebar и т.п. -->
 <script type="module" src="{{ url_for('static', path='js/entries/portal-common.js') | versioned }}"></script>
+<!-- Профиль-попап (правый верхний угол): показывает ФИО, должность, логин, форму
+     смены пароля/аватарки/logout. Подключается отдельным <script> (не ESM), чтобы
+     встать после portal-common.js и видеть window.AuthManager. -->
+<script src="{{ url_for('static', path='js/portal/layout/profile-popup.js') | versioned }}"></script>
 
 <!-- Дополнительные скрипты страницы -->
 {% block extra_js %}{% endblock %}

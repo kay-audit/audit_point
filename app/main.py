@@ -30,6 +30,7 @@ from app.core.middleware import (
     RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.core.middlewares.auth_redirect import AuthRedirectMiddleware
 from app.core.middlewares.http_metrics import HttpMetricsMiddleware
 import asyncpg
 from asyncpg import CheckViolationError, UniqueViolationError
@@ -335,6 +336,10 @@ def create_app() -> FastAPI:
 
     # 6. Request ID — innermost: добавляется последним, оборачивается всеми остальными.
     app.add_middleware(RequestIdMiddleware)
+
+    # 7. Auth redirect: HTML-запросы без сессии → /login. API/JSON пропускает,
+    # endpoint сам вернёт 401 через Depends(get_username).
+    app.add_middleware(AuthRedirectMiddleware)
 
     # Подключение статических файлов (доступны по URL /static/*)
     app.mount(

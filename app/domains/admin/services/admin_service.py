@@ -1,5 +1,6 @@
 """Сервис администрирования — бизнес-логика управления ролями."""
 
+import json
 import logging
 
 import asyncpg
@@ -188,3 +189,71 @@ class AdminService:
             "Начальное заполнение ролей: назначено %s ролей для %s пользователей из '%s'",
             assigned_count, len(usernames), branch_filter,
         )
+
+    async def create_user_with_roles(
+        self,
+        *,
+        username: str,
+        fullname: str,
+        job: str = "",
+        tn: str = "",
+        email: str = "",
+        branch: str = "",
+        role_ids: list[int] | None = None,
+        current_admin: str,
+    ) -> dict:
+        """Создаёт/обновляет пользователя в справочнике и опционально назначает роли.
+
+        Используется администратором для онбординга пользователей, которых нет
+        в справочнике EDW/Hive. Если пользователь уже существует — его поля
+        (fullname, job, tn, email, branch) обновляются, а указанные в ``role_ids``
+        роли добавляются к уже имеющимся (idempotent).
+
+        Raises:
+            RoleNotFoundError: если хотя бы одного role_id не существует.
+        """
+        role_ids = role_ids or []
+
+        # 1. Превентивная валидация role_ids — все роли должны существовать.
+        for rid in role_ids:
+            if not await self.repo.get_role_by_id(rid):
+                raise RoleNotFoundError(f"Роль с id={rid} не найдена")
+
+        # 2. Upsert в справочник.
+        await self.repo.upsert_user_in_directory(
+            username=username,
+            fullname=fullname,
+            job=job,
+            tn=tn,
+            email=email,
+            branch=branch,
+        )
+
+        # 3. Назначаем роли (idempotent — повторный вызов с тем же role_id — noop).
+        assigned_count = 0
+        for rid in role_ids:
+            if await self.repo.assign_role(username, rid, current_admin):
+                assigned_count += 1
+
+        # 4. Пишем в аудит-лог одной записью, чтобы было видно всё действие.
+        details = json.dumps(
+            {
+                "fullname": fullname,
+                "job": job,
+                "tn": tn,
+                "email": email,
+                "branch": branch,
+                "role_ids": role_ids,
+                "roles_newly_assigned": assigned_count,
+            },
+            ensure_ascii=False,
+        )
+        await self.audit_log.log(
+            action="create_user",
+            target_username=username,
+            admin_username=current_admin,
+            details=details,
+        )
+
+        # 5. Возвращаем пользователя с актуальными ролями.
+        return await self.get_user_roles(username)

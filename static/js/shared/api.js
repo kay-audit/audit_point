@@ -1511,6 +1511,29 @@ export class APIClient {
     }
 
     /**
+     * Сброс пароля пользователя (только админ). Возвращает новый пароль —
+     * показывается админу один раз, чтобы он мог передать пользователю.
+     * @param {string} targetUsername
+     * @param {string|null} [newPassword] - если null — сервер сгенерирует случайный.
+     * @returns {Promise<{username: string, new_password: string}>}
+     */
+    static async resetPassword(targetUsername, newPassword = null) {
+        const body = newPassword ? { new_password: newPassword } : {};
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl(`/api/v1/auth/admin/users/${targetUsername}/reset-password`),
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            }
+        );
+        if (!response.ok) {
+            await this._throwApiError(response);
+        }
+        return response.json();
+    }
+
+    /**
      * Поиск пользователей в справочнике (для добавления в систему)
      * @param {string} query - Строка поиска (мин. 2 символа)
      * @param {AbortSignal} [signal] - Сигнал отмены запроса

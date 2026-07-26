@@ -172,6 +172,9 @@ export class AdminRoles {
             row.querySelectorAll('.admin-role-chip').forEach(chip => {
                 chip.addEventListener('click', () => this._toggleRole(user.username, chip));
             });
+            row.querySelectorAll('.admin-row-action--reset').forEach(btn => {
+                btn.addEventListener('click', () => this._resetPassword(btn.dataset.username));
+            });
 
             fragment.appendChild(row);
         }
@@ -255,8 +258,36 @@ export class AdminRoles {
                 <div class="admin-roles-row-details">${this._escapeHtml(user.job || '')}</div>
             </div>
             <div class="admin-roles-row-chips">${chips}</div>
+            <div class="admin-roles-row-actions">
+                <button class="admin-row-action admin-row-action--reset"
+                        data-action="reset-password"
+                        data-username="${this._escapeHtml(user.username)}"
+                        title="Сбросить пароль">🔑 Сброс пароля</button>
+            </div>
             <div class="admin-roles-row-username">${this._escapeHtml(user.username)}</div>
         `;
+    }
+
+    /**
+     * Сброс пароля пользователя — вызывается с кнопки в строке таблицы.
+     * Генерирует новый пароль, показывает его админу (один раз).
+     * @param {string} username
+     * @private
+     */
+    static async _resetPassword(username) {
+        if (!confirm(`Сбросить пароль для пользователя ${username}?\nВсе его активные сессии будут отозваны.`)) {
+            return;
+        }
+        try {
+            const r = await APIClient.resetPassword(username);
+            prompt(
+                `Новый пароль для ${r.username} (скопируйте и передайте пользователю; показывается один раз):`,
+                r.new_password
+            );
+            Notifications.success(`Пароль для ${r.username} сброшен`);
+        } catch (err) {
+            Notifications.error(`Ошибка: ${err.message}`);
+        }
     }
 
     /**
@@ -326,6 +357,9 @@ export class AdminRoles {
         row.innerHTML = this._renderRow(user);
         row.querySelectorAll('.admin-role-chip').forEach(chip => {
             chip.addEventListener('click', () => this._toggleRole(user.username, chip));
+        });
+        row.querySelectorAll('.admin-row-action--reset').forEach(btn => {
+            btn.addEventListener('click', () => this._resetPassword(btn.dataset.username));
         });
     }
 

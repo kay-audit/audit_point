@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RoleSchema(BaseModel):
@@ -42,6 +42,25 @@ class UserSearchResult(BaseModel):
 class RoleAssignRequest(BaseModel):
     """Запрос на назначение роли пользователю."""
     role_id: int
+
+
+class UserCreateRequest(BaseModel):
+    """Создание/обновление пользователя в справочнике с опциональным назначением ролей.
+
+    Используется администратором для онбординга пользователей, которых ещё нет
+    в справочнике (например, локально при отсутствии EDW/Hive), либо для
+    обновления полей уже существующего пользователя. Если пользователь с
+    таким ``username`` уже существует — поля справочника обновляются
+    (upsert-семантика), а роли из ``role_ids`` добавляются к существующим
+    (idempotent).
+    """
+    username: str = Field(..., min_length=1, max_length=50)
+    fullname: str = Field(..., min_length=1, max_length=255)
+    job: str = Field(default="", max_length=255)
+    tn: str = Field(default="", max_length=50)
+    email: str = Field(default="", max_length=255)
+    branch: str = Field(default="", max_length=255)
+    role_ids: list[int] = Field(default_factory=list)
 
 
 class AuditLogEntry(BaseModel):

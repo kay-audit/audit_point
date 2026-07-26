@@ -19,6 +19,7 @@ from app.domains.admin.schemas.admin import (
     AuditLogEntry,
     RoleAssignRequest,
     RoleSchema,
+    UserCreateRequest,
     UserDirectoryItem,
     UserRolesResponse,
     UserSearchResult,
@@ -85,6 +86,45 @@ async def get_user_roles(
 ):
     """Возвращает роли указанного пользователя."""
     return await service.get_user_roles(username)
+
+
+@router.post("/users", status_code=201, response_model=UserRolesResponse, dependencies=[_admin])
+async def create_user(
+    body: UserCreateRequest,
+    admin_username: str = Depends(get_username),
+    service: AdminService = Depends(get_admin_service),
+):
+    """Создаёт/обновляет пользователя в справочнике и опционально назначает роли.
+
+    Доступно только администратору. Используется для онбординга пользователей,
+    которых ещё нет в справочнике (например, локально при отсутствии EDW/Hive),
+    а также для обновления полей уже существующих пользователей.
+
+    Поля, указанные в запросе, записываются в ``t_db_oarb_ua_user`` (upsert по
+    ``username``). Роли из ``role_ids`` добавляются к уже имеющимся — повторный
+    вызов с тем же набором безопасен (idempotent).
+
+    Возвращает пользователя с актуальным списком ролей.
+    """
+    from app.api.v1.deps.role_deps import invalidate_user_roles_cache
+
+    result = await service.create_user_with_roles(
+        username=body.username,
+        fullname=body.fullname,
+        job=body.job,
+        tn=body.tn,
+        email=body.email,
+        branch=body.branch,
+        role_ids=body.role_ids,
+        current_admin=admin_username,
+    )
+    if body.role_ids:
+        invalidate_user_roles_cache(body.username)
+    logger.info(
+        "Создание/обновление пользователя %s админом %s (roles=%s)",
+        body.username, admin_username, body.role_ids,
+    )
+    return result
 
 
 @router.post("/users/{username}/roles", status_code=200, dependencies=[_admin])
