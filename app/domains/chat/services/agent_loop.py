@@ -201,6 +201,7 @@ async def run_agent_loop(
     file_blocks: list[dict] | None = None,
     user_id: str | None = None,
     agent_mode: str = "off",
+    current_act_id: int | None = None,
 ) -> dict[str, Any]:
     """Полный (не стриминговый) agent loop.
 

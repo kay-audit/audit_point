@@ -30,6 +30,17 @@ export const ChatStream = {
         const fd = this._buildFormData(message, files, domains);
         fd.append('agent_mode', agentMode);
 
+        // Передаём backend'у id акта, в котором сейчас работает пользователь
+        // (страница конструктора /constructor?act_id=X). Бэкенд использует
+        // его, чтобы AI-ассистент понимал «текущий акт» по умолчанию для
+        // операций модификации (create_act/add_processes_to_act и т.п.).
+        // Вне конструктора — act_id=null, AI использует контекст диалога
+        // (например, явное упоминание КМ пользователем).
+        const currentActId = this._detectCurrentActId();
+        if (currentActId !== null) {
+            fd.append('current_act_id', String(currentActId));
+        }
+
         let res;
         try {
             res = await fetch(
@@ -238,6 +249,40 @@ export const ChatStream = {
         }
 
         return headers;
+    },
+
+    /**
+     * Определяет id акта, в котором сейчас работает пользователь.
+     *
+     * Источники (по приоритету):
+     * 1) `?act_id=N` в URL (страница конструктора).
+     * 2) meta-тег `<meta name="current-act" content="N">` —
+     *    запасной канал, если URL-параметр по какой-то причине не виден
+     *    (например, в iframe или hash-роутинге).
+     *
+     * @returns {number|null}
+     * @private
+     */
+    _detectCurrentActId() {
+        // 1) URL ?act_id=
+        try {
+            const param = new URLSearchParams(window.location.search)
+                .get('act_id');
+            if (param) {
+                const n = parseInt(param, 10);
+                if (Number.isFinite(n) && n > 0) return n;
+            }
+        } catch (_) { /* sandboxed / no URL */ }
+
+        // 2) meta-тег current-act (fallback)
+        const meta = document.querySelector('meta[name="current-act"]');
+        if (meta) {
+            const raw = meta.getAttribute('content');
+            const n = parseInt(raw, 10);
+            if (Number.isFinite(n) && n > 0) return n;
+        }
+
+        return null;
     },
 
     /**

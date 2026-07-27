@@ -41,12 +41,18 @@ def _derive_status(start: date, end: date) -> str:
     return "active"
 
 
-async def load_user_context(username: str) -> dict:
+async def load_user_context(
+    username: str,
+    current_act_id: int | None = None,
+) -> dict:
     """Загружает контекст текущего пользователя.
 
     Возвращает dict с полями:
         username, fullname, job, is_admin, roles: list[str],
-        acts: list[{id, km_number, inspection_name, my_role, status, ...}]
+        acts: list[{id, km_number, inspection_name, my_role, status, ...}],
+        current_act_id: int | None — id акта, в котором пользователь
+            сейчас работает (с конструктора). None если чат открыт
+            не из конструктора (например, sidebar на landing).
     """
     async with get_db() as conn:
         # ФИО/должность
@@ -144,14 +150,19 @@ async def load_user_context(username: str) -> dict:
         "is_admin": is_admin,
         "roles": roles,
         "acts": act_records,
+        "current_act_id": current_act_id,
     }
 
 
-def format_user_context_for_prompt(ctx: dict) -> str:
+async def format_user_context_for_prompt(ctx: dict) -> str:
     """Форматирует контекст пользователя как блок для system prompt.
 
     Формат — компактный, чтобы не раздувать токены. На 12 актов с
     кириллицей это ~1.5-2 KB.
+
+    Если задан current_act_id — он помечается маркером «← ОТКРЫТ
+    СЕЙЧАС» в таблице актов, чтобы LLM понимала контекст по умолчанию
+    для операций модификации.
     """
     lines = [
         "## Контекст текущего пользователя",
@@ -160,6 +171,40 @@ def format_user_context_for_prompt(ctx: dict) -> str:
         f"- Должность: {ctx['job'] or '(не заполнено)'}",
         f"- Роли: {', '.join(ctx['roles']) if ctx['roles'] else '(нет)'}",
     ]
+
+    current_act_id = ctx.get("current_act_id")
+    if current_act_id:
+        # Найдём описание текущего акта, чтобы LLM понимал контекст
+        current_act = next(
+            (a for a in ctx.get("acts", []) if a["id"] == current_act_id),
+            None,
+        )
+        if current_act:
+            lines.append(
+                f"- Текущий открытый акт: id={current_act_id}, "
+                f"КМ={current_act['km_number']}, "
+                f"«{current_act['inspection_name'] or '—'}», "
+                f"ваша роль в команде: {current_act['my_role']} "
+                f"(← ОТКРЫТ СЕЙЧАС в конструкторе)"
+            )
+        else:
+            # Акт есть в URL, но не в топ-12 доступных. Догрузим его
+            # метаданные одним запросом — чтобы LLM видела КМ/название,
+            # даже если акт не попал в основной список.
+            extra = await _load_single_act_meta(current_act_id)
+            if extra:
+                lines.append(
+                    f"- Текущий открытый акт: id={current_act_id}, "
+                    f"КМ={extra['km_number']}, "
+                    f"«{extra['inspection_name'] or '—'}» "
+                    f"(← ОТКРЫТ СЕЙЧАС в конструкторе)"
+                )
+            else:
+                lines.append(
+                    f"- Текущий открытый акт: id={current_act_id} "
+                    f"(← ОТКРЫТ СЕЙЧАС в конструкторе)"
+                )
+
     if ctx["acts"]:
         lines.append("")
         lines.append("## Доступные вам акты (id, КМ, ваша роль, статус)")
@@ -175,19 +220,43 @@ def format_user_context_for_prompt(ctx: dict) -> str:
             dates = (
                 f"{a['inspection_start_date']}…{a['inspection_end_date']}"
             )
+            marker = " ← ОТКРЫТ" if a["id"] == current_act_id else ""
             lines.append(
                 f"| {a['id']} | {a['km_number']} | {label} | {city} | "
-                f"{dates} | {a['my_role']} | {a['status']} |"
+                f"{dates} | {a['my_role']} | {a['status']}{marker} |"
             )
         lines.append("")
-        lines.append(
-            "Когда пользователь говорит «открой мой последний акт», "
-            "«какие у меня проекты», «открой КМ-99-XXXXX» — "
-            "используй эти данные. По «я», «мой», «у меня» — "
-            "подставляй username=" + ctx["username"] + "."
-        )
+        if current_act_id:
+            lines.append(
+                "Сейчас открыт один акт — по умолчанию все операции "
+                "модификации (create_act, add_processes_to_act и т.п.) "
+                "выполняй для него, если пользователь не указал "
+                "другой КМ. Для поиска/просмотра по другим актам — "
+                "используй таблицу выше."
+            )
+        else:
+            lines.append(
+                "Когда пользователь говорит «открой мой последний акт», "
+                "«какие у меня проекты», «открой КМ-99-XXXXX» — "
+                "используй эти данные. По «я», «мой», «у меня» — "
+                "подставляй username=" + ctx["username"] + "."
+            )
     else:
         lines.append("")
         lines.append("## Доступные вам акты")
         lines.append("(нет — пользователь ещё не участвует ни в одном акте)")
     return "\n".join(lines)
+
+
+async def _load_single_act_meta(act_id: int) -> dict | None:
+    """Догружает метаданные одного акта (если он не попал в топ-12)."""
+    from app.db.connection import get_db
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, km_number, inspection_name, is_process_based "
+            "FROM t_db_oarb_audit_act_acts WHERE id = $1",
+            act_id,
+        )
+    if row is None:
+        return None
+    return dict(row)

@@ -53,6 +53,15 @@ async def send_message(
     conv_service: ConversationService = Depends(get_conversation_service),
     msg_service: MessageService = Depends(get_message_service),
     file_service: FileService = Depends(get_file_service),
+    current_act_id: int | None = Form(
+        None,
+        description=(
+            "ID акта, в котором сейчас работает пользователь. "
+            "Передаётся фронтом с конструктора (/constructor?act_id=X), "
+            "чтобы AI-ассистент понимал контекст «по умолчанию» — без явного "
+            "указания act_id от пользователя. Вне конструктора — null."
+        ),
+    ),
 ):
     """
     Отправляет сообщение в беседу.
@@ -210,6 +219,7 @@ async def send_message(
             file_blocks=file_blocks if file_blocks else None,
             user_id=username,
             agent_mode=agent_mode,
+            current_act_id=current_act_id,
         )
     except Exception:
         logger.exception(

@@ -67,6 +67,7 @@ class Orchestrator:
         # 5 callsite'ов внутри agent loop.
         self._current_conversation_id: str | None = None
         self._current_user_id: str | None = None
+        self._current_act_id: int | None = None
 
     async def _completions_create(self, client, **kwargs):
         """Обёрнутый retry'ем вызов chat.completions.create."""
@@ -139,9 +140,12 @@ class Orchestrator:
                     load_user_context,
                     format_user_context_for_prompt,
                 )
-                user_ctx = await load_user_context(self._current_user_id)
+                user_ctx = await load_user_context(
+                    self._current_user_id,
+                    current_act_id=self._current_act_id,
+                )
                 base_prompt += (
-                    "\n\n" + format_user_context_for_prompt(user_ctx)
+                    "\n\n" + await format_user_context_for_prompt(user_ctx)
                 )
             except Exception as exc:
                 logger.warning(
@@ -682,6 +686,7 @@ class Orchestrator:
         file_blocks: list[dict] | None = None,
         user_id: str | None = None,
         agent_mode: str = "off",
+        current_act_id: int | None = None,
     ) -> dict[str, Any]:
         """Полный (не стриминговый) agent loop.
 
@@ -707,6 +712,7 @@ class Orchestrator:
         # Фиксируем контекст для метрик; читается из _execute_tool_call.
         self._current_conversation_id = conversation_id
         self._current_user_id = user_id
+        self._current_act_id = current_act_id
 
         return await run_agent_loop(
             self,
@@ -716,6 +722,7 @@ class Orchestrator:
             domains=domains,
             file_blocks=file_blocks,
             user_id=user_id,
+            current_act_id=current_act_id,
             agent_mode=agent_mode,
         )
 
