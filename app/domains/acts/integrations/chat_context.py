@@ -151,6 +151,7 @@ async def load_user_context(
         "roles": roles,
         "acts": act_records,
         "current_act_id": current_act_id,
+        "selected_node_id": None,  # подставляется позже, если передан
     }
 
 
@@ -173,6 +174,8 @@ async def format_user_context_for_prompt(ctx: dict) -> str:
     ]
 
     current_act_id = ctx.get("current_act_id")
+    selected_node_id = ctx.get("selected_node_id")
+    selected_node_info: dict | None = None
     if current_act_id:
         # Найдём описание текущего акта, чтобы LLM понимал контекст
         current_act = next(
@@ -203,6 +206,21 @@ async def format_user_context_for_prompt(ctx: dict) -> str:
                 lines.append(
                     f"- Текущий открытый акт: id={current_act_id} "
                     f"(← ОТКРЫТ СЕЙЧАС в конструкторе)"
+                )
+
+        # Если выбран конкретный узел — подгружаем его метку/номер,
+        # чтобы LLM знала контекст.
+        if selected_node_id:
+            selected_node_info = await _load_selected_node_meta(
+                current_act_id, selected_node_id,
+            )
+            if selected_node_info:
+                lines.append(
+                    f"- Выбранный блок: id={selected_node_id}, "
+                    f"number={selected_node_info.get('number') or '?'}, "
+                    f"label={selected_node_info.get('label') or '?'}, "
+                    f"type={selected_node_info.get('type', 'item')} "
+                    f"(← ВЫБРАН ПОЛЬЗОВАТЕЛЕМ через контекстное меню)"
                 )
 
     if ctx["acts"]:
@@ -260,3 +278,43 @@ async def _load_single_act_meta(act_id: int) -> dict | None:
     if row is None:
         return None
     return dict(row)
+
+
+async def _load_selected_node_meta(
+    act_id: int, node_id: str,
+) -> dict | None:
+    """Загружает label/number/type узла дерева акта по его id.
+
+    Идёт обходом дерева JSONB (несколько уровней вложенности). Если узел
+    не найден — возвращает None. Используется для контекстного промпта
+    «выбранный блок».
+    """
+    from app.db.connection import get_db
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT tree_data FROM t_db_oarb_audit_act_act_tree WHERE act_id = $1",
+            act_id,
+        )
+    if not row:
+        return None
+    try:
+        import json
+        tree = json.loads(row["tree_data"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    def walk(node):
+        if node.get("id") == node_id:
+            return {
+                "id": node_id,
+                "label": node.get("label", ""),
+                "number": node.get("number", ""),
+                "type": node.get("type", "item"),
+            }
+        for c in node.get("children", []) or []:
+            found = walk(c)
+            if found is not None:
+                return found
+        return None
+
+    return walk(tree)

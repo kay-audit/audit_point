@@ -157,6 +157,38 @@ ClientActionsRegistry.register('open_url', ({ url }) => {
     window.location.href = resolveProxyUrl(url);
 });
 
+// Конструктор актов: после модификации структуры (add_item / add_table
+// / delete_node / move_node) ассистент возвращает client_action с
+// action='refresh_act', чтобы UI перечитал содержимое без перезагрузки
+// страницы (раньше возвращался open_url, эквивалентный Ctrl+Shift+R).
+//
+// Действие идемпотентно: повторный вызов с тем же act_id — безвреден.
+ClientActionsRegistry.register('refresh_act', ({ act_id }) => {
+    if (!act_id) {
+        console.warn('refresh_act: не передан act_id');
+        return;
+    }
+    // На разных страницах по-разному: на конструкторе вызываем
+    // APIClient.loadActContent(act_id) — перечитывает дерево/таблицы/
+    // текстовые блоки/нарушения в state и обновляет рендер. На других
+    // страницах (sidebar landing и т.д.) — просто navigation на
+    // /constructor?act_id={act_id}, чтобы пользователь увидел
+    // изменения в привычном месте.
+    if (typeof window.APIClient !== 'undefined'
+        && typeof window.APIClient.loadActContent === 'function'
+        && document.getElementById('treePanel') !== null) {
+        // Мы в конструкторе — обновляем in-place.
+        window.APIClient.loadActContent(act_id).catch((err) => {
+            console.error('refresh_act: ошибка загрузки акта', err);
+        });
+    } else {
+        // Вне конструктора — переходим.
+        window.location.href = resolveProxyUrl(
+            `/constructor?act_id=${act_id}`
+        );
+    }
+});
+
 ClientActionsRegistry.register('notify', ({ message, level }) => {
     const lvl = level || 'info';
     if (window.Notifications && typeof window.Notifications.show === 'function') {

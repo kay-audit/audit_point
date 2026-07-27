@@ -202,6 +202,7 @@ async def run_agent_loop(
     user_id: str | None = None,
     agent_mode: str = "off",
     current_act_id: int | None = None,
+    selected_node_id: str | None = None,
 ) -> dict[str, Any]:
     """Полный (не стриминговый) agent loop.
 
@@ -240,7 +241,9 @@ async def run_agent_loop(
         ]
 
     # Собираем messages: system + history + текущее сообщение
-    messages = await orch._build_system_messages(domains)
+    messages = await orch._build_system_messages(
+        domains, selected_node_id=selected_node_id,
+    )
     history = await orch._get_history_messages(conversation_id)
     # Убираем последнее сообщение из истории — оно уже сохранено как user message,
     # но мы добавим его явно ниже

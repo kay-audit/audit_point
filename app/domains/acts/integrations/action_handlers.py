@@ -9,7 +9,7 @@ from datetime import date
 
 from pydantic import ValidationError
 
-from app.core.chat.names import ACTION_NOTIFY, ACTION_OPEN_URL
+from app.core.chat.names import ACTION_NOTIFY, ACTION_OPEN_URL, ACTION_REFRESH_ACT
 
 logger = logging.getLogger("audit_workstation.domains.acts.integrations.action_handlers")
 
@@ -472,10 +472,11 @@ async def create_act_handler(
         result.id, act_create.km_number, username,
     )
 
-    url = f"/constructor?act_id={result.id}"
+    # refresh_act — без перезагрузки страницы. Конструктор откроет
+    # только что созданный акт.
     return _client_action(
-        action=ACTION_OPEN_URL,
-        params={"url": url},
+        action=ACTION_REFRESH_ACT,
+        params={"act_id": result.id},
         label=f"Открываю новый акт {act_create.km_number}…",
     )
 
@@ -781,11 +782,11 @@ async def add_processes_to_act_handler(
         act_id, [p["process_code"] for p in processes], username,
     )
 
-    url = f"/constructor?act_id={act_id}"
+    # Используем refresh_act вместо open_url — без перезагрузки страницы.
     return _client_action(
-        action=ACTION_OPEN_URL,
-        params={"url": url},
-        label=f"Открываю акт {km} с новыми процессами…",
+        action=ACTION_REFRESH_ACT,
+        params={"act_id": act_id},
+        label=f"Акт {km} обновлён, обновляю конструктор…",
     ) + "\n\n" + summary
 
 
@@ -802,18 +803,36 @@ _TABLE_KINDS = frozenset({
 })
 
 
+def _unwrap_op(op: object) -> object:
+    """Распаковывает MiniMax-style ``{"$text": "{...json...}"}`` обёртку.
+
+    Некоторые LLM (MiniMax) сериализуют JSON-объекты как строки внутри
+    ключа $text — если объект ровно с одним ключом $text и значение
+    начинается с ``{`` / ``[`` (это JSON), пытаемся распарсить. Иначе
+    возвращаем как есть.
+
+    Рекурсивно: вложенные ``$text`` внутри dict-значений тоже разворачиваются
+    (например, ``add_table`` с ``kind`` в ``{"$text": "regularRisk"}`` —
+    "regularRisk" не JSON, остаётся строкой).
+    """
+    if not isinstance(op, dict):
+        return op
+    if set(op.keys()) == {"$text"}:
+        raw = op["$text"]
+        if isinstance(raw, str) and raw.lstrip().startswith(("{", "[")):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return op
+    # Рекурсивно распаковываем вложенные $text в значениях.
+    return {k: (_unwrap_op(v) if isinstance(v, dict) else v) for k, v in op.items()}
+
+
 def _find_node_by_ref(
     tree: dict,
     ref: str | int,
 ) -> tuple[dict | None, dict | None]:
-    """Ищет узел по id ИЛИ по number ('5', '5.1.2').
-
-    LLM может передать number как int (5) или str ('5') — нормализуем
-    в str, чтобы и '5', и 5 находили один и тот же узел.
-    """
-    if ref is None or ref == "":
-        return None, None
-    ref = str(ref)
 
     def walk(node, parent):
         if str(node.get("id", "")) == ref:
@@ -875,6 +894,7 @@ def _generate_node_id(prefix: str = "node") -> str:
 def _apply_add_item(
     tree: dict, op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     parent_id = op.get("parent_id")
     label = (op.get("label") or "Новый пункт").strip()
     content = op.get("content") or ""
@@ -906,6 +926,7 @@ def _apply_add_sibling(
     tree: dict, op: dict, results: list[dict]
 ) -> None:
     """Добавляет sibling-узел после указанного (как sibling в UI)."""
+    op = _unwrap_op(op)
     sibling_id = op.get("node_id")
     label = (op.get("label") or "Новый пункт").strip()
     if not sibling_id:
@@ -973,6 +994,7 @@ def _apply_add_textblock(
     tree: dict, dict_key: str, target_dict: dict,
     op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     parent_id = op.get("parent_id")
     label = (op.get("label") or "Текстовый блок").strip()
     content = op.get("content") or ""
@@ -1011,6 +1033,7 @@ def _apply_add_table(
     tree: dict, dict_key: str, target_dict: dict,
     op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     parent_id = op.get("parent_id")
     label = (op.get("label") or "Таблица").strip()
     kind = (op.get("kind") or "regular").strip()
@@ -1058,6 +1081,7 @@ def _apply_add_violation(
     tree: dict, dict_key: str, target_dict: dict,
     op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     parent_id = op.get("parent_id")
     label = (op.get("label") or "Нарушение").strip()
     if not parent_id:
@@ -1106,6 +1130,7 @@ def _apply_add_violation(
 def _apply_add_process_mining(
     tree: dict, op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     """Добавляет раздел «Process Mining» в корень (id='6')."""
     label = (
         op.get("label")
@@ -1146,6 +1171,7 @@ def _apply_add_process_mining(
 def _apply_delete_node(
     tree: dict, op: dict, results: list[dict]
 ) -> tuple[set[str], set[str], set[str]]:
+    op = _unwrap_op(op)
     """Удаляет узел из дерева + каскадно его вложенные.
 
     Returns:
@@ -1199,6 +1225,7 @@ def _apply_delete_node(
 def _apply_move_node(
     tree: dict, op: dict, results: list[dict]
 ) -> None:
+    op = _unwrap_op(op)
     """Перемещает узел (с поддеревом) к новому родителю."""
     node_id = op.get("node_id")
     new_parent_id = op.get("new_parent_id")
@@ -1310,6 +1337,19 @@ async def modify_act_tree_handler(
             "add_violation / add_process_mining / delete_node / "
             "move_node."
         )
+
+    # Некоторые LLM (MiniMax) оборачивают каждый dict операции в
+    # {"$text": "{...}"} — распаковываем на лету.
+    unwrapped_ops: list[dict] = []
+    for raw_op in operations:
+        raw_op = _unwrap_op(raw_op)
+        if not isinstance(raw_op, dict):
+            return (
+                f"Каждая операция должна быть объектом; получено {type(raw_op).__name__}: "
+                f"{raw_op!r:.200}"
+            )
+        unwrapped_ops.append(raw_op)
+    operations = unwrapped_ops
 
     # Шаг 1: проверка доступа + права на редактирование
     from app.domains.acts.repositories.act_access import ActAccessRepository
@@ -1486,12 +1526,30 @@ async def modify_act_tree_handler(
         act_id, [r["op"] for r in results], dry_run, username,
     )
 
-    url = f"/constructor?act_id={act_id}"
-    return _client_action(
-        action=ACTION_OPEN_URL,
-        params={"url": url},
-        label=f"Открываю акт {km} с обновлённой структурой…",
-    ) + "\n\n" + "\n".join(summary_lines)
+    # Возвращаем JSON-список блоков: client_action (refresh_act) +
+    # текстовый summary. _parse_blocks_list_result в agent_loop.py
+    # разворачивает список в emitted_blocks — конструктор получит
+    # client_action и обновится in-place, а summary попадёт в
+    # сообщение ассистента для контекста пользователя.
+    #
+    # Раньше возвращали JSON + "\n\n" + summary — это ломало
+    # json.loads (raw-строка невалидна), client_action терялся,
+    # и конструктор НЕ обновлялся (требовался Ctrl+Shift+R).
+    return json.dumps(
+        [
+            {
+                "type": "client_action",
+                "action": ACTION_REFRESH_ACT,
+                "params": {"act_id": act_id},
+                "label": f"Акт {km} обновлён, обновляю конструктор…",
+            },
+            {
+                "type": "text",
+                "content": "\n".join(summary_lines),
+            },
+        ],
+        ensure_ascii=False,
+    )
 
 
 def _renumber_tree(node: dict, prefix: str = "") -> None:

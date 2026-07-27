@@ -45,7 +45,7 @@ router = APIRouter(dependencies=[Depends(require_domain_access("chat"))])
 )
 async def send_message(
     conversation_id: str,
-    message: str = Form(...),
+    message: str = Form(""),
     domains: str | None = Form(None),
     agent_mode: str = Form("off"),
     files: list[UploadFile] = File(default=[]),
@@ -60,6 +60,23 @@ async def send_message(
             "Передаётся фронтом с конструктора (/constructor?act_id=X), "
             "чтобы AI-ассистент понимал контекст «по умолчанию» — без явного "
             "указания act_id от пользователя. Вне конструктора — null."
+        ),
+    ),
+    selected_node_id: str | None = Form(
+        None,
+        description=(
+            "ID узла дерева акта, на котором пользователь нажал правой кнопкой "
+            "(вызвал контекстное меню). Используется для контекстного промпта "
+            "AI-ассистента: «выбранный блок» = этот узел. Вне конструктора — null."
+        ),
+    ),
+    initial_message: str | None = Form(
+        None,
+        description=(
+            "Если передано — используется как первое сообщение пользователя в "
+            "диалоге (например, при вызове «AI-ассистент» из контекстного меню, "
+            "чтобы AI-ассистент сразу представил контекст). Используется, "
+            "только если переданное message пустое."
         ),
     ),
 ):
@@ -143,10 +160,24 @@ async def send_message(
             "file_size": saved["file_size"],
         })
 
-    # Сохраняем пользовательское сообщение
+    # Если передан initial_message (например, AI-ассистент из контекстного
+    # меню сразу открывает чат с фразой «Готов к редактированию. Акт: КМ-X,
+    # выбран блок 2.1…») и при этом пользователь НЕ ввёл свой текст —
+    # используем initial_message как первое сообщение диалога.
+    effective_message = (message or "").strip()
+    if initial_message and initial_message.strip() and not effective_message:
+        effective_message = initial_message.strip()
+        logger.info(
+            "send_message: initial_message передан как первое сообщение "
+            "(conversation=%s, len=%d)",
+            conversation_id, len(effective_message),
+        )
+
+    # Сохраняем пользовательское сообщение (тот же текст, что уйдёт в LLM —
+    # важно для согласованности БД и контекста LLM).
     await msg_service.save_user_message(
         conversation_id=conversation_id,
-        content=message,
+        content=effective_message,
         user_id=username,
         file_blocks=file_blocks if file_blocks else None,
     )
@@ -213,13 +244,14 @@ async def send_message(
     try:
         await orchestrator.run(
             conversation_id=conversation_id,
-            user_message=message,
+            user_message=effective_message,
             message_id=assistant_message_id,
             domains=domains_list,
             file_blocks=file_blocks if file_blocks else None,
             user_id=username,
             agent_mode=agent_mode,
             current_act_id=current_act_id,
+            selected_node_id=selected_node_id,
         )
     except Exception:
         logger.exception(

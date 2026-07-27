@@ -31,6 +31,10 @@ TOOL_OPEN_CK_CLIENT_EXP_PAGE: Final[str] = "ck_client_exp.open_ck_client_exp_pag
 ACTION_OPEN_URL: Final[str] = "open_url"
 ACTION_NOTIFY: Final[str] = "notify"
 ACTION_TRIGGER_SDK: Final[str] = "trigger_sdk"
+# refresh_act — перечитать содержимое акта без перезагрузки страницы.
+# Используется после операций AI-ассистента над структурой акта, чтобы
+# UI обновился in-place. Обработчик регистрируется в chat-client-actions.js.
+ACTION_REFRESH_ACT: Final[str] = "refresh_act"
 
 
 # ── Имена событий audit-лога жизненного цикла чата ───────────────────────────

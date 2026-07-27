@@ -1,5 +1,11 @@
 <!-- Контекстное меню для дерева структуры -->
 <div id="contextMenu" class="context-menu hidden" role="menu">
+    <!-- AI-ассистент (в самом верху, отдельной группой) -->
+    <div class="context-menu-item context-menu-item--ai" data-action="ai-assistant" role="menuitem">
+        <span aria-hidden="true">🤖</span> AI-ассистент
+    </div>
+    <div class="context-menu-separator" role="separator"></div>
+
     <!-- Добавление элементов -->
     <div class="context-menu-item" data-action="add-child" role="menuitem">
         <span aria-hidden="true">➕</span> Добавить подпункт

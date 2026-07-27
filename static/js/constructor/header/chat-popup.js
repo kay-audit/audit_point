@@ -101,6 +101,10 @@ export class ChatPopupManager {
         if (input) {
             setTimeout(() => input.focus(), 100);
         }
+
+        // Приветствие «Готов к редактированию» отправляется прямо из
+        // context-menu-tree.openChatWithContext() (после установки
+        // window.__selectedNode). Здесь никаких действий не требуется.
     }
 
     /**

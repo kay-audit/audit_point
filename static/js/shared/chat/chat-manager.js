@@ -124,23 +124,38 @@ export class ChatManager {
     /**
      * Отправляет сообщение пользователя.
      *
+     * Если передан opts.text — отправляет его напрямую (используется для
+     * автоматических сообщений от AI-ассистента из контекстного меню:
+     * «Готов к редактированию. Акт: ... Выбранный блок: ...»).
+     * Иначе читает текст из input.
+     *
      * ВАЖНО: проверка и установка _isSending выполняются строго до первого await —
      * иначе двойной клик/Enter за один тик микрозадач отправит два запроса
      * (ChatUI.isProcessing переключается только после ui:processing-эмита).
+     *
+     * @param {Object} [opts]
+     * @param {string} [opts.text] — текст сообщения; если не передан,
+     *   берётся из input. Пустой input и пустой opts.text → no-op.
      */
-    static async sendMessage() {
+    static async sendMessage(opts = {}) {
         if (this._isSending) return;
         this._isSending = true;
         try {
             if (ChatUI.isProcessing()) return;
 
-            const text = this._input.value.trim();
+            const text = (opts.text !== undefined
+                ? String(opts.text)
+                : this._input.value
+            ).trim();
             if (!text) return;
 
             const files = ChatFiles.getPendingFiles();
 
-            this._input.value = '';
-            ChatUI.autoResizeInput();
+            // Очищаем input только если текст шёл из него
+            if (opts.text === undefined) {
+                this._input.value = '';
+                ChatUI.autoResizeInput();
+            }
 
             ChatEventBus.emit('chat:send-request', { text, files });
         } finally {

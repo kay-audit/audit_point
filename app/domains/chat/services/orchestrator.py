@@ -68,6 +68,7 @@ class Orchestrator:
         self._current_conversation_id: str | None = None
         self._current_user_id: str | None = None
         self._current_act_id: int | None = None
+        self._current_selected_node_id: str | None = None
 
     async def _completions_create(self, client, **kwargs):
         """Обёрнутый retry'ем вызов chat.completions.create."""
@@ -114,6 +115,7 @@ class Orchestrator:
 
     async def _build_system_messages(
         self, domains: list[str] | None,
+        selected_node_id: str | None = None,
     ) -> list[dict[str, str]]:
         """Собирает системный промпт: базовый + правило small-talk + доменные
         + контекст текущего пользователя (ФИО/роль/доступные акты).
@@ -144,6 +146,20 @@ class Orchestrator:
                     self._current_user_id,
                     current_act_id=self._current_act_id,
                 )
+                # Если есть selected_node_id (пользователь кликнул правой
+                # кнопкой и выбрал «AI-ассистент» в контекстном меню) — это
+                # узел дерева акта, на котором он работает прямо сейчас.
+                # Сохраняем в ctx, чтобы formatter добавил строку «выбран
+                # пользователем».
+                if selected_node_id is not None:
+                    user_ctx["selected_node_id"] = selected_node_id
+                # По умолчанию (если не передан selected_node_id) берём
+                # selectedNode из AppState фронта, если он вдруг прокинут —
+                # на бэке его нет, используем сохранённый в self.
+                elif getattr(self, "_current_selected_node_id", None):
+                    user_ctx["selected_node_id"] = (
+                        self._current_selected_node_id
+                    )
                 base_prompt += (
                     "\n\n" + await format_user_context_for_prompt(user_ctx)
                 )
@@ -687,6 +703,7 @@ class Orchestrator:
         user_id: str | None = None,
         agent_mode: str = "off",
         current_act_id: int | None = None,
+        selected_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Полный (не стриминговый) agent loop.
 
@@ -713,6 +730,7 @@ class Orchestrator:
         self._current_conversation_id = conversation_id
         self._current_user_id = user_id
         self._current_act_id = current_act_id
+        self._current_selected_node_id = selected_node_id
 
         return await run_agent_loop(
             self,
@@ -723,7 +741,7 @@ class Orchestrator:
             file_blocks=file_blocks,
             user_id=user_id,
             current_act_id=current_act_id,
-            agent_mode=agent_mode,
+            selected_node_id=selected_node_id,
         )
 
     def _fallback_response(self, user_message: str) -> dict[str, Any]:

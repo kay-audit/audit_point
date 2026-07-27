@@ -25,7 +25,15 @@ export const ChatStream = {
      * @param {AbortSignal} [options.signal] — внешний сигнал отмены
      */
     async sendAndPoll(conversationId, message, files = [], options = {}) {
-        const { agentMode = 'off', domains = null, onReady, onProgress, onError, signal } = options;
+        const {
+            agentMode = 'off',
+            domains = null,
+            onReady,
+            onProgress,
+            onError,
+            signal,
+            initialMessage: explicitInitial = null,
+        } = options;
 
         const fd = this._buildFormData(message, files, domains);
         fd.append('agent_mode', agentMode);
@@ -39,6 +47,31 @@ export const ChatStream = {
         const currentActId = this._detectCurrentActId();
         if (currentActId !== null) {
             fd.append('current_act_id', String(currentActId));
+        }
+
+        // Если пользователь открыл чат через «AI-ассистент» в контекстном
+        // меню конкретного узла — пробрасываем id узла. Бэкенд подгружает
+        // его label/number и добавляет в system-prompt как «выбранный
+        // пользователем блок», чтобы LLM не спрашивала «в какой блок».
+        const selectedNode = this._detectSelectedNode();
+        if (selectedNode) {
+            fd.append('selected_node_id', selectedNode);
+        }
+
+        // Если чат открыт из контекстного меню (window.__selectedNode
+        // установлен) — initial_message содержит контекст (КМ + блок).
+        // Бэкенд использует его как первое сообщение диалога.
+        // Приоритет: explicit initialMessage из opts > автоматическое из
+        // window.__selectedNode.
+        let initialMsg = explicitInitial;
+        if (!initialMsg && window.__selectedNode) {
+            initialMsg = this._buildContextInitialMessage(window.__selectedNode);
+            // Сбрасываем, чтобы при повторном открытии чата (без вызова
+            // контекстного меню заново) приветствие не отправлялось.
+            window.__selectedNode = null;
+        }
+        if (initialMsg) {
+            fd.append('initial_message', initialMsg);
         }
 
         let res;
@@ -282,6 +315,66 @@ export const ChatStream = {
             if (Number.isFinite(n) && n > 0) return n;
         }
 
+        return null;
+    },
+
+    /**
+     * Формирует текст приветствия-контекста для AI-ассистента.
+     *
+     * Используется при вызове через пункт «AI-ассистент» в контекстном
+     * меню узла дерева. Текст содержит КМ акта, номер и название
+     * выбранного блока — LLM сразу понимает, в каком акте и блоке
+     * работаем, и не переспрашивает.
+     *
+     * @param {Object} ctx — {id, number, label, type}
+     * @returns {string}
+     */
+    buildContextInitialMessage(ctx) {
+        return this._buildContextInitialMessage(ctx);
+    },
+
+    /**
+     * @param {Object} ctx — {id, number, label, type}
+     * @returns {string}
+     * @private
+     */
+    _buildContextInitialMessage(ctx) {
+        if (!ctx) return '';
+        const actId = window.currentActId;
+        const kmLabel = (window.actMetadata && window.actMetadata.km_number)
+            ? window.actMetadata.km_number
+            : (actId ? `id=${actId}` : '');
+        const nodeDesc = ctx.number
+            ? `${ctx.number} «${ctx.label || ''}»`
+            : `id=${ctx.id}`;
+        return `Готов к редактированию. Акт: ${kmLabel}. ` +
+            `Выбранный блок: ${nodeDesc} (${ctx.type || 'item'}). ` +
+            `Какие изменения нужно сделать?`;
+    },
+
+    /**
+     * Определяет id выбранного узла дерева акта.
+     *
+     * Источник — ``AppState.selectedNode`` (или window.__selectedNode,
+     * который ставит контекстное меню перед открытием чата). На
+     * странице конструктора этот узел = выделенный пользователем
+     * элемент дерева (или тот, на котором вызвали контекстное меню).
+     *
+     * @returns {string|null}
+     * @private
+     */
+    _detectSelectedNode() {
+        try {
+            // 1) Явный selectedNode от контекстного меню (window.__selectedNode).
+            if (window.__selectedNode && window.__selectedNode.id) {
+                return String(window.__selectedNode.id);
+            }
+            // 2) Текущий selectedNode в AppState (ставится при клике
+            //    пользователем на элемент дерева).
+            if (window.AppState && window.AppState.selectedNode) {
+                return String(window.AppState.selectedNode);
+            }
+        } catch (_) { /* ignore */ }
         return null;
     },
 
