@@ -478,3 +478,312 @@ async def create_act_handler(
         params={"url": url},
         label=f"Открываю новый акт {act_create.km_number}…",
     )
+
+
+# =============================================================================
+# acts.add_processes_to_act — добавление процессов в акт через чат
+# =============================================================================
+
+# Метки разделов акта (синхронизированы с AppConfig.tree.defaultSections).
+# Используются при автосоздании разделов для новых актов (при вызове из
+# чата — UI ещё не успел открыть акт и проинициализировать дерево).
+_SECTION_LABELS: dict[str, str] = {
+    "1": "Информация о процессе, клиентском пути",
+    "2": "Оценка качества проверенного процесса / сценария процесса / потока работ",
+    "3": "Примененные технологии",
+    "4": "Основные выводы",
+    "5": "Результаты проверки",
+}
+# Порядок разделов в дереве (для автосоздания первого раздела):
+_SECTION_ORDER: list[str] = ["1", "2", "3", "4", "5"]
+
+
+def _add_process_nodes_to_tree(
+    tree: dict,
+    *,
+    parent_id: str,
+    processes: list[dict],
+    start_number: int,
+) -> tuple[int, list[str]]:
+    """Добавляет узлы процессов в раздел parent_id дерева.
+
+    Каждый процесс становится отдельным item-узлом с label вида
+    ``П1004 - Расчет процентной ставки ИЖС``. Номер узла назначается
+    по порядку (5.1, 5.2, ... для раздела 5).
+
+    Args:
+        tree: текущее дерево акта (мутируется in-place).
+        parent_id: id раздела, куда добавлять ('1'..'5', '6' для PM).
+        processes: список {process_code, process_name} (уже валидированный).
+        start_number: с какого числа начинать нумерацию внутри parent_id.
+
+    Returns:
+        (next_number, list_of_new_node_ids) — следующий доступный номер
+        и id созданных узлов (чтобы caller мог их логировать).
+    """
+    # Найти parent в дереве (рекурсивно, т.к. parent может быть вложенным)
+    def _find(node):
+        if node.get("id") == parent_id:
+            return node
+        for c in node.get("children", []):
+            found = _find(c)
+            if found is not None:
+                return found
+        return None
+
+    parent = _find(tree)
+    if parent is None:
+        # Раздел не найден — создаём корневую структуру, если её нет,
+        # иначе добавляем в корень как fallback (UI покажет как обычные пункты).
+        if "children" not in tree:
+            tree["children"] = []
+        parent = tree
+
+    if "children" not in parent:
+        parent["children"] = []
+
+    next_num = start_number
+    new_node_ids: list[str] = []
+    for proc in processes:
+        code = proc["process_code"]
+        name = proc["process_name"]
+        node_id = f"item_{parent_id}_{code}_{uuid.uuid4().hex[:8]}"
+        node = {
+            "id": node_id,
+            "label": f"{code} - {name}",
+            "type": "item",
+            "content": "",
+            "protected": False,
+            "deletable": True,
+            "children": [],
+            "customLabel": "",
+            "number": f"{parent_id}.{next_num}",
+        }
+        parent["children"].append(node)
+        new_node_ids.append(node_id)
+        next_num += 1
+    return next_num, new_node_ids
+
+
+async def add_processes_to_act_handler(
+    *,
+    act_id: int | None = None,
+    process_codes: list[str] | None = None,
+    section_id: str = "5",
+    start_number: int | None = None,
+) -> str:
+    """Добавляет процессы из справочника ua_data.process_dict в акт.
+
+    Args:
+        act_id: id акта. Если None — LLM должна передать явно (нет
+            fallback на «последний» — намеренно, чтобы избежать
+            неоднозначности).
+        process_codes: список кодов процессов (например, ['П1004',
+            'П2054']). Обязательный (если пусто — tool попросит коды).
+        section_id: id раздела дерева для добавления (по умолчанию '5' —
+            «Результаты проверки»). Допустимые: '1'..'5' (см. AppConfig).
+        start_number: с какого числа начинать нумерацию внутри раздела.
+            По умолчанию — продолжаем с последнего + 1.
+
+    Права: Куратор/Руководитель/Редактор (или Админ) — те же, что у
+    ручного редактора. Участник может только просматривать.
+
+    На успехе возвращает client_action с переходом на /constructor?act_id=...
+    и текстовую сводку: какие процессы добавлены, в какой раздел, итоговый
+    счётчик пунктов в разделе.
+    """
+    from app.db.connection import get_db
+    from app.domains.acts.integrations.processes import fetch_processes_by_codes
+    from app.domains.chat.services.tool_executor import get_current_chat_user
+
+    username = get_current_chat_user()
+    if not username:
+        return (
+            "Не удалось определить пользователя чат-сессии. "
+            "Сообщите администратору."
+        )
+
+    if act_id is None:
+        return (
+            "Не указан id акта. Передайте act_id (его можно увидеть "
+            "в URL открытого акта или в списке «Мои проекты»)."
+        )
+    if not process_codes:
+        return (
+            "Не переданы коды процессов. Укажите хотя бы один код "
+            "в process_codes (например, ['П1004', 'П2054']). "
+            "Если знаете только название — скажите в чате, я найду код."
+        )
+
+    # Шаг 1: проверить доступ (через репозиторий, не поднимая AccessGuard —
+    # достаточно знать, что пользователь в команде и имеет право edit).
+    from app.domains.acts.repositories.act_access import ActAccessRepository
+    from app.domains.acts.repositories.act_lock import ActLockRepository
+
+    async with get_db() as conn:
+        access_repo = ActAccessRepository(conn)
+        lock_repo = ActLockRepository(conn)
+        from app.domains.acts.services.access_guard import AccessGuard
+        guard = AccessGuard(access_repo, lock_repo)
+
+        # Доступ + права на редактирование
+        try:
+            await guard.require_access(act_id, username)
+            perm = await access_repo.get_user_edit_permission(act_id, username)
+        except Exception as exc:
+            logger.warning(
+                "add_processes_to_act: доступ запрещён user=%s act=%s: %s",
+                username, act_id, exc,
+            )
+            return (
+                f"Нет доступа к акту {act_id}: {exc}. "
+                f"Проверьте, что вы участник команды этого акта."
+            )
+        if not perm.get("can_edit"):
+            role = perm.get("role") or "(не в команде)"
+            return (
+                f"Ваша роль в акте ({role}) позволяет только просматривать "
+                f"акт. Редактировать могут Куратор, Руководитель или Редактор. "
+                f"Попросите одного из них добавить процесс."
+            )
+
+        # Шаг 2: проверить, что процессы существуют в справочнике
+        processes = await fetch_processes_by_codes(process_codes)
+        if not processes:
+            return (
+                f"Ни один из переданных кодов {process_codes} не найден "
+                f"в справочнике процессов. Проверьте коды (формат «ПXXXX») "
+                f"или передайте полное название процесса."
+            )
+        found_codes = {p["process_code"] for p in processes}
+        missing = [
+            str(c).strip()
+            for c in process_codes
+            if c is not None and str(c).strip() and str(c).strip() not in found_codes
+        ]
+        if missing:
+            return (
+                f"Эти коды процессов не найдены в справочнике: {', '.join(missing)}. "
+                f"Найденные: {', '.join(sorted(found_codes))}. "
+                f"Проверьте коды или передайте точные названия."
+            )
+
+        # Шаг 3: загрузить дерево и добавить узлы
+        from app.domains.acts.repositories.act_content import ActContentRepository
+
+        content_repo = ActContentRepository(conn)
+        tree = await content_repo._load_tree(act_id)
+
+        # Если раздел '6' (process mining) — его по умолчанию нет в дереве,
+        # добавляем как spec-узел. Иначе — ищем существующий раздел.
+        if section_id == "6":
+            # Process Mining секция: добавляем как корневой child с special
+            pm_exists = any(
+                c.get("special") == "process_mining"
+                for c in tree.get("children", [])
+            )
+            if not pm_exists:
+                tree.setdefault("children", []).append({
+                    "id": "6",
+                    "special": "process_mining",
+                    "label": (
+                        "Оценка процесса по результатам исследования "
+                        "методом Process Mining"
+                    ),
+                    "children": [],
+                    "protected": False,
+                    "deletable": True,
+                })
+            actual_parent = "6"
+        else:
+            actual_parent = section_id
+            # Акт при создании имеет пустой default tree (только root).
+            # Если раздел '1'..'5' ещё не создан — создаём защищённый
+            # раздел с правильным label (UI делает это на своей стороне
+            # при первом открытии, но AI вызывает tool до этого).
+            # Раздел 1 для непроцессных проверок переименовывается, как
+            # и в state-core.js _createRootStructure().
+            existing_ids = {c.get("id") for c in tree.get("children", [])}
+            if actual_parent not in existing_ids:
+                row = await conn.fetchrow(
+                    "SELECT is_process_based FROM t_db_oarb_audit_act_acts "
+                    "WHERE id = $1",
+                    act_id,
+                )
+                is_pb = bool(row["is_process_based"]) if row else True
+                section_label = _SECTION_LABELS.get(
+                    actual_parent, f"Раздел {actual_parent}"
+                )
+                if actual_parent == "1" and not is_pb:
+                    section_label = (
+                        "Характеристика проверяемого направления"
+                    )
+                tree.setdefault("children", []).insert(
+                    _SECTION_ORDER.index(actual_parent)
+                    if actual_parent in _SECTION_ORDER else len(_SECTION_ORDER),
+                    {
+                        "id": actual_parent,
+                        "label": section_label,
+                        "protected": True,
+                        "deletable": False,
+                        "children": [],
+                        "content": "",
+                    },
+                )
+
+        # Определить начальный номер для раздела
+        existing = []
+        for c in tree.get("children", []):
+            if c.get("id") == actual_parent:
+                existing = c.get("children", [])
+                break
+        if start_number is None:
+            max_num = 0
+            for child in existing:
+                num = child.get("number", "")
+                # числа вида "5.3" — берём последнюю цифру
+                if "." in str(num):
+                    tail = str(num).rsplit(".", 1)[-1]
+                    try:
+                        max_num = max(max_num, int(tail))
+                    except ValueError:
+                        pass
+            start_number = max_num + 1
+
+        # Применить изменения
+        next_num, new_ids = _add_process_nodes_to_tree(
+            tree,
+            parent_id=actual_parent,
+            processes=processes,
+            start_number=start_number,
+        )
+
+        # Шаг 4: сохранить дерево + (опционально) сгенерить audit_point_id
+        await content_repo._save_tree(act_id, tree)
+
+        # Получить КМ акта для текстового отчёта
+        km_row = await conn.fetchrow(
+            "SELECT km_number FROM t_db_oarb_audit_act_acts WHERE id = $1",
+            act_id,
+        )
+        km = km_row["km_number"] if km_row else f"id={act_id}"
+
+    summary = (
+        f"Добавлено {len(processes)} процесс(ов) в акт {km} "
+        f"(раздел {actual_parent}, пункты {actual_parent}.{start_number}…"
+        f"{actual_parent}.{next_num - 1}):\n"
+    )
+    for proc in processes:
+        summary += f"- {proc['process_code']} — {proc['process_name']}\n"
+
+    logger.info(
+        "AI-ассистент добавил процессы в акт id=%s: %s пользователем %s",
+        act_id, [p["process_code"] for p in processes], username,
+    )
+
+    url = f"/constructor?act_id={act_id}"
+    return _client_action(
+        action=ACTION_OPEN_URL,
+        params={"url": url},
+        label=f"Открываю акт {km} с новыми процессами…",
+    ) + "\n\n" + summary

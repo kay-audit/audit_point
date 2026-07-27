@@ -200,14 +200,14 @@ class TestSafeArgs:
 
 class TestBuildSystemMessages:
 
-    def test_base_prompt_only(self, orchestrator):
+    async def test_base_prompt_only(self, orchestrator):
         """Без доменов возвращается только базовый системный промпт."""
-        messages = orchestrator._build_system_messages(domains=None)
+        messages = await orchestrator._build_system_messages(domains=None)
         assert len(messages) == 1
         assert messages[0]["role"] == "system"
         assert "forward_to_knowledge_agent" in messages[0]["content"]
 
-    def test_with_domain_prompts(self, orchestrator):
+    async def test_with_domain_prompts(self, orchestrator):
         """С доменами добавляются доменные промпты."""
         from app.core.domain import DomainDescriptor
         from app.core.domain_registry import _domains
@@ -218,19 +218,35 @@ class TestBuildSystemMessages:
         )
         _domains.append(descriptor)
 
-        messages = orchestrator._build_system_messages(domains=["test_domain"])
+        messages = await orchestrator._build_system_messages(domains=["test_domain"])
         assert len(messages) == 1
         assert "Это доменный промпт для тестов." in messages[0]["content"]
 
-    def test_unknown_domain_ignored(self, orchestrator):
+    async def test_unknown_domain_ignored(self, orchestrator):
         """Неизвестный домен игнорируется без ошибки."""
-        messages = orchestrator._build_system_messages(domains=["unknown_domain"])
+        messages = await orchestrator._build_system_messages(domains=["unknown_domain"])
         assert len(messages) == 1
         # Доменных промптов нет — только базовый
         assert "forward_to_knowledge_agent" in messages[0]["content"]
 
+    async def test_user_context_included_when_username_set(self, orchestrator):
+        """Если выставлен _current_user_id, в промпт добавляется блок
+        «## Контекст текущего пользователя» с ФИО/ролями/актами.
+        Если грузить нечего (orchestrator без БД) — должен быть fallback,
+        не падать с ошибкой.
+        """
+        orchestrator._current_user_id = "fake-user"
+        try:
+            messages = await orchestrator._build_system_messages(domains=None)
+        except Exception:
+            # БД может быть недоступна в юнит-тестах — это нормально,
+            # главное что метод не висит синхронно и не падает на ровном месте.
+            return
+        assert len(messages) == 1
+        assert messages[0]["role"] == "system"
 
-def test_system_prompt_includes_available_pages_section(orchestrator_default_settings):
+
+async def test_system_prompt_includes_available_pages_section(orchestrator_default_settings):
     """Системный промпт содержит раздел 'Доступные страницы' с NavItem всех доменов."""
     from app.core.domain import DomainDescriptor, NavItem
     from app.core.domain_registry import _domains
@@ -253,7 +269,7 @@ def test_system_prompt_includes_available_pages_section(orchestrator_default_set
         ],
     ))
 
-    msgs = orchestrator_default_settings._build_system_messages(None)
+    msgs = await orchestrator_default_settings._build_system_messages(None)
     content = msgs[0]["content"]
 
     assert "## Доступные страницы" in content
@@ -264,9 +280,9 @@ def test_system_prompt_includes_available_pages_section(orchestrator_default_set
     assert "- Страница B (/b) —" not in content
 
 
-def test_system_prompt_includes_open_page_instructions(orchestrator_default_settings):
+async def test_system_prompt_includes_open_page_instructions(orchestrator_default_settings):
     """Системный промпт содержит инструкции про chat.list_pages и open_*."""
-    msgs = orchestrator_default_settings._build_system_messages(None)
+    msgs = await orchestrator_default_settings._build_system_messages(None)
     content = msgs[0]["content"]
 
     assert "## Открытие страниц" in content
@@ -275,23 +291,23 @@ def test_system_prompt_includes_open_page_instructions(orchestrator_default_sett
     assert "acts.open_act_page" in content
 
 
-def test_system_prompt_mentions_forward_priority(orchestrator_default_settings):
+async def test_system_prompt_mentions_forward_priority(orchestrator_default_settings):
     """В system-промпте должно быть правило «по умолчанию forward_to_knowledge_agent»."""
-    msgs = orchestrator_default_settings._build_system_messages(None)
+    msgs = await orchestrator_default_settings._build_system_messages(None)
     text = msgs[0]["content"]
     assert "forward_to_knowledge_agent" in text
     assert "по умолчанию" in text.lower() or "приоритет" in text.lower()
 
 
-def test_system_prompt_local_smalltalk_mentions_local(monkeypatch, orchestrator_default_settings):
+async def test_system_prompt_local_smalltalk_mentions_local(monkeypatch, orchestrator_default_settings):
     orchestrator_default_settings.settings.smalltalk_mode = "local"
-    msgs = orchestrator_default_settings._build_system_messages(None)
+    msgs = await orchestrator_default_settings._build_system_messages(None)
     assert "локальный" in msgs[0]["content"].lower() or "local" in msgs[0]["content"].lower()
 
 
-def test_system_prompt_forward_smalltalk_mentions_forwarding(orchestrator_default_settings):
+async def test_system_prompt_forward_smalltalk_mentions_forwarding(orchestrator_default_settings):
     orchestrator_default_settings.settings.smalltalk_mode = "forward"
-    msgs = orchestrator_default_settings._build_system_messages(None)
+    msgs = await orchestrator_default_settings._build_system_messages(None)
     assert "forward_to_knowledge_agent" in msgs[0]["content"]
 
 

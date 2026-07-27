@@ -239,7 +239,7 @@ async def run_agent_loop(
         ]
 
     # Собираем messages: system + history + текущее сообщение
-    messages = orch._build_system_messages(domains)
+    messages = await orch._build_system_messages(domains)
     history = await orch._get_history_messages(conversation_id)
     # Убираем последнее сообщение из истории — оно уже сохранено как user message,
     # но мы добавим его явно ниже

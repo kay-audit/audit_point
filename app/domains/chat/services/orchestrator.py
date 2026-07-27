@@ -111,10 +111,17 @@ class Orchestrator:
             )
         return result
 
-    def _build_system_messages(
+    async def _build_system_messages(
         self, domains: list[str] | None,
     ) -> list[dict[str, str]]:
-        """Собирает системный промпт: базовый + правило small-talk + доменные."""
+        """Собирает системный промпт: базовый + правило small-talk + доменные
+        + контекст текущего пользователя (ФИО/роль/доступные акты).
+
+        Контекст пользователя подгружается отдельным helper'ом из acts-домена
+        (load_user_context): LLM узнаёт, кто с ним говорит, и может отвечать
+        на «открой мой последний акт», «какие у меня проекты», понимать
+        «я», «руководитель я» и т.п. без отдельного tool-вызова.
+        """
         smalltalk_line = (
             "\n\nДля small-talk (приветствия, вопросы о тебе) давай "
             "локальный краткий текстовый ответ без вызова инструментов."
@@ -122,6 +129,25 @@ class Orchestrator:
             else "\n\nДля small-talk также вызывай chat.forward_to_knowledge_agent."
         )
         base_prompt = BASE_SYSTEM_PROMPT + smalltalk_line
+
+        # Контекст пользователя. Грузится всегда, даже для small-talk —
+        # чтобы LLM знала, кто с ней говорит, при первом же сообщении.
+        # Грузится только если есть username (т.е. мы в HTTP-контексте).
+        if self._current_user_id:
+            try:
+                from app.domains.acts.integrations.chat_context import (
+                    load_user_context,
+                    format_user_context_for_prompt,
+                )
+                user_ctx = await load_user_context(self._current_user_id)
+                base_prompt += (
+                    "\n\n" + format_user_context_for_prompt(user_ctx)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось загрузить контекст пользователя %s: %s",
+                    self._current_user_id, exc,
+                )
 
         if domains:
             from app.core.domain_registry import get_domain

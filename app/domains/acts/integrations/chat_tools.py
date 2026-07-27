@@ -4,9 +4,14 @@
 get_act_by_km и др. — всего 27) удалены: внешний агент сам ходит в БД.
 Здесь остаются только action-tools — команды интерфейса.
 """
-from app.core.chat.names import TOOL_CREATE_ACT, TOOL_OPEN_ACT_PAGE
+from app.core.chat.names import (
+    TOOL_ADD_PROCESSES_TO_ACT,
+    TOOL_CREATE_ACT,
+    TOOL_OPEN_ACT_PAGE,
+)
 from app.core.chat.tools import ChatTool, ChatToolParam
 from app.domains.acts.integrations.action_handlers import (
+    add_processes_to_act_handler,
     create_act_handler,
     open_act_page_button_translator,
     open_act_page_handler,
@@ -128,6 +133,61 @@ def get_chat_tools() -> list[ChatTool]:
                 ),
             ],
             handler=create_act_handler,
+            category="action",
+        ),
+        ChatTool(
+            name=TOOL_ADD_PROCESSES_TO_ACT,
+            domain=_DOMAIN,
+            description=(
+                "Добавить процессы (из справочника t_db_oarb_ua_process_dict) "
+                "в акт проверки как отдельные пункты в дереве. Использовать когда "
+                "пользователь говорит «добавь в акт процесс П1004», «включи в "
+                "проверку процессы ИЖС/готового жилья», «разбей акт по "
+                "процессам», «в структуре акта добавь пункты по процессам». "
+                "Tool резолвит коды процессов в справочнике, добавляет item-узлы "
+                "в выбранный раздел (по умолчанию '5' — «Результаты проверки», "
+                "или '6' для Process Mining — он создаётся автоматически), нумерует "
+                "их и сохраняет дерево. Каждый процесс становится отдельным пунктом "
+                "с label вида «П1004 - Расчет процентной ставки ИЖС». Права: "
+                "Куратор/Руководитель/Редактор/Админ (Участник может только "
+                "просматривать акт). На успехе возвращает client_action с переходом "
+                "на /constructor?act_id={act_id} и текстовую сводку: какие "
+                "процессы добавлены, в какой раздел, с какими номерами."
+            ),
+            parameters=[
+                ChatToolParam(
+                    "act_id", "integer",
+                    "ID акта, в который добавлять процессы (целое число). "
+                    "Обязательный — узнать можно из URL /constructor?act_id=... "
+                    "или из таблицы «Мои проекты». Если не указан — tool "
+                    "вернёт просьбу указать.",
+                    required=False,
+                ),
+                ChatToolParam(
+                    "process_codes", "array",
+                    "Коды процессов из справочника ua_data, например "
+                    "['П6152', 'П6153'] (формат ПXXXX или схожий). "
+                    "Если не переданы — tool вернёт просьбу указать. Если "
+                    "пользователь дал только название — СНАЧАЛА найди код через "
+                    "chat.forward_to_knowledge_agent.",
+                    required=False,
+                    items_type="string",
+                ),
+                ChatToolParam(
+                    "section_id", "string",
+                    "ID раздела дерева для добавления (по умолчанию '5' — "
+                    "«Результаты проверки»). Допустимые: '1'..'5'. Для Process "
+                    "Mining используй '6' (раздел создаётся автоматически).",
+                    required=False, default="5",
+                ),
+                ChatToolParam(
+                    "start_number", "integer",
+                    "Начать нумерацию пунктов с этого числа внутри раздела "
+                    "(по умолчанию — продолжаем с последнего + 1).",
+                    required=False,
+                ),
+            ],
+            handler=add_processes_to_act_handler,
             category="action",
         ),
     ]
