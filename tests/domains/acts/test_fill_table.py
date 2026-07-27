@@ -1,19 +1,23 @@
-"""Unit-тесты для fill_table-операции modify_act_tree_handler.
+"""Unit-тесты для fill_table и add_table_row операций modify_act_tree_handler.
 
 Покрывает:
 - Нормализация compact-формата (строки) в полные TableCellSchema.
 - Нормализация full-формата (dict).
 - Mode='replace' — заменяет таблицу целиком.
 - Mode='append_rows' — добавляет строки в конец.
+- add_table_row: добавление одной строки с first_value и row.
 - Поиск таблицы по node_id (когда LLM передаёт number вида 'Таблица 1.2').
 - Ошибки: неизвестный mode, отсутствует table_id, не-прямоугольный grid,
-  неверный тип ячейки, защищённая таблица, несуществующая таблица.
+  неверный тип ячейки, несуществующая таблица.
 - col_widths обновление.
+- Защищённые таблицы (protected=True) — fill_table/add_table_row
+  ДОЛЖНЫ работать (защита только структуры, не контента).
 - _resolve_table_by_ref: прямой ключ + поиск по node_id.
 """
 import pytest
 
 from app.domains.acts.integrations.action_handlers import (
+    _apply_add_table_row,
     _apply_fill_table,
     _normalize_table_cell,
     _normalize_table_grid,
@@ -350,18 +354,24 @@ class TestApplyFillTable:
                 [],
             )
 
-    def test_protected_table_raises(self):
+    def test_protected_table_allowed(self):
+        """protected=True защищает только структуру (от удаления/
+        перемещения), но НЕ контент. Ассистент с правами edit должен
+        мочь заполнять любые таблицы, включая шаблонные (metrics,
+        regularRisk и т.д.) — они ВСЕ protected=True на фронте."""
         tables = self._tables()
         tables["tbl_1"]["protected"] = True
-        with pytest.raises(ValueError, match="защищена"):
-            _apply_fill_table(
-                self._tree(), tables,
-                {
-                    "op": "fill_table", "table_id": "tbl_1",
-                    "grid": [["A"]],
-                },
-                [],
-            )
+        results: list[dict] = []
+        _apply_fill_table(
+            self._tree(), tables,
+            {
+                "op": "fill_table", "table_id": "tbl_1",
+                "grid": [["A", "B"], ["X", "Y"]],
+            },
+            results,
+        )
+        assert results[0]["rows"] == 2
+        assert tables["tbl_1"]["grid"][1][0]["content"] == "X"
 
     def test_non_rectangular_grid_raises(self):
         with pytest.raises(ValueError, match="прямоугольной"):
@@ -405,3 +415,231 @@ class TestApplyFillTable:
         )
         assert results[0]["rows"] == 2
         assert results[0]["cols"] == 2
+
+
+class TestApplyAddTableRow:
+    def _tree(self) -> dict:
+        return _tree_with_table("tbl_1", "node_1")
+
+    def _tables_with_headers(self) -> dict:
+        """Таблица с заголовками 3×3 (как у regularRisk шаблона)."""
+        return {
+            "tbl_1": {
+                "id": "tbl_1",
+                "nodeId": "node_1",
+                "grid": [
+                    [{"content": "Процесс", "isHeader": True, "originRow": 0, "originCol": 0},
+                     {"content": "Описание", "isHeader": True, "originRow": 0, "originCol": 1},
+                     {"content": "Уровень", "isHeader": True, "originRow": 0, "originCol": 2}],
+                ],
+                "colWidths": [120, 250, 100],
+                "protected": True,
+                "deletable": True,
+                "kind": "regularRisk",
+            },
+        }
+
+    def test_first_value_only(self):
+        """«Впиши П2008 в таблицу 1 в первый столбец» — самый частый кейс."""
+        tables = self._tables_with_headers()
+        results: list[dict] = []
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row",
+                "table_id": "tbl_1",
+                "first_value": "П2008",
+            },
+            results,
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert len(grid) == 2  # 1 header + 1 new
+        assert grid[1][0]["content"] == "П2008"
+        assert grid[1][1]["content"] == ""
+        assert grid[1][2]["content"] == ""
+        assert grid[1][0]["isHeader"] is False
+        assert results[0]["first_value"] == "П2008"
+        assert results[0]["row_index"] == 1
+        assert results[0]["cols"] == 3
+
+    def test_full_row_passed(self):
+        tables = self._tables_with_headers()
+        results: list[dict] = []
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row",
+                "table_id": "tbl_1",
+                "row": ["П2008", "Расчёт процентной ставки", "Высокий"],
+            },
+            results,
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert grid[1][0]["content"] == "П2008"
+        assert grid[1][1]["content"] == "Расчёт процентной ставки"
+        assert grid[1][2]["content"] == "Высокий"
+
+    def test_row_shorter_than_table_pads(self):
+        tables = self._tables_with_headers()
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "row": ["П2008"],  # только 1 ячейка, а таблица 3-кол
+            },
+            [],
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert len(grid[1]) == 3
+        assert grid[1][0]["content"] == "П2008"
+        assert grid[1][1]["content"] == ""
+        assert grid[1][2]["content"] == ""
+
+    def test_row_longer_than_table_truncates(self):
+        tables = self._tables_with_headers()
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "row": ["A", "B", "C", "D", "E"],
+            },
+            [],
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert len(grid[1]) == 3
+        assert grid[1][0]["content"] == "A"
+        assert grid[1][2]["content"] == "C"
+
+    def test_row_priority_over_first_value(self):
+        """Если переданы и row и first_value — row выигрывает."""
+        tables = self._tables_with_headers()
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "first_value": "X",  # будет проигнорировано
+                "row": ["П2008", "Описание", "Уровень"],
+            },
+            [],
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert grid[1][0]["content"] == "П2008"
+
+    def test_multiple_rows_appended_in_order(self):
+        tables = self._tables_with_headers()
+        for code in ("П2008", "П2009", "П2010"):
+            _apply_add_table_row(
+                self._tree(), tables,
+                {"op": "add_table_row", "table_id": "tbl_1",
+                 "first_value": code},
+                [],
+            )
+        grid = tables["tbl_1"]["grid"]
+        assert len(grid) == 4  # 1 header + 3 new
+        assert grid[1][0]["content"] == "П2008"
+        assert grid[2][0]["content"] == "П2009"
+        assert grid[3][0]["content"] == "П2010"
+        # originRow должен идти подряд
+        for c in range(3):
+            assert grid[3][c]["originRow"] == 3
+
+    def test_protected_table_allowed(self):
+        """add_table_row должен работать и для protected таблиц."""
+        tables = self._tables_with_headers()
+        # protected=True (как у шаблонных таблиц)
+        assert tables["tbl_1"]["protected"] is True
+        results: list[dict] = []
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "first_value": "П2008",
+            },
+            results,
+        )
+        assert results[0]["first_value"] == "П2008"
+
+    def test_empty_table_first_value(self):
+        """Для пустой таблицы (без заголовков) — дефолт 1 колонка."""
+        tables = {"tbl_1": _empty_table("tbl_1", "node_1")}
+        results: list[dict] = []
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "first_value": "X",
+            },
+            results,
+        )
+        assert results[0]["cols"] == 1
+        assert tables["tbl_1"]["grid"][0][0]["content"] == "X"
+
+    def test_first_value_none(self):
+        tables = self._tables_with_headers()
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "first_value": None,
+            },
+            [],
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert grid[1][0]["content"] == ""
+
+    def test_int_first_value(self):
+        tables = self._tables_with_headers()
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "op": "add_table_row", "table_id": "tbl_1",
+                "first_value": 42,
+            },
+            [],
+        )
+        grid = tables["tbl_1"]["grid"]
+        assert grid[1][0]["content"] == "42"
+
+    def test_missing_table_id_raises(self):
+        with pytest.raises(ValueError, match="table_id обязателен"):
+            _apply_add_table_row(
+                self._tree(), {"tbl_1": _empty_table()},
+                {"op": "add_table_row", "first_value": "X"},
+                [],
+            )
+
+    def test_table_not_found_raises(self):
+        with pytest.raises(ValueError, match="не найдена"):
+            _apply_add_table_row(
+                self._tree(), {"tbl_1": _empty_table()},
+                {"op": "add_table_row", "table_id": "missing",
+                 "first_value": "X"},
+                [],
+            )
+
+    def test_row_not_a_list_raises(self):
+        with pytest.raises(ValueError, match="row должен быть массивом"):
+            _apply_add_table_row(
+                self._tree(), self._tables_with_headers(),
+                {"op": "add_table_row", "table_id": "tbl_1",
+                 "row": "not a list"},
+                [],
+            )
+
+    def test_minimax_textwrap_unwraps(self):
+        import json
+        tables = self._tables_with_headers()
+        results: list[dict] = []
+        _apply_add_table_row(
+            self._tree(), tables,
+            {
+                "$text": json.dumps({
+                    "op": "add_table_row",
+                    "table_id": "tbl_1",
+                    "first_value": "П2008",
+                })
+            },
+            results,
+        )
+        assert results[0]["first_value"] == "П2008"
+        assert tables["tbl_1"]["grid"][1][0]["content"] == "П2008"

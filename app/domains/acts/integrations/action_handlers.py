@@ -1234,11 +1234,11 @@ def _apply_fill_table(
             f"(передай tableId из add_table или node_id узла с type='table')"
         )
 
-    if target_table.get("protected"):
-        raise ValueError(
-            f"fill_table: таблица {target_table.get('id')!r} защищена "
-            f"от изменений (protected=True)"
-        )
+    # НЕ проверяем target_table.get("protected") — этот флаг для шаблонных
+    # таблиц (metrics, regularRisk, operationalRisk, taxRisk) означает
+    # только защиту СТРУКТУРЫ от перемещения/удаления, а не запрет
+    # заполнения ячеек. Права на редактирование уже проверены в
+    # modify_act_tree_handler (can_edit), этого достаточно.
 
     normalized_grid = _normalize_table_grid(raw_grid, mode)
     existing_grid: list = target_table.get("grid") or []
@@ -1267,6 +1267,92 @@ def _apply_fill_table(
         "mode": mode,
         "rows": len(new_grid),
         "cols": len(new_grid[0]) if new_grid else 0,
+    })
+
+
+def _apply_add_table_row(
+    tree: dict, target_dict: dict, op: dict, results: list[dict]
+) -> None:
+    """Добавляет одну строку в конец таблицы.
+
+    Удобно для коротких команд вида «впиши П2008 в таблицу» — LLM
+    передаёт table_id + значение одной ячейки, handler сам разворачивает
+    в полную строку с пустыми ячейками по ширине таблицы (или по
+    переданной длине row).
+
+    Ожидаемые поля:
+    - table_id: id таблицы или узла (tableId / node_id / "Таблица 1.2").
+    - first_value (опц.) — значение для первой ячейки строки. Удобный
+      shortcut для «добавь в первый столбец П2008».
+    - row (опц.) — массив значений ячеек строки. Если задан И
+      first_value — first_value ИГНОРИРУЕТСЯ (row приоритетнее). Если
+      не задан — строка = [first_value] + ["" * n] где n — ширина
+      таблицы минус 1.
+    """
+    op = _unwrap_op(op)
+    table_ref = op.get("table_id")
+    if not table_ref:
+        raise ValueError("add_table_row: table_id обязателен")
+
+    target_table, node_id = _resolve_table_by_ref(tree, target_dict, table_ref)
+    if target_table is None:
+        raise ValueError(
+            f"add_table_row: таблица {table_ref!r} не найдена "
+            f"(передай tableId из add_table или node_id узла с type='table')"
+        )
+
+    existing_grid: list = target_table.get("grid") or []
+    # Ширина таблицы = ширина первой строки (там обычно заголовки).
+    # Если таблица пустая — берём 1 (дефолт).
+    if existing_grid and existing_grid[0]:
+        cols = len(existing_grid[0])
+    else:
+        cols = max(1, len(op.get("row") or []) or 1)
+
+    row_values = op.get("row")
+    if row_values is not None:
+        if not isinstance(row_values, list):
+            raise ValueError(
+                "add_table_row: row должен быть массивом значений"
+            )
+        # Нормализуем к ширине cols (дополняем пустыми или обрезаем).
+        # LLM может прислать любую длину — приведём к cols.
+        cells = [str(v) if v is not None else "" for v in row_values]
+        if len(cells) < cols:
+            cells.extend([""] * (cols - len(cells)))
+        elif len(cells) > cols:
+            cells = cells[:cols]
+    else:
+        first_value = op.get("first_value", "")
+        first_value_str = (
+            str(first_value) if first_value is not None else ""
+        )
+        cells = [first_value_str] + [""] * (cols - 1)
+
+    # Каждая ячейка строки — данные (isHeader=False).
+    new_row: list[dict] = []
+    new_row_index = len(existing_grid)
+    for c, content in enumerate(cells):
+        new_row.append({
+            "content": content,
+            "isHeader": False,
+            "colSpan": 1,
+            "rowSpan": 1,
+            "isSpanned": False,
+            "spanOrigin": None,
+            "originRow": new_row_index,
+            "originCol": c,
+        })
+
+    target_table["grid"] = list(existing_grid) + [new_row]
+
+    results.append({
+        "op": "add_table_row",
+        "table_id": target_table.get("id"),
+        "node_id": node_id,
+        "row_index": new_row_index,
+        "cols": cols,
+        "first_value": cells[0] if cells else "",
     })
 
 
@@ -1489,6 +1575,9 @@ async def modify_act_tree_handler(
             - ``{"op": "fill_table", "table_id": "5.2.3", "grid":
                [["Товар","Кол-во"],["Ручка",5]], "mode": "replace"}`` —
                заполнить/обновить таблицу (см.ниже).
+            - ``{"op": "add_table_row", "table_id": "5.2.3",
+               "first_value": "П2008"}`` — добавить ОДНУ строку в конец
+               таблицы (все ячейки кроме первой — пустые).
             - ``{"op": "add_violation", "parent_id": "5.1", "label": "...",
                "violated": "...", "established": "..."}`` — добавить нарушение.
             - ``{"op": "add_process_mining", "label": "..."}`` — добавить
@@ -1530,8 +1619,8 @@ async def modify_act_tree_handler(
         return (
             "Не переданы операции. Передайте хотя бы одну в "
             "operations: add_item / add_textblock / add_table / "
-            "fill_table / add_violation / add_process_mining / "
-            "delete_node / move_node."
+            "fill_table / add_table_row / add_violation / "
+            "add_process_mining / delete_node / move_node."
         )
 
     # Некоторые LLM (MiniMax) оборачивают каждый dict операции в
@@ -1606,6 +1695,8 @@ async def modify_act_tree_handler(
                                           tables, op, results)
                     elif kind == "fill_table":
                         _apply_fill_table(tree, tables, op, results)
+                    elif kind == "add_table_row":
+                        _apply_add_table_row(tree, tables, op, results)
                     elif kind == "add_violation":
                         _apply_add_violation(tree, "violations",
                                               violations, op, results)
@@ -1628,8 +1719,9 @@ async def modify_act_tree_handler(
                         errors.append(
                             f"#{op_index}: неизвестная операция {kind!r}. "
                             f"Допустимые: add_item, add_sibling, add_textblock, "
-                            f"add_table, fill_table, add_violation, "
-                            f"add_process_mining, delete_node, move_node."
+                            f"add_table, fill_table, add_table_row, "
+                            f"add_violation, add_process_mining, "
+                            f"delete_node, move_node."
                         )
                 except ValueError as exc:
                     errors.append(f"#{op_index}: {exc}")
@@ -1696,6 +1788,14 @@ async def modify_act_tree_handler(
             summary_lines.append(
                 f"- fill_table: таблица {r['table_id']!r} (id={r['node_id']}) "
                 f"обновлена в режиме «{r['mode']}» — {r['rows']}×{r['cols']}"
+            )
+        elif op_kind == "add_table_row":
+            value = r.get("first_value", "")
+            value_disp = f"«{value}»" if value else "(пусто)"
+            summary_lines.append(
+                f"- add_table_row: в таблицу {r['table_id']!r} добавлена "
+                f"строка №{r['row_index']} со значением в 1-й колонке "
+                f"{value_disp} ({r['cols']} колонок)"
             )
         elif op_kind == "add_violation":
             summary_lines.append(
