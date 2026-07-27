@@ -99,13 +99,13 @@ class TestSearchUsers:
 class TestAssignRoleValidation:
 
     async def test_user_not_in_directory_raises(self, service, mock_repo):
-        mock_repo.get_role_by_id.return_value = {"id": 1, "name": "Админ"}
+        mock_repo.get_role_by_id.return_value = {"id": 1, "name": "Администратор"}
         mock_repo.get_user_from_directory.return_value = None
         with pytest.raises(UserNotFoundError):
             await service.assign_role("99999999", 1, "admin")
 
     async def test_user_in_directory_succeeds(self, service, mock_repo):
-        mock_repo.get_role_by_id.return_value = {"id": 1, "name": "Админ"}
+        mock_repo.get_role_by_id.return_value = {"id": 1, "name": "Администратор"}
         mock_repo.get_user_from_directory.return_value = {"username": "22501010"}
         mock_repo.assign_role.return_value = True
         result = await service.assign_role("22501010", 1, "admin")
@@ -124,7 +124,7 @@ class TestSeedInitialRoles:
         # должны назначаться каждому пользователю — иначе разделы недоступны
         # не-админам.
         roles = {
-            "Админ": {"id": 1, "name": "Админ"},
+            "Администратор": {"id": 1, "name": "Администратор"},
             "Цифровой акт": {"id": 2, "name": "Цифровой акт"},
             "Чат-ассистент": {"id": 3, "name": "Чат-ассистент"},
             "SQL-агент": {"id": 4, "name": "SQL-агент"},

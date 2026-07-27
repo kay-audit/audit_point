@@ -82,7 +82,7 @@ class TestRequireDomainAccess:
     def test_admin_passes_any_domain(self):
         """Админ — особое имя роли, ``domain_name`` может быть любым (включая None)."""
         app = _build_app(protected_domain="acts")
-        _set_roles(app, [{"id": 99, "name": "Админ", "domain_name": None}])
+        _set_roles(app, [{"id": 99, "name": "Администратор", "domain_name": None}])
 
         with TestClient(app) as client:
             resp = client.get("/protected")
@@ -91,7 +91,7 @@ class TestRequireDomainAccess:
 
     def test_admin_passes_for_arbitrary_domain(self):
         app = _build_app(protected_domain="ck_fin_res")
-        _set_roles(app, [{"id": 99, "name": "Админ", "domain_name": None}])
+        _set_roles(app, [{"id": 99, "name": "Администратор", "domain_name": None}])
 
         with TestClient(app) as client:
             resp = client.get("/protected")
@@ -169,7 +169,7 @@ class TestRequireDomainAccess:
         with TestClient(app) as client:
             resp = client.get("/protected")
 
-        # Только роль 'Админ' получает универсальный доступ
+        # Только роль 'Администратор' получает универсальный доступ
         assert resp.status_code == 403
 
 
@@ -182,7 +182,7 @@ class TestRequireAdmin:
 
     def test_admin_role_passes(self):
         app = _build_app()
-        _set_roles(app, [{"id": 99, "name": "Админ", "domain_name": None}])
+        _set_roles(app, [{"id": 99, "name": "Администратор", "domain_name": None}])
 
         with TestClient(app) as client:
             resp = client.get("/admin-only")

@@ -6,7 +6,11 @@ import logging
 import asyncpg
 
 from app.api.v1.deps.role_deps import DEFAULT_ROLE_NAMES
-from app.domains.admin.exceptions import LastAdminError, RoleNotFoundError, UserNotFoundError
+from app.domains.admin.exceptions import (
+    LastAdminError,
+    RoleNotFoundError,
+    UserNotFoundError,
+)
 from app.domains.admin.repositories.admin_audit_log import AdminAuditLogRepository
 from app.domains.admin.repositories.admin_repository import AdminRepository
 from app.domains.admin.settings import AdminSettings
@@ -36,7 +40,7 @@ class AdminService:
     async def get_user_roles(self, username: str) -> dict:
         """Возвращает роли пользователя."""
         roles = await self.repo.get_user_roles(username)
-        is_admin = any(r["name"] == "Админ" for r in roles)
+        is_admin = any(r["name"] == "Администратор" for r in roles)
         return {
             "username": username,
             "roles": roles,
@@ -85,7 +89,7 @@ class AdminService:
             logger.warning("Попытка снять несуществующую роль id=%s", role_id)
             raise RoleNotFoundError(f"Роль с id={role_id} не найдена")
 
-        if role["name"] == "Админ":
+        if role["name"] == "Администратор":
             admin_count = await self.repo.count_admins()
             if admin_count <= 1:
                 logger.warning(
@@ -149,9 +153,9 @@ class AdminService:
             )
             return
 
-        admin_role = await self.repo.get_role_by_name("Админ")
+        admin_role = await self.repo.get_role_by_name("Администратор")
         if not admin_role:
-            logger.warning("Роль 'Админ' не найдена, заполнение пропущено")
+            logger.warning("Роль 'Администратор' не найдена, заполнение пропущено")
             return
 
         # Дефолтные роли — тот же набор, что auto-assign при первом обращении
@@ -199,6 +203,7 @@ class AdminService:
         tn: str = "",
         email: str = "",
         branch: str = "",
+        tb: str = "",
         role_ids: list[int] | None = None,
         current_admin: str,
     ) -> dict:
@@ -206,8 +211,12 @@ class AdminService:
 
         Используется администратором для онбординга пользователей, которых нет
         в справочнике EDW/Hive. Если пользователь уже существует — его поля
-        (fullname, job, tn, email, branch) обновляются, а указанные в ``role_ids``
-        роли добавляются к уже имеющимся (idempotent).
+        (fullname, job, tn, email, branch, tb) обновляются, а указанные в
+        ``role_ids`` роли добавляются к уже имеющимся (idempotent).
+
+        НИКОГДА не назначает роль «Администратор» — эта роль присваивается
+        только через отдельный admin-flow (чтобы случайно создаваемый
+        пользователь не получил бы полный доступ).
 
         Raises:
             RoleNotFoundError: если хотя бы одного role_id не существует.
@@ -227,9 +236,12 @@ class AdminService:
             tn=tn,
             email=email,
             branch=branch,
+            tb=tb,
         )
 
         # 3. Назначаем роли (idempotent — повторный вызов с тем же role_id — noop).
+        #    «Администратор» НЕ включается автоматически — это особая роль,
+        #    выдаваемая только осознанно через отдельный admin-flow.
         assigned_count = 0
         for rid in role_ids:
             if await self.repo.assign_role(username, rid, current_admin):
@@ -243,6 +255,7 @@ class AdminService:
                 "tn": tn,
                 "email": email,
                 "branch": branch,
+                "tb": tb,
                 "role_ids": role_ids,
                 "roles_newly_assigned": assigned_count,
             },
@@ -257,3 +270,107 @@ class AdminService:
 
         # 5. Возвращаем пользователя с актуальными ролями.
         return await self.get_user_roles(username)
+
+    async def update_user_metadata(
+        self,
+        *,
+        username: str,
+        fullname: str,
+        job: str = "",
+        tn: str = "",
+        email: str = "",
+        branch: str = "",
+        tb: str = "",
+        current_admin: str,
+    ) -> dict:
+        """Обновляет метаданные пользователя (ФИО/Должность/ТБ и т.п.).
+
+        Используется админ-панелью для кнопки «Редактировать». Не трогает
+        is_deleted/deleted_* (для этого — отдельные методы soft_delete /
+        restore). Роли в user_roles тоже не меняются — это делается через
+        свои эндпоинты /roles.
+
+        Raises:
+            UserNotFoundError: если пользователь не найден в справочнике.
+        """
+        existing = await self.repo.get_user_from_directory(username)
+        if not existing:
+            raise UserNotFoundError(f"Пользователь {username} не найден в справочнике")
+
+        await self.repo.upsert_user_in_directory(
+            username=username,
+            fullname=fullname,
+            job=job,
+            tn=tn,
+            email=email,
+            branch=branch,
+            tb=tb,
+        )
+
+        details = json.dumps(
+            {
+                "fullname": fullname,
+                "job": job,
+                "tn": tn,
+                "email": email,
+                "branch": branch,
+                "tb": tb,
+            },
+            ensure_ascii=False,
+        )
+        await self.audit_log.log(
+            action="update_user",
+            target_username=username,
+            admin_username=current_admin,
+            details=details,
+        )
+        return await self.get_user_roles(username)
+
+    async def soft_delete_user(self, username: str, current_admin: str) -> bool:
+        """Помечает пользователя как удалённого (soft-delete).
+
+        Удалённый пользователь:
+        - остаётся в БД (с пометкой «УДАЛЕН» в UI);
+        - недоступен в /api/v1/acts/users/search (нельзя добавить в НОВЫЕ акты);
+        - существующие упоминания в уже созданных актах продолжают работать.
+
+        Если пользователь уже помечен удалённым — операция идемпотентна,
+        повторный вызов возвращает False без побочных эффектов.
+
+        Raises:
+            UserNotFoundError: если пользователь не найден в справочнике.
+        """
+        existing = await self.repo.get_user_from_directory(username)
+        if not existing:
+            raise UserNotFoundError(f"Пользователь {username} не найден в справочнике")
+
+        deleted = await self.repo.soft_delete_user(username, current_admin)
+        if deleted:
+            await self.audit_log.log(
+                action="delete_user",
+                target_username=username,
+                admin_username=current_admin,
+            )
+        return deleted
+
+    async def restore_user(self, username: str, current_admin: str) -> bool:
+        """Восстанавливает пользователя из soft-delete.
+
+        Используется при отмене ошибочного удаления. Не восстанавливает
+        роли — их можно переназначить через admin-панель.
+
+        Raises:
+            UserNotFoundError: если пользователь не найден.
+        """
+        existing = await self.repo.get_user_from_directory(username)
+        if not existing:
+            raise UserNotFoundError(f"Пользователь {username} не найден в справочнике")
+
+        restored = await self.repo.restore_user(username)
+        if restored:
+            await self.audit_log.log(
+                action="restore_user",
+                target_username=username,
+                admin_username=current_admin,
+            )
+        return restored

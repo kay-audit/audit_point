@@ -140,14 +140,14 @@ class AdminRepository(BaseRepository):
         return result == "DELETE 1"
 
     async def count_admins(self) -> int:
-        """Возвращает количество пользователей с ролью 'Админ'."""
+        """Возвращает количество пользователей с ролью 'Администратор'."""
         return await self.conn.fetchval(
             f"""
             SELECT COUNT(*) FROM {self.user_roles} ur
             JOIN {self.roles} r ON r.id = ur.role_id
             WHERE r.name = $1
             """,
-            "Админ",
+            "Администратор",
         )
 
     async def count_user_roles(self) -> int:
@@ -191,6 +191,12 @@ class AdminRepository(BaseRepository):
 
         Один SQL-запрос с UNION + LEFT JOIN + json_agg. При непустом ``query``
         результат фильтруется по подстроке (ФИО/логин/email) на стороне БД.
+
+        Возвращаются ВСЕ пользователи — и удалённые (is_deleted=true), и
+        обычные. Удалённые нужны для отображения в админ-панели (с пометкой
+        «УДАЛЕН»), чтобы было видно, кого из старых проверок уже отозвали.
+        В других API (acts/users/search и подбор команды) удалённые
+        пользователи исключаются отдельной логикой в сервисном слое.
         """
         params: list = [branch]
         where_sql = ""
@@ -217,6 +223,10 @@ class AdminRepository(BaseRepository):
                 COALESCE(d.job, '') AS job,
                 COALESCE(d.tn, '') AS tn,
                 COALESCE(d.email, '') AS email,
+                COALESCE(d.tb, '') AS tb,
+                COALESCE(d.is_deleted, FALSE) AS is_deleted,
+                COALESCE(d.deleted_by, '') AS deleted_by,
+                d.deleted_at,
                 (d.branch IS NOT NULL AND d.branch = $1) AS is_department,
                 COALESCE(
                     json_agg(json_build_object(
@@ -232,14 +242,16 @@ class AdminRepository(BaseRepository):
                 SELECT DISTINCT username FROM {self.user_roles}
             ) base
             LEFT JOIN (
-                SELECT DISTINCT ON (username) username, fullname, job, tn, email, branch
+                SELECT DISTINCT ON (username) username, fullname, job, tn, email, branch,
+                       tb, is_deleted, deleted_by, deleted_at
                 FROM {self.user_table}
                 ORDER BY username
             ) d ON d.username = base.username
             LEFT JOIN {self.user_roles} ur ON ur.username = base.username
             LEFT JOIN {self.roles} r ON r.id = ur.role_id
             {where_sql}
-            GROUP BY base.username, d.fullname, d.job, d.tn, d.email, d.branch
+            GROUP BY base.username, d.fullname, d.job, d.tn, d.email, d.branch,
+                     d.tb, d.is_deleted, d.deleted_by, d.deleted_at
             ORDER BY COALESCE(d.fullname, base.username)
             LIMIT ${limit_idx} OFFSET ${offset_idx}
             """,
@@ -389,7 +401,11 @@ class AdminRepository(BaseRepository):
                    COALESCE(fullname, '') AS fullname,
                    COALESCE(job, '') AS job,
                    COALESCE(tn, '') AS tn,
-                   COALESCE(email, '') AS email
+                   COALESCE(email, '') AS email,
+                   COALESCE(tb, '') AS tb,
+                   COALESCE(is_deleted, FALSE) AS is_deleted,
+                   COALESCE(deleted_by, '') AS deleted_by,
+                   deleted_at
             FROM {self.user_table}
             WHERE username = $1
             """,
@@ -405,6 +421,7 @@ class AdminRepository(BaseRepository):
         tn: str = "",
         email: str = "",
         branch: str = "",
+        tb: str = "",
     ) -> dict:
         """Создаёт пользователя в справочнике или обновляет поля существующего.
 
@@ -412,21 +429,27 @@ class AdminRepository(BaseRepository):
         EDW/Hive (или для правки их полей). ON CONFLICT (username) DO UPDATE
         — идемпотентно: повторный вызов с теми же полями безопасен.
 
+        Поля is_deleted/deleted_at/deleted_by НЕ трогаем при обычном upsert —
+        они изменяются только через явные методы soft_delete / restore.
+        Это защищает от случайного «оживления» удалённого пользователя
+        при повторной отправке формы.
+
         Возвращает dict с обновлёнными полями (read-back после upsert).
         """
         await self.conn.execute(
             f"""
             INSERT INTO {self.user_table}
-                (username, fullname, job, tn, email, branch)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (username, fullname, job, tn, email, branch, tb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (username) DO UPDATE
               SET fullname = EXCLUDED.fullname,
                   job      = EXCLUDED.job,
                   tn       = EXCLUDED.tn,
                   email    = EXCLUDED.email,
-                  branch   = EXCLUDED.branch
+                  branch   = EXCLUDED.branch,
+                  tb       = EXCLUDED.tb
             """,
-            username, fullname, job, tn, email, branch,
+            username, fullname, job, tn, email, branch, tb,
         )
         row = await self.conn.fetchrow(
             f"""
@@ -435,10 +458,59 @@ class AdminRepository(BaseRepository):
                    COALESCE(job, '') AS job,
                    COALESCE(tn, '') AS tn,
                    COALESCE(email, '') AS email,
-                   COALESCE(branch, '') AS branch
+                   COALESCE(branch, '') AS branch,
+                   COALESCE(tb, '') AS tb,
+                   COALESCE(is_deleted, FALSE) AS is_deleted,
+                   COALESCE(deleted_by, '') AS deleted_by,
+                   deleted_at
             FROM {self.user_table}
             WHERE username = $1
             """,
             username,
         )
         return dict(row)
+
+    async def soft_delete_user(
+        self,
+        username: str,
+        deleted_by: str,
+    ) -> bool:
+        """Помечает пользователя как удалённого (soft-delete).
+
+        Устанавливает is_deleted=true, deleted_at=CURRENT_TIMESTAMP,
+        deleted_by=deleted_by. Возвращает True если запись была обновлена.
+
+        ВНИМАНИЕ: роль-связи в user_roles НЕ удаляются, чтобы уже
+        зафиксированные упоминания в Актах продолжали резолвиться.
+        Удалённый пользователь просто исключается из /api/v1/acts/users/search
+        и не может быть добавлен в НОВЫЕ акты.
+        """
+        result = await self.conn.execute(
+            f"""
+            UPDATE {self.user_table}
+            SET is_deleted = TRUE,
+                deleted_at = CURRENT_TIMESTAMP,
+                deleted_by = $2
+            WHERE username = $1 AND COALESCE(is_deleted, FALSE) = FALSE
+            """,
+            username, deleted_by,
+        )
+        return result == "UPDATE 1"
+
+    async def restore_user(self, username: str) -> bool:
+        """Восстанавливает пользователя из soft-delete (снимает пометку).
+
+        Используется при отмене случайного удаления. Роли в user_roles
+        остаются нетронутыми.
+        """
+        result = await self.conn.execute(
+            f"""
+            UPDATE {self.user_table}
+            SET is_deleted = FALSE,
+                deleted_at = NULL,
+                deleted_by = ''
+            WHERE username = $1
+            """,
+            username,
+        )
+        return result == "UPDATE 1"

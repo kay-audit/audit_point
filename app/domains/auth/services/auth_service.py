@@ -141,7 +141,7 @@ class AuthService:
 
     async def is_admin(self, username: str) -> bool:
         roles = await self._user_roles(username)
-        return any(r["name"] == "Админ" for r in roles)
+        return any(r["name"] == "Администратор" for r in roles)
 
     # ---------- credentials ----------
 

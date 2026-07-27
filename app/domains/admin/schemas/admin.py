@@ -1,8 +1,16 @@
 """Pydantic схемы для эндпоинтов администрирования."""
 
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+# Фиксированный список допустимых ТБ (территориальных банков).
+# Используется в Pydantic-схемах и в JS-форме редактирования пользователя.
+TB_CODES: tuple[str, ...] = (
+    "СРБ", "СИБ", "ББ", "ВВБ", "МБ", "ЦЧБ", "СЗБ", "ЮЗБ", "ДВБ", "УБ", "ПБ", "ЦА",
+)
 
 
 class RoleSchema(BaseModel):
@@ -27,6 +35,15 @@ class UserDirectoryItem(BaseModel):
     job: str = ""
     tn: str = ""
     email: str = ""
+    # Территориальный банк (ТБ): буквенное обозначение из TB_CODES,
+    # пустая строка если не заполнено.
+    tb: str = ""
+    # Soft-delete: true = пользователь помечен как удалённый. В UI
+    # показывается плашка «УДАЛЕН», кнопки редактирования/удаления
+    # блокируются.
+    is_deleted: bool = False
+    deleted_by: str = ""
+    deleted_at: Optional[datetime] = None
     roles: list[RoleSchema] = []
     is_department: bool = True
 
@@ -37,6 +54,7 @@ class UserSearchResult(BaseModel):
     fullname: str = ""
     job: str = ""
     email: str = ""
+    tb: str = ""
 
 
 class RoleAssignRequest(BaseModel):
@@ -53,6 +71,10 @@ class UserCreateRequest(BaseModel):
     таким ``username`` уже существует — поля справочника обновляются
     (upsert-семантика), а роли из ``role_ids`` добавляются к существующим
     (idempotent).
+
+    ВАЖНО: роль «Администратор» НЕ включается автоматически — её можно
+    назначить только отдельной осознанной отметкой (см. ``role_ids`` и
+    проверки на стороне сервиса).
     """
     username: str = Field(..., min_length=1, max_length=50)
     fullname: str = Field(..., min_length=1, max_length=255)
@@ -60,7 +82,23 @@ class UserCreateRequest(BaseModel):
     tn: str = Field(default="", max_length=50)
     email: str = Field(default="", max_length=255)
     branch: str = Field(default="", max_length=255)
+    tb: str = Field(default="", max_length=16)
     role_ids: list[int] = Field(default_factory=list)
+
+
+class UserUpdateRequest(BaseModel):
+    """Обновление метаданных пользователя (без изменения ролей).
+
+    Используется админ-панелью для кнопки «Редактировать». Не меняет
+    пароль, роли и soft-delete флаги — для каждого из этих аспектов
+    есть отдельный эндпоинт.
+    """
+    fullname: str = Field(..., min_length=1, max_length=255)
+    job: str = Field(default="", max_length=255)
+    tn: str = Field(default="", max_length=50)
+    email: str = Field(default="", max_length=255)
+    branch: str = Field(default="", max_length=255)
+    tb: str = Field(default="", max_length=16)
 
 
 class AuditLogEntry(BaseModel):

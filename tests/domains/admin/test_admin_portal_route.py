@@ -88,7 +88,7 @@ class TestAdminPortalAccessGate:
             portal_module.templates, "TemplateResponse", _fake_template_response,
         )
 
-        roles = [{"id": 99, "name": "Админ", "domain_name": None}]
+        roles = [{"id": 99, "name": "Администратор", "domain_name": None}]
         app = _build_app(roles=roles)
 
         client = TestClient(app, follow_redirects=False)

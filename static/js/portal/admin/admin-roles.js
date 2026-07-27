@@ -167,6 +167,7 @@ export class AdminRoles {
             row.dataset.fullname = user.fullname || '';
             row.dataset.email = user.email || '';
             row.dataset.department = user.is_department !== false ? '1' : '0';
+            if (user.is_deleted) row.classList.add('admin-roles-row--deleted');
             row.innerHTML = this._renderRow(user);
 
             row.querySelectorAll('.admin-role-chip').forEach(chip => {
@@ -174,6 +175,15 @@ export class AdminRoles {
             });
             row.querySelectorAll('.admin-row-action--reset').forEach(btn => {
                 btn.addEventListener('click', () => this._resetPassword(btn.dataset.username));
+            });
+            row.querySelectorAll('.admin-row-action--edit').forEach(btn => {
+                btn.addEventListener('click', () => this._onEditUser(user));
+            });
+            row.querySelectorAll('.admin-row-action--delete').forEach(btn => {
+                btn.addEventListener('click', () => this._onDeleteUser(btn.dataset.username));
+            });
+            row.querySelectorAll('.admin-row-action--restore').forEach(btn => {
+                btn.addEventListener('click', () => this._onRestoreUser(btn.dataset.username));
             });
 
             fragment.appendChild(row);
@@ -246,16 +256,48 @@ export class AdminRoles {
                     </button>`;
         }).join('');
 
-        const externalBadge = user.is_department === false
-            ? '<span class="admin-external-badge">внешний</span>'
+        // Бейдж «УДАЛЕН» — пользователь soft-deleted, существующие упоминания
+        // в актах продолжают работать, но добавлять в новые акты его нельзя.
+        const deletedBadge = user.is_deleted
+            ? '<span class="admin-deleted-badge" title="Пользователь помечен удалённым. Доступ закрыт, но старые упоминания в актах сохранены.">УДАЛЕН</span>'
+            : '';
+
+        // ТБ отображается под ФИО/должностью (отдельной строкой) — основные
+        // метаданные рядом.
+        const tbText = user.tb
+            ? ` · ТБ: ${this._escapeHtml(user.tb)}`
+            : '';
+
+        // Действия с пользователем: сброс пароля, редактирование, удаление.
+        // Для удалённых пользователей кнопки редактирования/удаления скрываем —
+        // показываем только «Восстановить».
+        const editBtn = user.is_deleted
+            ? ''
+            : `<button class="admin-row-action admin-row-action--edit"
+                       data-action="edit-user"
+                       data-username="${this._escapeHtml(user.username)}"
+                       title="Редактировать пользователя">✏️ Редактировать</button>`;
+        const deleteBtn = user.is_deleted
+            ? ''
+            : `<button class="admin-row-action admin-row-action--delete"
+                       data-action="delete-user"
+                       data-username="${this._escapeHtml(user.username)}"
+                       title="Пометить пользователя удалённым">🗑 Удалить</button>`;
+        const restoreBtn = user.is_deleted
+            ? `<button class="admin-row-action admin-row-action--restore"
+                       data-action="restore-user"
+                       data-username="${this._escapeHtml(user.username)}"
+                       title="Восстановить пользователя">↩ Восстановить</button>`
             : '';
 
         return `
             <div class="admin-roles-row-info">
                 <div class="admin-roles-row-name">
-                    ${this._escapeHtml(user.fullname)}${externalBadge}
+                    ${this._escapeHtml(user.fullname)}${deletedBadge}
                 </div>
-                <div class="admin-roles-row-details">${this._escapeHtml(user.job || '')}</div>
+                <div class="admin-roles-row-details">
+                    ${this._escapeHtml(user.job || '')}${tbText}
+                </div>
             </div>
             <div class="admin-roles-row-chips">${chips}</div>
             <div class="admin-roles-row-actions">
@@ -263,6 +305,9 @@ export class AdminRoles {
                         data-action="reset-password"
                         data-username="${this._escapeHtml(user.username)}"
                         title="Сбросить пароль">🔑 Сброс пароля</button>
+                ${editBtn}
+                ${deleteBtn}
+                ${restoreBtn}
             </div>
             <div class="admin-roles-row-username">${this._escapeHtml(user.username)}</div>
         `;
@@ -355,12 +400,106 @@ export class AdminRoles {
         const row = this._tableEl.querySelector(`.admin-roles-row[data-username="${CSS.escape(user.username)}"]`);
         if (!row) return;
         row.innerHTML = this._renderRow(user);
+        row.classList.toggle('admin-roles-row--deleted', !!user.is_deleted);
         row.querySelectorAll('.admin-role-chip').forEach(chip => {
             chip.addEventListener('click', () => this._toggleRole(user.username, chip));
         });
         row.querySelectorAll('.admin-row-action--reset').forEach(btn => {
             btn.addEventListener('click', () => this._resetPassword(btn.dataset.username));
         });
+        row.querySelectorAll('.admin-row-action--edit').forEach(btn => {
+            btn.addEventListener('click', () => this._onEditUser(user));
+        });
+        row.querySelectorAll('.admin-row-action--delete').forEach(btn => {
+            btn.addEventListener('click', () => this._onDeleteUser(btn.dataset.username));
+        });
+        row.querySelectorAll('.admin-row-action--restore').forEach(btn => {
+            btn.addEventListener('click', () => this._onRestoreUser(btn.dataset.username));
+        });
+    }
+
+    /**
+     * Открывает диалог редактирования пользователя.
+     *
+     * Делегирует AdminEditUserDialog, который вызывает /api/v1/admin/users/{username}
+     * (PUT) для обновления ФИО/Должности/ТБ/etc. После успеха —
+     * AdminRoles.addUser для обновления локального стейта.
+     * @param {Object} user - пользователь, которого редактируем
+     * @private
+     */
+    static _onEditUser(user) {
+        if (typeof AdminEditUserDialog !== 'undefined') {
+            AdminEditUserDialog.show(user, this._allRoles);
+        } else {
+            Notifications.error('Диалог редактирования недоступен');
+        }
+    }
+
+    /**
+     * Подтверждение и вызов soft-delete для пользователя.
+     * @param {string} username
+     * @private
+     */
+    static async _onDeleteUser(username) {
+        if (!confirm(
+            `Пометить пользователя ${username} как удалённого?\n\n`
+            + 'Доступ будет закрыт, но упоминания в уже созданных актах сохранятся.'
+        )) {
+            return;
+        }
+        try {
+            const r = await APIClient.deleteUser(username);
+            if (r.deleted) {
+                Notifications.success(`Пользователь ${username} помечен как удалённый`);
+            } else {
+                Notifications.info(`Пользователь ${username} уже был удалён`);
+            }
+            // Перезагружаем текущую запись из БД для синхронизации строки.
+            const fresh = await APIClient.getUserRoles(username);
+            const freshUser = await APIClient.loadUserDirectory(200, 0, '');
+            const updated = (freshUser.items || []).find((u) => u.username === username);
+            if (updated) {
+                this._refreshUserRow(updated);
+            } else if (fresh) {
+                this._refreshUserRow({
+                    username,
+                    fullname: '',
+                    job: '',
+                    roles: fresh.roles || [],
+                    is_department: false,
+                    is_deleted: true,
+                    tb: '',
+                });
+            }
+        } catch (err) {
+            Notifications.error(`Ошибка: ${err.message}`);
+        }
+    }
+
+    /**
+     * Восстановление пользователя из soft-delete.
+     * @param {string} username
+     * @private
+     */
+    static async _onRestoreUser(username) {
+        if (!confirm(`Восстановить пользователя ${username}?`)) {
+            return;
+        }
+        try {
+            const r = await APIClient.restoreUser(username);
+            if (r.restored) {
+                Notifications.success(`Пользователь ${username} восстановлен`);
+            } else {
+                Notifications.info(`Пользователь ${username} уже активен`);
+            }
+            const freshUser = await APIClient.loadUserDirectory(200, 0, '');
+            const updated = (freshUser.items || []).find((u) => u.username === username);
+            if (updated) {
+                this._refreshUserRow(updated);
+            }
+        } catch (err) {
+            Notifications.error(`Ошибка: ${err.message}`);
+        }
     }
 
     /**
@@ -389,8 +528,16 @@ export class AdminRoles {
         const exists = this._users.find(u => u.username === user.username);
         if (exists) {
             exists.roles = user.roles;
+            // Могут также измениться tb/is_deleted после edit/restore — обновим,
+            // если новые поля пришли.
+            if ('tb' in user) exists.tb = user.tb;
+            if ('is_deleted' in user) exists.is_deleted = user.is_deleted;
         } else {
-            this._users.push(user);
+            this._users.push({
+                tb: '',
+                is_deleted: false,
+                ...user,
+            });
         }
         this._sortUsers();
         this._renderAll();

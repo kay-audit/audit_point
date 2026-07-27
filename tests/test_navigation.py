@@ -160,7 +160,7 @@ class TestGetNavItemsForUser:
             _domain("acts", [_nav("Акты", "/acts", group="Основные")]),
             _domain("ck", [_nav("ЦК", "/ck", group="ЦК")]),
         ]
-        roles = [{"name": "Админ"}]
+        roles = [{"name": "Администратор"}]
         result = get_nav_items_for_user(roles)
         labels = [item.label for g in result for item in g["nav_items"]]
         assert "Акты" in labels

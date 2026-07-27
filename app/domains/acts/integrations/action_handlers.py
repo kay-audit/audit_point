@@ -158,7 +158,7 @@ async def open_act_page_button_translator(params: dict) -> dict:
 # Роли, дающие право создавать акты. «Куратор»/«Руководитель» — это
 # роли участников аудиторской группы в домене acts (см. AuditTeamMember.role).
 # Проверка идёт по справочнику ролей пользователя (user_roles → roles.name).
-_ACT_CREATOR_ROLES: tuple[str, ...] = ("Куратор", "Руководитель", "Админ")
+_ACT_CREATOR_ROLES: tuple[str, ...] = ("Куратор", "Руководитель", "Администратор")
 
 
 async def _user_can_create_acts(username: str) -> tuple[bool, str]:

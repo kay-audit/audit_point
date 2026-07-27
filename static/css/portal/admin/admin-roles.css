@@ -88,10 +88,22 @@
 
 /* Rows */
 .admin-roles-row {
+    /* Layout: явный grid с тремя колонками и явным позиционированием детей.
+       Логика:
+         col 1 (280px — ФИО/должность/ТБ): зарезервированное место слева,
+               не сжимается даже при большом количестве ролей.
+         col 2 (1fr — роли): чипсы ролей на верхней строке, кнопки действий
+               на нижней строке под чипсами.
+         col 3 (auto — логин): компактный логин пользователя справа.
+       Раньше была схема `1fr auto auto auto` — но при 8+ ролях auto-колонка
+       chips раздувалась до ~700px и сжимала 1fr (ФИО) до 0, из-за чего
+       ФИО не отрисовывалось. */
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
-    align-items: center;
-    gap: 16px;
+    grid-template-columns: 280px minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: 16px;
+    row-gap: 8px;
+    align-items: start;
     padding: 12px 16px;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
@@ -99,10 +111,58 @@
     transition: box-shadow 0.15s;
 }
 
+/* Позиционируем каждого ребёнка явно, чтобы grid-auto-flow не вмешивался
+   и не пытался разместить «actions» на row 2 col 1 (первый свободный). */
+.admin-roles-row-info {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+}
+
+.admin-roles-row-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    /* word-break вместо nowrap — пусть ФИО переносится, если длинное. */
+    word-break: break-word;
+    line-height: 1.25;
+}
+
+.admin-roles-row-details {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    word-break: break-word;
+    line-height: 1.3;
+}
+
+.admin-roles-row-chips {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
 .admin-roles-row-actions {
+    grid-column: 2;
+    grid-row: 2;
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+
+.admin-roles-row-username {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
 }
 
 .admin-row-action {
@@ -127,51 +187,66 @@
     border-color: #c0392b;
 }
 
+/* Кнопка сброса пароля — овальная, светло-красная. По требованию заказчика
+   должна быть в одном стиле с остальными овальными кнопками действий
+   (как у admin-role-chip), но со «светло-красным» акцентом — это
+   привлекает внимание к потенциально опасному действию. */
+.admin-row-action--reset {
+    color: #c0392b;
+    border-color: #f3c5be;
+    background: #fdeeec;
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+}
+.admin-row-action--reset:hover {
+    background: #f9d4cb;
+    border-color: #c0392b;
+}
+
+/* Кнопки редактирования / удаления / восстановления — те же овальные
+   формы, но разных цветовых акцентов для семантики. */
+.admin-row-action--edit {
+    color: var(--primary, #3563e9);
+    border-color: #c0d3ff;
+    background: #eaf1ff;
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+}
+.admin-row-action--edit:hover {
+    background: #d3e1ff;
+    border-color: var(--primary, #3563e9);
+}
+
+.admin-row-action--delete {
+    color: #c0392b;
+    border-color: #f3c5be;
+    background: #fdeeec;
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+}
+.admin-row-action--delete:hover {
+    background: #f9d4cb;
+    border-color: #c0392b;
+}
+
+.admin-row-action--restore {
+    color: #047857;
+    border-color: #a7e4c7;
+    background: #e6f7ee;
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+}
+.admin-row-action--restore:hover {
+    background: #cef0db;
+    border-color: #047857;
+}
+
 .admin-roles-row.hidden {
     display: none;
 }
 
 .admin-roles-row:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.admin-roles-row-info {
-    flex: 0 0 22%;
-    min-width: 0;
-}
-
-.admin-roles-row-name {
-    font-weight: 500;
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.admin-roles-row-details {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.admin-roles-row-chips {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: 1;
-}
-
-.admin-roles-row-username {
-    flex: 0 0 12%;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 .admin-role-chip {
@@ -207,17 +282,31 @@
     cursor: not-allowed;
 }
 
-/* External user badge */
-.admin-external-badge {
+/* Бейдж «УДАЛЕН» — soft-delete маркер. Виден на удалённых пользователях.
+   Внешне «погашенный» — серый фон + зачёркнутый текст, чтобы было видно
+   что пользователь неактивен. */
+.admin-deleted-badge {
     display: inline-block;
     margin-left: 8px;
     padding: 1px 8px;
     font-size: 0.7rem;
     border-radius: var(--radius-full);
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-secondary, #f6f7fa);
+    color: #c0392b;
+    border: 1px solid #c0392b;
+    font-weight: 600;
+    letter-spacing: 0.4px;
     vertical-align: middle;
+}
+
+/* Soft-deleted строка: лёгкая «затухание» + диагональная полоса слева,
+   чтобы визуально отделить от живых пользователей. */
+.admin-roles-row--deleted {
+    opacity: 0.7;
+    background: var(--bg-secondary, #f6f7fa);
+}
+.admin-roles-row--deleted:hover {
+    opacity: 0.85;
 }
 
 /* Кнопка «Загрузить ещё» под таблицей ролей */

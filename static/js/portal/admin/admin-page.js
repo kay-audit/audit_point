@@ -12,6 +12,7 @@
 import { AdminAddUserDialog } from './admin-add-user-dialog.js';
 import { AdminAuditLog } from './admin-audit-log.js';
 import { AdminDiagnostics } from './admin-diagnostics.js';
+import { AdminEditUserDialog } from './admin-edit-user-dialog.js';
 import { AdminRoles } from './admin-roles.js';
 import { AdminSearch } from './admin-search.js';
 import { APIClient } from '../../shared/api.js';

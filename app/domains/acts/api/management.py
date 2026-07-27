@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 logger = logging.getLogger("audit_workstation.api.acts.management")
 
 from app.api.v1.deps.auth_deps import get_username
+from app.api.v1.deps.role_deps import get_user_roles
 from app.core.responses import PaginatedResponse
 from app.domains.acts.deps import get_crud_service, get_lock_service, _get_acts_settings
 from app.domains.acts.schemas.act_metadata import ActAttentionItem, ActCreate, ActUpdate, ActListItem, ActResponse, AuditPointIdsRequest
@@ -33,10 +34,23 @@ async def list_user_acts(
         username: str = Depends(get_username),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        roles: list[dict] = Depends(get_user_roles),
         service: ActCrudService = Depends(get_crud_service),
 ):
-    """Получает список актов пользователя (только те, где участвует)."""
-    items, total = await service.list_acts(username, limit=limit, offset=offset)
+    """Получает список актов для страницы «Управление актами».
+
+    Обычные пользователи видят только акты, в команде которых они состоят
+    (роль из ``audit_team_members``).
+
+    Администратор видит **ВСЕ** акты в системе — те, что созданы другими
+    пользователями, в команде которых он может не состоять. Роль пользователя
+    для таких актов подменяется на «Администратор» (системная роль — это не
+    роль в рамках проверки, поэтому в ``audit_team_members`` её нет).
+    """
+    is_admin = any(r["name"] == "Администратор" for r in roles)
+    items, total = await service.list_acts(
+        username, limit=limit, offset=offset, is_admin=is_admin,
+    )
     return PaginatedResponse[ActListItem](
         items=items, total=total, limit=limit, offset=offset,
     )

@@ -55,6 +55,7 @@ def _build_domain():
         chat_tools=get_chat_tools(),
         migration_substitutions={
             "{REF_USER_TABLE}": lambda: settings_registry.get("admin", AdminSettings).user_directory.table,
+            "{REF_USER_TABLE_PLAIN}": lambda: settings_registry.get("admin", AdminSettings).user_directory.table,
         },
         health_check=_health_check,
         nav_items=[],

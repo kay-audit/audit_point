@@ -171,7 +171,7 @@ class TestUaDataEndpointsIntegration:
         repo_mock.get_processes = AsyncMock(return_value=[])
         app = _build_app(
             repo_mock,
-            roles=[{"id": 1, "name": "Админ", "domain_name": None}],
+            roles=[{"id": 1, "name": "Администратор", "domain_name": None}],
         )
 
         with TestClient(app) as client:
@@ -187,7 +187,7 @@ class TestUaDataEndpointsIntegration:
         )
         app = _build_app(
             repo_mock,
-            roles=[{"id": 99, "name": "Админ", "domain_name": None}],
+            roles=[{"id": 99, "name": "Администратор", "domain_name": None}],
         )
 
         with TestClient(app) as client:

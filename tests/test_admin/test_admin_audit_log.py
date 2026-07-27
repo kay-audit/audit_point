@@ -32,7 +32,7 @@ class TestLog:
             target_username="12345",
             admin_username="admin_user",
             role_id=1,
-            role_name="Админ",
+            role_name="Администратор",
         )
 
         mock_conn.execute.assert_called_once()
@@ -71,7 +71,7 @@ class TestGetLog:
                 "target_username": "12345",
                 "admin_username": "admin",
                 "role_id": 1,
-                "role_name": "Админ",
+                "role_name": "Администратор",
                 "details": "",
                 "created_at": "2025-06-15T12:00:00",
             },

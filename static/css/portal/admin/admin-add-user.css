@@ -1,9 +1,28 @@
 /* Admin add user dialog */
 .admin-add-user-dialog {
-    width: 520px;
+    width: 560px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
+}
+
+/* Внутренний скролл для тела диалога — раньше без этого chips переполняли
+   диалог и наезжали на кнопки. min-height: 0 — обязательно для flex-родителя,
+   иначе содержимое заставляет браузер игнорировать overflow на дочерних
+   уровнях. */
+.admin-add-user-dialog .dialog-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* Кнопки «Отмена / Добавить» не должны сжиматься/уезжать при скролле —
+   фиксируем их внизу диалога через flex-shrink: 0. */
+.admin-add-user-dialog .dialog-buttons {
+    flex-shrink: 0;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light, #e6e8ee);
 }
 
 .admin-add-search-section {
@@ -100,4 +119,101 @@
     font-size: 0.85rem;
     background: var(--bg-primary);
     color: var(--text-primary);
+}
+
+/* ===== Диалог ручного создания пользователя (ФИО / Логин / ТБ) ===== */
+
+.admin-add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.admin-add-form-row {
+    display: flex;
+    gap: 10px;
+}
+
+.admin-add-form-row .admin-edit-field {
+    flex: 1;
+}
+
+.admin-edit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.admin-edit-field > span {
+    font-size: 0.8rem;
+    color: var(--text-secondary, #6a7184);
+    font-weight: 500;
+}
+
+.admin-edit-field > span .required {
+    color: #c0392b;
+    margin-left: 2px;
+}
+
+.admin-edit-field input[readonly] {
+    background: var(--bg-secondary, #f6f7fa);
+    color: var(--text-secondary, #6a7184);
+    cursor: not-allowed;
+}
+
+.admin-add-roles-section {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light, #e6e8ee);
+}
+
+.admin-add-roles-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #6a7184);
+    margin-bottom: 8px;
+}
+
+.admin-add-roles-label .hint {
+    color: var(--text-tertiary, #99a0b0);
+    font-style: italic;
+    font-weight: 400;
+    margin-left: 4px;
+}
+
+.admin-add-roles-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.admin-add-role-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color, #d0d4dd);
+    background: var(--bg-secondary, #f6f7fa);
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #4a5168);
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.admin-add-role-checkbox:hover {
+    border-color: var(--primary, #3563e9);
+}
+
+.admin-add-role-checkbox input {
+    margin: 0;
+    cursor: pointer;
+}
+
+.admin-add-role-checkbox:has(input:checked) {
+    background: var(--primary-subtle, #e3eaff);
+    border-color: var(--primary, #3563e9);
+    color: var(--primary, #3563e9);
 }

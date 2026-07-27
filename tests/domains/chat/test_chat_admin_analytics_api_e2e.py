@@ -19,7 +19,7 @@ from app.domains.chat.api.admin_analytics import router as analytics_router
 from app.domains.chat.deps import get_analytics_service
 
 USERNAME = "12345"
-ADMIN_ROLES = [{"id": 1, "name": "Админ", "domain_name": None}]
+ADMIN_ROLES = [{"id": 1, "name": "Администратор", "domain_name": None}]
 USER_ROLES = [{"id": 2, "name": "Чат-ассистент", "domain_name": "chat"}]
 
 

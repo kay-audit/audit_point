@@ -15,14 +15,17 @@ from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import invalidate_user_roles_cache, require_admin
 from app.core.responses import PaginatedResponse
 from app.domains.admin.deps import get_admin_service
+from app.domains.admin.exceptions import UserNotFoundError
 from app.domains.admin.schemas.admin import (
     AuditLogEntry,
     RoleAssignRequest,
     RoleSchema,
+    TB_CODES,
     UserCreateRequest,
     UserDirectoryItem,
     UserRolesResponse,
     UserSearchResult,
+    UserUpdateRequest,
 )
 from app.domains.admin.services.admin_service import AdminService
 
@@ -102,7 +105,8 @@ async def create_user(
 
     Поля, указанные в запросе, записываются в ``t_db_oarb_ua_user`` (upsert по
     ``username``). Роли из ``role_ids`` добавляются к уже имеющимся — повторный
-    вызов с тем же набором безопасен (idempotent).
+    вызов с тем же набором безопасен (idempotent). Роль «Администратор» НЕ
+    включается автоматически — её можно передать явно через ``role_ids``.
 
     Возвращает пользователя с актуальным списком ролей.
     """
@@ -115,6 +119,7 @@ async def create_user(
         tn=body.tn,
         email=body.email,
         branch=body.branch,
+        tb=body.tb,
         role_ids=body.role_ids,
         current_admin=admin_username,
     )
@@ -125,6 +130,86 @@ async def create_user(
         body.username, admin_username, body.role_ids,
     )
     return result
+
+
+@router.put("/users/{username}", response_model=UserRolesResponse, dependencies=[_admin])
+async def update_user(
+    username: str,
+    body: UserUpdateRequest,
+    admin_username: str = Depends(get_username),
+    service: AdminService = Depends(get_admin_service),
+):
+    """Обновляет метаданные пользователя (ФИО/Должность/ТБ и т.п.).
+
+    Не меняет роли, пароль и soft-delete-флаги — для каждого из этих
+    аспектов есть отдельный эндпоинт. Используется кнопкой «Редактировать»
+    в админ-панели.
+    """
+    from fastapi import HTTPException
+
+    try:
+        result = await service.update_user_metadata(
+            username=username,
+            fullname=body.fullname,
+            job=body.job,
+            tn=body.tn,
+            email=body.email,
+            branch=body.branch,
+            tb=body.tb,
+            current_admin=admin_username,
+        )
+    except UserNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    logger.info(
+        "Обновление пользователя %s админом %s (tb=%s)",
+        username, admin_username, body.tb,
+    )
+    return result
+
+
+@router.delete("/users/{username}", status_code=200, dependencies=[_admin])
+async def delete_user(
+    username: str,
+    admin_username: str = Depends(get_username),
+    service: AdminService = Depends(get_admin_service),
+):
+    """Помечает пользователя как удалённого (soft-delete).
+
+    Удалённый пользователь остаётся в БД (отображается в админ-панели с
+    пометкой «УДАЛЕН»), но исключается из подбора команды для НОВЫХ актов.
+    Уже существующие упоминания в актах продолжают работать.
+    """
+    from fastapi import HTTPException
+
+    try:
+        deleted = await service.soft_delete_user(username, admin_username)
+    except UserNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    logger.info(
+        "Soft-delete пользователя %s админом %s (result=%s)",
+        username, admin_username, deleted,
+    )
+    return {"deleted": deleted, "detail": "Пользователь помечен как удалённый" if deleted else "Пользователь уже удалён"}
+
+
+@router.post("/users/{username}/restore", status_code=200, dependencies=[_admin])
+async def restore_user(
+    username: str,
+    admin_username: str = Depends(get_username),
+    service: AdminService = Depends(get_admin_service),
+):
+    """Восстанавливает пользователя из soft-delete."""
+    from fastapi import HTTPException
+
+    try:
+        restored = await service.restore_user(username, admin_username)
+    except UserNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    logger.info(
+        "Restore пользователя %s админом %s (result=%s)",
+        username, admin_username, restored,
+    )
+    return {"restored": restored, "detail": "Пользователь восстановлен" if restored else "Нечего восстанавливать"}
 
 
 @router.post("/users/{username}/roles", status_code=200, dependencies=[_admin])
@@ -187,3 +272,14 @@ async def get_audit_log(
     return PaginatedResponse[AuditLogEntry](
         items=items, total=total, limit=limit, offset=offset,
     )
+
+
+@router.get("/tb-codes", dependencies=[_admin])
+async def get_tb_codes():
+    """Возвращает фиксированный список допустимых ТБ.
+
+    Используется JS-формой редактирования/создания пользователя для
+    построения select. Серверный список — единый источник истины, чтобы
+    клиент не дублировал константы.
+    """
+    return {"items": list(TB_CODES)}

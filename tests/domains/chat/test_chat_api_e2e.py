@@ -111,7 +111,7 @@ def _build_app(
     app.dependency_overrides[get_username] = lambda: username
     # Роль: возвращаем Админа, чтобы require_domain_access('chat') пропустил
     app.dependency_overrides[get_user_roles] = lambda: [
-        {"id": 1, "name": "Админ", "domain_name": None},
+        {"id": 1, "name": "Администратор", "domain_name": None},
     ]
     # Сервисы — мокаем через DI
     app.dependency_overrides[get_conversation_service] = lambda: conv_service

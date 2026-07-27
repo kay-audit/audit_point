@@ -85,10 +85,10 @@ def _build_domain():
                 order=10,
                 active_page="acts",
                 chat_domains=[DOMAIN_NAME],
-                group="Аудит",
+                group="ЦИФРОВОЙ АКТ",
                 description="Создание и редактирование актов аудита",
             ),
-            # План проверок — инструмент блока «Аудит» в разработке.
+            # План проверок — инструмент блока «ЦИФРОВОЙ АКТ» в разработке.
             # Открывается на /acts/plan и рендерит ту же заглушку, что и
             # SQL-агент (единый визуальный язык для placeholder-инструментов).
             NavItem(
@@ -117,7 +117,7 @@ def _build_domain():
                 order=11,
                 active_page="acts-plan",
                 chat_domains=[DOMAIN_NAME],
-                group="Аудит",
+                group="ЦИФРОВОЙ АКТ",
                 description="Планирование: действующие проверки, их статусы, сроки и участники",
             ),
         ],

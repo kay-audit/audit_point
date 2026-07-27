@@ -44,7 +44,7 @@ async def show_landing(request: Request):
         username = await get_current_username(request)
         if username:
             roles = await get_user_roles(username=username)
-            is_admin = any(r["name"] == "Админ" for r in roles)
+            is_admin = any(r["name"] == "Администратор" for r in roles)
             user_domains = {r.get("domain_name") for r in roles if r.get("domain_name")}
             # В landing ВСЕГДА показываем все nav items, чтобы ЦК и прочие
             # были видны (locked) — иначе фильтр их уберёт совсем.
@@ -61,7 +61,7 @@ async def show_landing(request: Request):
         "portal/landing/landing.html",
         {
             "active_page": "landing",
-            "topbar_title": "Рабочее пространство",
+            "topbar_title": "Единое рабочее место аудитора",
             "nav_groups": nav_groups,
             "is_admin": is_admin,
             "user_domains": sorted(user_domains),

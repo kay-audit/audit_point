@@ -1,0 +1,61 @@
+{# Простая информационная страница для ЦК-доменов в стадии «в разработке».
+
+Используется для ЦК Code Mining и ЦК Process Mining — здесь пока нет
+рабочей таблицы/формы, только карточка с описанием работы центра и
+контактной информацией. Когда появится полноценная логика, страницы
+переедут на ck/_ck_layout.html с шапкой/тулбаром/таблицей как у
+ЦК Фин.Рез. и ЦК Клиентский опыт.
+#}
+{% extends "portal/base_portal.html" %}
+
+{% block title %}{{ placeholder.title }}{% endblock %}
+
+{% block content %}
+<div class="stub-page-content">
+    <div class="tool-placeholder">
+        <div class="tool-placeholder-card">
+            <div class="tool-placeholder-glow" aria-hidden="true"></div>
+
+            <div class="tool-placeholder-header">
+                <div class="tool-placeholder-icon-wrap">
+                    <svg class="tool-placeholder-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        {{ placeholder.icon_svg|safe }}
+                    </svg>
+                    <span class="tool-placeholder-badge">В&nbsp;разработке</span>
+                </div>
+            </div>
+
+            <h1 class="tool-placeholder-title">{{ placeholder.title }}</h1>
+            <p class="tool-placeholder-subtitle">{{ placeholder.subtitle }}</p>
+
+            <div class="tool-placeholder-content">
+                <p class="tool-placeholder-paragraph tool-placeholder-paragraph--lead">
+                    {{ placeholder.lead }}
+                </p>
+                <p class="tool-placeholder-paragraph">
+                    Во&nbsp;внешней сети инструмент недоступен, но&nbsp;будет реализован в&nbsp;
+                    <span class="tool-placeholder-highlight">
+                        Едином рабочем месте аудитора в&nbsp;КАП
+                    </span>.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block init_script %}
+<script type="module" nonce="{{ request.state.csp_nonce }}">
+    import { AuthManager } from '{{ url_for('static', path='js/shared/auth.js') | versioned }}';
+    import { PortalSidebar } from '{{ url_for('static', path='js/portal/portal-sidebar.js') | versioned }}';
+    import { LandingSettingsManager } from '{{ url_for('static', path='js/portal/portal-settings.js') | versioned }}';
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        const isAuthorized = await AuthManager.requireAuth();
+        if (isAuthorized) {
+            PortalSidebar.init();
+            LandingSettingsManager.init();
+        }
+    });
+</script>
+{% endblock %}

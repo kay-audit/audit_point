@@ -1,43 +1,53 @@
 /**
- * Диалог добавления внешнего пользователя
+ * Диалог добавления нового пользователя.
  *
- * Поиск по справочнику → выбор пользователя → выбор роли → добавление.
- * Наследует базовый функционал от DialogBase.
+ * По требованию: позволяет добавлять нового пользователя прямо в БД,
+ * указав Фамилию, Имя, Отчество, Должность, Логин, ТБ.
+ *
+ * POST /api/v1/admin/users — создание пользователя + опциональные роли.
+ * Роли по умолчанию НЕ включают «Администратор» (это особая роль,
+ * выдаваемая только осознанно через существующие чипсы ролей).
  */
 import { AdminPage } from './admin-page.js';
 import { AdminRoles } from './admin-roles.js';
 import { APIClient } from '../../shared/api.js';
 import { DialogBase } from '../../shared/dialog/dialog-base.js';
 import { Notifications } from '../../shared/notifications.js';
-import { SafeHTML } from '../../shared/sanitize.js';
 
 export class AdminAddUserDialog extends DialogBase {
     static _currentDialog = null;
     static _allRoles = [];
-    static _debounceTimer = null;
-    static _searchAbort = null;
+    static _tbCodes = [];
+    static _tbLoaded = false;
 
     /**
-     * Показывает диалог добавления пользователя
-     * @param {Array} allRoles - Все доступные роли
+     * Показывает диалог добавления пользователя.
+     * @param {Array} allRoles - список всех доступных ролей (для чекбоксов)
      */
     static show(allRoles) {
-        this._allRoles = allRoles;
+        this._allRoles = allRoles || [];
         this._showDialog(this._createDialog());
     }
 
     /**
-     * Создаёт DOM диалога
+     * Создаёт DOM диалога.
      * @private
-     * @returns {HTMLElement}
      */
     static _createDialog() {
         const overlay = this._createOverlay();
         this._currentDialog = overlay;
 
-        const roleOptions = this._allRoles
-            .map(r => `<option value="${r.id}">${r.name}</option>`)
-            .join('');
+        // По умолчанию выбраны все роли КРОМЕ «Администратор» — это
+        // требование заказчика: «у пользователя должны быть все права
+        // кроме роли Администратор».
+        const roleCheckboxes = this._allRoles
+            .filter((r) => r.name !== 'Администратор')
+            .map((r) => `
+                <label class="admin-add-role-checkbox" title="${escape(r.description || '')}">
+                    <input type="checkbox" name="role_ids" value="${r.id}" checked>
+                    <span>${escape(r.name)}</span>
+                </label>
+            `).join('');
 
         overlay.innerHTML = `
             <div class="custom-dialog admin-add-user-dialog">
@@ -45,44 +55,109 @@ export class AdminAddUserDialog extends DialogBase {
                     <h3 class="dialog-title">Добавить пользователя</h3>
                 </div>
                 <div class="dialog-body">
-                    <div class="admin-add-search-section">
-                        <input type="text" class="admin-add-search-input"
-                               placeholder="Поиск по ФИО или логину (мин. 2 символа)"
-                               autocomplete="off">
-                    </div>
-                    <div class="admin-add-results"></div>
-                    <div class="admin-add-selected" style="display:none">
-                        <div class="admin-add-selected-user"></div>
-                        <div class="admin-add-role-section">
-                            <label>Назначить роль:</label>
-                            <select class="admin-add-role-select">
-                                ${roleOptions}
-                            </select>
+                    <div class="admin-add-form">
+                        <div class="admin-add-form-row">
+                            <label class="admin-edit-field">
+                                <span>Фамилия <span class="required">*</span></span>
+                                <input type="text" class="admin-add-search-input"
+                                       name="lastname" required maxlength="100"
+                                       autocomplete="off">
+                            </label>
+                            <label class="admin-edit-field">
+                                <span>Имя <span class="required">*</span></span>
+                                <input type="text" class="admin-add-search-input"
+                                       name="firstname" required maxlength="100"
+                                       autocomplete="off">
+                            </label>
+                            <label class="admin-edit-field">
+                                <span>Отчество</span>
+                                <input type="text" class="admin-add-search-input"
+                                       name="middlename" maxlength="100"
+                                       autocomplete="off">
+                            </label>
+                        </div>
+                        <label class="admin-edit-field">
+                            <span>Должность</span>
+                            <input type="text" class="admin-add-search-input"
+                                   name="job" maxlength="255"
+                                   autocomplete="off">
+                        </label>
+                        <div class="admin-add-form-row">
+                            <label class="admin-edit-field">
+                                <span>Логин <span class="required">*</span></span>
+                                <input type="text" class="admin-add-search-input"
+                                       name="username" required minlength="5"
+                                       maxlength="20" inputmode="numeric"
+                                       pattern="\\d{5,20}"
+                                       title="Числовой логин (5-20 цифр)"
+                                       placeholder="например, 22494524"
+                                       autocomplete="off">
+                            </label>
+                            <label class="admin-edit-field">
+                                <span>ТБ (территориальный банк)</span>
+                                <select class="admin-add-search-input" name="tb">
+                                    <option value="">— не указан —</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="admin-add-roles-section">
+                            <div class="admin-add-roles-label">
+                                Назначить роли по умолчанию <span class="hint">(все, кроме «Администратор»)</span>:
+                            </div>
+                            <div class="admin-add-roles-list">${roleCheckboxes}</div>
                         </div>
                     </div>
                 </div>
                 <div class="dialog-buttons">
                     <button class="btn btn-secondary dialog-cancel">Отмена</button>
-                    <button class="btn btn-primary dialog-confirm" disabled>Добавить</button>
+                    <button class="btn btn-primary dialog-confirm">Добавить</button>
                 </div>
             </div>
         `;
 
+        this._loadTbCodesIfNeeded(overlay);
         this._bindEvents(overlay);
         return overlay;
     }
 
     /**
-     * Привязывает обработчики событий
+     * Ленивая загрузка ТБ-кодов.
      * @private
-     * @param {HTMLElement} overlay
+     */
+    static async _loadTbCodesIfNeeded(overlay) {
+        if (this._tbLoaded) {
+            this._fillTbSelect(overlay, this._tbCodes);
+            return;
+        }
+        try {
+            const r = await APIClient.getTbCodes();
+            this._tbCodes = r.items || [];
+            this._tbLoaded = true;
+            this._fillTbSelect(overlay, this._tbCodes);
+        } catch (err) {
+            Notifications.error(`Не удалось загрузить справочник ТБ: ${err.message}`);
+        }
+    }
+
+    /**
+     * Заполняет select ТБ.
+     * @private
+     */
+    static _fillTbSelect(overlay, items) {
+        const sel = overlay.querySelector('select[name="tb"]');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">— не указан —</option>' +
+            items.map((c) => `<option value="${escape(c)}">${escape(c)}</option>`).join('');
+    }
+
+    /**
+     * Привязывает обработчики событий.
+     * @private
      */
     static _bindEvents(overlay) {
-        const input = overlay.querySelector('.admin-add-search-input');
         const cancelBtn = overlay.querySelector('.dialog-cancel');
         const confirmBtn = overlay.querySelector('.dialog-confirm');
 
-        input.addEventListener('input', () => this._onSearchInput(overlay));
         cancelBtn.addEventListener('click', () => this._close());
         confirmBtn.addEventListener('click', () => this._onConfirm(overlay));
 
@@ -90,130 +165,84 @@ export class AdminAddUserDialog extends DialogBase {
             if (e.target === overlay) this._close();
         });
 
-        setTimeout(() => input.focus(), 100);
+        // Фокус на первом поле — на фамилии
+        setTimeout(() => {
+            const first = overlay.querySelector('input[name="lastname"]');
+            if (first) first.focus();
+        }, 100);
     }
 
     /**
-     * Обработчик ввода в поле поиска (debounce 300мс)
-     * @private
-     * @param {HTMLElement} overlay
-     */
-    static _onSearchInput(overlay) {
-        clearTimeout(this._debounceTimer);
-        this._debounceTimer = setTimeout(async () => {
-            const input = overlay.querySelector('.admin-add-search-input');
-            const query = input.value.trim();
-            const resultsEl = overlay.querySelector('.admin-add-results');
-            const selectedEl = overlay.querySelector('.admin-add-selected');
-
-            selectedEl.style.display = 'none';
-            overlay.querySelector('.dialog-confirm').disabled = true;
-
-            if (query.length < 2) {
-                resultsEl.innerHTML = '';
-                return;
-            }
-
-            // Отменяем предыдущий поиск: пользователь набрал новые символы
-            // быстрее, чем сервер ответил. Иначе устаревший ответ перезатрёт UI.
-            if (this._searchAbort) {
-                this._searchAbort.abort();
-            }
-            this._searchAbort = new AbortController();
-            const signal = this._searchAbort.signal;
-
-            try {
-                resultsEl.innerHTML = '<div class="admin-add-loading">Поиск...</div>';
-                const users = await APIClient.searchUsers(query, signal);
-
-                if (users.length === 0) {
-                    resultsEl.innerHTML = '<div class="admin-add-empty">Пользователи не найдены</div>';
-                    return;
-                }
-
-                resultsEl.innerHTML = users.map(u => `
-                    <div class="admin-add-result-item" data-username="${SafeHTML.escapeHtml(u.username || '')}">
-                        <div class="admin-add-result-name">${SafeHTML.escapeHtml(u.fullname || u.username)}</div>
-                        <div class="admin-add-result-details">
-                            ${SafeHTML.escapeHtml(u.job || '')}
-                            ${u.email ? ' · ' + SafeHTML.escapeHtml(u.email) : ''}
-                        </div>
-                    </div>
-                `).join('');
-
-                resultsEl.querySelectorAll('.admin-add-result-item').forEach(item => {
-                    item.addEventListener('click', () => {
-                        const user = users.find(u => u.username === item.dataset.username);
-                        if (user) this._selectUser(overlay, user);
-                    });
-                });
-            } catch (error) {
-                if (error?.name === 'AbortError') {
-                    // Запрос отменён следующим поиском — не показываем ошибку.
-                    return;
-                }
-                resultsEl.innerHTML = '<div class="admin-add-empty">Ошибка поиска</div>';
-                console.error('AdminAddUserDialog: ошибка поиска:', error);
-                Notifications.error('Не удалось выполнить поиск пользователей');
-            }
-        }, 300);
-    }
-
-    /**
-     * Выбор пользователя из результатов
-     * @private
-     */
-    static _selectUser(overlay, user) {
-        const resultsEl = overlay.querySelector('.admin-add-results');
-        const selectedEl = overlay.querySelector('.admin-add-selected');
-        const selectedUserEl = overlay.querySelector('.admin-add-selected-user');
-        const confirmBtn = overlay.querySelector('.dialog-confirm');
-
-        resultsEl.innerHTML = '';
-        selectedEl.style.display = 'block';
-        selectedUserEl.innerHTML = `
-            <strong>${SafeHTML.escapeHtml(user.fullname || user.username)}</strong>
-            <span class="admin-add-selected-details">${SafeHTML.escapeHtml(user.job || '')} · ${SafeHTML.escapeHtml(user.username)}</span>
-        `;
-        selectedEl.dataset.username = user.username;
-        selectedEl.dataset.fullname = user.fullname || '';
-        selectedEl.dataset.job = user.job || '';
-        selectedEl.dataset.email = user.email || '';
-        confirmBtn.disabled = false;
-    }
-
-    /**
-     * Подтверждение добавления
+     * Подтверждение создания — POST /users.
      * @private
      */
     static async _onConfirm(overlay) {
-        const selectedEl = overlay.querySelector('.admin-add-selected');
-        const username = selectedEl.dataset.username;
-        const roleSelect = overlay.querySelector('.admin-add-role-select');
-        const roleId = parseInt(roleSelect.value);
+        const lastname = overlay.querySelector('input[name="lastname"]').value.trim();
+        const firstname = overlay.querySelector('input[name="firstname"]').value.trim();
+        const middlename = overlay.querySelector('input[name="middlename"]').value.trim();
+        const job = overlay.querySelector('input[name="job"]').value.trim();
+        const username = overlay.querySelector('input[name="username"]').value.trim();
+        const tb = overlay.querySelector('select[name="tb"]').value;
         const confirmBtn = overlay.querySelector('.dialog-confirm');
 
+        if (!lastname || !firstname) {
+            Notifications.error('Поля «Фамилия» и «Имя» обязательны');
+            return;
+        }
+        if (!username) {
+            Notifications.error('Поле «Логин» обязательно');
+            return;
+        }
+        if (!/^\d{5,20}$/.test(username)) {
+            Notifications.error('Логин должен быть числовым (5-20 цифр)');
+            return;
+        }
+
+        // Собираем ФИО в формате «Фамилия Имя Отчество» (отчество может быть пустым).
+        const fullname = middlename
+            ? `${lastname} ${firstname} ${middlename}`.replace(/\s+/g, ' ').trim()
+            : `${lastname} ${firstname}`.trim();
+
+        // Собираем выбранные роли (чекбоксы).
+        const checkedBoxes = overlay.querySelectorAll(
+            'input[name="role_ids"]:checked',
+        );
+        const roleIds = Array.from(checkedBoxes).map((cb) => parseInt(cb.value, 10));
+
         confirmBtn.disabled = true;
-
         try {
-            await APIClient.assignRole(username, roleId);
-
-            const role = this._allRoles.find(r => r.id === roleId);
-            AdminRoles.addUser({
+            await APIClient.createUser({
                 username,
-                fullname: selectedEl.dataset.fullname,
-                job: selectedEl.dataset.job,
-                tn: '',
-                email: selectedEl.dataset.email,
-                is_department: false,
-                roles: role ? [role] : [],
+                fullname,
+                job,
+                tb,
+                role_ids: roleIds,
             });
-            AdminPage.updateUserRoles(username, role ? [role] : []);
+            Notifications.success(`Пользователь ${username} создан`);
 
-            Notifications.success('Пользователь добавлен');
+            // Полностью перезагрузим каталог пользователей, чтобы новая
+            // запись сразу появилась в таблице. Точечный addUser тут
+            // не подойдёт — нам нужно знать реальный список ролей с сервера.
+            try {
+                const directory = await APIClient.loadUserDirectory(200, 0, '');
+                AdminRoles.setUsers(directory.items || []);
+            } catch (e) {
+                // Если reload не удался — добавляем точечно, чтобы UI не пустовал.
+                AdminRoles.addUser({
+                    username,
+                    fullname,
+                    job,
+                    tb,
+                    is_department: true,
+                    is_deleted: false,
+                    roles: this._allRoles.filter((r) => roleIds.includes(r.id)),
+                });
+            }
+            AdminPage.updateUserRoles(username, this._allRoles.filter((r) => roleIds.includes(r.id)));
+
             this._close();
-        } catch (error) {
-            Notifications.error(`Ошибка: ${error.message}`);
+        } catch (err) {
+            Notifications.error(`Ошибка: ${err.message}`);
             confirmBtn.disabled = false;
         }
     }
@@ -223,17 +252,16 @@ export class AdminAddUserDialog extends DialogBase {
      * @private
      */
     static _close() {
-        clearTimeout(this._debounceTimer);
-        // Прерываем активный поиск, чтобы ответ не пришёл уже закрытому диалогу.
-        if (this._searchAbort) {
-            this._searchAbort.abort();
-            this._searchAbort = null;
-        }
         if (this._currentDialog) {
             this._hideDialog(this._currentDialog);
             this._currentDialog = null;
         }
     }
+}
+
+function escape(s) {
+    const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+    return String(s || '').replace(/[&<>"']/g, (c) => map[c]);
 }
 
 window.AdminAddUserDialog = AdminAddUserDialog;

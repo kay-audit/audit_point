@@ -1,7 +1,9 @@
 -- Схема базы данных для домена администрирования (Greenplum)
 -- Схема: {SCHEMA}
 -- Префикс таблиц: {PREFIX}
--- Примечание: таблица t_db_oarb_ua_user уже существует в GP, НЕ создаём её
+-- Примечание: таблица t_db_oarb_ua_user уже существует в GP, НЕ создаём её.
+-- Однако в неё добавлены поля tb/is_deleted/deleted_at/deleted_by (идемпотентно
+-- через блок DO c information_schema) — см. внизу файла.
 
 -- ============================================================================
 -- ТАБЛИЦА РОЛЕЙ
@@ -30,16 +32,65 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}roles.description IS 'Описание рол
 INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
 SELECT s.name, s.domain_name, s.description
 FROM (
-    SELECT 'Админ'::varchar AS name, NULL::varchar AS domain_name, 'Полный доступ ко всем доменам и функциям'::text AS description
+    SELECT 'Администратор'::varchar AS name, NULL::varchar AS domain_name, 'Полный доступ ко всем доменам и функциям'::text AS description
     UNION ALL SELECT 'Цифровой акт', 'acts', 'Доступ к домену актов'
     UNION ALL SELECT 'ЦК финансовый результат', 'ck_fin_res', 'Доступ к ЦК Фин.Рез.'
     UNION ALL SELECT 'ЦК клиентский опыт', 'ck_client_exp', 'Доступ к ЦК Клиентский опыт'
+    UNION ALL SELECT 'ЦК Code Mining', 'ck_code_mining', 'Доступ к ЦК Code Mining'
+    UNION ALL SELECT 'ЦК Process Mining', 'ck_process_mining', 'Доступ к ЦК Process Mining'
     UNION ALL SELECT 'Чат-ассистент', 'chat', 'Доступ к AI-чату'
     UNION ALL SELECT 'SQL-агент', 'sqlagent', 'Доступ к SQL-агенту'
 ) AS s
 WHERE NOT EXISTS (
     SELECT 1 FROM {SCHEMA}.{PREFIX}roles r WHERE r.name = s.name
 );
+
+-- Миграция: роль «Админ» → «Администратор».
+--
+-- Идемпотентно (выполняется на каждом старте). Три исходных состояния:
+--
+-- (A) Только «Админ» существует, «Администратор» нет:
+--     Переименовываем (тот же role_id, user_roles-связи продолжают работать).
+--
+-- (B) Обе роли существуют (INSERT выше уже добавил «Администратор» с новым id,
+--     UPDATE выше не отработал из-за NOT EXISTS):
+--     Копируем user_roles-связи из «Админ» в «Администратор» (без дублей)
+--     и удаляем старую роль.
+--
+-- (C) Только «Администратор» существует (новая инсталляция): ничего не делаем.
+DO $$
+DECLARE
+    v_admin_id BIGINT;
+    v_administrator_id BIGINT;
+BEGIN
+    -- Случай (A): переименовать «Админ» в «Администратор», сохранив id.
+    IF NOT EXISTS (
+        SELECT 1 FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Администратор'
+    ) AND EXISTS (
+        SELECT 1 FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Админ'
+    ) THEN
+        UPDATE {SCHEMA}.{PREFIX}roles
+        SET name = 'Администратор',
+            description = 'Полный доступ ко всем доменам и функциям'
+        WHERE name = 'Админ';
+        RETURN;
+    END IF;
+
+    -- Случай (B): обе роли существуют. Копируем связи и удаляем старую.
+    SELECT id INTO v_administrator_id
+    FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Администратор' LIMIT 1;
+    SELECT id INTO v_admin_id
+    FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Админ' LIMIT 1;
+
+    IF v_admin_id IS NOT NULL AND v_administrator_id IS NOT NULL THEN
+        INSERT INTO {SCHEMA}.{PREFIX}user_roles (username, role_id, assigned_by)
+        SELECT ur.username, v_administrator_id, ur.assigned_by
+        FROM {SCHEMA}.{PREFIX}user_roles ur
+        WHERE ur.role_id = v_admin_id
+        ON CONFLICT (username, role_id) DO NOTHING;
+        DELETE FROM {SCHEMA}.{PREFIX}roles WHERE id = v_admin_id;
+    END IF;
+END $$;
 
 -- ============================================================================
 -- ТАБЛИЦА СВЯЗЕЙ ПОЛЬЗОВАТЕЛЬ — РОЛЬ
@@ -216,3 +267,103 @@ CREATE INDEX idx_{PREFIX}access_denied_audit_username
 
 CREATE INDEX idx_{PREFIX}access_denied_audit_domain
     ON {SCHEMA}.{PREFIX}access_denied_audit(domain, created_at DESC);
+
+-- ============================================================================
+-- МЕТАДАННЫЕ ПОЛЬЗОВАТЕЛЯ (tb, is_deleted) В {REF_USER_TABLE}
+-- ============================================================================
+--
+-- В Greenplum (PG 9.4) форма ALTER TABLE с условным добавлением колонки
+-- (IF NOT EXISTS) не поддерживается — синтаксис появился только в PG 9.6+.
+-- Делаем идемпотентные добавления через DO-блок с проверкой
+-- information_schema.columns. Адаптер миграций проглатывает ошибки
+-- дублирования, но эта форма явная и безопасная: если колонка уже есть —
+-- DO-блок просто пропускает изменение.
+--
+-- {REF_USER_TABLE} подставляется в qualified-форме (myschema.t_db_oarb_ua_user
+-- для GP или просто t_db_oarb_ua_user для PG). Парсим split_part'ом: если
+-- точка есть — schema = часть до точки, table = часть после; иначе берём
+-- текущую схему подключения и table = вся строка.
+
+DO $$
+DECLARE
+    v_schema TEXT;
+    v_table TEXT;
+BEGIN
+    IF position('.' in '{REF_USER_TABLE}') > 0 THEN
+        v_schema := split_part('{REF_USER_TABLE}', '.', 1);
+        v_table := split_part('{REF_USER_TABLE}', '.', 2);
+    ELSE
+        v_schema := current_schema();
+        v_table := '{REF_USER_TABLE}';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = v_schema
+          AND table_name = v_table
+          AND column_name = 'tb'
+    ) THEN
+        ALTER TABLE {REF_USER_TABLE}
+            ADD COLUMN tb VARCHAR(16) NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = v_schema
+          AND table_name = v_table
+          AND column_name = 'is_deleted'
+    ) THEN
+        ALTER TABLE {REF_USER_TABLE}
+            ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = v_schema
+          AND table_name = v_table
+          AND column_name = 'deleted_at'
+    ) THEN
+        ALTER TABLE {REF_USER_TABLE}
+            ADD COLUMN deleted_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = v_schema
+          AND table_name = v_table
+          AND column_name = 'deleted_by'
+    ) THEN
+        ALTER TABLE {REF_USER_TABLE}
+            ADD COLUMN deleted_by VARCHAR(50) NOT NULL DEFAULT '';
+    END IF;
+END $$;
+
+-- ============================================================================
+-- Идемпотентная миграция: добавление отдельных ролей для Агентов.
+--
+-- До этой миграции все агенты (ИОР, CRM, Документы, Источники данных,
+-- BackLog команд, Follow UP) разделяли одну общую роль «SQL-агент».
+-- Админ-панель не могла отдельно управлять доступом к каждому агенту.
+-- Эти роли имеют уникальный domain_name (sqlagent_xxx / chat_assistant),
+-- чтобы sidebar мог разграничивать доступ через chat_domains в NavItem.
+--
+-- Идемпотентно: используется NOT EXISTS-фильтр на имени (GP не позволяет
+-- UNIQUE(name) как часть PK, но name-уникальность обеспечивается приложением
+-- и защитой от дублей в DO-блоке). Повторное выполнение безопасно.
+-- ============================================================================
+
+DO $$
+BEGIN
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    SELECT s.name, s.domain_name, s.description
+    FROM (
+        SELECT 'ИОР'::varchar AS name, 'sqlagent_ior'::varchar AS domain_name,
+               'Доступ к агенту «ИОР» (анализ отклонений)'::text AS description
+        UNION ALL SELECT 'CRM', 'sqlagent_crm', 'Доступ к агенту «CRM» (анализ клиентской базы)'
+        UNION ALL SELECT 'Документы', 'sqlagent_docs', 'Доступ к агенту «Документы» (анализ SberDocs)'
+        UNION ALL SELECT 'Источники данных', 'sqlagent_sources', 'Доступ к агенту «Источники данных» (метаданные)'
+        UNION ALL SELECT 'BackLog команд', 'sqlagent_jira', 'Доступ к агенту «BackLog команд» (Jira/Confluence)'
+        UNION ALL SELECT 'Follow UP', 'sqlagent_followup', 'Доступ к агенту «Follow UP» (контроль задач)'
+        UNION ALL SELECT 'AI-ассистент', 'chat_assistant', 'Доступ к боковой панели AI-ассистента'
+    ) AS s
+    WHERE NOT EXISTS (
+        SELECT 1 FROM {SCHEMA}.{PREFIX}roles r WHERE r.name = s.name
+    );
+END $$;

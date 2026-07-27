@@ -38,13 +38,13 @@ class TestGetAllRoles:
     async def test_returns_list(self, repo, mock_conn):
         """Возвращает список всех ролей."""
         mock_conn.fetch.return_value = [
-            {"id": 1, "name": "Админ", "domain_name": None, "description": ""},
+            {"id": 1, "name": "Администратор", "domain_name": None, "description": ""},
             {"id": 2, "name": "ЦК Фин.Рез.", "domain_name": "ck_fin_res", "description": ""},
         ]
         result = await repo.get_all_roles()
 
         assert len(result) == 2
-        assert result[0]["name"] == "Админ"
+        assert result[0]["name"] == "Администратор"
         assert result[1]["domain_name"] == "ck_fin_res"
 
 
@@ -57,8 +57,8 @@ class TestGetRole:
 
     async def test_by_name_found(self, repo, mock_conn):
         """Возвращает роль по имени."""
-        mock_conn.fetchrow.return_value = {"id": 1, "name": "Админ", "domain_name": None, "description": ""}
-        result = await repo.get_role_by_name("Админ")
+        mock_conn.fetchrow.return_value = {"id": 1, "name": "Администратор", "domain_name": None, "description": ""}
+        result = await repo.get_role_by_name("Администратор")
 
         assert result is not None
         assert result["id"] == 1
@@ -72,11 +72,11 @@ class TestGetRole:
 
     async def test_by_id_found(self, repo, mock_conn):
         """Возвращает роль по id."""
-        mock_conn.fetchrow.return_value = {"id": 1, "name": "Админ", "domain_name": None, "description": ""}
+        mock_conn.fetchrow.return_value = {"id": 1, "name": "Администратор", "domain_name": None, "description": ""}
         result = await repo.get_role_by_id(1)
 
         assert result is not None
-        assert result["name"] == "Админ"
+        assert result["name"] == "Администратор"
 
     async def test_by_id_not_found(self, repo, mock_conn):
         """Возвращает None, если роль не найдена."""
@@ -96,12 +96,12 @@ class TestGetUserRoles:
     async def test_returns_roles(self, repo, mock_conn):
         """Возвращает список ролей пользователя."""
         mock_conn.fetch.return_value = [
-            {"id": 1, "name": "Админ", "domain_name": None, "description": ""},
+            {"id": 1, "name": "Администратор", "domain_name": None, "description": ""},
         ]
         result = await repo.get_user_roles("testuser")
 
         assert len(result) == 1
-        assert result[0]["name"] == "Админ"
+        assert result[0]["name"] == "Администратор"
         query = mock_conn.fetch.call_args[0][0]
         assert "JOIN" in query
 
@@ -238,7 +238,7 @@ class TestCountAdmins:
         assert result == 3
         query = mock_conn.fetchval.call_args[0][0]
         assert "JOIN" in query
-        assert mock_conn.fetchval.call_args[0][1] == "Админ"
+        assert mock_conn.fetchval.call_args[0][1] == "Администратор"
 
     async def test_zero_admins(self, repo, mock_conn):
         """Возвращает 0, если администраторов нет."""
@@ -306,14 +306,14 @@ class TestGetUsersWithRoles:
                 "tn": "12345",
                 "email": "",
                 "is_department": True,
-                "roles": '[{"id": 1, "name": "Админ", "domain_name": null, "description": ""}]',
+                "roles": '[{"id": 1, "name": "Администратор", "domain_name": null, "description": ""}]',
             },
         ]
         result = await repo.get_users_with_roles("branch1")
 
         assert len(result) == 1
         assert isinstance(result[0]["roles"], list)
-        assert result[0]["roles"][0]["name"] == "Админ"
+        assert result[0]["roles"][0]["name"] == "Администратор"
 
     async def test_parses_list_roles(self, repo, mock_conn):
         """Корректно обрабатывает роли как list (asyncpg десериализация)."""
@@ -332,3 +332,142 @@ class TestGetUsersWithRoles:
 
         assert len(result) == 1
         assert result[0]["roles"][0]["domain_name"] == "ck_fin_res"
+
+
+# -------------------------------------------------------------------------
+# upsert_user_in_directory — новые поля tb
+# -------------------------------------------------------------------------
+
+
+class TestUpsertUserWithTb:
+    """Проверяем, что upsert записывает поле tb."""
+
+    async def test_passes_tb_to_insert(self, repo, mock_conn):
+        """tb передаётся в INSERT и в read-back."""
+        mock_conn.fetchrow.return_value = {
+            "username": "12345",
+            "fullname": "Иванов",
+            "job": "",
+            "tn": "",
+            "email": "",
+            "branch": "",
+            "tb": "МБ",
+            "is_deleted": False,
+            "deleted_by": "",
+            "deleted_at": None,
+        }
+
+        await repo.upsert_user_in_directory(
+            username="12345",
+            fullname="Иванов",
+            tb="МБ",
+        )
+
+        insert_call = mock_conn.execute.call_args
+        # tb присутствует в params
+        assert "МБ" in insert_call.args
+        # Колонка tb в SQL
+        assert "tb" in insert_call.args[0]
+
+    async def test_empty_tb(self, repo, mock_conn):
+        """Пустой ТБ тоже проходит (для пользователей без ТБ)."""
+        mock_conn.fetchrow.return_value = {
+            "username": "12345",
+            "fullname": "Иванов",
+            "job": "",
+            "tn": "",
+            "email": "",
+            "branch": "",
+            "tb": "",
+            "is_deleted": False,
+            "deleted_by": "",
+            "deleted_at": None,
+        }
+
+        await repo.upsert_user_in_directory(
+            username="12345",
+            fullname="Иванов",
+            tb="",
+        )
+
+        # Должен пройти без ошибок
+        assert mock_conn.execute.called
+
+
+# -------------------------------------------------------------------------
+# soft_delete_user / restore_user
+# -------------------------------------------------------------------------
+
+
+class TestSoftDeleteUser:
+
+    async def test_marks_deleted(self, repo, mock_conn):
+        """UPDATE возвращает 1 если пользователь был помечен удалённым."""
+        mock_conn.execute.return_value = "UPDATE 1"
+
+        result = await repo.soft_delete_user("12345", "admin_user")
+
+        assert result is True
+        sql = mock_conn.execute.call_args.args[0]
+        assert "is_deleted = TRUE" in sql
+        assert "deleted_by" in sql
+
+    async def test_already_deleted_returns_false(self, repo, mock_conn):
+        """UPDATE 0 — пользователь уже был удалён."""
+        mock_conn.execute.return_value = "UPDATE 0"
+
+        result = await repo.soft_delete_user("12345", "admin_user")
+
+        assert result is False
+
+
+class TestRestoreUser:
+
+    async def test_restores(self, repo, mock_conn):
+        """UPDATE возвращает 1 если пользователь был восстановлен."""
+        mock_conn.execute.return_value = "UPDATE 1"
+
+        result = await repo.restore_user("12345")
+
+        assert result is True
+        sql = mock_conn.execute.call_args.args[0]
+        assert "is_deleted = FALSE" in sql
+        assert "deleted_at = NULL" in sql
+
+    async def test_not_deleted_returns_false(self, repo, mock_conn):
+        """UPDATE 0 — пользователь и так не был удалён."""
+        mock_conn.execute.return_value = "UPDATE 0"
+
+        result = await repo.restore_user("12345")
+
+        assert result is False
+
+
+# -------------------------------------------------------------------------
+# get_users_with_roles — tb/is_deleted в SELECT
+# -------------------------------------------------------------------------
+
+
+class TestGetUsersWithRolesNewFields:
+    """Проверяем, что новые поля tb/is_deleted возвращаются."""
+
+    async def test_returns_tb_and_deleted(self, repo, mock_conn):
+        """Возвращает tb и is_deleted из SELECT."""
+        mock_conn.fetch.return_value = [
+            {
+                "username": "12345",
+                "fullname": "Иванов",
+                "job": "",
+                "tn": "",
+                "email": "",
+                "tb": "МБ",
+                "is_deleted": False,
+                "deleted_by": "",
+                "deleted_at": None,
+                "is_department": True,
+                "roles": [],
+            },
+        ]
+        result = await repo.get_users_with_roles("branch1")
+        assert result[0]["tb"] == "МБ"
+        assert result[0]["is_deleted"] is False

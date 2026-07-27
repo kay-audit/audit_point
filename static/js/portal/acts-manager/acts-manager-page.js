@@ -452,6 +452,25 @@ export class ActsManagerPage {
         };
         this._fillFields(cardFragment, data);
 
+        // Роль «Администратор» — системная роль (НЕ из audit_team_members).
+        // API подставляет её для админа в актах, где он НЕ состоит в команде,
+        // чтобы показать, что системный доступ к акту у него есть (как у
+        // Руководителя). Помечаем бейдж отдельным классом — зелёный овал
+        // выделяет «чужие» акты среди своих. Также делаем кнопки активными
+        // (админ может открыть/редактировать/дублировать/удалить любой акт).
+        if (act.user_role === 'Администратор') {
+            const roleBadge = cardElement.querySelector('.act-card-role');
+            if (roleBadge) {
+                roleBadge.classList.add('act-card-role--admin');
+                roleBadge.setAttribute(
+                    'title',
+                    'Системная роль. Администратор имеет доступ к этому акту '
+                    + 'на правах Руководителя, но не входит в его команду. '
+                    + 'Эта роль НЕ отображается среди участников акта.',
+                );
+            }
+        }
+
         // Привязываем обработчики к кнопкам действий
         const openBtn = cardElement.querySelector('[data-action="open"]');
         const editBtn = cardElement.querySelector('[data-action="edit"]');
@@ -459,8 +478,12 @@ export class ActsManagerPage {
         const duplicateBtn = cardElement.querySelector('[data-action="duplicate"]');
         const deleteBtn = cardElement.querySelector('[data-action="delete"]');
 
-        // Проверяем, может ли пользователь редактировать (не Участник)
-        const canEdit = act.user_role !== 'Участник';
+        // Проверяем, может ли пользователь редактировать (не Участник).
+        // Системная роль «Администратор» (подменённая на API для чужих актов)
+        // эквивалентна правам Руководителя — админ может редактировать и
+        // удалять любой акт.
+        const isSystemAdmin = act.user_role === 'Администратор';
+        const canEdit = isSystemAdmin || act.user_role !== 'Участник';
 
         // Скрываем кнопки редактирования и удаления для роли "Участник"
         // Примечание: кнопка "Дублировать" остаётся активной — Участник может
@@ -501,8 +524,9 @@ export class ActsManagerPage {
             }));
         }
 
-        // Кнопка «История» — видна только Куратору и Руководителю
-        if (historyBtn && ['Куратор', 'Руководитель'].includes(act.user_role)) {
+        // Кнопка «История» — видна Куратору, Руководителю и Администратору
+        // (системный админ имеет права Руководителя в любом акте).
+        if (historyBtn && ['Куратор', 'Руководитель', 'Администратор'].includes(act.user_role)) {
             historyBtn.style.display = '';
             historyBtn.addEventListener('click', safeClick(async () => {
                 if (typeof AuditLogDialog !== 'undefined') {

@@ -21,7 +21,7 @@
     <section class="admin-tab-panel admin-tab-panel--active" data-tab-panel="roles">
         <div class="admin-header">
             <h1 class="admin-title">Управление ролями пользователей</h1>
-            <button id="adminAddUserBtn" class="admin-add-user-btn">+ Добавить пользователя</button>
+            <button id="adminAddUserBtn" class="admin-add-user-btn">Добавить пользователя</button>
         </div>
 
         <!-- Поиск пользователей -->
@@ -33,7 +33,10 @@
             </div>
         </div>
 
-        <!-- Панель фильтров по ролям -->
+        <!-- Панель быстрого фильтра по ролям — чипсы всех доступных ролей
+             сверху таблицы. Позволяет администратору быстро оставить в списке
+             только пользователей с нужной ролью (например, только членов
+             конкретного домена). -->
         <div class="admin-filter-bar" id="adminFilterBar">
             <!-- JS заполнит чипсами ролей -->
         </div>

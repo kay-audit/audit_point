@@ -45,7 +45,7 @@ def _app(service):
     # а даём админ-роль через get_user_roles (тогда проверка проходит).
     app.dependency_overrides[get_username] = lambda: "user1"
     app.dependency_overrides[get_user_roles] = lambda: [
-        {"id": 1, "name": "Админ", "domain_name": None},
+        {"id": 1, "name": "Администратор", "domain_name": None},
     ]
     app.dependency_overrides[get_text_corrector_service] = lambda: service
     app.dependency_overrides[get_violation_formalizer_service] = lambda: service

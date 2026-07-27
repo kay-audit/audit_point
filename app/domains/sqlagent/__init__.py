@@ -1,14 +1,14 @@
-"""Домен SQL-агента и блока «Аналитика» в sidebar.
+"""Домен SQL-агента и блока «АГЕНТЫ» в sidebar.
 
 Регистрирует:
 - портал-страницу /sqlagent (iframe на отдельный процесс SQLAgent
   или заглушка для placeholder-инструмента);
 - набор пунктов навигации в сайдбаре:
-  * блок «Аналитика»: SQL-агент, ИОР, CRM, Документы,
-    Источники данных, JIRA|BB|Confluence, Follow UP;
+  * блок «АГЕНТЫ»: SQL-агент, ИОР, CRM, Документы,
+    Источники данных, BackLog команд, Follow UP;
   * все эти инструменты, кроме самого SQL-агента, в данный момент
-    в разработке — открываются по URL ``/sqlagent?tool=xxx`` и
-    показывают однотипную заглушку с описанием.
+  в разработке — открываются по URL ``/sqlagent?tool=xxx`` и
+  показывают однотипную заглушку с описанием.
 """
 
 DOMAIN_NAME = "sqlagent"
@@ -26,23 +26,31 @@ def _build_domain():
         settings_class=SQLAgentSettings,
         nav_items=[
             # --- SQL-агент ----------------------------------------------------
-            # Главный пункт. Иконка — классический цилиндр БД в стиле outline
-            # (stroke=currentColor, width=2, round caps/joins) — как и остальные
-            # иконки в sidebar. Размер viewBox 0 0 24 24, чтобы вписаться в
-            # 20x20 svg-контейнер.
+            # Главный пункт. Иконка — шестерёнка (settings) — символ
+            # автоматизации / конфигурации SQL-агента.
             NavItem(
                 label="SQL-агент",
                 url="/sqlagent",
                 icon_svg=(
-                    '<path d="M4 7c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 '
-                    '3-8-1.34-8-3zm0 0v5c0 1.66 3.58 3 8 3s8-1.34 8-3V7M4 '
-                    '12v5c0 1.66 3.58 3 8 3s8-1.34 8-3v-5" '
+                    # шестерёнка: круг + 8 «зубцов» (прямоугольники по периметру)
+                    '<circle cx="12" cy="12" r="3" '
+                    'stroke="currentColor" stroke-width="2" fill="none"/>'
+                    '<path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 '
+                    '01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 '
+                    '00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 '
+                    '1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a'
+                    '1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A'
+                    '1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 '
+                    '012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 '
+                    '014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 '
+                    '012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 '
+                    '010 4h-.09a1.65 1.65 0 00-1.51 1z" '
                     'stroke="currentColor" stroke-width="2" '
-                    'stroke-linecap="round" stroke-linejoin="round"/>'
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
                 ),
                 order=30,
                 active_page="sqlagent",
-                group="Аналитика",
+                group="АГЕНТЫ",
                 description="Автоматизация запросов к источникам данных",
             ),
             # --- ИОР (операционный риск) -------------------------------------
@@ -70,40 +78,33 @@ def _build_domain():
                 ),
                 order=31,
                 active_page="sqlagent-ior",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_ior"],
                 description="Поиск информации об инцидентах операционного риска",
             ),
             # --- CRM ---------------------------------------------------------
-            # Иконка: голова оператора + наушники с микрофоном-«гусиная шея».
-            # Окружность-голова + дуга-оголовье + два прямоугольника-амбушюры
-            # + микрофон-«гусиная шея» справа.
+            # Иконка: тучка-диалог (speech bubble в форме облака) — символ
+            # общения / обращений клиентов. Два облака, одно больше,
+            # второе поменьше — как в классических мессенджерах.
             NavItem(
                 label="CRM",
                 url="/sqlagent?tool=crm",
                 icon_svg=(
-                    # голова оператора
-                    '<circle cx="12" cy="12" r="3" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # оголовье (полудуга над головой)
-                    '<path d="M6 12a6 6 0 0112 0" '
+                    # большое облако-диалог (со скруглённым «носиком» внизу)
+                    '<path d="M21 11.5a3.5 3.5 0 00-3.5-3.5h-.71A6 6 0 005 9.5a4.5 '
+                    '4.5 0 00.79 8.93h11.71A3.5 3.5 0 0021 14.93a3.49 3.49 0 '
+                    '00-.74-2.13A3.5 3.5 0 0021 11.5z" '
                     'stroke="currentColor" stroke-width="2" '
-                    'stroke-linecap="round" fill="none"/>'
-                    # левый амбушюр
-                    '<rect x="3" y="10" width="3" height="6" rx="1" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # правый амбушюр
-                    '<rect x="18" y="10" width="3" height="6" rx="1" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # микрофон-«гусиная шея» от правого амбушюра
-                    '<path d="M19 16v1.5a1.5 1.5 0 01-1.5 1.5h-1.5" '
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+                    # носик-указатель у большого облака
+                    '<path d="M8 18.5l-1.5 2.5 3.5-1" '
                     'stroke="currentColor" stroke-width="2" '
-                    'stroke-linecap="round" fill="none"/>'
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
                 ),
                 order=32,
                 active_page="sqlagent-crm",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_crm"],
                 description="Поиск информации из обращений клиентов",
             ),
             # --- Документы ---------------------------------------------------
@@ -130,72 +131,63 @@ def _build_domain():
                 ),
                 order=33,
                 active_page="sqlagent-docs",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_docs"],
                 description="Поиск документов в SberDocs и Консультант+",
             ),
             # --- Источники данных --------------------------------------------
-            # Иконка: три БД-цилиндра, связанных линиями в треугольник —
-            # символ сети источников / data lake. Каждый цилиндр упрощён до
-            # 3 элементов (ellipse + 2 path) для лучшей читаемости.
+            # Иконка: один крупный бочонок СУБД (цилиндр) с зачёркнутыми
+            # горизонтальными линиями — символ хранилища данных. Акцент
+            # именно на одном бочонке (вместо трёх связанных).
             NavItem(
                 label="Источники данных",
                 url="/sqlagent?tool=sources",
                 icon_svg=(
-                    # верхний-левый цилиндр
-                    '<ellipse cx="6" cy="5" rx="3" ry="1.5" '
+                    # верхний эллипс бочонка
+                    '<ellipse cx="12" cy="5" rx="8" ry="3" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M3 5v6M9 5v6" '
+                    # боковые стороны
+                    '<path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M3 11c0 .83 1.34 1.5 3 1.5s3-.67 3-1.5" '
+                    # промежуточные горизонтальные «крышки» для объёма
+                    '<path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # верхний-правый цилиндр
-                    '<ellipse cx="18" cy="5" rx="3" ry="1.5" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M15 5v6M21 5v6" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M15 11c0 .83 1.34 1.5 3 1.5s3-.67 3-1.5" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # нижний цилиндр
-                    '<ellipse cx="12" cy="19" rx="3" ry="1.5" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M9 19v2M15 19v2" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<path d="M9 21c0 .83 1.34 1.5 3 1.5s3-.67 3-1.5" '
-                    'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    # соединительные линии (треугольник)
-                    '<line x1="9" y1="5" x2="15" y2="5" '
-                    'stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
-                    '<line x1="6" y1="13" x2="10.5" y2="17" '
-                    'stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
-                    '<line x1="18" y1="13" x2="13.5" y2="17" '
-                    'stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
                 ),
                 order=34,
                 active_page="sqlagent-sources",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_sources"],
                 description="Поиск по источникам данных",
             ),
-            # --- JIRA|BB|Confluence ------------------------------------------
-            # Иконка: канбан-доска (3 колонки разной высоты) — типичный
-            # символ JIRA / трекера задач.
+            # --- BackLog команд (исторически JIRA|BB|Confluence) ----------
+            # Иконка: группа человечков (3 фигурки рядом). Символ команды.
             NavItem(
-                label="JIRA|BB|Confluence",
+                label="BackLog команд",
                 url="/sqlagent?tool=jira",
                 icon_svg=(
-                    # 3 колонки разной высоты
-                    '<rect x="3" y="4" width="5" height="16" rx="1" '
+                    # левая фигурка (голова + плечи)
+                    '<circle cx="7" cy="8" r="2" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<rect x="9.5" y="4" width="5" height="12" rx="1" '
+                    '<path d="M3 19v-1a4 4 0 014-4h0a4 4 0 014 4v1" '
+                    'stroke="currentColor" stroke-width="2" '
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+                    # правая фигурка (голова + плечи)
+                    '<circle cx="17" cy="8" r="2" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
-                    '<rect x="16" y="4" width="5" height="9" rx="1" '
+                    '<path d="M13 19v-1a4 4 0 014-4h0a4 4 0 014 4v1" '
+                    'stroke="currentColor" stroke-width="2" '
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+                    # центральная фигурка (основная, чуть крупнее)
+                    '<circle cx="12" cy="6" r="2.2" '
                     'stroke="currentColor" stroke-width="2" fill="none"/>'
+                    '<path d="M8 19v-1.5a4 4 0 014-4h0a4 4 0 014 4V19" '
+                    'stroke="currentColor" stroke-width="2" '
+                    'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
                 ),
                 order=35,
                 active_page="sqlagent-jira",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_jira"],
                 description="Информация о процессе разработки проверяемых команд",
             ),
             # --- Follow UP ---------------------------------------------------
@@ -216,8 +208,8 @@ def _build_domain():
                 ),
                 order=36,
                 active_page="sqlagent-followup",
-                group="Аналитика",
-                chat_domains=[DOMAIN_NAME],
+                group="АГЕНТЫ",
+                chat_domains=["sqlagent_followup"],
                 description="Данные о прошедших проверках и перспективах повторной проверки",
             ),
         ],

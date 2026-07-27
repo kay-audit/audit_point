@@ -13,7 +13,19 @@ CREATE TABLE IF NOT EXISTS {REF_USER_TABLE} (
     job VARCHAR(255) NOT NULL DEFAULT '',
     tn VARCHAR(50) NOT NULL DEFAULT '',
     email VARCHAR(255) NOT NULL DEFAULT '',
-    branch VARCHAR(255) NOT NULL DEFAULT ''
+    branch VARCHAR(255) NOT NULL DEFAULT '',
+    -- Территориальный банк (ТБ) пользователя. Буквенное обозначение
+    -- из фиксированного списка: СРБ, СИБ, ББ, ВВБ, МБ, ЦЧБ, СЗБ, ЮЗБ,
+    -- ДВБ, УБ, ПБ, ЦА. NULL допустим — поле может быть ещё не заполнено.
+    tb VARCHAR(16) NOT NULL DEFAULT '',
+    -- Soft-delete: помечает пользователя как удалённого. Удалённый
+    -- пользователь сохраняется в БД (с пометкой УДАЛЕН в UI), но:
+    --  - не отображается в выдаче /acts/users/search и подборе команды;
+    --  - недоступен для нового добавления в Акты;
+    --  - существующие упоминания в Актах продолжают работать.
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    deleted_at TIMESTAMP,
+    deleted_by VARCHAR(50) NOT NULL DEFAULT ''
 );
 
 COMMENT ON TABLE {REF_USER_TABLE} IS 'Справочник пользователей (реплика из GP для локального тестирования)';
@@ -23,6 +35,22 @@ COMMENT ON COLUMN {REF_USER_TABLE}.job IS 'Должность';
 COMMENT ON COLUMN {REF_USER_TABLE}.tn IS 'Табельный номер';
 COMMENT ON COLUMN {REF_USER_TABLE}.email IS 'Электронная почта';
 COMMENT ON COLUMN {REF_USER_TABLE}.branch IS 'Подразделение';
+COMMENT ON COLUMN {REF_USER_TABLE}.tb IS 'Территориальный банк (ТБ): СРБ, СИБ, ББ, ВВБ, МБ, ЦЧБ, СЗБ, ЮЗБ, ДВБ, УБ, ПБ, ЦА';
+COMMENT ON COLUMN {REF_USER_TABLE}.is_deleted IS 'Soft-delete флаг (true = пользователь помечен как удалённый)';
+COMMENT ON COLUMN {REF_USER_TABLE}.deleted_at IS 'Время soft-delete';
+COMMENT ON COLUMN {REF_USER_TABLE}.deleted_by IS 'Логин администратора, выполнившего soft-delete';
+
+-- Добавляем поля tb/is_deleted в существующие таблицы (идемпотентно).
+-- IF NOT EXISTS для ALTER TABLE ADD COLUMN поддерживается PostgreSQL ≥ 9.6.
+ALTER TABLE {REF_USER_TABLE} ADD COLUMN IF NOT EXISTS tb VARCHAR(16) NOT NULL DEFAULT '';
+ALTER TABLE {REF_USER_TABLE} ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE {REF_USER_TABLE} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+ALTER TABLE {REF_USER_TABLE} ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(50) NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_{REF_USER_TABLE}_is_deleted
+    ON {REF_USER_TABLE}(is_deleted) WHERE is_deleted = FALSE;
+CREATE INDEX IF NOT EXISTS idx_{REF_USER_TABLE}_tb
+    ON {REF_USER_TABLE}(tb) WHERE tb <> '';
 
 -- Заполняем тестовыми данными
 INSERT INTO {REF_USER_TABLE} (username, fullname, job, tn, email, branch) VALUES
@@ -58,13 +86,130 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}roles.description IS 'Описание рол
 
 -- Заполняем ролями по умолчанию
 INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description) VALUES
-    ('Админ', NULL, 'Полный доступ ко всем доменам и функциям'),
+    ('Администратор', NULL, 'Полный доступ ко всем доменам и функциям'),
     ('Цифровой акт', 'acts', 'Доступ к домену актов'),
     ('ЦК финансовый результат', 'ck_fin_res', 'Доступ к ЦК Фин.Рез.'),
     ('ЦК клиентский опыт', 'ck_client_exp', 'Доступ к ЦК Клиентский опыт'),
+    ('ЦК Code Mining', 'ck_code_mining', 'Доступ к ЦК Code Mining'),
+    ('ЦК Process Mining', 'ck_process_mining', 'Доступ к ЦК Process Mining'),
     ('Чат-ассистент', 'chat', 'Доступ к AI-чату'),
     ('SQL-агент', 'sqlagent', 'Доступ к SQL-агенту')
 ON CONFLICT DO NOTHING;
+
+-- ============================================================================
+-- Миграция: роль «Админ» → «Администратор».
+--
+-- Идемпотентно (выполняется на каждом старте). Три возможных исходных состояния:
+--
+-- (A) Только «Админ» существует, «Администратор» нет:
+--     Просто переименовываем «Админ» → «Администратор» (тот же role_id).
+--     user_roles-связи продолжают работать, т.к. хранят role_id, не name.
+--
+-- (B) Обе роли существуют (INSERT выше уже добавил «Администратор» с новым id,
+--     UPDATE ниже не отработал из-за NOT EXISTS):
+--     Копируем user_roles-связи из старой роли «Админ» в новую «Администратор»
+--     (пропускаем дубликаты через ON CONFLICT), затем удаляем старую роль
+--     (CASCADE удалит её user_roles-связи, которые мы уже скопировали).
+--
+-- (C) Только «Администратор» существует (новая инсталляция): ничего не делаем.
+--
+-- DO-блок нужен потому что PostgreSQL требует оборачивать декларативные
+-- операции, использующие переменные, в DO $$...$$.
+
+DO $$
+DECLARE
+    v_admin_id BIGINT;
+    v_administrator_id BIGINT;
+BEGIN
+    -- Случай (A): переименовать «Админ» в «Администратор», сохранив id.
+    -- Касается только ситуации, когда новой роли ещё нет.
+    IF NOT EXISTS (
+        SELECT 1 FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Администратор'
+    ) AND EXISTS (
+        SELECT 1 FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Админ'
+    ) THEN
+        UPDATE {SCHEMA}.{PREFIX}roles
+        SET name = 'Администратор',
+            description = 'Полный доступ ко всем доменам и функциям'
+        WHERE name = 'Админ';
+        RETURN;
+    END IF;
+
+    -- Случай (B): обе роли существуют (INSERT ниже отработал, UPDATE выше —
+    -- нет). Копируем user_roles из «Админ» в «Администратор» и удаляем старую.
+    SELECT id INTO v_administrator_id
+    FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Администратор' LIMIT 1;
+
+    SELECT id INTO v_admin_id
+    FROM {SCHEMA}.{PREFIX}roles WHERE name = 'Админ' LIMIT 1;
+
+    IF v_admin_id IS NOT NULL AND v_administrator_id IS NOT NULL THEN
+        -- Копируем все user_roles-связи старой роли в новую.
+        -- ON CONFLICT (username, role_id) DO NOTHING защищает от дублей,
+        -- если пользователь уже был связан с «Администратор».
+        INSERT INTO {SCHEMA}.{PREFIX}user_roles (username, role_id, assigned_by)
+        SELECT ur.username, v_administrator_id, ur.assigned_by
+        FROM {SCHEMA}.{PREFIX}user_roles ur
+        WHERE ur.role_id = v_admin_id
+        ON CONFLICT (username, role_id) DO NOTHING;
+
+        -- Удаляем старую роль. user_roles-связи, которые мы не скопировали
+        -- (например, пользователь уже добавлен в новую роль напрямую),
+        -- CASCADE-ом удалятся вместе с ролью — никаких потерь.
+        DELETE FROM {SCHEMA}.{PREFIX}roles WHERE id = v_admin_id;
+    END IF;
+END $$;
+
+-- ============================================================================
+-- Идемпотентная миграция: добавление отдельных ролей для Агентов.
+--
+-- До этой миграции все агенты (ИОР, CRM, Документы, Источники данных,
+-- BackLog команд, Follow UP) разделяли одну общую роль «SQL-агент».
+-- Админ-панель не могла отдельно управлять доступом к каждому агенту.
+--
+-- DO-блок добавляет по одной записи на агента с уникальным domain_name,
+-- чтобы потом sidebar мог разграничивать доступ по нему (через chat_domains
+-- в NavItem). Используем ON CONFLICT (name) DO NOTHING — полная
+-- идемпотентность безопасно на повторных применениях.
+-- ============================================================================
+
+DO $$
+BEGIN
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('ИОР', 'sqlagent_ior', 'Доступ к агенту «ИОР» (анализ отклонений)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('CRM', 'sqlagent_crm', 'Доступ к агенту «CRM» (анализ клиентской базы)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('Документы', 'sqlagent_docs', 'Доступ к агенту «Документы» (анализ SberDocs)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('Источники данных', 'sqlagent_sources', 'Доступ к агенту «Источники данных» (метаданные)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('BackLog команд', 'sqlagent_jira', 'Доступ к агенту «BackLog команд» (Jira/Confluence)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('Follow UP', 'sqlagent_followup', 'Доступ к агенту «Follow UP» (контроль задач)')
+    ON CONFLICT (name) DO NOTHING;
+
+    INSERT INTO {SCHEMA}.{PREFIX}roles (name, domain_name, description)
+    VALUES
+        ('AI-ассистент', 'chat_assistant', 'Доступ к боковой панели AI-ассистента')
+    ON CONFLICT (name) DO NOTHING;
+END $$;
 
 -- ============================================================================
 -- ТАБЛИЦА СВЯЗЕЙ ПОЛЬЗОВАТЕЛЬ — РОЛЬ

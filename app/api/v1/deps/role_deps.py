@@ -132,7 +132,7 @@ def require_domain_access(domain_name: str) -> Callable:
         username: str = Depends(get_username),
         roles: list[dict] = Depends(get_user_roles),
     ):
-        if any(r["name"] == "Админ" for r in roles):
+        if any(r["name"] == "Администратор" for r in roles):
             return
         if not any(r["domain_name"] == domain_name for r in roles):
             await _log_access_denied(
@@ -191,7 +191,7 @@ async def _log_access_denied(
 def require_admin() -> Callable:
     """Фабрика зависимости: только администраторы."""
     async def _check(roles: list[dict] = Depends(get_user_roles)):
-        if not any(r["name"] == "Админ" for r in roles):
+        if not any(r["name"] == "Администратор" for r in roles):
             raise HTTPException(status_code=403, detail="Только для администраторов")
     return _check
 

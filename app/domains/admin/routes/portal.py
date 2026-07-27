@@ -25,7 +25,7 @@ async def show_admin_page(
     пустой шаблон с сообщением «Не удалось загрузить данные
     администрирования» (API возвращает 403 для всех вложенных вызовов).
     """
-    is_admin = any(r.get("name") == "Админ" for r in roles)
+    is_admin = any(r.get("name") == "Администратор" for r in roles)
     if not is_admin:
         return RedirectResponse(url="/portal/acts", status_code=303)
 

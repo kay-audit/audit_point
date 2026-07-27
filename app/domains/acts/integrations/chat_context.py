@@ -71,7 +71,7 @@ async def load_user_context(
 
         roles_records = await get_user_roles(username=username)
         roles = sorted({r["name"] for r in roles_records})
-        is_admin = "Админ" in roles
+        is_admin = "Администратор" in roles
 
         # Акты: админу — все, остальным — только свои.
         if is_admin:
@@ -92,7 +92,7 @@ async def load_user_context(
                     "km_number": r["km_number"],
                     "inspection_name": r["inspection_name"] or "",
                     "city": r["city"] or "",
-                    "my_role": "Админ",
+                    "my_role": "Администратор",
                     "status": _derive_status(
                         r["inspection_start_date"],
                         r["inspection_end_date"],

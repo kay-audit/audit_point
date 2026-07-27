@@ -15,7 +15,7 @@ DOMAIN_LABEL = "ЦК Клиентский опыт"
 
 
 def _user_has_access(roles: list[dict]) -> bool:
-    if any(r["name"] == "Админ" for r in roles):
+    if any(r["name"] == "Администратор" for r in roles):
         return True
     return any((r.get("domain_name") or "") == DOMAIN_NAME for r in roles)
 
@@ -28,7 +28,7 @@ async def show_ck_client_experience(
 ):
     """Страница ЦК Клиентский опыт — без роли показывает «нет доступа»."""
     nav_groups = get_nav_items_for_user(roles)
-    is_admin = any(r["name"] == "Админ" for r in roles)
+    is_admin = any(r["name"] == "Администратор" for r in roles)
     user_domains = sorted({r.get("domain_name") for r in roles if r.get("domain_name")})
 
     if not _user_has_access(roles):

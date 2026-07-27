@@ -193,6 +193,29 @@
     color: var(--text-secondary);
 }
 
+/* Огонёк «< 1 месяца до дедлайна» — индикатор срочности.
+   Цвет emoji варьируется ОС-браузером, поэтому делаем семантически
+   выраженный размер + лёгкая анимация пульсации. */
+.project-card-fire {
+    display: inline-flex;
+    align-items: center;
+    font-size: 1rem;
+    line-height: 1;
+    margin-left: 6px;
+    animation: project-card-fire-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes project-card-fire-pulse {
+    0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 0 rgba(232, 89, 12, 0));
+    }
+    50% {
+        transform: scale(1.18);
+        filter: drop-shadow(0 0 4px rgba(232, 89, 12, 0.55));
+    }
+}
+
 /* Кликабельная карточка проекта (ведёт в конструктор) */
 .project-card--link {
     display: block;
@@ -261,18 +284,6 @@
     color: #8a6d00;             /* тёмно-жёлтый текст */
     background: #fff7d6;         /* светло-жёлтый фон */
     border: 1px solid #f0d77a;   /* жёлтая рамка */
-    white-space: nowrap;
-}
-
-.project-card-admin-badge {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: var(--font-size-xs, 12px);
-    font-weight: var(--font-weight-medium, 500);
-    color: var(--primary, #3563e9);
-    background: var(--primary-subtle, #e3eaff);
-    border: 1px solid #c0d3ff;
     white-space: nowrap;
 }
 

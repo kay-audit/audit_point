@@ -237,8 +237,28 @@ class ActCrudService:
         *,
         limit: int = 50,
         offset: int = 0,
+        is_admin: bool = False,
     ) -> tuple[list[ActListItem], int]:
-        """Получает страницу актов пользователя и общее количество."""
+        """Получает страницу актов пользователя и общее количество.
+
+        Для администратора (``is_admin=True``) возвращаем **ВСЕ** акты в системе,
+        с ролью пользователя «Администратор» — это про системный доступ к списку,
+        а не про членство в команде. Сама роль «Администратор» в ``audit_team_members``
+        НЕ хранится (системная роль != роль в рамках проверки).
+
+        Для остальных — только акты, в команде которых пользователь состоит.
+        """
+        if is_admin:
+            total = await self._crud.count_all_acts()
+            acts = await self._crud.get_all_acts_as_admin(
+                limit=limit, offset=offset,
+            )
+            logger.info(
+                "Получен список ВСЕХ актов для админа %s: %s из %s (limit=%s, offset=%s)",
+                username, len(acts), total, limit, offset,
+            )
+            return acts, total
+
         total = await self._crud.count_user_acts(username)
         acts = await self._crud.get_user_acts(
             username, limit=limit, offset=offset,

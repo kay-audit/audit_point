@@ -1525,6 +1525,25 @@ export class APIClient {
     }
 
     /**
+     * Создаёт/обновляет пользователя в справочнике.
+     * Используется админ-панелью для кнопки «Добавить пользователя».
+     * @param {Object} body - {username, fullname, job, tb, role_ids}
+     * @returns {Promise<{username: string, roles: Array, is_admin: boolean}>}
+     */
+    static async createUser(body) {
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl('/api/v1/admin/users'),
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            }
+        );
+        if (!response.ok) await this._throwApiError(response);
+        return response.json();
+    }
+
+    /**
      * Сброс пароля пользователя (только админ). Возвращает новый пароль —
      * показывается админу один раз, чтобы он мог передать пользователю.
      * @param {string} targetUsername
@@ -1544,6 +1563,66 @@ export class APIClient {
         if (!response.ok) {
             await this._throwApiError(response);
         }
+        return response.json();
+    }
+
+    /**
+     * Обновляет метаданные пользователя (ФИО/Должность/ТБ/email).
+     * @param {string} username
+     * @param {Object} fields - {fullname, job, email, tb}
+     * @returns {Promise<{username: string, roles: Array, is_admin: boolean}>}
+     */
+    static async updateUser(username, fields) {
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl(`/api/v1/admin/users/${encodeURIComponent(username)}`),
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fields),
+            }
+        );
+        if (!response.ok) await this._throwApiError(response);
+        return response.json();
+    }
+
+    /**
+     * Помечает пользователя как удалённого (soft-delete).
+     * @param {string} username
+     * @returns {Promise<{deleted: boolean, detail: string}>}
+     */
+    static async deleteUser(username) {
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl(`/api/v1/admin/users/${encodeURIComponent(username)}`),
+            { method: 'DELETE', headers: {} }
+        );
+        if (!response.ok) await this._throwApiError(response);
+        return response.json();
+    }
+
+    /**
+     * Восстанавливает пользователя из soft-delete.
+     * @param {string} username
+     * @returns {Promise<{restored: boolean, detail: string}>}
+     */
+    static async restoreUser(username) {
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl(`/api/v1/admin/users/${encodeURIComponent(username)}/restore`),
+            { method: 'POST', headers: {} }
+        );
+        if (!response.ok) await this._throwApiError(response);
+        return response.json();
+    }
+
+    /**
+     * Возвращает фиксированный список ТБ для select'а в форме редактирования.
+     * @returns {Promise<{items: Array<string>}>}
+     */
+    static async getTbCodes() {
+        const response = await this._fetchWithTimeout(
+            AppConfig.api.getUrl('/api/v1/admin/tb-codes'),
+            { headers: {} }
+        );
+        if (!response.ok) throw this._createError(response.status, 'Ошибка загрузки справочника ТБ');
         return response.json();
     }
 

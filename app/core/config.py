@@ -191,7 +191,7 @@ class Settings(BaseSettings):
     """
 
     # Метаданные приложения
-    app_title: str = "Audit Workstation"
+    app_title: str = "Единое рабочее место аудитора"
     app_version: str = "1.0.0"
 
     # Аутентификация

@@ -4,7 +4,9 @@
  * Управляет отображением портала инструментов компании:
  * - Sidebar с навигацией по инструментам
  * - Панель «Мои проекты» (GET /api/v1/acts/my-projects) — рендерит карточки
- *   актов, в которых пользователь участвует; для админа — все акты.
+ *   актов, в команде которых пользователь явно состоит. Роль в проекте
+ *   берётся из `audit_team_members` и показывается как есть — без подмен
+ *   на «Руководитель»/«Администратор» по системной роли.
  *   Клик по карточке ведёт в конструктор (как кнопка «Открыть» в Управлении актами).
  *   Фильтры по статусу / номеру КМ / роли — открываются по кнопке «Фильтры».
  * - AI-чат ассистент
@@ -17,7 +19,6 @@ import { Notifications } from '../../shared/notifications.js';
 export class LandingPage {
     static _chatCollapsed = false;
     static _allProjects = [];   // кэш загруженных проектов (для фильтрации)
-    static _isAdmin = false;
 
     /**
      * Инициализирует landing page
@@ -122,7 +123,6 @@ export class LandingPage {
             if (loading) loading.remove();
 
             this._allProjects = data.items || [];
-            this._isAdmin = !!data.is_admin;
 
             // Заполняем select ролей из реальных данных
             this._populateRoleFilter();
@@ -151,8 +151,11 @@ export class LandingPage {
         if (!roleSel) return;
         const current = roleSel.value;
         const seen = new Set();
-        // Стандартный набор ролей — отображаем независимо от наличия в данных
-        ['Администратор', 'Куратор', 'Руководитель', 'Редактор', 'Участник', 'AppendixRef']
+        // Стандартный набор ролей в проверке (Куратор = Руководитель с точки зрения
+        // пользовательской модели — исторически Куратор использовался в БД для
+        // представителя проверяемого подразделения, Руководитель — для главного
+        // аудитора со стороны банка). Отображаем все стандартные варианты.
+        ['Руководитель', 'Участник', 'Редактор', 'Куратор', 'AppendixRef']
             .forEach((r) => seen.add(r));
         this._allProjects.forEach((p) => { if (p.my_role) seen.add(p.my_role); });
         // Перестраиваем options
@@ -162,7 +165,28 @@ export class LandingPage {
     }
 
     /**
+     * Возвращает роль в проекте для отображения на карточке.
+     *
+     * Серверная модель my_role: ровно та роль, которая записана за пользователем
+     * в `audit_team_members` для данного акта (Куратор / Руководитель / Редактор /
+     * Участник / AppendixRef). Никаких подмен на «Руководитель» для админов —
+     * системная роль администратора даёт доступ ко всем актам на уровне API,
+     * но в «Моих проектах» показывается фактическая роль в команде.
+     *
+     * @param {Object} p — карточка проекта (my_role)
+     * @returns {string}
+     * @private
+     */
+    static _displayRole(p) {
+        return p.my_role || 'Участник';
+    }
+
+    /**
      * Рендерит массив проектов в контейнер.
+     *
+     * Сортировка: ASC по дате дедлайна (inspection_end_date) — самый ближайший
+     * дедлайн оказывается сверху. При равных датах — по id DESC (более новый
+     * акт выше), чтобы порядок был стабильным между перерисовками.
      * @private
      */
     static _renderProjects(items) {
@@ -180,12 +204,21 @@ export class LandingPage {
             return;
         }
 
+        // Сортируем копию, чтобы не мутировать исходный массив (фильтр-пайплайн
+        // итерирует this._allProjects и должен оставаться в серверном порядке).
+        const sorted = [...items].sort((a, b) => {
+            const ae = a.inspection_end_date || '';
+            const be = b.inspection_end_date || '';
+            if (ae !== be) return ae < be ? -1 : 1;
+            return (b.id || 0) - (a.id || 0);
+        });
+
         const fragment = document.createDocumentFragment();
-        for (const p of items) {
-            fragment.appendChild(this._renderProjectCard(p, this._isAdmin));
+        for (const p of sorted) {
+            fragment.appendChild(this._renderProjectCard(p));
         }
         container.appendChild(fragment);
-        this._updateFilterSummary(items.length, this._allProjects.length);
+        this._updateFilterSummary(sorted.length, this._allProjects.length);
     }
 
     /**
@@ -200,9 +233,10 @@ export class LandingPage {
         const km = (kmInput ? kmInput.value : '').trim().toLowerCase();
         const role = roleSel ? roleSel.value : '';
         const filtered = this._allProjects.filter((p) => {
+            const displayRole = this._displayRole(p);
             if (status && p.status !== status) return false;
             if (km && !String(p.km_number).toLowerCase().includes(km)) return false;
-            if (role && p.my_role !== role) return false;
+            if (role && displayRole !== role) return false;
             return true;
         });
         this._renderProjects(filtered);
@@ -223,10 +257,31 @@ export class LandingPage {
     }
 
     /**
+     * Возвращает true, если до даты дедлайна осталось менее 1 месяца.
+     *
+     * Сравнение ведётся в миллисекундах, без учёта часовых поясов (как и
+     * серверная дата YYYY-MM-DD). Акт, чей дедлайн — сегодня, уже считается
+     * «горит» (deltaDays < 30).
+     * @param {string} endDateIso — дедлайн в формате YYYY-MM-DD
+     * @private
+     */
+    static _isDeadlineHot(endDateIso) {
+        if (!endDateIso) return false;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const end = new Date(endDateIso);
+        if (isNaN(end.getTime())) return false;
+        // 30 дней — граница «менее 1 месяца»
+        const MS_PER_DAY = 24 * 60 * 60 * 1000;
+        const deltaDays = Math.floor((end - today) / MS_PER_DAY);
+        return deltaDays < 30;
+    }
+
+    /**
      * Строит DOM-элемент карточки проекта.
      * @private
      */
-    static _renderProjectCard(p, isAdmin) {
+    static _renderProjectCard(p) {
         const card = document.createElement('a');
         card.href = `/constructor?act_id=${p.id}`;
         card.className = 'project-card project-card--link';
@@ -249,16 +304,22 @@ export class LandingPage {
             ? `Просрочен: ${formatDate(p.inspection_end_date)}`
             : `Дедлайн: ${formatDate(p.inspection_end_date)}`;
 
-        // Роль в проекте — овальный бейдж светло-жёлтого цвета (как «В работе»).
-        // Для админа показываем доп. плашку «видит все».
+        // Если до дедлайна осталось менее месяца — рядом с датой рисуем «огонёк».
+        const isHot = !isOverdue && this._isDeadlineHot(p.inspection_end_date);
+        const hotIcon = isHot
+            ? '<span class="project-card-fire" title="До дедлайна менее месяца">🔥</span>'
+            : '';
+
+        // Роль в проекте — овальный бейдж. Показываем именно ту роль, которая
+        // указана за пользователем в `audit_team_members` для данного акта.
+        // Системная роль «Администратор» НЕ подменяется и НЕ добавляется —
+        // см. требование: «нельзя путать роли в рамках Актов и в системе».
+        const displayRole = this._displayRole(p);
         const roleBadge = `
-            <span class="project-card-role-badge" data-role="${escapeHtml(p.my_role)}">
-                ${escapeHtml(p.my_role)}
+            <span class="project-card-role-badge" data-role="${escapeHtml(displayRole)}">
+                ${escapeHtml(displayRole)}
             </span>
         `;
-        const adminBadge = isAdmin
-            ? '<span class="project-card-admin-badge">видит все</span>'
-            : '';
 
         card.innerHTML = `
             <div class="project-card-header">
@@ -269,12 +330,12 @@ export class LandingPage {
                 <p class="project-card-description">${escapeHtml(p.km_number)} · г. ${escapeHtml(p.city || '—')}</p>
                 <div class="project-card-badges">
                     ${roleBadge}
-                    ${adminBadge}
                 </div>
             </div>
             <div class="project-card-footer">
                 <div class="project-card-meta">
                     <span class="project-card-date">${dateText}</span>
+                    ${hotIcon}
                 </div>
             </div>
         `;

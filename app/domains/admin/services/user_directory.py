@@ -37,17 +37,24 @@ class UserDirectoryRepository(BaseRepository):
     async def search_users(
         self, query: str, limit: int = 20, offset: int = 0,
     ) -> list[dict]:
-        """Поиск по ФИО (ILIKE) или логину (LIKE)."""
+        """Поиск по ФИО (ILIKE) или логину (LIKE).
+
+        Исключает пользователей с is_deleted=true — soft-deleted записи
+        нельзя добавить в НОВЫЕ акты (они нужны только для отображения
+        в админ-панели и сохранения ссылок в уже созданных актах).
+        """
         pattern = self._build_pattern(query)
         rows = await self.conn.fetch(
             f"""
-            SELECT username, fullname, job FROM (
+            SELECT username, fullname, job, tb FROM (
                 SELECT DISTINCT ON (username)
                        username,
                        COALESCE(fullname, '') AS fullname,
-                       COALESCE(job, '') AS job
+                       COALESCE(job, '') AS job,
+                       COALESCE(tb, '') AS tb
                 FROM {self.user_table}
-                WHERE fullname ILIKE $1 OR username LIKE $2
+                WHERE (fullname ILIKE $1 OR username LIKE $2)
+                  AND COALESCE(is_deleted, FALSE) = FALSE
                 ORDER BY username
             ) sub
             ORDER BY fullname
@@ -61,14 +68,18 @@ class UserDirectoryRepository(BaseRepository):
         return [dict(r) for r in rows]
 
     async def count_users(self, query: str) -> int:
-        """Считает количество DISTINCT username, удовлетворяющих фильтру."""
+        """Считает количество DISTINCT username, удовлетворяющих фильтру.
+
+        Исключает soft-deleted записи — те же правила, что и в search_users.
+        """
         pattern = self._build_pattern(query)
         return await self.conn.fetchval(
             f"""
             SELECT COUNT(*) FROM (
                 SELECT DISTINCT username
                 FROM {self.user_table}
-                WHERE fullname ILIKE $1 OR username LIKE $2
+                WHERE (fullname ILIKE $1 OR username LIKE $2)
+                  AND COALESCE(is_deleted, FALSE) = FALSE
             ) sub
             """,
             pattern,

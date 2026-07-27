@@ -2,7 +2,7 @@
 
 Создаёт записи в t_db_oarb_audit_act_auth_credentials для всех пользователей
 из t_db_oarb_ua_user. Пароли:
-- админы (роль 'Админ'): "admin"
+- админы (роль 'Администратор'): "admin"
 - остальные: случайные 12-символьные
 
 Дамп паролей пишется в secrets.txt в корне проекта (НЕ коммитится, в .gitignore).
@@ -52,7 +52,7 @@ async def _admin_usernames(conn: asyncpg.Connection) -> set[str]:
         SELECT DISTINCT ur.username
         FROM t_db_oarb_audit_act_user_roles ur
         JOIN t_db_oarb_audit_act_roles r ON r.id = ur.role_id
-        WHERE r.name = 'Админ'
+        WHERE r.name = 'Администратор'
         """
     )
     return {r["username"] for r in rows}

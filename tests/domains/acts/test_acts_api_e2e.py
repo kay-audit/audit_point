@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from app.api.v1.deps.auth_deps import get_username
+from app.api.v1.deps.role_deps import get_user_roles
 from app.core.exceptions import AppError
 from app.domains.acts.api.management import router as management_router
 from app.domains.acts.api.invoice import router as invoice_router
@@ -49,8 +50,16 @@ def _build_app(
     lock_service: object | None = None,
     invoice_service: object | None = None,
     username: str = USERNAME,
+    user_roles: list[dict] | None = None,
 ) -> FastAPI:
-    """Собирает минимальный FastAPI с двумя роутерами и оверрайдами DI."""
+    """Собирает минимальный FastAPI с двумя роутерами и оверрайдами DI.
+
+    ``user_roles`` — список ролей пользователя, который передаётся в
+    Depends(get_user_roles). По умолчанию — пустой список (тест-пользователь
+    без админ-роли; так исторически было — раньше list_acts принимал только
+    username). Тест может явно передать ``user_roles=[{"name": "Администратор"}]``
+    чтобы проверить админ-ветку.
+    """
     app = FastAPI()
 
     # Глобальный AppError-handler — как в app/main.py
@@ -62,6 +71,7 @@ def _build_app(
     app.include_router(invoice_router, prefix="/api/v1/acts/invoice")
 
     app.dependency_overrides[get_username] = lambda: username
+    app.dependency_overrides[get_user_roles] = lambda: (user_roles or [])
     app.dependency_overrides[_get_acts_settings] = lambda: ActsSettings()
 
     if crud_service is not None:
@@ -208,7 +218,10 @@ class TestListActs:
         assert resp.status_code == 200
         body = resp.json()
         assert body == {"items": [], "total": 0, "limit": 50, "offset": 0}
-        crud.list_acts.assert_awaited_once_with(USERNAME, limit=50, offset=0)
+        # Для не-админа list_acts вызывается с is_admin=False.
+        crud.list_acts.assert_awaited_once_with(
+            USERNAME, limit=50, offset=0, is_admin=False,
+        )
 
     def test_list_unauthorized_returns_401(self):
         """Без авторизации — 401, сервис не вызван."""
@@ -247,7 +260,27 @@ class TestListActs:
             resp = client.get("/api/v1/acts/list?limit=200")
 
         assert resp.status_code == 200
-        crud.list_acts.assert_awaited_once_with(USERNAME, limit=200, offset=0)
+        crud.list_acts.assert_awaited_once_with(
+            USERNAME, limit=200, offset=0, is_admin=False,
+        )
+
+    def test_list_admin_calls_with_is_admin_true(self):
+        """С ролью «Администратор» сервис вызывается с is_admin=True —
+        админ видит все акты в системе, в т.ч. чужие."""
+        crud = _make_crud_service()
+        crud.list_acts.return_value = ([], 0)
+        app = _build_app(
+            crud_service=crud,
+            user_roles=[{"name": "Администратор"}],
+        )
+
+        with TestClient(app) as client:
+            resp = client.get("/api/v1/acts/list")
+
+        assert resp.status_code == 200
+        crud.list_acts.assert_awaited_once_with(
+            USERNAME, limit=50, offset=0, is_admin=True,
+        )
 
 
 # -------------------------------------------------------------------------

@@ -67,7 +67,7 @@ def test_admin_role_returns_200_with_payload():
         },
     )
 
-    app = _build_app(roles=[{"id": 1, "name": "Админ", "domain_name": None}])
+    app = _build_app(roles=[{"id": 1, "name": "Администратор", "domain_name": None}])
     client = TestClient(app)
     resp = client.get("/api/v1/admin/diagnostics")
     assert resp.status_code == 200, resp.text
@@ -85,7 +85,7 @@ def test_admin_role_returns_200_with_payload():
 
 def test_empty_registry_returns_200_with_empty_dicts():
     """Если ничего не зарегистрировано — 200 + пустые словари."""
-    app = _build_app(roles=[{"id": 1, "name": "Админ", "domain_name": None}])
+    app = _build_app(roles=[{"id": 1, "name": "Администратор", "domain_name": None}])
     client = TestClient(app)
     resp = client.get("/api/v1/admin/diagnostics")
     assert resp.status_code == 200, resp.text

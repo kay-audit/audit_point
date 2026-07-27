@@ -227,7 +227,7 @@ async def test_require_domain_access_allows_admin_without_audit():
         return "22494524"
 
     async def _override_roles() -> list[dict]:
-        return [{"id": 1, "name": "Админ", "domain_name": None}]
+        return [{"id": 1, "name": "Администратор", "domain_name": None}]
 
     app.dependency_overrides[get_username] = _override_username
     app.dependency_overrides[get_user_roles] = _override_roles

@@ -25,6 +25,8 @@ class UserSearchResult(BaseModel):
     username: str
     fullname: str = ""
     job: str = ""
+    # Территориальный банк пользователя (для отображения в подборе команды).
+    tb: str = ""
 
 
 class ActDirective(BaseModel):

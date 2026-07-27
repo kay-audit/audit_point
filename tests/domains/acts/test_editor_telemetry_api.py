@@ -41,7 +41,7 @@ def _build_app(*, enabled: bool = True, repo: MagicMock | None = None) -> tuple[
     app.dependency_overrides[get_username] = lambda: USERNAME
     # require_domain_access("acts") пропускает админа — избегаем реального БД-запроса ролей.
     app.dependency_overrides[get_user_roles] = lambda: [
-        {"name": "Админ", "domain_name": None},
+        {"name": "Администратор", "domain_name": None},
     ]
     app.dependency_overrides[_get_acts_settings] = lambda: ActsSettings(
         editor_telemetry_enabled=enabled,

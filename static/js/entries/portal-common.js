@@ -17,6 +17,9 @@ import '../shared/dialog/dialog-base.js';
 import '../shared/dialog/dialog-confirm.js';
 import '../portal/portal-sidebar.js';
 import '../portal/portal-settings.js';
+// Админ-диалоги (edit/delete): подключаем на уровне portal-common, чтобы они
+// были доступны с любой portal-страницы (вызываются из admin-page.js).
+import '../portal/admin/admin-edit-user-dialog.js';
 
 // Shared-центр уведомлений (без живых источников на портале).
 import { NotificationCenter } from '../shared/notifications-center/notification-center.js';

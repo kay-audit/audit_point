@@ -59,7 +59,7 @@ def _build_app(*, conv, msg, feedback, username: str = USERNAME) -> FastAPI:
 
     app.dependency_overrides[get_username] = lambda: username
     app.dependency_overrides[get_user_roles] = lambda: [
-        {"id": 1, "name": "Админ", "domain_name": None},
+        {"id": 1, "name": "Администратор", "domain_name": None},
     ]
     app.dependency_overrides[get_conversation_service] = lambda: conv
     app.dependency_overrides[get_message_service] = lambda: msg

@@ -40,7 +40,7 @@ def _build_domain():
                 order=30,
                 active_page="ck_client_experience",
                 chat_domains=[DOMAIN_NAME, "acts"],
-                group="Центры компетенций",
+                group="ЦЕНТРЫ КОМПЕТЕНЦИЙ",
                 description="Центр компетенций по верификации метрик клиентского опыта",
             ),
         ],

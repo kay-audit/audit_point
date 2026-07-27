@@ -119,7 +119,7 @@ def get_nav_items_for_user(roles: list[dict]) -> list[dict]:
     if cached is not None and (now - cached[0]) < _CACHE_TTL_SEC:
         return cached[1]
 
-    is_admin = any(r["name"] == "Админ" for r in roles)
+    is_admin = any(r["name"] == "Администратор" for r in roles)
     user_domains = {r["domain_name"] for r in roles if r.get("domain_name")}
 
     items: list[NavItem] = []

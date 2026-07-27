@@ -470,6 +470,10 @@ class ActCrudRepository(BaseRepository):
             username,
         )
 
+    async def count_all_acts(self) -> int:
+        """Считает общее количество актов в системе (для админ-просмотра)."""
+        return await self.conn.fetchval(f"SELECT COUNT(*) FROM {self.acts}")
+
     async def get_user_acts(
         self,
         username: str,
@@ -539,28 +543,94 @@ class ActCrudRepository(BaseRepository):
         )
 
         return [
-            ActListItem(
-                id=row["id"],
-                km_number=row["km_number"],
-                part_number=row["part_number"],
-                total_parts=row["total_parts"],
-                inspection_name=row["inspection_name"],
-                order_number=row["order_number"],
-                inspection_start_date=row["inspection_start_date"],
-                inspection_end_date=row["inspection_end_date"],
-                last_edited_at=row["last_edited_at"],
-                user_role=row["user_role"],
-                service_note=row["service_note"],
-                audit_act_id=row["audit_act_id"],
-                locked_by=row["locked_by"],
-                is_locked=row["is_locked"],
-                needs_created_date=row["needs_created_date"],
-                needs_directive_number=row["needs_directive_number"],
-                needs_invoice_check=row["needs_invoice_check"],
-                needs_service_note=row["needs_service_note"],
-                validation_status=row["validation_status"],
-                validation_issues=_parse_validation_issues(row["validation_issues"]),
-            )
+            self._build_act_list_item(row)
+            for row in rows
+        ]
+
+    @staticmethod
+    def _build_act_list_item(row) -> ActListItem:
+        """Собирает ActListItem из строки запроса (общий хелпер).
+
+        Выделен чтобы не дублировать маппинг полей между ``get_user_acts``
+        (для участников команды) и ``get_all_acts_as_admin`` (для админа,
+        видящего все акты).
+        """
+        return ActListItem(
+            id=row["id"],
+            km_number=row["km_number"],
+            part_number=row["part_number"],
+            total_parts=row["total_parts"],
+            inspection_name=row["inspection_name"],
+            order_number=row["order_number"],
+            inspection_start_date=row["inspection_start_date"],
+            inspection_end_date=row["inspection_end_date"],
+            last_edited_at=row["last_edited_at"],
+            user_role=row["user_role"],
+            service_note=row["service_note"],
+            audit_act_id=row["audit_act_id"],
+            locked_by=row["locked_by"],
+            is_locked=row["is_locked"],
+            needs_created_date=row["needs_created_date"],
+            needs_directive_number=row["needs_directive_number"],
+            needs_invoice_check=row["needs_invoice_check"],
+            needs_service_note=row["needs_service_note"],
+            validation_status=row["validation_status"],
+            validation_issues=_parse_validation_issues(row["validation_issues"]),
+        )
+
+    async def get_all_acts_as_admin(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ActListItem]:
+        """Получает ВСЕ акты в системе (только для администраторов).
+
+        Используется на странице «Управление актами» — админ видит не только
+        акты, в команде которых он состоит, но и акты, созданные другими
+        пользователями. Чтобы отличить «системный» доступ от «командного»,
+        роль пользователя в таких актах подменяется на «Администратор»:
+        в ``audit_team_members`` такой роли быть НЕ должно (это системная роль,
+        а не роль в рамках проверки — см. ТЗ заказчика). Поэтому возвращаем
+        «Администратор» как литерал здесь, не джойнясь с team.
+        """
+        rows = await self.conn.fetch(
+            f"""
+            SELECT
+                a.id,
+                a.km_number,
+                a.part_number,
+                a.total_parts,
+                a.inspection_name,
+                a.order_number,
+                a.inspection_start_date,
+                a.inspection_end_date,
+                a.last_edited_at,
+                a.created_at,
+                a.service_note,
+                a.audit_act_id,
+                a.locked_by,
+                (a.locked_by IS NOT NULL
+                 AND a.lock_expires_at IS NOT NULL
+                 AND a.lock_expires_at > CURRENT_TIMESTAMP) as is_locked,
+                a.needs_created_date,
+                a.needs_directive_number,
+                a.needs_invoice_check,
+                a.needs_service_note,
+                a.validation_status,
+                a.validation_issues
+            FROM {self.acts} a
+            ORDER BY
+                COALESCE(a.last_edited_at, a.created_at) DESC,
+                a.created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+        # «Администратор» как роль пользователя — литерал (не из БД).
+        return [
+            self._build_act_list_item({**dict(row), "user_role": "Администратор"})
             for row in rows
         ]
 

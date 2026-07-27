@@ -28,9 +28,20 @@
 
         <div class="workflow-content">
             <!-- Панель фильтров (открывается по кнопке «Фильтры»). Использует
-                 классы .btn/.admin-search-input из проекта для консистентности. -->
+                 классы .btn/.admin-search-input из проекта для консистентности.
+
+                 Порядок полей слева направо:
+                 1) Номер КМ (поиск по вхождению)
+                 2) Статус
+                 3) Роль в проекте
+                 4) Сброс -->
             <div class="workflow-filters" id="workflowFilters">
                 <div class="workflow-filters-row">
+                    <div class="workflow-filter">
+                        <label for="filterKm">Номер КМ (содержит)</label>
+                        <input type="text" id="filterKm" class="admin-search-input"
+                               placeholder="например, КМ-99-10">
+                    </div>
                     <div class="workflow-filter">
                         <label for="filterStatus">Статус</label>
                         <select id="filterStatus" class="admin-search-input">
@@ -39,11 +50,6 @@
                             <option value="pending">Ожидание</option>
                             <option value="completed">Завершён</option>
                         </select>
-                    </div>
-                    <div class="workflow-filter">
-                        <label for="filterKm">Номер КМ (содержит)</label>
-                        <input type="text" id="filterKm" class="admin-search-input"
-                               placeholder="например, КМ-99-10">
                     </div>
                     <div class="workflow-filter">
                         <label for="filterRole">Роль в проекте</label>

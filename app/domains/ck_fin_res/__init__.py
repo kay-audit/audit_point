@@ -28,7 +28,7 @@ def _build_domain():
         chat_tools=get_chat_tools(),
         nav_items=[
             NavItem(
-                label="ЦК Фин.Рез.",
+                label="ЦК Фин. результат",
                 url="/ck-fin-res",
                 icon_svg=(
                     '<path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 '
@@ -41,7 +41,7 @@ def _build_domain():
                 order=20,
                 active_page="ck_fin_res",
                 chat_domains=[DOMAIN_NAME, "acts"],
-                group="Центры компетенций",
+                group="ЦЕНТРЫ КОМПЕТЕНЦИЙ",
                 description="Центр компетенций по верификации метрик финансовых результатов",
             ),
         ],

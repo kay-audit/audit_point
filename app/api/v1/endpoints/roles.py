@@ -22,5 +22,5 @@ async def get_my_roles(
     return {
         "username": username,
         "roles": roles,
-        "is_admin": any(r["name"] == "Админ" for r in roles),
+        "is_admin": any(r["name"] == "Администратор" for r in roles),
     }

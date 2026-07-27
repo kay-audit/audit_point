@@ -129,7 +129,7 @@ export class AdminAuditLog {
                 <tr>
                     <th>Дата</th>
                     <th>Action</th>
-                    <th>Админ</th>
+                    <th>Администратор</th>
                     <th>Цель</th>
                     <th>Роль</th>
                     <th>Детали</th>

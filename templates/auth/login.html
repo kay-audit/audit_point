@@ -10,8 +10,8 @@
 <body class="login-body">
     <div class="login-card">
         <div class="login-card-header">
-            <h1 class="login-title">Audit Workstation</h1>
-            <p class="login-subtitle">Войдите в систему</p>
+            <h1 class="login-title">Единое рабочее место аудитора</h1>
+            <p class="login-subtitle">Авторизация</p>
         </div>
         <form id="loginForm" class="login-form" autocomplete="on">
             <label class="login-label">
@@ -32,8 +32,7 @@
             <button type="submit" class="login-submit" id="loginSubmitBtn">Войти</button>
         </form>
         <div class="login-hint" id="loginHint">
-            <p>Логин — числовой идентификатор (например, табельный номер).
-               Пароль выдаётся администратором.</p>
+            <p>Логин - числовой идентификатор. Пароль выдаётся администратором.</p>
         </div>
     </div>
     <script type="module" src="{{ url_for('static', path='js/auth/login.js') | versioned }}"></script>
