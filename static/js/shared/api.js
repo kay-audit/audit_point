@@ -581,6 +581,17 @@ export class APIClient {
             // при несинхронизированных правках (см. StorageManager.saveState).
             setTimeout(() => {
                 window.StorageManager.enableTracking();
+                // Только что загрузили актуальное содержимое с сервера —
+                // считаем состояние синхронизированным с БД. Без этого
+                // вызова after AI-операций (refresh_act от modify_act_tree,
+                // add_table_row и т.д.) beforeunload ошибочно срабатывает:
+                // бэкенд только что сохранил данные, но StorageManager
+                // по-прежнему думает, что остались несинхронизированные
+                // правки от прошлой сессии. Аналогично для ручного
+                // _switchToAct (acts-menu.js) — там вызывающая сторона
+                // и так делает markAsSyncedWithDB, идемпотентность это
+                // поддерживает.
+                window.StorageManager.markAsSyncedWithDB();
                 if (fontNorm.changed && !AppConfig.readOnlyMode.isReadOnly) {
                     // 6.4: нормализация изменила content — теперь, когда tracking
                     // снова включён, помечаем акт несохранённым (автосейв персистит).
@@ -597,6 +608,9 @@ export class APIClient {
                     // Восстановленный черновик ещё не в БД — помечаем как
                     // несинхронизированный ПОСЛЕ bootstrap-вызовов
                     // markAsSyncedWithDB вызывающих сторон (acts-menu/app).
+                    // ВАЖНО: applyRestoredDraftState идёт ПОСЛЕ markAsSyncedWithDB
+                    // — иначе он сбросится в 'saved', и draft не помешает уйти
+                    // со страницы без предупреждения.
                     window.StorageManager.applyRestoredDraftState();
                 }
             }, AppConfig.timings.enableTrackingAfterLoad);
