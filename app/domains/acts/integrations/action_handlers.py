@@ -833,11 +833,15 @@ def _find_node_by_ref(
     tree: dict,
     ref: str | int,
 ) -> tuple[dict | None, dict | None]:
+    # Нормализуем ref в str — LLM может передать как "2" (str), так и
+    # 2 (int). В Python `"2" == 2` = False, поэтому нужно привести
+    # к одному типу ДО сравнения.
+    ref_str = str(ref) if ref is not None else ""
 
     def walk(node, parent):
-        if str(node.get("id", "")) == ref:
+        if str(node.get("id", "")) == ref_str:
             return node, parent
-        if str(node.get("number", "")) == ref:
+        if str(node.get("number", "")) == ref_str:
             return node, parent
         for child in node.get("children", []) or []:
             found, par = walk(child, node)

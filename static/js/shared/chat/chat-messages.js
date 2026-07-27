@@ -538,6 +538,79 @@ export const ChatMessages = {
     },
 
     /**
+     * Показывает system-greeting в чате: «Акт КМ-X • Выбранный блок: N».
+     *
+     * Это info-баннер, который отображается при вызове «AI-ассистент» из
+     * контекстного меню. НЕ вызывает LLM, не создаёт user-сообщение,
+     * не отправляет ничего на бэкенд — только рисует DOM-блок.
+     *
+     * Контекст (KМ + выбранный узел) уже передан в window.__selectedNode
+     * и будет автоматически приложен к следующему user-сообщению через
+     * ChatStream.sendAndPoll (selected_node_id + current_act_id в FormData
+     * попадают в system prompt LLM).
+     *
+     * Идемпотентно: если system-greeting уже есть — обновляем его текст
+     * (это нужно, когда пользователь вызвал AI-ассистента на другом
+     * узле — контекст обновляется без дубля баннера и без потери
+     * уже отправленных сообщений).
+     *
+     * @param {Object} ctx — {id, number, label, type} (из window.__selectedNode)
+     */
+    showNodeContext(ctx) {
+        if (!ctx || !this._messagesContainer) return;
+        const kmLabel = (window.actMetadata && window.actMetadata.km_number)
+            || (window.currentActId ? `id=${window.currentActId}` : '');
+        const nodeDesc = ctx.number
+            ? `${ctx.number} «${ctx.label || ''}»`
+            : (ctx.id || '?');
+
+        // Ищем существующий баннер и обновляем.
+        const existing = this._messagesContainer.querySelector(
+            '.chat-message-system'
+        );
+        if (existing) {
+            const textEl = existing.querySelector('.chat-system-text');
+            if (textEl) {
+                textEl.textContent = kmLabel
+                    ? `Акт ${kmLabel} • Блок: ${nodeDesc}`
+                    : `Блок: ${nodeDesc}`;
+            }
+            ChatEventBus.emit('ui:scroll-bottom');
+            return;
+        }
+
+        // Иначе создаём новый. Без аватара, по центру, с иконкой.
+        const msg = document.createElement('div');
+        msg.className = 'chat-message chat-message-system';
+        msg.setAttribute('data-source', 'node-context');
+
+        const content = document.createElement('div');
+        content.className = 'chat-message-content';
+
+        const icon = document.createElement('span');
+        icon.className = 'chat-system-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = '📋';
+
+        const label = document.createElement('span');
+        label.className = 'chat-system-label';
+        label.textContent = 'Контекст';
+
+        const text = document.createElement('span');
+        text.className = 'chat-system-text';
+        text.textContent = kmLabel
+            ? `Акт ${kmLabel} • Блок: ${nodeDesc}`
+            : `Блок: ${nodeDesc}`;
+
+        content.appendChild(icon);
+        content.appendChild(label);
+        content.appendChild(text);
+        msg.appendChild(content);
+        this._messagesContainer.appendChild(msg);
+        ChatEventBus.emit('ui:scroll-bottom');
+    },
+
+    /**
      * Создаёт DOM-элемент сообщения и вставляет в контейнер
      *
      * @param {'user'|'bot'} role

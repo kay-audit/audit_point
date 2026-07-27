@@ -113,7 +113,9 @@ async def execute_tool_call(
             out = json.dumps(result, ensure_ascii=False, default=str)
         else:
             out = str(result)
-        preview = out[:200] + "..." if len(out) > 200 else out
+        # preview в логах обрезаем до 500 (читаемо); сам return-строкой наружу
+        # отдаём полный результат — LLM должна видеть причину отказа.
+        preview = out[:500] + "..." if len(out) > 500 else out
         logger.info(
             "Tool result: %s, длина=%d, preview=%s",
             tool_name, len(out), preview,

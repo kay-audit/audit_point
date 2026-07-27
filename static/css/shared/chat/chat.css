@@ -251,6 +251,42 @@
     border-top-left-radius: 2px;
 }
 
+/* Системное сообщение от AI-ассистента (без вызова LLM).
+ * Например, info-баннер «Выбран акт КМ-99-XXXXX, блок 2 …»,
+ * который показывается при вызове «AI-ассистент» из контекстного
+ * меню. Отличается от bot/user: бесцветный бэкграунд, без
+ * аватара, по центру, с иконкой и label «контекст».
+ */
+.chat-message-system {
+    display: flex;
+    justify-content: center;
+    margin: var(--spacing-md) 0;
+}
+.chat-message-system .chat-message-content {
+    background: var(--gray-100, #f1f5f9);
+    color: var(--text-secondary, #475569);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-md);
+    border: 1px dashed var(--gray-300, #cbd5e1);
+    font-size: var(--font-size-xs, 12px);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-sm, 6px);
+    max-width: 90%;
+    line-height: var(--line-height-tight, 1.3);
+}
+.chat-message-system .chat-system-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+}
+.chat-message-system .chat-system-label {
+    font-weight: 600;
+    color: var(--text-primary, #1e293b);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+}
+
 /* Typing-плейсхолдер (три точки внутри bot-bubble) */
 .chat-typing-placeholder {
     display: inline-flex;

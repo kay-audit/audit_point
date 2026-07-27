@@ -301,19 +301,25 @@ export class TreeContextMenu {
      * Открывает AI-чат с контекстом: текущий акт + выбранный узел.
      *
      * Используется пунктом «AI-ассистент» в контекстном меню. При клике:
-     * 1) Запоминает выбранный узел в window.__selectedNode.
-     * 2) Открывает popup чата (chatPopupBtn) — при необходимости.
-     * 3) Очищает текущую беседу (chat:clear) — если чат уже был открыт
-     *    и пользователь вызвал AI-ассистент на ДРУГОМ узле. Так не будет
-     *    путаницы «редактируем старый узел».
-     * 4) Формирует initial_message с контекстом (КМ + выбранный блок) и
-     *    сразу отправляет его через ChatManager.sendMessage({text: ...}).
-     *    LLM получает user-сообщение «Готов к редактированию. Акт: ...»
-     *    и отвечает «Готов к редактированию».
+     * 1) Запоминает выбранный узел в window.__selectedNode (id, number,
+     *    label, type). Этот ctx автоматически прикрепляется к
+     *    следующему user-сообщению — ChatStream._detectSelectedNode()
+     *    читает window.__selectedNode и добавляет selected_node_id
+     *    в FormData, а бэкенд пробрасывает в system prompt как
+     *    «Выбранный блок». Так LLM сразу понимает контекст.
+     * 2) Открывает popup чата (если закрыт). Безопасно вызывать на
+     *    уже открытом — toggle() сам разберётся.
+     * 3) Показывает info-баннер в чате (ChatMessages.showNodeContext) —
+     *    НЕ вызывает LLM, не отправляет сообщение. Пользователь видит
+     *    «Акт КМ-99-XXXXX • Блок: 2 «Оценка качества…»» и понимает,
+     *    что ассистент знает контекст. Если пользователь сменил узел
+     *    и снова вызвал AI-ассистента — баннер ОБНОВЛЯЕТСЯ, не дублируется.
      *
-     * Если пользователь не ввёл промпт, а потом вызвал AI-ассистента на
-     * другом узле — чат НЕ будет редактировать старый узел: открывается
-     * новая беседа, и initial_message уже ссылается на новый узел.
+     * Когда пользователь сам напишет — LLM получит сообщение +
+     * selected_node_id, обработает задачу и вернёт client_action.refresh_act
+     * для in-place обновления конструктора. Никаких лишних токенов
+     * на приветствие «Готов к редактированию» — баннер уже сказал всё
+     * что нужно.
      */
     openChatWithContext(node, nodeId) {
         // 1) Запоминаем выбранный узел глобально.
@@ -326,10 +332,7 @@ export class TreeContextMenu {
             };
         } catch (_) { /* node уже удалён */ }
 
-        // 2) Открываем popup чата (если закрыт). Безопасно вызывать
-        //    на уже открытом — toggle() сам разберётся.
-        const popupOpen = document.getElementById('chatPopupPanel')
-            && !document.getElementById('chatPopupPanel').classList.contains('hidden');
+        // 2) Открываем popup чата.
         if (typeof window.ChatPopupManager !== 'undefined'
             && typeof window.ChatPopupManager.open === 'function') {
             window.ChatPopupManager.open();
@@ -338,39 +341,27 @@ export class TreeContextMenu {
             if (btn) btn.click();
         }
 
-        // 3) Очищаем текущую беседу, если чат УЖЕ был открыт. Так
-        //    предыдущий контекст (например, выбранный ранее узел)
-        //    не «утяжелит» новую итерацию AI-ассистента.
-        if (popupOpen && typeof window.ChatEventBus !== 'undefined') {
-            try { window.ChatEventBus.emit('chat:clear'); } catch (_) {}
-        }
-
-        // 4) Формируем initial_message с контекстом и сразу отправляем.
-        //    Это будет первое user-сообщение в новой беседе; LLM получает
-        //    его и отвечает «Готов к редактированию».
-        let initialMsg = '';
-        if (typeof window.ChatStream !== 'undefined'
-            && typeof window.ChatStream.buildContextInitialMessage === 'function') {
-            try {
-                initialMsg = window.ChatStream.buildContextInitialMessage(
-                    window.__selectedNode,
-                );
-            } catch (_) { initialMsg = ''; }
-        }
-
-        if (initialMsg && typeof window.ChatManager !== 'undefined'
-            && typeof window.ChatManager.sendMessage === 'function') {
-            // Сбрасываем __selectedNode, чтобы sendAndPoll не дублировал
-            // initial_message (мы передадим его явно через text).
-            // Но selectedNode нужен бэкенду — оставляем.
-            // Микро-задержка: после open() ChatManager уже инициализирован.
-            setTimeout(() => {
+        // 3) Показываем system-баннер в чате (без вызова LLM).
+        //    showNodeContext идемпотентен — если баннер уже есть,
+        //    обновляет его; иначе создаёт новый.
+        const tryShowGreeting = () => {
+            if (typeof window.ChatMessages !== 'undefined'
+                && typeof window.ChatMessages.showNodeContext === 'function'
+                && window.ChatMessages._messagesContainer) {
                 try {
-                    window.ChatManager.sendMessage({ text: initialMsg });
+                    window.ChatMessages.showNodeContext(window.__selectedNode);
                 } catch (e) {
-                    console.error('AI-ассистент: не удалось отправить приветствие', e);
+                    console.error('AI-ассистент: не удалось отобразить контекст', e);
                 }
-            }, 50);
+                return true;
+            }
+            return false;
+        };
+        // ChatManager.init() запускается в ChatPopupManager.open() —
+        // _messagesContainer появляется там же. Ждём один tick,
+        // чтобы DOM был готов, и только потом рисуем баннер.
+        if (!tryShowGreeting()) {
+            setTimeout(tryShowGreeting, 50);
         }
     }
 
