@@ -802,6 +802,8 @@ _TABLE_KINDS = frozenset({
     "regularRisk", "operationalRisk", "taxRisk", "otherRisk",
 })
 
+_TABLE_FILL_MODES: frozenset[str] = frozenset({"replace", "append_rows"})
+
 
 def _unwrap_op(op: object) -> object:
     """Распаковывает MiniMax-style ``{"$text": "{...json...}"}`` обёртку.
@@ -1081,6 +1083,193 @@ def _apply_add_table(
                     "label": label, "kind": kind, "parent_id": parent["id"]})
 
 
+def _normalize_table_cell(
+    cell: object, row: int, col: int, is_header: bool = False
+) -> dict:
+    """Приводит ячейку к dict-формату TableCellSchema.
+
+    Принимает:
+    - str: {content: <str>, isHeader: <is_header>, colSpan: 1, rowSpan: 1, ...}
+    - dict: дополняет дефолтами (isHeader, colSpan, rowSpan, originRow/Col)
+
+    Используется в fill_table — LLM может передавать компактный формат
+    (просто строки), а handler приведёт к полному.
+    """
+    if isinstance(cell, str):
+        return {
+            "content": cell,
+            "isHeader": is_header,
+            "colSpan": 1,
+            "rowSpan": 1,
+            "isSpanned": False,
+            "spanOrigin": None,
+            "originRow": row,
+            "originCol": col,
+        }
+    if isinstance(cell, (int, float, bool)):
+        return {
+            "content": str(cell),
+            "isHeader": is_header,
+            "colSpan": 1,
+            "rowSpan": 1,
+            "isSpanned": False,
+            "spanOrigin": None,
+            "originRow": row,
+            "originCol": col,
+        }
+    if cell is None:
+        return {
+            "content": "",
+            "isHeader": is_header,
+            "colSpan": 1,
+            "rowSpan": 1,
+            "isSpanned": False,
+            "spanOrigin": None,
+            "originRow": row,
+            "originCol": col,
+        }
+    if not isinstance(cell, dict):
+        raise ValueError(
+            f"fill_table: ячейка [{row}][{col}] должна быть строкой "
+            f"или dict, получено {type(cell).__name__}"
+        )
+    if "content" not in cell:
+        raise ValueError(
+            f"fill_table: ячейка [{row}][{col}] (dict) должна иметь "
+            f"поле 'content'"
+        )
+    return {
+        "content": str(cell.get("content", "")),
+        "isHeader": bool(cell.get("isHeader", is_header)),
+        "colSpan": int(cell.get("colSpan", 1)),
+        "rowSpan": int(cell.get("rowSpan", 1)),
+        "isSpanned": bool(cell.get("isSpanned", False)),
+        "spanOrigin": cell.get("spanOrigin"),
+        "originRow": int(cell.get("originRow", row)),
+        "originCol": int(cell.get("originCol", col)),
+    }
+
+
+def _normalize_table_grid(
+    raw_grid: list, mode: str
+) -> list[list[dict]]:
+    """Приводит 2D-массив к формату TableSchema.grid.
+
+    mode='replace': первая строка = заголовки (isHeader=True), остальные —
+    данные. mode='append_rows': все строки — данные (isHeader=False).
+
+    Проверяет прямоугольность (все строки одной длины).
+    """
+    if not isinstance(raw_grid, list) or not raw_grid:
+        raise ValueError("fill_table: grid должен быть непустым 2D-массивом")
+
+    out: list[list[dict]] = []
+    for r, row in enumerate(raw_grid):
+        if not isinstance(row, list):
+            raise ValueError(
+                f"fill_table: строка {r} должна быть массивом ячеек, "
+                f"получено {type(row).__name__}"
+            )
+        is_header_row = (mode == "replace" and r == 0)
+        out.append([
+            _normalize_table_cell(cell, r, c, is_header_row)
+            for c, cell in enumerate(row)
+        ])
+
+    if out:
+        width = len(out[0])
+        for r, row in enumerate(out):
+            if len(row) != width:
+                raise ValueError(
+                    f"fill_table: строка {r} имеет {len(row)} ячеек, "
+                    f"а строка 0 — {width}. Матрица должна быть прямоугольной"
+                )
+    return out
+
+
+def _resolve_table_by_ref(
+    tree: dict, target_dict: dict, ref: str
+) -> tuple[dict | None, str | None]:
+    """Ищет таблицу в target_dict по ref (table_id или node_id).
+
+    Returns: (table_dict, node_id) или (None, None) если не найдено.
+    """
+    if not ref:
+        return None, None
+    # 1) Прямое совпадение ключа в target_dict
+    if ref in target_dict:
+        return target_dict[ref], target_dict[ref].get("nodeId")
+    # 2) Поиск узла в дереве — может быть node_id узла с type='table'
+    node, _ = _find_node_by_ref(tree, ref)
+    if node is not None and node.get("type") == "table":
+        tbl_id = node.get("tableId")
+        if tbl_id and tbl_id in target_dict:
+            return target_dict[tbl_id], node.get("id")
+    return None, None
+
+
+def _apply_fill_table(
+    tree: dict, target_dict: dict, op: dict, results: list[dict]
+) -> None:
+    op = _unwrap_op(op)
+    table_ref = op.get("table_id")
+    if not table_ref:
+        raise ValueError("fill_table: table_id обязателен")
+    mode = (op.get("mode") or "replace").strip()
+    if mode not in _TABLE_FILL_MODES:
+        raise ValueError(
+            f"fill_table: mode {mode!r} недопустим. "
+            f"Допустимые: {sorted(_TABLE_FILL_MODES)}"
+        )
+    raw_grid = op.get("grid")
+    if not raw_grid:
+        raise ValueError(
+            "fill_table: grid обязателен (2D-массив строк или полных ячеек)"
+        )
+
+    target_table, node_id = _resolve_table_by_ref(tree, target_dict, table_ref)
+    if target_table is None:
+        raise ValueError(
+            f"fill_table: таблица {table_ref!r} не найдена "
+            f"(передай tableId из add_table или node_id узла с type='table')"
+        )
+
+    if target_table.get("protected"):
+        raise ValueError(
+            f"fill_table: таблица {target_table.get('id')!r} защищена "
+            f"от изменений (protected=True)"
+        )
+
+    normalized_grid = _normalize_table_grid(raw_grid, mode)
+    existing_grid: list = target_table.get("grid") or []
+
+    if mode == "replace":
+        target_table["grid"] = normalized_grid
+    elif mode == "append_rows":
+        target_table["grid"] = list(existing_grid) + normalized_grid
+
+    col_widths = op.get("col_widths")
+    if col_widths is not None:
+        if not isinstance(col_widths, list) or not all(
+            isinstance(w, (int, float)) for w in col_widths
+        ):
+            raise ValueError(
+                "fill_table: col_widths должен быть массивом положительных "
+                "целых чисел"
+            )
+        target_table["colWidths"] = [int(w) for w in col_widths]
+
+    new_grid = target_table["grid"]
+    results.append({
+        "op": "fill_table",
+        "table_id": target_table.get("id"),
+        "node_id": node_id,
+        "mode": mode,
+        "rows": len(new_grid),
+        "cols": len(new_grid[0]) if new_grid else 0,
+    })
+
+
 def _apply_add_violation(
     tree: dict, dict_key: str, target_dict: dict,
     op: dict, results: list[dict]
@@ -1297,6 +1486,9 @@ async def modify_act_tree_handler(
                "content": "..."}`` — добавить текстовый блок.
             - ``{"op": "add_table", "parent_id": "5", "label": "...",
                "kind": "regularRisk"}`` — добавить таблицу (любого kind).
+            - ``{"op": "fill_table", "table_id": "5.2.3", "grid":
+               [["Товар","Кол-во"],["Ручка",5]], "mode": "replace"}`` —
+               заполнить/обновить таблицу (см.ниже).
             - ``{"op": "add_violation", "parent_id": "5.1", "label": "...",
                "violated": "...", "established": "..."}`` — добавить нарушение.
             - ``{"op": "add_process_mining", "label": "..."}`` — добавить
@@ -1338,8 +1530,8 @@ async def modify_act_tree_handler(
         return (
             "Не переданы операции. Передайте хотя бы одну в "
             "operations: add_item / add_textblock / add_table / "
-            "add_violation / add_process_mining / delete_node / "
-            "move_node."
+            "fill_table / add_violation / add_process_mining / "
+            "delete_node / move_node."
         )
 
     # Некоторые LLM (MiniMax) оборачивают каждый dict операции в
@@ -1412,6 +1604,8 @@ async def modify_act_tree_handler(
                     elif kind == "add_table":
                         _apply_add_table(tree, "tables",
                                           tables, op, results)
+                    elif kind == "fill_table":
+                        _apply_fill_table(tree, tables, op, results)
                     elif kind == "add_violation":
                         _apply_add_violation(tree, "violations",
                                               violations, op, results)
@@ -1434,8 +1628,8 @@ async def modify_act_tree_handler(
                         errors.append(
                             f"#{op_index}: неизвестная операция {kind!r}. "
                             f"Допустимые: add_item, add_sibling, add_textblock, "
-                            f"add_table, add_violation, add_process_mining, "
-                            f"delete_node, move_node."
+                            f"add_table, fill_table, add_violation, "
+                            f"add_process_mining, delete_node, move_node."
                         )
                 except ValueError as exc:
                     errors.append(f"#{op_index}: {exc}")
@@ -1497,6 +1691,11 @@ async def modify_act_tree_handler(
             summary_lines.append(
                 f"- table «{r['label']}» (kind={r['kind']}, id={r['node_id']}, "
                 f"tableId={r['tableId']}) в parent_id={r['parent_id']}"
+            )
+        elif op_kind == "fill_table":
+            summary_lines.append(
+                f"- fill_table: таблица {r['table_id']!r} (id={r['node_id']}) "
+                f"обновлена в режиме «{r['mode']}» — {r['rows']}×{r['cols']}"
             )
         elif op_kind == "add_violation":
             summary_lines.append(
