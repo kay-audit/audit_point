@@ -1,0 +1,29 @@
+{% extends "portal/base_portal.html" %}
+
+{% block title %}{{ topbar_title|default("План проверок") }}{% endblock %}
+
+{% block content %}
+{% from "portal/components/_placeholder.html" import tool_placeholder %}
+{{ tool_placeholder(
+    title=placeholder.title,
+    subtitle=placeholder.subtitle,
+    icon_svg=placeholder.icon_svg,
+    paragraphs=placeholder.paragraphs,
+) }}
+{% endblock %}
+
+{% block init_script %}
+<script type="module" nonce="{{ request.state.csp_nonce }}">
+    import { AuthManager } from '{{ url_for('static', path='js/shared/auth.js') | versioned }}';
+    import { PortalSidebar } from '{{ url_for('static', path='js/portal/portal-sidebar.js') | versioned }}';
+    import { LandingSettingsManager } from '{{ url_for('static', path='js/portal/portal-settings.js') | versioned }}';
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        const isAuthorized = await AuthManager.requireAuth();
+        if (isAuthorized) {
+            PortalSidebar.init();
+            LandingSettingsManager.init();
+        }
+    });
+</script>
+{% endblock %}

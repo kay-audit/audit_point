@@ -1,0 +1,43 @@
+{# Общий макрос «карточка-заглушка для инструмента в разработке».
+
+Принимает:
+- title:     крупный заголовок карточки (label инструмента)
+- subtitle:  подзаголовок (description из NavItem)
+- icon_svg:  inline SVG-разметка иконки (currentColor-stroke, 24x24 viewBox)
+- paragraphs: список {"lead": bool, "html": str} — содержательные абзацы
+              (последним обычно идёт COMMON_AVAILABILITY_NOTE)
+
+Рендерит карточку в стиле AW: декоративный glow сверху, иконка в круглом
+primary-бейдже, badge «В разработке», 3xl-заголовок, контентная карточка
+с bg-secondary и подсвеченными фразами.
+
+Зависит от стилей в static/css/portal/sqlagent/sqlagent.css (классы
+с префиксом ``tool-placeholder-*``).
+#}
+{% macro tool_placeholder(title, subtitle, icon_svg, paragraphs) -%}
+<div class="tool-placeholder">
+    <div class="tool-placeholder-card">
+        <div class="tool-placeholder-glow" aria-hidden="true"></div>
+
+        <div class="tool-placeholder-header">
+            <div class="tool-placeholder-icon-wrap">
+                <svg class="tool-placeholder-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    {{ icon_svg|safe }}
+                </svg>
+                <span class="tool-placeholder-badge">В&nbsp;разработке</span>
+            </div>
+        </div>
+
+        <h1 class="tool-placeholder-title">{{ title }}</h1>
+        <p class="tool-placeholder-subtitle">{{ subtitle }}</p>
+
+        <div class="tool-placeholder-content">
+            {%- for p in paragraphs %}
+            <p class="tool-placeholder-paragraph{% if p.lead %} tool-placeholder-paragraph--lead{% endif %}">
+                {{ p.html|safe }}
+            </p>
+            {%- endfor %}
+        </div>
+    </div>
+</div>
+{%- endmacro %}

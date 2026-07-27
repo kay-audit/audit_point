@@ -1,11 +1,15 @@
 /*
- * Страница SQL-агента: обёртка встроенного iframe и заглушка
- * «инструмент в разработке».
+ * Страница SQL-агента: обёртка встроенного iframe и заглушки
+ * «инструмент в разработке» для placeholder-инструментов.
  *
  * Когда процесс SQL-агента не отвечает на своём порту, сервер отдаёт
  * информационную карточку с описанием назначения инструмента вместо
  * iframe — чтобы пользователь видел аккуратное сообщение в стиле AW,
  * а не браузерную заглушку «не удаётся установить соединение».
+ *
+ * Те же классы используются для всех placeholder-инструментов блока
+ * Аналитика (?tool=xxx) и для Плана проверок (/acts/plan) — единый
+ * визуальный язык.
  */
 
 /* Обёртка iframe — тянется на всю свободную высоту main-области */
@@ -24,10 +28,12 @@
 }
 
 /* ============================================================
-   Заглушка «SQL-агент в разработке»
+   Заглушка «инструмент в разработке» — общий стиль для всех
+   placeholder-инструментов (SQL-агент, ИОР, CRM, Документы,
+   Источники данных, JIRA|BB|Confluence, Follow UP, План проверок).
    ============================================================ */
 
-.sqlagent-unavailable {
+.tool-placeholder {
     flex: 1 1 auto;
     display: flex;
     align-items: center;
@@ -41,7 +47,7 @@
         );
 }
 
-.sqlagent-unavailable-card {
+.tool-placeholder-card {
     position: relative;
     width: 100%;
     max-width: 38rem;
@@ -55,7 +61,7 @@
 
 /* Декоративное «свечение» в верхней части карточки — намёк на
    подключение к данным, подсвечивает иконку и заголовок. */
-.sqlagent-unavailable-glow {
+.tool-placeholder-glow {
     position: absolute;
     top: -120px;
     left: 50%;
@@ -71,24 +77,23 @@
     z-index: 0;
 }
 
-.sqlagent-unavailable-header,
-.sqlagent-unavailable-title,
-.sqlagent-unavailable-subtitle,
-.sqlagent-unavailable-content,
-.sqlagent-unavailable-footer {
+.tool-placeholder-header,
+.tool-placeholder-title,
+.tool-placeholder-subtitle,
+.tool-placeholder-content {
     position: relative;
     z-index: 1;
 }
 
 /* --- Иконка + бейдж «В разработке» --- */
 
-.sqlagent-unavailable-header {
+.tool-placeholder-header {
     display: flex;
     justify-content: center;
     margin-bottom: var(--spacing-xl);
 }
 
-.sqlagent-unavailable-icon-wrap {
+.tool-placeholder-icon-wrap {
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -101,11 +106,11 @@
     color: var(--primary);
 }
 
-.sqlagent-unavailable-icon {
+.tool-placeholder-icon {
     color: var(--primary);
 }
 
-.sqlagent-unavailable-badge {
+.tool-placeholder-badge {
     position: absolute;
     bottom: -8px;
     left: 50%;
@@ -124,7 +129,7 @@
 
 /* --- Заголовок и подзаголовок --- */
 
-.sqlagent-unavailable-title {
+.tool-placeholder-title {
     margin: 0 0 var(--spacing-sm);
     font-size: var(--font-size-3xl);
     font-weight: var(--font-weight-semibold);
@@ -134,7 +139,7 @@
     letter-spacing: -0.01em;
 }
 
-.sqlagent-unavailable-subtitle {
+.tool-placeholder-subtitle {
     margin: 0 0 var(--spacing-2xl);
     font-size: var(--font-size-base);
     line-height: var(--line-height-normal);
@@ -144,86 +149,39 @@
 
 /* --- Основной текст --- */
 
-.sqlagent-unavailable-content {
+.tool-placeholder-content {
     padding: var(--spacing-xl) var(--spacing-2xl);
-    margin-bottom: var(--spacing-2xl);
+    margin-bottom: 0;
     background: var(--bg-secondary);
     border: 1px solid var(--border-light);
     border-radius: var(--radius-lg);
 }
 
-.sqlagent-unavailable-paragraph {
+.tool-placeholder-paragraph {
     margin: 0;
     font-size: var(--font-size-base);
     line-height: var(--line-height-relaxed);
     color: var(--text-primary);
 }
 
-.sqlagent-unavailable-paragraph + .sqlagent-unavailable-paragraph {
+.tool-placeholder-paragraph + .tool-placeholder-paragraph {
     margin-top: var(--spacing-md);
 }
 
-.sqlagent-unavailable-paragraph--lead {
+.tool-placeholder-paragraph--lead {
     color: var(--text-primary);
 }
 
-.sqlagent-unavailable-paragraph strong {
+.tool-placeholder-paragraph strong {
     color: var(--primary);
     font-weight: var(--font-weight-semibold);
 }
 
-.sqlagent-unavailable-highlight {
+.tool-placeholder-highlight {
     padding: 1px 6px;
     font-weight: var(--font-weight-semibold);
     color: var(--primary-hover);
     background: var(--primary-subtle);
     border-radius: var(--radius-sm);
     white-space: nowrap;
-}
-
-/* --- Футер (часы + кнопка обновления) --- */
-
-.sqlagent-unavailable-footer {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding-top: var(--spacing-md);
-    border-top: 1px dashed var(--border-light);
-}
-
-.sqlagent-unavailable-footer-icon {
-    flex-shrink: 0;
-    color: var(--text-tertiary);
-}
-
-.sqlagent-unavailable-footer-text {
-    flex: 1;
-    font-size: var(--font-size-sm);
-    line-height: var(--line-height-normal);
-    color: var(--text-tertiary);
-}
-
-.sqlagent-unavailable-refresh {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-medium);
-    color: var(--primary);
-    background: transparent;
-    border: 1px solid var(--primary-light);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    transition: all var(--duration-fast);
-}
-
-.sqlagent-unavailable-refresh:hover {
-    color: var(--primary-hover);
-    background: var(--primary-subtle);
-    border-color: var(--primary);
-}
-
-.sqlagent-unavailable-refresh svg {
-    flex-shrink: 0;
 }
