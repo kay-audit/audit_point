@@ -8,6 +8,93 @@
     <meta name="app-version" content="{{ app_version }}">
     <title>{% block title %}Портал{% endblock %}</title>
 
+    {# Anti-FOUC: критичные правила для свёрнутого состояния sidebar лежат
+       прямо в <head> через inline <style>, чтобы они применялись синхронно
+       при парсинге HTML — ДО загрузки основного CSS через @import
+       (который блокирует first paint, пока не разрешится весь граф импортов).
+
+       Без этого при переходе между страницами пользователь видит
+       развёрнутый sidebar (правила .collapsed в sidebar.css ещё не подгружены)
+       и только потом он сворачивается — отчётливое мерцание.
+
+       ⚠️ CSS-переменные (--spacing-lg и т.п.) определяются через @import в
+       static/css/base/variables/spacing.css, который подгружается ПОЗЖЕ.
+       Поэтому здесь используются КОНКРЕТНЫЕ значения (1rem / 1.25rem),
+       а не var(--spacing-X) — иначе в момент первого рендера переменные ещё
+       не определены, и правила проваливаются в fallback.
+
+       Сценарий:
+       1) inline-script читает localStorage и ставит класс на <html>;
+       2) inline-<style> ниже применяет правила для этого класса;
+       3) Парсер доходит до <body>, рендерит #landingSidebar уже свёрнутым;
+       4) После загрузки JS PortalSidebar.init() дублирует состояние через
+          класс .collapsed на #landingSidebar и снимает sidebar-collapsed-init
+          с <html>.
+
+       Правила дублируют часть sidebar.css (но с !important для надёжности) —
+       иначе CSS @import-графа не успеет к первому рендеру. #}
+    <script>
+        (function () {
+            try {
+                if (localStorage.getItem('sidebar_collapsed') === 'true') {
+                    document.documentElement.classList.add('sidebar-collapsed-init');
+                }
+            } catch (e) { /* localStorage недоступен — игнорируем */ }
+        })();
+    </script>
+    <style id="sidebar-fouc-guard">
+        /* Отключаем transition на время первого рендера, чтобы sidebar не
+           «дёргался» при применении ширины/transform. После PortalSidebar.init()
+           класс sidebar-collapsed-init снимается с <html>, и обычные правила
+           .collapsed в sidebar.css (включая transition) снова работают. */
+        html.sidebar-collapsed-init .landing-sidebar,
+        html.sidebar-collapsed-init .landing-sidebar * {
+            transition: none !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar {
+            width: 68px !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-title {
+            opacity: 0 !important;
+            width: 0 !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-toggle-btn svg {
+            transform: rotate(180deg) !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-header {
+            padding: 1.25rem !important; /* var(--spacing-lg) */
+            justify-content: center !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-logo,
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-build-marker {
+            display: none !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-toggle-btn {
+            margin-left: 0 !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-nav-group-label,
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-nav-label,
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-nav-badge {
+            display: none !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-nav-item {
+            padding: 1rem 1.25rem !important; /* var(--spacing-md) var(--spacing-lg) */
+            justify-content: center !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-chat-btn {
+            padding: 0 1.25rem !important; /* 0 var(--spacing-lg) */
+            justify-content: center !important;
+        }
+        html.sidebar-collapsed-init .landing-sidebar .sidebar-chat-btn .sidebar-nav-label {
+            display: none !important;
+        }
+        @media (max-width: 768px) {
+            html.sidebar-collapsed-init .landing-sidebar {
+                width: 56px !important;
+            }
+        }
+    </style>
+
     <!-- Основные стили -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/entry/portal.css') | versioned }}">
     <link rel="stylesheet" href="{{ url_for('static', path='css/portal/layout/profile.css') | versioned }}">

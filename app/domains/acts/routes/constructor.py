@@ -11,8 +11,13 @@ from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.v1.deps.auth_deps import get_username
+from app.api.v1.deps.role_deps import get_user_roles
 from app.core.config import get_settings
-from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts
+from app.core.navigation import (
+    build_chat_greeting_context,
+    get_chat_domains_for_page,
+    get_knowledge_bases_as_dicts,
+)
 from app.core.templating import render_template
 from app.db.connection import get_db
 from app.domains.acts.repositories import ActAccessRepository
@@ -27,7 +32,8 @@ router = APIRouter()
 async def show_constructor(
         request: Request,
         act_id: int,
-        username: str = Depends(get_username)
+        username: str = Depends(get_username),
+        roles: list[dict] = Depends(get_user_roles),
 ):
     """
     Страница конструктора конкретного акта.
@@ -39,6 +45,7 @@ async def show_constructor(
         request: HTTP запрос
         act_id: ID акта из query параметра
         username: Имя пользователя (из зависимости get_username)
+        roles: Роли пользователя (для контекста приветствия AI-ассистента)
 
     Returns:
         HTML страница конструктора или редирект на /
@@ -63,6 +70,7 @@ async def show_constructor(
             {
                 "act_id": act_id,
                 "chat_domains": get_chat_domains_for_page("acts"),
+                "chat_greeting": await build_chat_greeting_context(roles, username),
                 "knowledge_bases": get_knowledge_bases_as_dicts(),
             }
         )

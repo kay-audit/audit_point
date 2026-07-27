@@ -260,27 +260,56 @@
 }
 
 /* ============================================
-   Footer сайдбара с кнопкой чата
+   Footer сайдбара с кнопкой чата и build-маркером
    ============================================ */
 
 .sidebar-footer {
     flex-shrink: 0;
-    height: 48px;                /* совпадает с .ck-footer домена → линии на одной горизонтали; по высоте вровень с пунктами навигации */
     display: flex;
-    align-items: stretch;
-    padding: 0;
+    flex-direction: column;
     border-top: var(--border-width-thin) solid var(--border-light);
 }
 
+/* Кнопка AI-ассистента занимает ровно одну строку (48px) — высота
+   совпадает с .ck-footer домена → линии на одной горизонтали;
+   по высоте вровень с пунктами навигации. */
+.sidebar-footer > .sidebar-chat-btn {
+    height: 48px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Build-маркер — служебная строка под кнопкой AI-ассистента:
+   маленький шрифт, третичный цвет, центрирование. Скрывается в
+   свёрнутом состоянии, чтобы не ломать узкую колонку (68px). */
+.sidebar-build-marker {
+    display: block;
+    text-align: center;
+    font-size: 10px;
+    font-family: var(--font-family-mono, monospace);
+    color: var(--text-tertiary, #99a0b0);
+    padding: 4px var(--spacing-md);
+    background: var(--bg-secondary);
+    border-top: var(--border-width-thin) solid var(--border-light);
+    line-height: 1.2;
+    user-select: all;
+    opacity: 0.85;
+}
+
+.landing-sidebar.collapsed .sidebar-build-marker {
+    display: none;
+}
+
 /* Кнопка AI-Ассистента визуально совпадает с пунктами навигации (.sidebar-nav-item):
-   те же отступы, типографика и hover. Высота 100% заполняет 48px-футер, поэтому
-   верхняя линия футера лежит на той же горизонтали, что и линия футера ЦК-страницы. */
+   те же отступы, типографика и hover. Высота фиксирована — 48px, чтобы
+   верхняя линия футера лежала на той же горизонтали, что и линия футера
+   ЦК-страницы. */
 .sidebar-chat-btn {
     display: flex;
     align-items: center;
     gap: var(--spacing-md);
     padding: 12px var(--spacing-2xl); /* тот же паддинг, что у пунктов навигации */
-    height: 100%;
+    height: 48px;
     width: 100%;
     box-sizing: border-box;
     border: none;

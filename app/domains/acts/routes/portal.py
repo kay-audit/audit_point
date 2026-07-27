@@ -9,7 +9,12 @@ from fastapi.responses import HTMLResponse
 from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import get_user_roles
 from app.core.domain_registry import get_all_domains
-from app.core.navigation import get_chat_domains_for_page, get_knowledge_bases_as_dicts, get_nav_items_for_user
+from app.core.navigation import (
+    build_chat_greeting_context,
+    get_chat_domains_for_page,
+    get_knowledge_bases_as_dicts,
+    get_nav_items_for_user,
+)
 from app.core.templating import render_template
 from app.domains.sqlagent.placeholders import get_placeholder_paragraphs
 
@@ -48,6 +53,7 @@ async def show_acts_manager(
             "user_domains": sorted({r.get("domain_name") for r in roles if r.get("domain_name")}),
             "username": username,
             "chat_domains": get_chat_domains_for_page("acts"),
+            "chat_greeting": await build_chat_greeting_context(roles, username),
             "knowledge_bases": get_knowledge_bases_as_dicts(),
         }
     )
@@ -57,6 +63,7 @@ async def show_acts_manager(
 async def show_acts_plan(
     request: Request,
     roles: list[dict] = Depends(get_user_roles),
+    username: str = Depends(get_username),
 ):
     """Заглушка «План проверок в разработке» (блок Аудит).
 
@@ -83,7 +90,9 @@ async def show_acts_plan(
             "nav_groups": get_nav_items_for_user(roles),
             "is_admin": any(r["name"] == "Администратор" for r in roles),
             "user_domains": sorted({r.get("domain_name") for r in roles if r.get("domain_name")}),
+            "username": username,
             "chat_domains": get_chat_domains_for_page("acts"),
+            "chat_greeting": await build_chat_greeting_context(roles, username),
             "knowledge_bases": get_knowledge_bases_as_dicts(),
             "placeholder": {
                 "title": nav["label"],

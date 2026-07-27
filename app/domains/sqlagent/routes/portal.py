@@ -16,10 +16,15 @@ import asyncio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
+from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import get_user_roles
 from app.api.v1.endpoints.auth import get_current_user_from_env
 from app.core.config import get_settings
-from app.core.navigation import get_knowledge_bases_as_dicts, get_nav_items_for_user
+from app.core.navigation import (
+    build_chat_greeting_context,
+    get_knowledge_bases_as_dicts,
+    get_nav_items_for_user,
+)
 from app.core.settings_registry import get as get_domain_settings
 from app.core.templating import get_templates
 from app.domains.sqlagent.placeholders import get_placeholder_paragraphs
@@ -98,11 +103,16 @@ def _find_nav_item(roles: list[dict], tool: str) -> dict | None:
 
 
 @router.get("/sqlagent", response_class=HTMLResponse)
-async def show_sqlagent(request: Request, roles: list[dict] = Depends(get_user_roles)):
+async def show_sqlagent(
+    request: Request,
+    roles: list[dict] = Depends(get_user_roles),
+    username: str = Depends(get_username),
+):
     """Страница SQL-агента: iframe на родной UI SQLAgent либо заглушка
     placeholder-инструмента (?tool=xxx), либо баннер «недоступен».
     """
     sa_settings = get_domain_settings("sqlagent", SQLAgentSettings)
+    chat_greeting = await build_chat_greeting_context(roles, username)
 
     # 1) Placeholder-инструмент блока Аналитика (?tool=xxx).
     #    Всегда показываем заглушку — sidecar SQLAgent тут не при чём.
@@ -112,7 +122,7 @@ async def show_sqlagent(request: Request, roles: list[dict] = Depends(get_user_r
         # Если NavItem не найден — фолбэк на общую заглушку SQL-агента.
         if nav is None:
             return await _show_sqlagent_unavailable(
-                request, roles, sa_settings, tool=None,
+                request, roles, sa_settings, tool=None, chat_greeting=chat_greeting,
             )
         return templates.TemplateResponse(
             request,
@@ -123,6 +133,7 @@ async def show_sqlagent(request: Request, roles: list[dict] = Depends(get_user_r
                 "nav_groups": get_nav_items_for_user(roles),
                 "is_admin": any(r["name"] == "Администратор" for r in roles),
                 "chat_domains": None,
+                "chat_greeting": chat_greeting,
                 "knowledge_bases": get_knowledge_bases_as_dicts(),
                 "sqlagent_available": False,
                 "sqlagent_port": sa_settings.sidecar_port,
@@ -154,6 +165,7 @@ async def show_sqlagent(request: Request, roles: list[dict] = Depends(get_user_r
                 "nav_groups": get_nav_items_for_user(roles),
                 "is_admin": any(r["name"] == "Администратор" for r in roles),
                 "chat_domains": None,
+                "chat_greeting": chat_greeting,
                 "knowledge_bases": get_knowledge_bases_as_dicts(),
                 "sqlagent_available": True,
                 "sqlagent_port": sa_settings.sidecar_port,
@@ -162,7 +174,9 @@ async def show_sqlagent(request: Request, roles: list[dict] = Depends(get_user_r
         )
 
     # SQL-агент недоступен (sidecar не запущен) — показываем его же заглушку.
-    return await _show_sqlagent_unavailable(request, roles, sa_settings, tool=None)
+    return await _show_sqlagent_unavailable(
+        request, roles, sa_settings, tool=None, chat_greeting=chat_greeting,
+    )
 
 
 async def _show_sqlagent_unavailable(
@@ -170,6 +184,7 @@ async def _show_sqlagent_unavailable(
     roles: list[dict],
     sa_settings: SQLAgentSettings,
     tool: str | None,
+    chat_greeting: dict | None = None,
 ) -> HTMLResponse:
     """Заглушка «SQL-агент недоступен / в разработке» с полным текстом.
 
@@ -204,6 +219,7 @@ async def _show_sqlagent_unavailable(
             "nav_groups": get_nav_items_for_user(roles),
             "is_admin": any(r["name"] == "Администратор" for r in roles),
             "chat_domains": None,
+            "chat_greeting": chat_greeting or {},
             "knowledge_bases": get_knowledge_bases_as_dicts(),
             "sqlagent_available": False,
             "sqlagent_port": sa_settings.sidecar_port,

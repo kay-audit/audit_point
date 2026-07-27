@@ -65,7 +65,16 @@ export class PortalSidebar {
     }
 
     /**
-     * Восстанавливает состояние сворачивания из localStorage
+     * Восстанавливает состояние сворачивания из localStorage.
+     *
+     * На момент выполнения inline-скрипт в ``<head>`` уже выставил класс
+     * ``sidebar-collapsed-init`` на ``<html>`` — он держит CSS-правила
+     * свёрнутого состояния до парсинга body. Здесь мы синхронизируем
+     * собственно ``#landingSidebar`` (добавляем ``.collapsed``) и снимаем
+     * временный класс с ``<html>``, чтобы он не висел в DOM-дереве
+     * (а заодно — чтобы классы, выставляемые через ``toggleBtn``, работали
+     * как раньше, без двойного наслоения).
+     *
      * @private
      */
     static _restoreState() {
@@ -76,6 +85,9 @@ export class PortalSidebar {
         if (collapsed) {
             sidebar.classList.add('collapsed');
         }
+        // Снимаем временный FOUC-флаг с <html>; на этом этапе реальное
+        // состояние sidebar уже синхронизировано через .collapsed.
+        document.documentElement.classList.remove('sidebar-collapsed-init');
     }
 
     /**

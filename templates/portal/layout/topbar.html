@@ -1,16 +1,6 @@
 <!-- Общий topbar для landing и acts-manager страниц -->
 <header class="landing-topbar">
     <h2 class="landing-topbar-title">{{ topbar_title }}</h2>
-    <!-- Build-marker: визуальный индикатор того, что сервер запущен с актуальной версией
-         файлов. Содержит короткий git-hash (если есть) + mtime самого свежего файла
-         в static/. Если в UI вы видите "build: <hash>-<mtime>" — значит, сервер
-         работает с актуальным кодом; если что-то другое или пусто — нужно
-         перезапустить uvicorn. -->
-    <span class="landing-topbar-build" id="topbarBuildMarker"
-          title="Версия сборки (git hash + mtime статики). Если устарела — перезапустите uvicorn."
-          style="font-size:11px;color:var(--text-tertiary,#99a0b0);margin-left:12px;opacity:0.7;">
-        build: {{ app_version }}
-    </span>
     <div class="landing-topbar-actions">
         <!-- Колокольчик уведомлений (shared NotificationCenter; те же DOM-id, что в конструкторе) -->
         <div class="notifications-menu-container">

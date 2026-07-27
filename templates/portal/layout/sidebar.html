@@ -78,5 +78,13 @@
             <span class="sidebar-nav-label">AI-ассистент</span>
         </button>
         {% endif %}
+        {# Build-marker (git hash + mtime статики) — служебная информация для
+           разработчика: «сервер работает с актуальной версией файлов?».
+           Раньше висела в topbar, но мешала — теперь в footer sidebar мелким
+           шрифтом. #}
+        <span class="sidebar-build-marker" id="sidebarBuildMarker"
+              title="Версия сборки (git hash + mtime статики). Если устарела — перезапустите uvicorn.">
+            v{{ app_version }}
+        </span>
     </div>
 </aside>

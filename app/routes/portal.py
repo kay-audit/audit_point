@@ -12,7 +12,12 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from app.core.navigation import get_knowledge_bases_as_dicts, get_nav_items_for_user, get_nav_items_grouped
+from app.core.navigation import (
+    build_chat_greeting_context,
+    get_knowledge_bases_as_dicts,
+    get_nav_items_for_user,
+    get_nav_items_grouped,
+)
 from app.core.templating import get_templates, render_template
 
 logger = logging.getLogger("audit_workstation.routes.portal")
@@ -33,6 +38,12 @@ async def show_landing(request: Request):
     """
     is_admin = False
     user_domains: set[str] = set()
+    chat_greeting: dict = {
+        "is_admin": False,
+        "agent_buttons": [],
+        "available_tools": [],
+        "inspections": [],
+    }
     try:
         # ИСПОЛЬЗУЕМ СЕССИОННУЮ COOKIE (а не JUPYTERHUB_USER) — иначе все
         # залогиненные пользователи видели бы ВСЕ nav items (включая ЦК и
@@ -50,6 +61,7 @@ async def show_landing(request: Request):
             # были видны (locked) — иначе фильтр их уберёт совсем.
             # Другие страницы продолжают использовать get_nav_items_for_user.
             nav_groups = get_nav_items_grouped()
+            chat_greeting = await build_chat_greeting_context(roles, username)
         else:
             nav_groups = get_nav_items_grouped()
     except Exception:
@@ -66,6 +78,7 @@ async def show_landing(request: Request):
             "is_admin": is_admin,
             "user_domains": sorted(user_domains),
             "chat_domains": None,
+            "chat_greeting": chat_greeting,
             "knowledge_bases": get_knowledge_bases_as_dicts(),
         }
     )

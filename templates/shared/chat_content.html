@@ -38,14 +38,89 @@
                     </svg>
                 </div>
                 <div class="chat-message-content">
-                    <p>Здравствуйте! Я AI-ассистент, который поможет вам с работой над проектами.</p>
-                    <p>В данный момент я нахожусь в разработке, но скоро смогу помогать вам с:</p>
-                    <ul>
-                        <li>Анализом данных актов</li>
-                        <li>Поиском информации</li>
-                        <li>Составлением отчетов</li>
-                        <li>Ответами на вопросы</li>
-                    </ul>
+                    <p>Я <strong>AI-ассистент</strong>, могу создать проверку, редактировать Акт проверки, выполнять все, что возможно выполнять с помощью интерфейса.</p>
+                    <p>Для быстрого перехода к инструментам используйте интерфейс слева или кнопки:</p>
+
+                    {# Кнопки быстрого перехода: Администрирование (только админ),
+                       Управление актами, План проверок. Рендерятся, только если
+                       пользователь имеет к ним доступ. #}
+                    {% if chat_greeting and chat_greeting.quick_buttons %}
+                    <div class="chat-greeting-quick-buttons">
+                        {% for btn in chat_greeting.quick_buttons %}
+                        <a href="{{ btn.url }}" class="chat-greeting-quick-btn" title="{{ btn.label }}">
+                            <span class="chat-greeting-quick-btn-icon" aria-hidden="true">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">{{ btn.icon_svg|safe }}</svg>
+                            </span>
+                            <span class="chat-greeting-quick-btn-label">{{ btn.label }}</span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    {# Список ЦК — с кнопками быстрого перехода по аналогии с агентами.
+                       Рендерится, только если у пользователя есть доступ хотя бы
+                       к одному ЦК (фильтр по d.name, не «доступные всем»). #}
+                    {% if chat_greeting and chat_greeting.available_ck %}
+                    <p class="chat-greeting-section-title"><strong>Доступные ЦК:</strong></p>
+                    <div class="chat-greeting-ck">
+                        {% for ck in chat_greeting.available_ck %}
+                        <div class="chat-greeting-ck-row">
+                            <a href="{{ ck.url }}" class="chat-greeting-ck-btn" title="{{ ck.label }}">
+                                <span class="chat-greeting-ck-icon" aria-hidden="true">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">{{ ck.icon_svg|safe }}</svg>
+                                </span>
+                                <span class="chat-greeting-ck-label">{{ ck.label }}</span>
+                            </a>
+                            <span class="chat-greeting-ck-description">— {{ ck.description }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    {# Список агентов — с кнопками быстрого перехода внутри блока.
+                       Рендерится только если есть хотя бы один доступный агент. #}
+                    {% if chat_greeting and chat_greeting.available_agents %}
+                    <p class="chat-greeting-section-title"><strong>Доступные Агенты:</strong></p>
+                    <div class="chat-greeting-agents">
+                        {% for a in chat_greeting.available_agents %}
+                        <div class="chat-greeting-agent-row">
+                            <a href="{{ a.url }}" class="chat-greeting-agent-btn" title="{{ a.label }}">
+                                <span class="chat-greeting-agent-icon" aria-hidden="true">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">{{ a.icon_svg|safe }}</svg>
+                                </span>
+                                <span class="chat-greeting-agent-label">{{ a.label }}</span>
+                            </a>
+                            <span class="chat-greeting-agent-description">— {{ a.description }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    {# Проверки, в команде которых состоит пользователь.
+                       Блок не выводится, если таких нет. #}
+                    {% if chat_greeting and chat_greeting.inspections %}
+                    <p class="chat-greeting-section-title"><strong>Вы являетесь участником проверок:</strong></p>
+                    <table class="chat-greeting-inspections">
+                        <thead>
+                            <tr>
+                                <th>КМ</th>
+                                <th>Наименование проверки</th>
+                                <th>Период</th>
+                                <th>Роль</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ins in chat_greeting.inspections %}
+                            <tr>
+                                <td>{{ ins.km_number }}</td>
+                                <td>{{ ins.inspection_name }}</td>
+                                <td>{{ ins.period }}</td>
+                                <td>{{ ins.role }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
                 </div>
             </div>
         </div>
