@@ -787,3 +787,737 @@ async def add_processes_to_act_handler(
         params={"url": url},
         label=f"Открываю акт {km} с новыми процессами…",
     ) + "\n\n" + summary
+
+
+# =============================================================================
+# acts.modify_act_tree — комплексные операции над структурой акта
+# =============================================================================
+
+
+# Поддерживаемые типы таблиц (TableKind Literal из schemas/act_content.py).
+# Все они могут быть созданы через add_table — LLM просто указывает kind.
+_TABLE_KINDS = frozenset({
+    "regular", "metrics", "mainMetrics",
+    "regularRisk", "operationalRisk", "taxRisk", "otherRisk",
+})
+
+
+def _find_node_by_ref(
+    tree: dict,
+    ref: str | int,
+) -> tuple[dict | None, dict | None]:
+    """Ищет узел по id ИЛИ по number ('5', '5.1.2').
+
+    LLM может передать number как int (5) или str ('5') — нормализуем
+    в str, чтобы и '5', и 5 находили один и тот же узел.
+    """
+    if ref is None or ref == "":
+        return None, None
+    ref = str(ref)
+
+    def walk(node, parent):
+        if str(node.get("id", "")) == ref:
+            return node, parent
+        if str(node.get("number", "")) == ref:
+            return node, parent
+        for child in node.get("children", []) or []:
+            found, par = walk(child, node)
+            if found is not None:
+                return found, par
+        return None, None
+
+    return walk(tree, None)
+
+
+def _next_item_number(tree: dict, parent_id: str, parent_number: str | None) -> tuple[str, int]:
+    """Возвращает следующий (number, N) для нового item-узла внутри parent.
+
+    number строится как ``{parent_number}.{N}`` (или ``N`` если parent — root).
+    N = max(existing N) + 1.
+    """
+    # Сначала вычислим число существующих items среди детей parent
+    node, _ = _find_node_by_ref(tree, parent_id)
+    if node is None:
+        # Не нашли — fallback: начинаем с 1
+        if parent_number:
+            return f"{parent_number}.1", 1
+        return "1", 1
+
+    max_n = 0
+    for child in node.get("children", []) or []:
+        n = child.get("number", "")
+        if not n:
+            continue
+        # Берём последнюю цифру после последней точки
+        if "." in n:
+            tail = n.rsplit(".", 1)[-1]
+        else:
+            tail = n
+        try:
+            v = int(tail)
+            if v > max_n:
+                max_n = v
+        except ValueError:
+            pass
+    next_n = max_n + 1
+    if parent_number:
+        return f"{parent_number}.{next_n}", next_n
+    return str(next_n), next_n
+
+
+def _generate_node_id(prefix: str = "node") -> str:
+    """Генерирует уникальный id для нового узла (как в state-core.js _createNewNode)."""
+    import uuid as _uuid
+    ms = int(_uuid.uuid4().int & 0x7FFFFFFFFFFFFFFF)
+    return f"{prefix}_{ms}_{_uuid.uuid4().hex[:7]}"
+
+
+def _apply_add_item(
+    tree: dict, op: dict, results: list[dict]
+) -> None:
+    parent_id = op.get("parent_id")
+    label = (op.get("label") or "Новый пункт").strip()
+    content = op.get("content") or ""
+    if not parent_id:
+        raise ValueError("add_item: parent_id обязателен")
+    parent, _ = _find_node_by_ref(tree, parent_id)
+    if parent is None:
+        raise ValueError(f"add_item: parent {parent_id!r} не найден в дереве")
+    parent_number = parent.get("number")
+    number, _ = _next_item_number(tree, parent["id"], parent_number)
+    new_id = _generate_node_id("node")
+    new_node = {
+        "id": new_id,
+        "label": label,
+        "type": "item",
+        "content": content,
+        "protected": False,
+        "deletable": True,
+        "children": [],
+        "customLabel": "",
+        "number": number,
+    }
+    parent.setdefault("children", []).append(new_node)
+    results.append({"op": "add_item", "node_id": new_id, "number": number,
+                    "label": label, "parent_id": parent["id"]})
+
+
+def _apply_add_sibling(
+    tree: dict, op: dict, results: list[dict]
+) -> None:
+    """Добавляет sibling-узел после указанного (как sibling в UI)."""
+    sibling_id = op.get("node_id")
+    label = (op.get("label") or "Новый пункт").strip()
+    if not sibling_id:
+        raise ValueError("add_sibling: node_id обязателен")
+    sibling, parent = _find_node_by_ref(tree, sibling_id)
+    if sibling is None:
+        raise ValueError(f"add_sibling: узел {sibling_id!r} не найден")
+    if parent is None:
+        raise ValueError(
+            "add_sibling: нельзя добавить sibling на root уровне — "
+            "используйте add_process_mining или add_item с parent_id=root"
+        )
+    # Определяем следующий номер среди children parent
+    parent_number = parent.get("number")
+    base = parent_number or ""
+    children = parent.get("children", []) or []
+    # Найти максимальный N среди соседей типа item
+    max_n = 0
+    for ch in children:
+        if ch.get("id") == sibling["id"]:
+            continue
+        n = ch.get("number", "")
+        if not n:
+            continue
+        if base and n.startswith(base + "."):
+            tail = n[len(base) + 1:]
+        elif base:
+            continue  # другой подраздел
+        else:
+            tail = n
+        try:
+            v = int(tail.split(".")[-1] if "." in tail else tail)
+            if v > max_n:
+                max_n = v
+        except ValueError:
+            pass
+    next_n = max_n + 1
+    if base:
+        number = f"{base}.{next_n}"
+    else:
+        number = str(next_n)
+    new_id = _generate_node_id("node")
+    new_node = {
+        "id": new_id,
+        "label": label,
+        "type": "item",
+        "content": op.get("content") or "",
+        "protected": False,
+        "deletable": True,
+        "children": [],
+        "customLabel": "",
+        "number": number,
+    }
+    # Вставляем ПОСЛЕ sibling
+    idx = next(
+        (i for i, c in enumerate(children) if c.get("id") == sibling["id"]),
+        len(children) - 1,
+    )
+    children.insert(idx + 1, new_node)
+    results.append({"op": "add_sibling", "node_id": new_id, "number": number,
+                    "label": label, "parent_id": parent["id"]})
+
+
+def _apply_add_textblock(
+    tree: dict, dict_key: str, target_dict: dict,
+    op: dict, results: list[dict]
+) -> None:
+    parent_id = op.get("parent_id")
+    label = (op.get("label") or "Текстовый блок").strip()
+    content = op.get("content") or ""
+    if not parent_id:
+        raise ValueError("add_textblock: parent_id обязателен")
+    parent, _ = _find_node_by_ref(tree, parent_id)
+    if parent is None:
+        raise ValueError(f"add_textblock: parent {parent_id!r} не найден")
+    tb_id = _generate_node_id("textblock")
+    node_id = _generate_node_id("node")
+    tb_count = sum(
+        1 for c in parent.get("children", []) if c.get("type") == "textblock"
+    )
+    parent.setdefault("children", []).append({
+        "id": node_id,
+        "label": label,
+        "type": "textblock",
+        "textBlockId": tb_id,
+        "content": content,
+        "protected": False,
+        "deletable": True,
+        "children": [],
+        "customLabel": "",
+        "number": f"Текстовый блок {tb_count + 1}",
+    })
+    target_dict[tb_id] = {
+        "id": tb_id,
+        "nodeId": node_id,
+        "content": content,
+    }
+    results.append({"op": "add_textblock", "node_id": node_id, "textBlockId": tb_id,
+                    "label": label, "parent_id": parent["id"]})
+
+
+def _apply_add_table(
+    tree: dict, dict_key: str, target_dict: dict,
+    op: dict, results: list[dict]
+) -> None:
+    parent_id = op.get("parent_id")
+    label = (op.get("label") or "Таблица").strip()
+    kind = (op.get("kind") or "regular").strip()
+    if kind not in _TABLE_KINDS:
+        raise ValueError(
+            f"add_table: kind {kind!r} недопустим. "
+            f"Допустимые: {sorted(_TABLE_KINDS)}"
+        )
+    if not parent_id:
+        raise ValueError("add_table: parent_id обязателен")
+    parent, _ = _find_node_by_ref(tree, parent_id)
+    if parent is None:
+        raise ValueError(f"add_table: parent {parent_id!r} не найден")
+    table_id = _generate_node_id("table")
+    node_id = _generate_node_id("node")
+    tbl_count = sum(
+        1 for c in parent.get("children", []) if c.get("type") == "table"
+    )
+    parent.setdefault("children", []).append({
+        "id": node_id,
+        "label": label,
+        "type": "table",
+        "tableId": table_id,
+        "content": "",
+        "protected": False,
+        "deletable": True,
+        "children": [],
+        "customLabel": "",
+        "number": f"Таблица {tbl_count + 1}",
+    })
+    target_dict[table_id] = {
+        "id": table_id,
+        "nodeId": node_id,
+        "grid": [],
+        "colWidths": [],
+        "protected": False,
+        "deletable": True,
+        "kind": kind,
+    }
+    results.append({"op": "add_table", "node_id": node_id, "tableId": table_id,
+                    "label": label, "kind": kind, "parent_id": parent["id"]})
+
+
+def _apply_add_violation(
+    tree: dict, dict_key: str, target_dict: dict,
+    op: dict, results: list[dict]
+) -> None:
+    parent_id = op.get("parent_id")
+    label = (op.get("label") or "Нарушение").strip()
+    if not parent_id:
+        raise ValueError("add_violation: parent_id обязателен")
+    parent, _ = _find_node_by_ref(tree, parent_id)
+    if parent is None:
+        raise ValueError(f"add_violation: parent {parent_id!r} не найден")
+    viol_id = _generate_node_id("violation")
+    node_id = _generate_node_id("node")
+    viol_count = sum(
+        1 for c in parent.get("children", []) if c.get("type") == "violation"
+    )
+    parent.setdefault("children", []).append({
+        "id": node_id,
+        "label": label,
+        "type": "violation",
+        "violationId": viol_id,
+        "content": "",
+        "protected": False,
+        "deletable": True,
+        "children": [],
+        "customLabel": "",
+        "number": f"Нарушение {viol_count + 1}",
+    })
+    violated = op.get("violated") or ""
+    established = op.get("established") or ""
+    target_dict[viol_id] = {
+        "id": viol_id,
+        "nodeId": node_id,
+        "violated": violated,
+        "established": established,
+        "descriptionList": {"enabled": False, "items": []},
+        "additionalContent": {
+            "enabled": False,
+            "items": [],
+        },
+        "reasons": {"enabled": False, "content": ""},
+        "measures": {"enabled": False, "content": ""},
+        "consequences": {"enabled": False, "content": ""},
+        "responsible": {"enabled": False, "content": ""},
+    }
+    results.append({"op": "add_violation", "node_id": node_id, "violationId": viol_id,
+                    "label": label, "parent_id": parent["id"]})
+
+
+def _apply_add_process_mining(
+    tree: dict, op: dict, results: list[dict]
+) -> None:
+    """Добавляет раздел «Process Mining» в корень (id='6')."""
+    label = (
+        op.get("label")
+        or "Оценка процесса по результатам исследования методом Process Mining"
+    ).strip()
+    # Дубль-защита: считаем все PM-разделы (в т.ч. с кривыми id после
+    # ручных правок) и не создаём ещё один, если он уже есть.
+    pm_count = sum(
+        1 for c in tree.get("children", [])
+        if c.get("special") == "process_mining"
+    )
+    if pm_count > 0:
+        # Доп. защита: убрать дубликаты PM-разделов, оставив только первый.
+        seen = False
+        new_children = []
+        for c in tree.get("children", []):
+            if c.get("special") == "process_mining":
+                if seen:
+                    continue
+                seen = True
+            new_children.append(c)
+        if len(new_children) < len(tree.get("children", [])):
+            tree["children"] = new_children
+        results.append({"op": "add_process_mining", "skipped": True,
+                        "reason": f"раздел уже существует ({pm_count} шт.)"})
+        return
+    tree.setdefault("children", []).append({
+        "id": "6",
+        "special": "process_mining",
+        "label": label,
+        "children": [],
+        "protected": False,
+        "deletable": True,
+    })
+    results.append({"op": "add_process_mining", "node_id": "6", "label": label})
+
+
+def _apply_delete_node(
+    tree: dict, op: dict, results: list[dict]
+) -> tuple[set[str], set[str], set[str]]:
+    """Удаляет узел из дерева + каскадно его вложенные.
+
+    Returns:
+        (table_ids, textblock_ids, violation_ids) для последующей очистки
+        в content_data — save_content и так сделает DROP для orphan-id, но
+        явная очистка уменьшает размер payload.
+    """
+    node_id = op.get("node_id")
+    if not node_id:
+        raise ValueError("delete_node: node_id обязателен")
+    target, parent = _find_node_by_ref(tree, node_id)
+    if target is None:
+        raise ValueError(f"delete_node: узел {node_id!r} не найден")
+    if parent is None:
+        raise ValueError("delete_node: нельзя удалить корень")
+    # Собрать все дочерние id-шники (таблиц/текстблоков/нарушений) для
+    # очистки content_data — иначе save_content оставит orphan-записи
+    # (но они orphan-фильтром всё равно удалятся; это просто оптимизация).
+    table_ids: set[str] = set()
+    textblock_ids: set[str] = set()
+    violation_ids: set[str] = set()
+
+    def collect_ids(n):
+        if n.get("tableId"):
+            table_ids.add(n["tableId"])
+        if n.get("textBlockId"):
+            textblock_ids.add(n["textBlockId"])
+        if n.get("violationId"):
+            violation_ids.add(n["violationId"])
+        for c in n.get("children", []) or []:
+            collect_ids(c)
+
+    collect_ids(target)
+    # Удаляем узел из children parent
+    parent["children"] = [
+        c for c in parent.get("children", [])
+        if c.get("id") != target["id"]
+    ]
+    results.append({
+        "op": "delete_node",
+        "node_id": target["id"],
+        "label": target.get("label", ""),
+        "number": target.get("number", ""),
+        "removed_tables": len(table_ids),
+        "removed_textblocks": len(textblock_ids),
+        "removed_violations": len(violation_ids),
+    })
+    return table_ids, textblock_ids, violation_ids
+
+
+def _apply_move_node(
+    tree: dict, op: dict, results: list[dict]
+) -> None:
+    """Перемещает узел (с поддеревом) к новому родителю."""
+    node_id = op.get("node_id")
+    new_parent_id = op.get("new_parent_id")
+    if not node_id or not new_parent_id:
+        raise ValueError("move_node: node_id и new_parent_id обязательны")
+    if node_id == new_parent_id:
+        raise ValueError("move_node: нельзя переместить узел в самого себя")
+    target, old_parent = _find_node_by_ref(tree, node_id)
+    if target is None:
+        raise ValueError(f"move_node: узел {node_id!r} не найден")
+    new_parent, _ = _find_node_by_ref(tree, new_parent_id)
+    if new_parent is None:
+        raise ValueError(f"move_node: new_parent {new_parent_id!r} не найден")
+    # Проверим, что new_parent не является потомком target (иначе цикл)
+    def is_descendant(n, target_id):
+        for c in n.get("children", []) or []:
+            if c.get("id") == target_id:
+                return True
+            if is_descendant(c, target_id):
+                return True
+        return False
+    if is_descendant(target, new_parent["id"]):
+        raise ValueError(
+            "move_node: new_parent является потомком перемещаемого узла — цикл"
+        )
+    # Отцепляем
+    if old_parent is not None:
+        old_parent["children"] = [
+            c for c in old_parent.get("children", [])
+            if c.get("id") != target["id"]
+        ]
+    else:
+        # Удаляем из root
+        tree["children"] = [
+            c for c in tree.get("children", [])
+            if c.get("id") != target["id"]
+        ]
+    # Прицепляем
+    new_parent.setdefault("children", []).append(target)
+    results.append({
+        "op": "move_node",
+        "node_id": target["id"],
+        "label": target.get("label", ""),
+        "from_parent_id": old_parent["id"] if old_parent else "root",
+        "to_parent_id": new_parent["id"],
+    })
+
+
+async def modify_act_tree_handler(
+    *,
+    act_id: int | None = None,
+    operations: list[dict] | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Комплексные операции над структурой акта.
+
+    Args:
+        act_id: id акта.
+        operations: список операций (любая комбинация):
+            - ``{"op": "add_item", "parent_id": "2", "label": "...",
+               "content": "..."}`` — добавить дочерний пункт.
+            - ``{"op": "add_sibling", "node_id": "5.1", "label": "..."}`` —
+               добавить соседний пункт.
+            - ``{"op": "add_textblock", "parent_id": "5", "label": "...",
+               "content": "..."}`` — добавить текстовый блок.
+            - ``{"op": "add_table", "parent_id": "5", "label": "...",
+               "kind": "regularRisk"}`` — добавить таблицу (любого kind).
+            - ``{"op": "add_violation", "parent_id": "5.1", "label": "...",
+               "violated": "...", "established": "..."}`` — добавить нарушение.
+            - ``{"op": "add_process_mining", "label": "..."}`` — добавить
+               раздел «Process Mining» в корень (id='6').
+            - ``{"op": "delete_node", "node_id": "5.1.2"}`` — удалить узел.
+            - ``{"op": "move_node", "node_id": "5.1.2",
+               "new_parent_id": "5.2"}`` — переместить.
+            parent_id/node_id могут быть как полным id, так и human-readable
+            number ('2', '5.1.2').
+        dry_run: если True — операции применяются к копии дерева в памяти,
+            но не сохраняются. Используется для предпросмотра.
+
+    Права: Куратор/Руководитель/Редактор/Админ (те же, что у ручного
+    редактора структуры). Участник (без can_edit) увидит понятный отказ.
+
+    На успехе возвращает client_action с переходом на
+    /constructor?act_id={act_id} и текстовую сводку: какие операции
+    выполнены, какие id/number у созданных узлов.
+    """
+    from app.core.config import get_settings
+    from app.db.connection import get_db
+    from app.domains.chat.services.tool_executor import get_current_chat_user
+    from pydantic import ValidationError
+    from app.domains.acts.schemas.act_metadata import ActUpdate
+
+    username = get_current_chat_user()
+    if not username:
+        return (
+            "Не удалось определить пользователя чат-сессии. "
+            "Сообщите администратору."
+        )
+
+    if act_id is None:
+        return (
+            "Не указан id акта. Передайте act_id (его можно увидеть "
+            "в URL открытого акта или в списке «Мои проекты»)."
+        )
+    if not operations:
+        return (
+            "Не переданы операции. Передайте хотя бы одну в "
+            "operations: add_item / add_textblock / add_table / "
+            "add_violation / add_process_mining / delete_node / "
+            "move_node."
+        )
+
+    # Шаг 1: проверка доступа + права на редактирование
+    from app.domains.acts.repositories.act_access import ActAccessRepository
+    from app.domains.acts.repositories.act_lock import ActLockRepository
+    from app.domains.acts.services.access_guard import AccessGuard
+
+    async with get_db() as conn:
+        access_repo = ActAccessRepository(conn)
+        lock_repo = ActLockRepository(conn)
+        guard = AccessGuard(access_repo, lock_repo)
+
+        try:
+            await guard.require_access(act_id, username)
+            perm = await access_repo.get_user_edit_permission(act_id, username)
+        except Exception as exc:
+            logger.warning(
+                "modify_act_tree: доступ запрещён user=%s act=%s: %s",
+                username, act_id, exc,
+            )
+            return (
+                f"Нет доступа к акту {act_id}: {exc}. "
+                f"Проверьте, что вы участник команды этого акта."
+            )
+        if not perm.get("can_edit"):
+            role = perm.get("role") or "(не в команде)"
+            return (
+                f"Ваша роль в акте ({role}) позволяет только просматривать "
+                f"акт. Редактировать структуру могут Куратор, Руководитель "
+                f"или Редактор. Попросите одного из них выполнить операцию."
+            )
+
+        # Шаг 2: загрузить текущее содержимое
+        from app.domains.acts.repositories.act_content import ActContentRepository
+
+        content_repo = ActContentRepository(conn)
+        content = await content_repo.get_content(act_id)
+        tree = content["tree"]
+        tables = dict(content.get("tables") or {})
+        textblocks = dict(content.get("textBlocks") or {})
+        violations = dict(content.get("violations") or {})
+
+        # Шаг 3: применить операции к локальной копии
+        results: list[dict] = []
+        errors: list[str] = []
+        try:
+            for op_index, op in enumerate(operations, start=1):
+                kind = op.get("op")
+                try:
+                    if kind == "add_item":
+                        _apply_add_item(tree, op, results)
+                    elif kind == "add_sibling":
+                        _apply_add_sibling(tree, op, results)
+                    elif kind == "add_textblock":
+                        _apply_add_textblock(tree, "textBlocks",
+                                            textblocks, op, results)
+                    elif kind == "add_table":
+                        _apply_add_table(tree, "tables",
+                                          tables, op, results)
+                    elif kind == "add_violation":
+                        _apply_add_violation(tree, "violations",
+                                              violations, op, results)
+                    elif kind == "add_process_mining":
+                        _apply_add_process_mining(tree, op, results)
+                    elif kind == "delete_node":
+                        t_ids, tb_ids, v_ids = _apply_delete_node(
+                            tree, op, results,
+                        )
+                        # Удаляем каскадно записи из content-таблиц
+                        for tid in t_ids:
+                            tables.pop(tid, None)
+                        for tbid in tb_ids:
+                            textblocks.pop(tbid, None)
+                        for vid in v_ids:
+                            violations.pop(vid, None)
+                    elif kind == "move_node":
+                        _apply_move_node(tree, op, results)
+                    else:
+                        errors.append(
+                            f"#{op_index}: неизвестная операция {kind!r}. "
+                            f"Допустимые: add_item, add_sibling, add_textblock, "
+                            f"add_table, add_violation, add_process_mining, "
+                            f"delete_node, move_node."
+                        )
+                except ValueError as exc:
+                    errors.append(f"#{op_index}: {exc}")
+        except Exception as exc:
+            logger.exception(
+                "modify_act_tree: ошибка при применении операций: %s", exc
+            )
+            return (
+                f"Внутренняя ошибка при обработке операций: {exc}. "
+                f"Ничего не сохранено (dry_run=False, но ошибка до commit)."
+            )
+
+        if errors:
+            return (
+                "Не удалось выполнить все операции:\n\n"
+                + "\n".join(f"- {e}" for e in errors)
+                + "\n\nНичего не сохранено (rollback)."
+            )
+
+        # Шаг 4: перенумерация (как в state-tree.js generateNumbering).
+        _renumber_tree(tree)
+
+        # Шаг 5: сохранить
+        if not dry_run:
+            from app.domains.acts.schemas.act_content import ActDataSchema
+
+            data = ActDataSchema(
+                tree=tree,
+                tables=tables,
+                textBlocks=textblocks,
+                violations=violations,
+            )
+            await content_repo.save_content(act_id, data, username)
+
+        km_row = await conn.fetchrow(
+            "SELECT km_number FROM t_db_oarb_audit_act_acts WHERE id = $1",
+            act_id,
+        )
+        km = km_row["km_number"] if km_row else f"id={act_id}"
+
+    # Формируем сводку
+    summary_lines = [
+        f"В акт {km} внесено {len(results)} изменений"
+        f"{' (dry-run, НЕ сохранено)' if dry_run else ''}:\n"
+    ]
+    for r in results:
+        op_kind = r["op"]
+        if op_kind == "add_item" or op_kind == "add_sibling":
+            summary_lines.append(
+                f"- {op_kind}: «{r['label']}» (number={r['number']}, "
+                f"id={r['node_id']}) в parent_id={r['parent_id']}"
+            )
+        elif op_kind == "add_textblock":
+            summary_lines.append(
+                f"- textblock «{r['label']}» (id={r['node_id']}, "
+                f"textBlockId={r['textBlockId']}) в parent_id={r['parent_id']}"
+            )
+        elif op_kind == "add_table":
+            summary_lines.append(
+                f"- table «{r['label']}» (kind={r['kind']}, id={r['node_id']}, "
+                f"tableId={r['tableId']}) в parent_id={r['parent_id']}"
+            )
+        elif op_kind == "add_violation":
+            summary_lines.append(
+                f"- violation «{r['label']}» (id={r['node_id']}, "
+                f"violationId={r['violationId']}) в parent_id={r['parent_id']}"
+            )
+        elif op_kind == "add_process_mining":
+            if r.get("skipped"):
+                summary_lines.append(f"- process_mining: пропущено ({r['reason']})")
+            else:
+                summary_lines.append(
+                    f"- process_mining раздел добавлен (id={r['node_id']}, "
+                    f"label={r['label']!r})"
+                )
+        elif op_kind == "delete_node":
+            summary_lines.append(
+                f"- удалён узел «{r['label']}» ({r['number']}, "
+                f"id={r['node_id']}); "
+                f"каскадно удалено: {r['removed_tables']} таблиц, "
+                f"{r['removed_textblocks']} текстблоков, "
+                f"{r['removed_violations']} нарушений"
+            )
+        elif op_kind == "move_node":
+            summary_lines.append(
+                f"- перемещён «{r['label']}» (id={r['node_id']}) "
+                f"из {r['from_parent_id']} → {r['to_parent_id']}"
+            )
+
+    logger.info(
+        "AI-ассистент modify_act_tree: act=%s ops=%s dry_run=%s user=%s",
+        act_id, [r["op"] for r in results], dry_run, username,
+    )
+
+    url = f"/constructor?act_id={act_id}"
+    return _client_action(
+        action=ACTION_OPEN_URL,
+        params={"url": url},
+        label=f"Открываю акт {km} с обновлённой структурой…",
+    ) + "\n\n" + "\n".join(summary_lines)
+
+
+def _renumber_tree(node: dict, prefix: str = "") -> None:
+    """Перенумерация дерева — как в state-tree.js generateNumbering."""
+    children = node.get("children", []) or []
+    if not children:
+        return
+    table_count = 0
+    text_block_count = 0
+    violation_count = 0
+    item_count = 0
+    for child in children:
+        ctype = child.get("type")
+        if ctype == "table":
+            child["number"] = f"Таблица {table_count + 1}"
+            table_count += 1
+        elif ctype == "textblock":
+            child["number"] = f"Текстовый блок {text_block_count + 1}"
+            text_block_count += 1
+        elif ctype == "violation":
+            child["number"] = f"Нарушение {violation_count + 1}"
+            violation_count += 1
+        else:
+            item_count += 1
+            if prefix:
+                child["number"] = f"{prefix}.{item_count}"
+            else:
+                child["number"] = str(item_count)
+            _renumber_tree(child, child["number"])

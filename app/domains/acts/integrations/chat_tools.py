@@ -7,12 +7,14 @@ get_act_by_km и др. — всего 27) удалены: внешний аге�
 from app.core.chat.names import (
     TOOL_ADD_PROCESSES_TO_ACT,
     TOOL_CREATE_ACT,
+    TOOL_MODIFY_ACT_TREE,
     TOOL_OPEN_ACT_PAGE,
 )
 from app.core.chat.tools import ChatTool, ChatToolParam
 from app.domains.acts.integrations.action_handlers import (
     add_processes_to_act_handler,
     create_act_handler,
+    modify_act_tree_handler,
     open_act_page_button_translator,
     open_act_page_handler,
 )
@@ -135,7 +137,7 @@ def get_chat_tools() -> list[ChatTool]:
             handler=create_act_handler,
             category="action",
         ),
-        ChatTool(
+ChatTool(
             name=TOOL_ADD_PROCESSES_TO_ACT,
             domain=_DOMAIN,
             description=(
@@ -148,7 +150,7 @@ def get_chat_tools() -> list[ChatTool]:
                 "в выбранный раздел (по умолчанию '5' — «Результаты проверки», "
                 "или '6' для Process Mining — он создаётся автоматически), нумерует "
                 "их и сохраняет дерево. Каждый процесс становится отдельным пунктом "
-                "с label вида «П1004 - Расчет процентной ставки ИЖС». Права: "
+                "с label «П1004 - Расчет процентной ставки ИЖС». Права: "
                 "Куратор/Руководитель/Редактор/Админ (Участник может только "
                 "просматривать акт). На успехе возвращает client_action с переходом "
                 "на /constructor?act_id={act_id} и текстовую сводку: какие "
@@ -188,6 +190,67 @@ def get_chat_tools() -> list[ChatTool]:
                 ),
             ],
             handler=add_processes_to_act_handler,
+            category="action",
+        ),
+        ChatTool(
+            name=TOOL_MODIFY_ACT_TREE,
+            domain=_DOMAIN,
+            description=(
+                "Модификация дерева структуры акта: добавить пункт, "
+                "текстовый блок, таблицу любого типа, нарушение, раздел "
+                "Process Mining; удалить узел; переместить узел. Этот tool "
+                "делает то же, что пользователь может сделать через "
+                "контекстное меню в конструкторе («Добавить подпункт», "
+                "«Добавить таблицу регуляторного риска», «Удалить», и т.д.) — "
+                "но программно, без ручного клика. Использовать когда "
+                "пользователь говорит «добавь подпункт в пункт 2 — Описание "
+                "процесса», «добавь таблицу операционного риска», «удали "
+                "пункт 5.1.2», «перенеси пункт 3.2 в пункт 5», «добавь раздел "
+                "Process Mining». Параметр operations — список операций "
+                "(можно комбинировать в одном вызове, например добавить сразу "
+                "5 пунктов и 1 таблицу). Права: Куратор/Руководитель/Редактор/"
+                "Админ (Участник без права edit видит понятный отказ). "
+                "parent_id и node_id принимают как полный id узла, так и "
+                "human-readable number ('2', '5.1.2'). При успехе возвращает "
+                "client_action с переходом на /constructor?act_id={act_id} "
+                "и сводку с id/number каждого созданного/удалённого узла."
+            ),
+            parameters=[
+                ChatToolParam(
+                    "act_id", "integer",
+                    "ID акта, в котором модифицируется структура. Обязательный.",
+                    required=False,
+                ),
+                ChatToolParam(
+                    "operations", "array",
+                    "Список операций над деревом. Каждая операция — dict "
+                    "с полем 'op' и параметрами:\n"
+                    "- {'op': 'add_item', 'parent_id': '2', "
+                    "'label': 'Описание процесса', 'content': ''}\n"
+                    "- {'op': 'add_sibling', 'node_id': '5.1', 'label': '...'}\n"
+                    "- {'op': 'add_textblock', 'parent_id': '5', "
+                    "'label': 'Заметка', 'content': '<p>...</p>'}\n"
+                    "- {'op': 'add_table', 'parent_id': '5', "
+                    "'label': 'Риски', 'kind': 'regularRisk'} (kind: "
+                    "regular, metrics, mainMetrics, regularRisk, "
+                    "operationalRisk, taxRisk, otherRisk)\n"
+                    "- {'op': 'add_violation', 'parent_id': '5.1', "
+                    "'label': '...', 'violated': '...', 'established': '...'}\n"
+                    "- {'op': 'add_process_mining', 'label': '...'}\n"
+                    "- {'op': 'delete_node', 'node_id': '5.1.2'}\n"
+                    "- {'op': 'move_node', 'node_id': '5.1.2', "
+                    "'new_parent_id': '5.2'}",
+                    required=False,
+                    items_type="object",
+                ),
+                ChatToolParam(
+                    "dry_run", "boolean",
+                    "Если true — операции применяются к копии дерева в "
+                    "памяти, но не сохраняются. Используется для предпросмотра.",
+                    required=False, default=False,
+                ),
+            ],
+            handler=modify_act_tree_handler,
             category="action",
         ),
     ]
