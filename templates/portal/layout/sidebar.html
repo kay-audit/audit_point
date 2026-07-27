@@ -51,7 +51,7 @@
         <a href="{{ item.url if has_access else '#' }}"
            class="sidebar-nav-item {{ 'active' if active_page == item.active_page else '' }} {{ '' if has_access else 'sidebar-nav-item--locked' }}"
            {% if not has_access %}aria-disabled="true" tabindex="0"{% endif %}
-           title="{{ item.label }}{{ '' if has_access else ' (нет доступа)' }}"
+           title="{{ (item.label ~ ': ' ~ item.description) if item.description else item.label }}{{ '' if has_access else ' (нет доступа)' }}"
            data-domain="{{ item_domain }}">
             <svg class="sidebar-nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
                 {{ item.icon_svg|safe }}

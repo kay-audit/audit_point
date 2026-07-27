@@ -86,10 +86,7 @@ def _build_domain():
                 active_page="acts",
                 chat_domains=[DOMAIN_NAME],
                 group="Аудит",
-                description=(
-                    "Список и редактирование актов аудита; конкретный акт "
-                    "открывается через инструмент acts.open_act_page"
-                ),
+                description="Создание и редактирование актов аудита",
             ),
         ],
         knowledge_bases=[

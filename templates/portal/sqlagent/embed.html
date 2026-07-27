@@ -12,20 +12,58 @@
             sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-modals"></iframe>
 </div>
 {% else %}
-<!-- Процесс SQL-агента не отвечает на своём порту — аккуратный баннер вместо
-     браузерной заглушки «не удаётся установить соединение». -->
+<!-- Заглушка инструмента SQL-агент. Полноценный функционал появится в одном
+     из следующих релизов (планируется в Едином рабочем месте аудитора в КАП).
+     Пока показываем информационную карточку с описанием назначения инструмента. -->
 <div class="sqlagent-unavailable">
     <div class="sqlagent-unavailable-card">
-        <svg class="sqlagent-unavailable-icon" width="56" height="56" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 7c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3zm0 0v5c0 1.66 3.58 3 8 3s8-1.34 8-3V7M4 12v5c0 1.66 3.58 3 8 3s8-1.34 8-3v-5"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <h1 class="sqlagent-unavailable-title">SQL-агент сейчас недоступен</h1>
-        <p class="sqlagent-unavailable-message">
-            Сервис не запущен или перезапускается. Запустите процесс SQL-агента
-            на порту <code>{{ sqlagent_port }}</code> и обновите страницу.
-        </p>
-        <button type="button" id="sqlagentRetry" class="btn btn-primary">Обновить</button>
+        <div class="sqlagent-unavailable-glow" aria-hidden="true"></div>
+
+        <div class="sqlagent-unavailable-header">
+            <div class="sqlagent-unavailable-icon-wrap">
+                <svg class="sqlagent-unavailable-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 7c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3zm0 0v5c0 1.66 3.58 3 8 3s8-1.34 8-3V7M4 12v5c0 1.66 3.58 3 8 3s8-1.34 8-3v-5"
+                          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="sqlagent-unavailable-badge">В&nbsp;разработке</span>
+            </div>
+        </div>
+
+        <h1 class="sqlagent-unavailable-title">SQL-агент</h1>
+        <p class="sqlagent-unavailable-subtitle">Автоматизация запросов к источникам данных</p>
+
+        <div class="sqlagent-unavailable-content">
+            <p class="sqlagent-unavailable-paragraph sqlagent-unavailable-paragraph--lead">
+                <strong>SQL-агент</strong> предназначен для формирования запросов
+                к&nbsp;источникам данных по&nbsp;запросам пользователя, с&nbsp;учётом
+                имеющихся у&nbsp;пользователя доступов.
+            </p>
+            <p class="sqlagent-unavailable-paragraph">
+                Запросы формируются на&nbsp;основе данных из&nbsp;
+                <span class="sqlagent-unavailable-highlight">Базы знаний об&nbsp;Источниках данных</span>.
+            </p>
+            <p class="sqlagent-unavailable-paragraph">
+                Во&nbsp;внешней сети инструмент недоступен, но&nbsp;будет реализован в&nbsp;
+                <span class="sqlagent-unavailable-highlight">Едином рабочем месте аудитора в&nbsp;КАП</span>.
+            </p>
+        </div>
+
+        <div class="sqlagent-unavailable-footer">
+            <svg class="sqlagent-unavailable-footer-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                <path d="M12 7v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="sqlagent-unavailable-footer-text">
+                Полноценный функционал появится в&nbsp;одном из&nbsp;следующих релизов
+            </span>
+            <button type="button" id="sqlagentRetry" class="sqlagent-unavailable-refresh" title="Обновить страницу">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M3 12a9 9 0 0115.5-6.3M21 5v5h-5M21 12a9 9 0 01-15.5 6.3M3 19v-5h5"
+                          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Обновить</span>
+            </button>
+        </div>
     </div>
 </div>
 {% endif %}
