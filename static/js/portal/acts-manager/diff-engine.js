@@ -1,5 +1,14 @@
 import { INVOICE_DIFF_FIELD_KEYS } from './invoice-diff-fields.js';
 
+// Инлайновые теги форматирования — граница тега НЕ считается границей слова
+// (сло<b>во</b> визуально сливается с соседним текстом в «слово»). Блочные
+// теги (div/p/li/tr/h1-h6/...) и <br> — остаются границей (разрыв
+// строки/абзаца), поэтому в _stripHtml обрабатываются по умолчанию (не в
+// этом списке).
+const INLINE_FORMATTING_TAGS = new Set([
+    'b', 'i', 'u', 's', 'em', 'strong', 'span', 'a', 'sub', 'sup', 'code', 'strike', 'del',
+]);
+
 /**
  * Вычисление структурного diff между двумя снэпшотами содержимого.
  * Чистый utility-класс без DOM-зависимостей.
@@ -698,9 +707,21 @@ export class DiffEngine {
         };
     }
 
+    /**
+     * Видимый текст HTML-строки. Инлайновые теги форматирования (см.
+     * INLINE_FORMATTING_TAGS) вырезаются БЕЗ пробела — тег внутри слова не
+     * должен разбивать его на два («сло<b>во</b>» → «слово», не «сло во»).
+     * Прочие теги (блочные, <br>) заменяются пробелом — граница слова.
+     */
     static _stripHtml(html) {
         if (!html) return '';
-        return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        return html
+            .replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g, (match, tag) => (
+                INLINE_FORMATTING_TAGS.has(tag.toLowerCase()) ? '' : ' '
+            ))
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 }
 
