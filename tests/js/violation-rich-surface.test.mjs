@@ -51,6 +51,20 @@ test('getContent: читает модель по плоскому и точеч�
   assert.equal(vm._makeViolationSurface(violation, 'reasons.content').getContent(), 'причина');
 });
 
+// V23: read (_readViolationField) и write (setViolationField) разбирают путь
+// общим parseFieldPath (violation-mutations.js) — паритет на вложенном пути,
+// БЕЗ мока setViolationField (реальный мутатор через прототип ViolationManager).
+test('V23: read/write через общий parseFieldPath — паритет на вложенном пути reasons.content', () => {
+  const vm = new ViolationManager();
+  const violation = { id: 'v1', reasons: { enabled: false, content: '' } };
+
+  vm.setViolationField(violation, 'reasons.content', 'причина');
+
+  assert.equal(violation.reasons.content, 'причина', 'запись ушла в правильный вложенный слот');
+  assert.equal(vm._makeViolationSurface(violation, 'reasons.content').getContent(), 'причина',
+    'чтение через ту же точечную адресацию видит записанное значение');
+});
+
 test('setContent → setViolationField (плоский путь и *.content)', () => {
   const vm = new ViolationManager();
   const calls = [];

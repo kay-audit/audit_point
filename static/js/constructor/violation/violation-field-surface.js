@@ -35,19 +35,20 @@ import { EditorController } from '../textblock/editor-controller.js';
 import { EditorRegistry } from '../textblock/editor-registry.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
 import { isFieldEmpty } from './violation-field-empty.js';
+import { parseFieldPath } from './violation-mutations.js';
 
 /**
  * Читает значение поля нарушения по пути мутатора (плоский 'violated' либо
- * точечный 'reasons.content' — до 2 уровней, зеркало разбора пути в
- * setViolationField, violation-mutations.js).
+ * точечный 'reasons.content' — до 2 уровней). Разбор пути — общий с write
+ * (parseFieldPath, violation-mutations.js, V23) — раньше расходился (read
+ * защищён `?.`, write — нет).
  * @param {Object} violation - Объект нарушения
  * @param {string} path - Путь поля
  * @returns {*} Текущее значение поля
  */
 function _readViolationField(violation, path) {
-    const parts = path.split('.');
-    if (parts.length === 1) return violation[parts[0]];
-    return violation[parts[0]]?.[parts[1]];
+    const { key, subKey } = parseFieldPath(path);
+    return subKey === null ? violation[key] : violation[key]?.[subKey];
 }
 
 /**
