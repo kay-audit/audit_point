@@ -303,61 +303,6 @@ export class ViolationManager {
     }
 
     /**
-     * Настраивает обработчики событий для текстового поля с поддержкой отмены.
-     * Применяется ко всем текстовым полям формы нарушения: «Нарушено»/
-     * «Установлено», кейсы/свободный текст (textarea) и подпись картинки
-     * (однострочный input).
-     *
-     * @param {HTMLTextAreaElement|HTMLInputElement} field - Поле ввода
-     * @param {Function} onUpdate - Callback обновления данных (значение)
-     * @param {boolean} [multiline=true] - true для textarea (Shift+Enter — новая
-     *   строка); false для однострочного input (любой Enter сохраняет и снимает
-     *   фокус, Shift+Enter для него бессмыслен)
-     */
-    setupTextareaHandlers(field, onUpdate, multiline = true) {
-        let originalValue = field.value;
-
-        // Обновляем данные при каждом изменении
-        const handleInput = () => {
-            onUpdate(field.value);
-        };
-
-        // Обработка горячих клавиш
-        const handleKeyDown = (e) => {
-            if (e.key === 'Enter' && multiline && e.shiftKey) {
-                // Shift+Enter в textarea — добавить новую строку (стандартное поведение)
-                e.stopPropagation();
-            } else if (e.key === 'Enter') {
-                // Enter — сохранить изменения и снять фокус. Для однострочного
-                // input сюда попадает любой Enter (в т.ч. с Shift).
-                e.preventDefault();
-                field.blur();
-            } else if (e.key === 'Escape') {
-                // Escape — отменить изменения и восстановить исходное значение.
-                // onUpdate зовём ТОЛЬКО при реальном изменении, иначе Escape в
-                // нетронутом поле поднимал бы ложный markAsUnsaved и ложную
-                // запись аудита (#18-В).
-                e.preventDefault();
-                e.stopPropagation();
-                if (field.value !== originalValue) {
-                    field.value = originalValue;
-                    onUpdate(originalValue);
-                }
-                field.blur();
-            }
-        };
-
-        // Запоминаем исходное значение при получении фокуса
-        const handleFocus = () => {
-            originalValue = field.value;
-        };
-
-        field.addEventListener('input', handleInput);
-        field.addEventListener('keydown', handleKeyDown);
-        field.addEventListener('focus', handleFocus);
-    }
-
-    /**
      * Создает опциональное поле с чекбоксом для включения/выключения
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldName - Имя поля в объекте violation

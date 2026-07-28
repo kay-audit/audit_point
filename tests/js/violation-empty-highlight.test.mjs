@@ -56,8 +56,8 @@ function trackElement(el) {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(cb);
     };
-    // blur() зовётся в keydown-обработчиках (Enter/Escape) renderList и
-    // setupTextareaHandlers — стаб _browser-stub его не даёт.
+    // blur() — стаб _browser-stub его не даёт, а EditorController.unmount
+    // (см. тесты teardown ниже) может его звать.
     el.blur = () => {};
     // evt по умолчанию {} (обработчики input/focus его не читают);
     // keydown-обработчику нужен объект с key/preventDefault/stopPropagation.
