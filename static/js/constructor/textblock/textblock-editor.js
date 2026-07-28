@@ -436,26 +436,35 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * Регистрирует поверхность редактора как активную в EditorRegistry — второй
-     * (наряду с this.activeEditor) источник истины «кто сейчас в фокусе», нужный
-     * seam'у EditableSurface. Существующий мост this.activeEditor не заменяется.
+     * Единая точка активации поверхности текстблок-редактора. Источник истины
+     * «кто сейчас активен» — surface в EditorRegistry; this.activeEditor держим
+     * как его ЭЛЕМЕНТ-проекцию (мост для легаси-читателей тулбара/форматирования).
+     * V17: раньше this.activeEditor выставлялся ОТДЕЛЬНЫМ вызовом setActiveEditor
+     * в handleEditorFocus — параллельно реестру, из-за чего это были два
+     * независимых источника истины (могли разъехаться). Теперь activeEditor
+     * пишется ТОЛЬКО здесь как surface.element, в лок-степе с реестром.
      * @private
      */
     _activateSurfaceForEditor(editor) {
         const surface = this._makeTextBlockSurface(editor);
         EditorRegistry.setActive(surface);
+        this.setActiveEditor(surface.element);
         return surface;
     },
 
     /**
-     * Ownership-guard: снимает активную поверхность в EditorRegistry, только если
-     * ею всё ещё владеет ИМЕННО этот editor. Без этой проверки стейл-блюр A при
-     * быстром переходе фокуса A→B затирал бы поверхность, которой уже владеет B.
+     * Ownership-guard: снимает активную поверхность в EditorRegistry и её
+     * элемент-проекцию this.activeEditor, только если ими всё ещё владеет ИМЕННО
+     * этот editor. Без проверки стейл-блюр A при быстром переходе фокуса A→B
+     * затирал бы поверхность, которой уже владеет B. V17: реестр и мост
+     * this.activeEditor снимаются здесь в лок-степе (симметрия
+     * _activateSurfaceForEditor) — единый источник истины не расходится.
      * @private
      */
     _clearSurfaceIfOwned(editor) {
         if (EditorRegistry.getActive()?.element === editor) {
             EditorRegistry.clear();
+            this.clearActiveEditor();
         }
     },
 
@@ -463,7 +472,9 @@ Object.assign(TextBlockManager.prototype, {
      * Обработчик фокуса редактора
      */
     handleEditorFocus(editor, textBlock) {
-        this.setActiveEditor(editor);
+        // V17: _activateSurfaceForEditor выставляет и surface в реестре, и мост
+        // this.activeEditor (surface.element) разом — отдельный setActiveEditor
+        // здесь больше не нужен (был вторым источником истины).
         this._activateSurfaceForEditor(editor);
         this.showToolbar();
         this.updateToolbarState();
@@ -538,16 +549,19 @@ Object.assign(TextBlockManager.prototype, {
 
         setTimeout(() => {
             // Ownership-guard: если фокус ушёл на ДРУГОЙ текстблок, его
-            // handleEditorFocus уже выполнил setActiveEditor(B) → this.activeEditor
-            // указывает на B, не на этот editor(A). Стейл-таймер A не должен гасить
-            // тулбар, которым теперь владеет B (иначе тулбар мигает и пропадает при
-            // каждом переходе между блоками). Прячем только когда ЭТОТ редактор всё
-            // ещё активный владелец, а фокус ушёл наружу (не в редактор и не в тулбар).
+            // handleEditorFocus уже выполнил _activateSurfaceForEditor(B) →
+            // this.activeEditor указывает на B, не на этот editor(A). Стейл-таймер
+            // A не должен гасить тулбар, которым теперь владеет B (иначе тулбар
+            // мигает и пропадает при каждом переходе между блоками). Прячем только
+            // когда ЭТОТ редактор всё ещё активный владелец, а фокус ушёл наружу
+            // (не в редактор и не в тулбар).
             if (this.activeEditor === editor &&
                 document.activeElement !== editor &&
                 !this.globalToolbar?.contains(document.activeElement)) {
                 this.hideToolbar();
-                this.clearActiveEditor();
+                // V17: _clearSurfaceIfOwned снимает и реестр, и мост
+                // this.activeEditor разом (в лок-степе) — отдельный
+                // clearActiveEditor больше не нужен.
                 this._clearSurfaceIfOwned(editor);
             }
         }, 200);
