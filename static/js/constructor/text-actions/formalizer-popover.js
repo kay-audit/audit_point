@@ -29,6 +29,7 @@ import { EscapeStack } from '../../shared/escape-stack.js';
 import { makeResizablePanel } from '../../shared/resizable-panel.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
 import { serializeVisibleText } from '../../shared/rich-text.js';
+import { SafeHTML } from '../../shared/sanitize.js';
 import { formalizeViolation } from './text-actions-client.js';
 
 // Поля превью в порядке карточки (Принятые меры — под Причинами, как в форме).
@@ -104,8 +105,10 @@ export const FormalizerPopover = {
      * через serializeVisibleText (br/границы блоков → \n, инлайн-капсулы
      * ссылок/сносок — видимым текстом как есть), затем снимает caret-guard'ы
      * (U+FEFF) — они живут в DOM/модели капсул, но в текст для LLM попадать
-     * не должны. Строка модели на этом этапе уже прошла санитайзер при
-     * записи — это чтение, а не рендер в UI, повторный DOMPurify не нужен.
+     * не должны. #14a: строку санитизируем профилем 'acts' (тем же, что рендерит
+     * поле) ДО присваивания в innerHTML — иначе в detached-узле Chromium сырой
+     * innerHTML фетчит src-ресурсы (img и пр.), а on*-атрибуты дают mXSS-вектор;
+     * видимый текст (включая текст капсул) при этом сохраняется.
      * Overridable — тест-шов (`_gatherSource` зовёт через `this._richToPlain`):
      * реальный DOM-парсинг HTML-строки недоступен под node-стабом (innerHTML
      * не парсится), юнит-тесты подменяют метод; разбор настоящих строк — в
@@ -115,7 +118,9 @@ export const FormalizerPopover = {
      */
     _richToPlain(html) {
         const tmp = document.createElement('div');
-        tmp.innerHTML = html || '';
+        // SafeHTML.set санитизирует и присваивает одним шагом — сырой html до
+        // innerHTML не доходит.
+        SafeHTML.set(tmp, html || '', 'acts');
         return serializeVisibleText(tmp).replace(/\uFEFF/g, '');
     },
 
