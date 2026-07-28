@@ -12,6 +12,7 @@ import {
 } from './violation-content-item.js';
 import { renderImageWithFallback } from './violation-image-render.js';
 import { computeAdditionalContentNumbers } from './violation-numbering.js';
+import { toggleEmptyClass } from './violation-field-empty.js';
 
 /**
  * Опции селекта ширины картинки (Б-1.4): [значение item.width, подпись].
@@ -107,8 +108,10 @@ Object.assign(ViolationManager.prototype, {
     createCaseElement(violation, item, index, caseNumber, isReadOnly = false) {
         const wrapper = document.createElement('div');
         wrapper.className = 'content-item-wrapper';
-        // Подсветка пустого кейса (#9-Г, Wave 2): не блокирует ввод, только визуальный сигнал.
-        wrapper.classList.toggle('content-item-wrapper--empty', !item.content?.trim());
+        // Подсветка пустого кейса (#9-Г, Wave 2): не блокирует ввод, только
+        // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24) —
+        // toggleEmptyClass (violation-field-empty.js).
+        toggleEmptyClass(wrapper, 'content-item-wrapper--empty', item.content);
 
         const label = document.createElement('div');
         label.className = 'content-item-label';
@@ -127,7 +130,7 @@ Object.assign(ViolationManager.prototype, {
             // Живая подсветка пустого кейса (#9-Г) — только визуальный класс, без
             // записи модели (её ведёт write-through контроллера через commit).
             field.addEventListener('input', () => {
-                wrapper.classList.toggle('content-item-wrapper--empty', !field.textContent.trim());
+                toggleEmptyClass(wrapper, 'content-item-wrapper--empty', field);
             });
         }
 
@@ -242,8 +245,10 @@ Object.assign(ViolationManager.prototype, {
     createFreeTextElement(violation, item, index, textNumber, isReadOnly = false) {
         const wrapper = document.createElement('div');
         wrapper.className = 'content-item-wrapper';
-        // Подсветка пустого текста (#9-Г, Wave 2): не блокирует ввод, только визуальный сигнал.
-        wrapper.classList.toggle('content-item-wrapper--empty', !item.content?.trim());
+        // Подсветка пустого текста (#9-Г, Wave 2): не блокирует ввод, только
+        // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24) —
+        // toggleEmptyClass (violation-field-empty.js).
+        toggleEmptyClass(wrapper, 'content-item-wrapper--empty', item.content);
 
         const label = document.createElement('div');
         label.className = 'content-item-label';
@@ -261,7 +266,7 @@ Object.assign(ViolationManager.prototype, {
         if (!isReadOnly) {
             // Живая подсветка пустого текста (#9-Г) — только визуальный класс.
             field.addEventListener('input', () => {
-                wrapper.classList.toggle('content-item-wrapper--empty', !field.textContent.trim());
+                toggleEmptyClass(wrapper, 'content-item-wrapper--empty', field);
             });
         }
 

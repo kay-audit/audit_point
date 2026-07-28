@@ -10,6 +10,7 @@ import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
+import { toggleEmptyClass } from './violation-field-empty.js';
 
 /**
  * Адаптер записи формализатора: переводит ПЛОСКУЮ строку LLM в rich HTML —
@@ -466,11 +467,14 @@ export class ViolationManager {
         violation[fieldName].items.forEach((item, index) => {
             const itemContainer = document.createElement('div');
             itemContainer.className = 'violation-list-item';
-            // Подсветка пустого пункта (#9-Г, Wave 2): не блокирует ввод, только визуальный сигнал.
-            // String(...) — страховка от не-строкового элемента ([null]/число из
-            // легаси/битого акта): нормализатор дозаполняет ключи, но не приводит
-            // типы внутри items, иначе .trim() кинул бы TypeError и уронил рендер карточки.
-            itemContainer.classList.toggle('violation-list-item--empty', !String(item).trim());
+            // Подсветка пустого пункта (#9-Г, Wave 2): не блокирует ввод, только
+            // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24)
+            // — toggleEmptyClass (violation-field-empty.js). String(...) —
+            // страховка от не-строкового элемента ([null]/число из легаси/битого
+            // акта): нормализатор дозаполняет ключи, но не приводит типы внутри
+            // items, иначе isFieldEmpty получил бы не-строку и рендер карточки
+            // мог упасть.
+            toggleEmptyClass(itemContainer, 'violation-list-item--empty', String(item));
 
             const field = this._createRichFieldEditor(
                 this._makeViolationListItemSurface(violation, fieldName, index),
@@ -483,7 +487,7 @@ export class ViolationManager {
                 // записи модели (её ведёт write-through контроллера через commit,
                 // зеркало createCaseElement/createFreeTextElement).
                 field.addEventListener('input', () => {
-                    itemContainer.classList.toggle('violation-list-item--empty', !field.textContent.trim());
+                    toggleEmptyClass(itemContainer, 'violation-list-item--empty', field);
                 });
             }
 

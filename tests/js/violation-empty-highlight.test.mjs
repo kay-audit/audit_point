@@ -173,6 +173,17 @@ test('createCaseElement: очистка поля возвращает класс
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), 'класс возвращается при очистке поля');
 });
 
+test('createCaseElement: модельное значение \'<br>\' (легаси-остаток до нормализации коммита) — предикат считает пустым (V24)', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    const item = { id: 'c1', type: CONTENT_TYPE_CASE, content: '<br>' };
+
+    const { result: wrapper } = withTrackedDom(() => vm.createCaseElement(violation, item, 0, 1, false));
+
+    assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), '<br>-остаток считается пустым');
+});
+
 // --- createFreeTextElement ---
 
 test('createFreeTextElement: ввод текста снимает класс --empty динамически (визуальный класс)', () => {
@@ -201,6 +212,17 @@ test('createFreeTextElement: заполненный текст — без кла
     const { result: wrapper } = withTrackedDom(() => vm.createFreeTextElement(violation, item, 0, 1, false));
 
     assert.ok(!wrapper.classList.contains('content-item-wrapper--empty'));
+});
+
+test('createFreeTextElement: модельное значение \'<div><br></div>\' (легаси-остаток) — предикат считает пустым (V24)', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    const item = { id: 'f1', type: CONTENT_TYPE_FREE_TEXT, content: '<div><br></div>' };
+
+    const { result: wrapper } = withTrackedDom(() => vm.createFreeTextElement(violation, item, 0, 1, false));
+
+    assert.ok(wrapper.classList.contains('content-item-wrapper--empty'));
 });
 
 // --- renderList (descriptionList) ---
@@ -291,6 +313,19 @@ test('renderList: очистка пункта возвращает класс --
     field.fire('input');
 
     assert.ok(row.classList.contains('violation-list-item--empty'), 'класс возвращается при очистке поля');
+});
+
+test('renderList: модельное значение \'<br>\' (легаси-остаток) — предикат считает пустым, класс --empty присутствует (V24)', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    violation.descriptionList.items = ['<br>'];
+    const container = { innerHTML: '', appendChild() {} };
+
+    const { created } = withTrackedDom(() => vm.renderList(container, violation, 'descriptionList', false));
+    const row = created.find((c) => c.tag === 'div' && c.el.className && c.el.className.split(' ').includes('violation-list-item')).el;
+
+    assert.ok(row.classList.contains('violation-list-item--empty'));
 });
 
 // --- Task 7: индексная адресация переживает удаление пункта --------------
