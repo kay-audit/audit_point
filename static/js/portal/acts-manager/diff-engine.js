@@ -278,16 +278,13 @@ export class DiffEngine {
             if (oldContent === newContent) {
                 result[id] = { status: 'unchanged', content: oldContent };
             } else {
-                const strippedOld = this._stripHtml(oldContent);
-                const strippedNew = this._stripHtml(newContent);
+                // Видимый текст совпал, а raw HTML различается → правка только
+                // форматирования (word-diff пуст); рендер показывает бейдж.
                 result[id] = {
                     status: 'modified',
                     oldContent,
                     newContent,
-                    wordDiff: this._wordDiff(strippedOld, strippedNew),
-                    // Видимый текст совпал, а raw HTML различается → правка только
-                    // форматирования (word-diff пуст); рендер показывает бейдж.
-                    formattingOnly: strippedOld === strippedNew,
+                    ...this._richWordDiff(oldContent, newContent),
                 };
             }
         }
@@ -335,17 +332,14 @@ export class DiffEngine {
                 const newVal = this._getViolationFieldValue(newV, field);
                 if (oldVal !== newVal) {
                     // Rich-поля (планируется rich-текст) — сравниваем по
-                    // ВИДИМОМУ тексту, зеркало _diffTextBlocks (:281-291).
+                    // ВИДИМОМУ тексту, зеркало _diffTextBlocks (через _richWordDiff).
                     // formattingOnly — правка только разметки при совпавшем
                     // видимом тексте.
-                    const strippedOld = this._stripHtml(oldVal);
-                    const strippedNew = this._stripHtml(newVal);
                     fieldDiffs[field] = {
                         old: oldVal,
                         new: newVal,
                         changed: true,
-                        wordDiff: this._wordDiff(strippedOld, strippedNew),
-                        formattingOnly: strippedOld === strippedNew,
+                        ...this._richWordDiff(oldVal, newVal),
                     };
                     hasFieldChanges = true;
                 }
@@ -497,12 +491,9 @@ export class DiffEngine {
                 // detect-modified остаётся по сырому значению (см. там же),
                 // formattingOnly — правка только разметки при совпавшем
                 // видимом тексте (паритет со скалярными rich-полями).
-                const strippedOld = this._stripHtml(oldItem);
-                const strippedNew = this._stripHtml(newItem);
                 items.push({
                     status: 'modified', old: oldItem, new: newItem,
-                    wordDiff: this._wordDiff(strippedOld, strippedNew),
-                    formattingOnly: strippedOld === strippedNew,
+                    ...this._richWordDiff(oldItem, newItem),
                 });
                 changed = true;
             } else {
@@ -601,13 +592,10 @@ export class DiffEngine {
             const oldCaption = (oldItem && oldItem.caption) || '';
             const newCaption = (newItem && newItem.caption) || '';
             if (oldCaption !== newCaption) {
-                const strippedOld = this._stripHtml(oldCaption);
-                const strippedNew = this._stripHtml(newCaption);
                 fields.caption = {
                     old: oldCaption,
                     new: newCaption,
-                    wordDiff: this._wordDiff(strippedOld, strippedNew),
-                    formattingOnly: strippedOld === strippedNew,
+                    ...this._richWordDiff(oldCaption, newCaption),
                 };
                 changed = true;
             }
@@ -623,10 +611,7 @@ export class DiffEngine {
         // приёмом, что и скалярные поля нарушения (_diffViolations выше).
         // formattingOnly — правка только разметки при совпавшем видимом
         // тексте (паритет со скалярными полями нарушения).
-        const strippedOld = this._stripHtml(oldContent);
-        const strippedNew = this._stripHtml(newContent);
-        const wordDiff = this._wordDiff(strippedOld, strippedNew);
-        return { changed: true, detail: { typeChanged, wordDiff, formattingOnly: strippedOld === strippedNew } };
+        return { changed: true, detail: { typeChanged, ...this._richWordDiff(oldContent, newContent) } };
     }
 
     /**
@@ -694,6 +679,23 @@ export class DiffEngine {
         }
 
         return grouped;
+    }
+
+    /**
+     * Word-diff + флаг formattingOnly по паре rich-HTML строк — общее ядро
+     * для всех rich-полей (текстблоки, скалярные поля нарушения, пункты
+     * descriptionList, case/freeText, подпись под фото): сравнение по
+     * ВИДИМОМУ тексту (_stripHtml). formattingOnly — правка затронула
+     * только разметку (видимый текст совпал, word-diff без вставок/удалений).
+     * @returns {{wordDiff: Array, formattingOnly: boolean}}
+     */
+    static _richWordDiff(oldHtml, newHtml) {
+        const strippedOld = this._stripHtml(oldHtml);
+        const strippedNew = this._stripHtml(newHtml);
+        return {
+            wordDiff: this._wordDiff(strippedOld, strippedNew),
+            formattingOnly: strippedOld === strippedNew,
+        };
     }
 
     static _stripHtml(html) {

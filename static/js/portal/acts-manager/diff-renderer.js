@@ -182,6 +182,21 @@ export class DiffRenderer {
     }
 
     /**
+     * Бейдж «Изменено форматирование» — общий для word-diff всех rich-полей
+     * (текстблок, поле нарушения, пункт списка, case/freeText, подпись под
+     * фото). Показывается при formattingOnly: видимый текст совпал, word-diff
+     * без вставок/удалений выглядел бы «пустым» без явного сигнала.
+     * @param {HTMLElement} parent - куда добавить бейдж
+     * @param {string} [tag='span'] - тег элемента (текстблок использует div)
+     */
+    static _appendFormatBadge(parent, tag = 'span') {
+        const badge = document.createElement(tag);
+        badge.className = 'diff-textblock-format-badge';
+        badge.textContent = 'Изменено форматирование';
+        parent.appendChild(badge);
+    }
+
+    /**
      * Добавляет к parent пару «старое → новое»: <del>old</del> → <ins>new</ins>.
      * Единый сборщик для бейджей атрибутов узла, полей фактуры и атрибутов
      * картинки. Варианты — через opts:
@@ -321,10 +336,7 @@ export class DiffRenderer {
             // Бейдж уходит в container ДО текстблока, чтобы не тронуть innerHTML
             // корневого div (на нём держится подсветка <ins>/<del>).
             if (tbDiff.formattingOnly) {
-                const badge = document.createElement('div');
-                badge.className = 'diff-textblock-format-badge';
-                badge.textContent = 'Изменено форматирование';
-                container.appendChild(badge);
+                this._appendFormatBadge(container, 'div');
             }
             div.className += ' diff-text';
             // Профиль по умолчанию (НЕ 'acts'): здесь рендерится diff-разметка
@@ -381,10 +393,7 @@ export class DiffRenderer {
                 // бейдж, иначе word-diff без вставок/удалений выглядел бы
                 // «пустым» (зеркало _renderDiffTextBlock).
                 if (fieldDiff.formattingOnly) {
-                    const badge = document.createElement('span');
-                    badge.className = 'diff-textblock-format-badge';
-                    badge.textContent = 'Изменено форматирование';
-                    fieldDiv.appendChild(badge);
+                    this._appendFormatBadge(fieldDiv);
                 }
                 const wordDiffEl = document.createElement('span');
                 SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fieldDiff.wordDiff));
@@ -540,10 +549,7 @@ export class DiffRenderer {
                 li.appendChild(del);
             } else if (item.status === 'modified') {
                 if (item.formattingOnly) {
-                    const badge = document.createElement('span');
-                    badge.className = 'diff-textblock-format-badge';
-                    badge.textContent = 'Изменено форматирование';
-                    li.appendChild(badge);
+                    this._appendFormatBadge(li);
                 }
                 const wordDiffEl = document.createElement('span');
                 SafeHTML.set(wordDiffEl, this._wordDiffToHtml(item.wordDiff));
@@ -621,10 +627,7 @@ export class DiffRenderer {
             // не её потомок: SafeHTML.set(body, ...) заменил бы innerHTML и
             // стёр бы бейдж, будь он внутри.
             if (entry.formattingOnly) {
-                const badge = document.createElement('span');
-                badge.className = 'diff-textblock-format-badge';
-                badge.textContent = 'Изменено форматирование';
-                itemDiv.appendChild(badge);
+                this._appendFormatBadge(itemDiv);
             }
             SafeHTML.set(body, this._wordDiffToHtml(entry.wordDiff));
         } else {
@@ -681,10 +684,7 @@ export class DiffRenderer {
                 // вместо сырых HTML-строк (зеркало _renderDiffViolation) —
                 // appendOldNewPair показал бы <b>-теги буквально.
                 if (fields[key].formattingOnly) {
-                    const badge = document.createElement('span');
-                    badge.className = 'diff-textblock-format-badge';
-                    badge.textContent = 'Изменено форматирование';
-                    line.appendChild(badge);
+                    this._appendFormatBadge(line);
                 }
                 const wordDiffEl = document.createElement('span');
                 SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fields[key].wordDiff));
