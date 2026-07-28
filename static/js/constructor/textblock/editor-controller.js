@@ -23,6 +23,7 @@ export const EditorController = {
     _onCopy: null,
     _onCut: null,
     _onPaste: null,
+    _onDrop: null,
 
     /**
      * Гейт интерактивного capsule-lifecycle: rich-поверхность, чью капсульную
@@ -85,11 +86,16 @@ export const EditorController = {
             // этого в поле льётся сырой browser-HTML, а сноски вставлялись бы в обход
             // запрета политики.
             this._onPaste = (e) => textBlockManager.handleEditorPaste(e, surface.element, null);
+            // T7 (#6/#14b): drop минует тулбар/хоткей/пасту — свой обработчик
+            // санитизирует dataTransfer и вырезает сноски по политике ДО вставки
+            // (иначе нативный drop доводил бы капсулу до атома в обход запрета).
+            this._onDrop = (e) => textBlockManager.handleEditorDrop(e, surface.element, null);
             surface.element.addEventListener('beforeinput', this._onBeforeInput);
             surface.element.addEventListener('keydown', this._onKeydown);
             surface.element.addEventListener('copy', this._onCopy);
             surface.element.addEventListener('cut', this._onCut);
             surface.element.addEventListener('paste', this._onPaste);
+            surface.element.addEventListener('drop', this._onDrop);
             textBlockManager.attachLinkFootnoteHandlers(); // tooltip/dblclick-правка/ПКМ-меню/клик-каретка
         }
     },
@@ -122,6 +128,7 @@ export const EditorController = {
         surface.element.removeEventListener('keyup', this._onSelectionPing);
         if (this._usesCapsuleLifecycle(surface)) {
             surface.element.removeEventListener('paste', this._onPaste);
+            surface.element.removeEventListener('drop', this._onDrop);
             surface.element.__capsuleObserver?.disconnect();
             surface.element.removeEventListener('beforeinput', this._onBeforeInput);
             surface.element.removeEventListener('keydown', this._onKeydown);
@@ -139,6 +146,7 @@ export const EditorController = {
         this._onCopy = null;
         this._onCut = null;
         this._onPaste = null;
+        this._onDrop = null;
     },
 };
 

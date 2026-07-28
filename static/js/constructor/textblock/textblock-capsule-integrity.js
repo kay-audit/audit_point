@@ -295,7 +295,11 @@ Object.assign(TextBlockManager.prototype, {
             }
         }
         // insertCompositionText (IME), historyUndo/Redo, insertFromDrop —
-        // не вмешиваемся, страхует слой 3.
+        // не вмешиваемся, страхует слой 3. Для поля нарушения insertFromDrop сюда
+        // уже не доходит: EditorController.handleEditorDrop гасит нативный drop
+        // (preventDefault) и вставляет санитизированный фрагмент со сноской,
+        // вырезанной по политике, — observer её не «атомизирует» (T7 #6/#14b).
+        // Здесь ветка остаётся для textblock-пути (свой нативный drop, сноска жива).
     },
 
     /**
