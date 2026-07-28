@@ -4,7 +4,7 @@
  */
 import { PreviewManager } from '../preview/preview.js';
 import { RENDER_CLASSES } from '../render-classes.js';
-import { renderActContent, SafeHTML } from '../../shared/sanitize.js';
+import { SafeHTML } from '../../shared/sanitize.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
@@ -268,29 +268,42 @@ export class ViolationManager {
      * @param {Object} fields - Ответ формализатора (плоские строки)
      */
     _applyFormalized(violation, controls, fields) {
-        const setPlain = (name, fieldDiv, value) => {
+        // Пишем извлечённое поле через поверхность (setContent) — единый защищённый
+        // путь модель+DOM: setViolationField (requireWrite-guard + превью) внутри +
+        // renderActContent + капсульная гигиена. Это же делает setContent продовым
+        // путём (S4: до этой задачи ни одного продового вызова). Плоскую строку LLM
+        // переводим в rich HTML (экранирование + \n → <br>) ДО записи.
+        const writeField = (path, fieldDiv, value) => {
             const v = (value || '').trim();
             if (!v) return;                 // не извлечено — не затираем существующее
-            // Плоская строка LLM → rich HTML (экранирование + \n → <br>) ДО записи.
             const html = plainToRichHtml(v);
-            // Запись только через setViolationField — единственную защищённую точку
-            // (requireWrite-guard + превью); прямая запись миновала бы её.
-            this.setViolationField(violation, name, html);
-            // Модель → rich-поле (contenteditable): renderActContent, не .value.
-            if (fieldDiv) renderActContent(fieldDiv, html);
+            if (fieldDiv) {
+                const surface = this._makeViolationSurface(violation, path);
+                surface.element = fieldDiv;
+                surface.setContent(html);
+                // setContent не трогает placeholder-класс — снимаем его (поле теперь
+                // непусто), иначе CSS-плейсхолдер (.textblock-editor--empty::before)
+                // «Опишите нарушение…» оставался бы серым префиксом перед реальным
+                // текстом (#7). Предикат пустоты — общий с подсветкой (T5,
+                // violation-field-empty.js).
+                toggleEmptyClass(fieldDiv, 'textblock-editor--empty', fieldDiv);
+            } else {
+                // Поле не смонтировано (нет DOM-хоста) — прямой model-write; DOM его
+                // подхватит при следующем рендере карточки.
+                this.setViolationField(violation, path, html);
+            }
         };
+        const setPlain = (name, fieldDiv, value) => writeField(name, fieldDiv, value);
         const setOptional = (name, container, value) => {
             const v = (value || '').trim();
             if (!v) return;
-            const html = plainToRichHtml(v);
             this.setViolationField(violation, `${name}.enabled`, true);
-            this.setViolationField(violation, `${name}.content`, html);
             const cb = container?.querySelector('.violation-field-toggle input[type="checkbox"]');
             const content = container?.querySelector('.violation-field-content');
             const fieldDiv = container?.querySelector('.violation-field-content .violation-field');
             if (cb) cb.checked = true;
             if (content) content.style.display = 'block';
-            if (fieldDiv) renderActContent(fieldDiv, html);
+            writeField(`${name}.content`, fieldDiv, value);
         };
 
         setPlain('violated', controls.violated, fields.violated);
