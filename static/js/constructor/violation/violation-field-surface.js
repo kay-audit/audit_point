@@ -362,8 +362,15 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
     // :55-58). Только не-RO: RO ничего не пишет обратно в модель (нет
     // commit/setContent от пользовательского ввода), чинить незачем то, что
     // никогда не покинет эту DOM-копию.
-    if (!isReadOnly && typeof textBlockManager.validateAndRepairCapsules === 'function') {
-        renderActContent(field, textBlockManager.validateAndRepairCapsules(field.innerHTML));
+    // V27: поле УЖЕ отрисовано строкой выше (surface.getContent()) — второй
+    // renderActContent имеет смысл ТОЛЬКО если репак реально что-то починил
+    // (гейт как у report.changed в setContent выше), иначе это безусловный
+    // повторный рендер на КАЖДОЙ из ≥8 фабрик поля на карточку.
+    if (!isReadOnly) {
+        const report = _repairCapsuleHtml(field.innerHTML);
+        if (report.changed) {
+            renderActContent(field, report.html);
+        }
     }
     // ce=false/caret-guard'ы + tooltip — в ОБОИХ режимах: капсула должна быть
     // атомом и на просмотре (см. докстринг _hardenCapsuleField).

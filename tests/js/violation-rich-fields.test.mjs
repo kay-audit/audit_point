@@ -120,7 +120,7 @@ test('_createRichFieldEditor: __lastFootnoteCount=0 при создании (Tas
 
 // ── Task 1.3.4-B1: hardening капсул при загрузке (creation) ──────────────────
 
-test('_createRichFieldEditor: не-RO — validateAndRepairCapsules (round-trip) + normalizeMarkers + tooltip вызваны на field', () => {
+test('_createRichFieldEditor: не-RO — репак капсул (round-trip через _repairCapsulesReport) + normalizeMarkers + tooltip вызваны на field', () => {
     const vm = new ViolationManager();
     const el = recordingEl();
     // renderActContent под стабом (нет DOMPurify) правит только textContent —
@@ -128,13 +128,15 @@ test('_createRichFieldEditor: не-RO — validateAndRepairCapsules (round-trip)
     // же в repair-раунд-трипе, поэтому предзаполняем осмысленной строкой.
     const seedHtml = '<span class="text-link" data-link-id="1" data-link-url="/x">x</span>';
     el.innerHTML = seedHtml;
-    const repairCalls = [];
+    const reportCalls = [];
     const normalizeCalls = [];
     const tooltipCalls = [];
-    const origRepair = textBlockManager.validateAndRepairCapsules;
+    const origStrip = textBlockManager._stripGuards;
+    const origReport = textBlockManager._repairCapsulesReport;
     const origNormalize = textBlockManager.normalizeMarkers;
     const origTooltip = textBlockManager._attachInitialTooltipHandlers;
-    textBlockManager.validateAndRepairCapsules = (html) => { repairCalls.push(html); return html; };
+    textBlockManager._stripGuards = (html) => html;
+    textBlockManager._repairCapsulesReport = (html) => { reportCalls.push(html); return { html, changed: false }; };
     textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
     textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
     try {
@@ -142,41 +144,92 @@ test('_createRichFieldEditor: не-RO — validateAndRepairCapsules (round-trip)
             const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
             const out = withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: false }));
 
-            assert.deepEqual(repairCalls, [seedHtml],
-                'validateAndRepairCapsules вызван ровно раз с field.innerHTML (round-trip)');
+            assert.deepEqual(reportCalls, [seedHtml],
+                '_repairCapsulesReport вызван ровно раз с field.innerHTML (round-trip)');
             assert.deepEqual(normalizeCalls, [out], 'normalizeMarkers вызван на field');
             assert.deepEqual(tooltipCalls, [out], '_attachInitialTooltipHandlers вызван на field');
         });
     } finally {
-        textBlockManager.validateAndRepairCapsules = origRepair;
+        textBlockManager._stripGuards = origStrip;
+        textBlockManager._repairCapsulesReport = origReport;
         textBlockManager.normalizeMarkers = origNormalize;
         textBlockManager._attachInitialTooltipHandlers = origTooltip;
     }
 });
 
-test('_createRichFieldEditor: RO — normalizeMarkers + tooltip вызваны, validateAndRepairCapsules НЕ вызван', () => {
+test('_createRichFieldEditor: RO — normalizeMarkers + tooltip вызваны, репак капсул НЕ вызван', () => {
     const vm = new ViolationManager();
     const el = recordingEl();
-    const repairCalls = [];
+    const reportCalls = [];
     const normalizeCalls = [];
     const tooltipCalls = [];
-    const origRepair = textBlockManager.validateAndRepairCapsules;
+    const origReport = textBlockManager._repairCapsulesReport;
     const origNormalize = textBlockManager.normalizeMarkers;
     const origTooltip = textBlockManager._attachInitialTooltipHandlers;
-    textBlockManager.validateAndRepairCapsules = (html) => { repairCalls.push(html); return html; };
+    textBlockManager._repairCapsulesReport = (html) => { reportCalls.push(html); return { html, changed: false }; };
     textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
     textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
     try {
         const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
         const out = withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: true }));
 
-        assert.equal(repairCalls.length, 0, 'RO ничего не пишет обратно в модель — чинить незачем');
+        assert.equal(reportCalls.length, 0, 'RO ничего не пишет обратно в модель — чинить незачем');
         assert.deepEqual(normalizeCalls, [out], 'normalizeMarkers вызван на field даже в RO (ce=false атом)');
         assert.deepEqual(tooltipCalls, [out], '_attachInitialTooltipHandlers вызван на field даже в RO (иначе капсула немая)');
     } finally {
-        textBlockManager.validateAndRepairCapsules = origRepair;
+        textBlockManager._repairCapsulesReport = origReport;
         textBlockManager.normalizeMarkers = origNormalize;
         textBlockManager._attachInitialTooltipHandlers = origTooltip;
+    }
+});
+
+// ── V27: гейт повторного рендера — только при реальной структурной починке ──
+
+test('V27: unchanged-санитизация (changed=false) — второй renderActContent НЕ происходит (единственная запись — начальная из модели)', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const textContentSets = [];
+    Object.defineProperty(el, 'textContent', {
+        get() { return el._tc || ''; },
+        set(v) { el._tc = v; textContentSets.push(v); },
+    });
+    const origStrip = textBlockManager._stripGuards;
+    const origReport = textBlockManager._repairCapsulesReport;
+    textBlockManager._stripGuards = (html) => html;
+    textBlockManager._repairCapsulesReport = (html) => ({ html, changed: false });
+    try {
+        const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
+        withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: false }));
+
+        assert.equal(textContentSets.length, 1, 'ровно один рендер — unchanged-санитизация не даёт второй (≥8 фабрик на карточку)');
+        assert.equal(textContentSets[0], '<b>x</b>');
+    } finally {
+        textBlockManager._stripGuards = origStrip;
+        textBlockManager._repairCapsulesReport = origReport;
+    }
+});
+
+test('V27: структурная починка (changed=true) — второй renderActContent происходит, репаренным html', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const textContentSets = [];
+    Object.defineProperty(el, 'textContent', {
+        get() { return el._tc || ''; },
+        set(v) { el._tc = v; textContentSets.push(v); },
+    });
+    const origStrip = textBlockManager._stripGuards;
+    const origReport = textBlockManager._repairCapsulesReport;
+    textBlockManager._stripGuards = (html) => html;
+    textBlockManager._repairCapsulesReport = () => ({ html: '<b>починено</b>', changed: true });
+    try {
+        const surface = { kind: 'violationField', element: null, getContent: () => '<b>x</b>', commit() {} };
+        withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: false }));
+
+        assert.equal(textContentSets.length, 2, 'структурная починка → второй рендер репаренным html');
+        assert.equal(textContentSets[1], '<b>починено</b>');
+    } finally {
+        textBlockManager._stripGuards = origStrip;
+        textBlockManager._repairCapsulesReport = origReport;
     }
 });
 
