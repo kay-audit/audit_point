@@ -4,25 +4,13 @@
  */
 import { PreviewManager } from '../preview/preview.js';
 import { RENDER_CLASSES } from '../render-classes.js';
-import { SafeHTML } from '../../shared/sanitize.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
+import { plainToRichHtml } from '../../shared/html-text.js';
 import { toggleEmptyClass } from './violation-field-empty.js';
-
-/**
- * Адаптер записи формализатора: переводит ПЛОСКУЮ строку LLM в rich HTML —
- * экранирует спецсимволы и переносы `\n` → `<br>` (зеркало `_insertCorrected`
- * в corrector-popover.js). Без этого `\n` не отрисовался бы, а `&`/`<` из
- * текста LLM попали бы в rich-модель как невалидный HTML.
- * @param {string} v - Плоское значение поля от формализатора
- * @returns {string} HTML для setViolationField/renderActContent
- */
-function plainToRichHtml(v) {
-    return SafeHTML.escapeHtml(v).replace(/\n/g, '<br>');
-}
 
 export class ViolationManager {
     constructor() {
