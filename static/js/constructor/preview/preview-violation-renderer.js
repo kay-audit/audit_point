@@ -100,6 +100,51 @@ export function collectViolationLines(violation) {
 }
 
 /**
+ * Режет rich-HTML поля на верхнеуровневые блочные абзацы (упрощённый JS-аналог
+ * split_block_segments, app/domains/acts/formatters/docx/builders/inline.py) —
+ * #13: `_addLine` кладёт тело поля в инлайновый `<span>` рядом с меткой;
+ * блочные `<div>` многострочного rich-значения (Enter в rich-редакторе →
+ * новый параграф) внутри `<span>` рвут инлайн-контекст (anonymous block boxes,
+ * CSS 2.1 §9.2.1.1) — метка остаётся одна на строке, первая строка уезжает
+ * вниз. Верхнеуровневый `<div>`/`<p>` → отдельный сегмент (его ВНУТРЕННИЙ
+ * html, обёртка отбрасывается — рендерится обычной строкой превью). Смежный
+ * контент вне блочных тегов (голый текст/инлайн-форматирование/`<br>`) уходит
+ * в отдельный анонимный сегмент. Вложенные блочные теги остаются внутри html
+ * родительского сегмента (рендерятся как есть). Нет верхнеуровневых блочных
+ * тегов (частый случай — однострочные поля) → один сегмент с исходным html.
+ * @param {string} html
+ * @returns {string[]} Сегменты в порядке появления
+ */
+export function splitTopLevelBlocks(html) {
+    if (!html) return [];
+    const segments = [];
+    const tagRe = /<(div|p)\b[^>]*>|<\/(div|p)>/gi;
+    let depth = 0;
+    let segStart = 0;
+    let blockStart = -1;
+    let match;
+    while ((match = tagRe.exec(html)) !== null) {
+        if (match[1]) {
+            if (depth === 0) {
+                const anon = html.slice(segStart, match.index);
+                if (anon.trim()) segments.push(anon);
+                blockStart = match.index + match[0].length;
+            }
+            depth++;
+        } else if (depth > 0) {
+            depth--;
+            if (depth === 0) {
+                segments.push(html.slice(blockStart, match.index));
+                segStart = match.index + match[0].length;
+            }
+        }
+    }
+    const tail = html.slice(segStart);
+    if (tail.trim()) segments.push(tail);
+    return segments;
+}
+
+/**
  * Чистый маппинг item.width / лимита высоты → inline-стиль картинки превью.
  *
  * @param {Object} item - Элемент типа image (поле width: 0 — авто)
@@ -141,25 +186,46 @@ export class PreviewViolationRenderer {
     /**
      * Добавляет абзац «Метка_подчёркнута полный текст» (паритет с DOCX:
      * label-run подчёркнут, body-run обычный). `small` → 9pt-курсив-группа.
+     *
+     * #13: многострочное rich-значение (несколько верхнеуровневых `<div>`-
+     * абзацев) режется на сегменты (splitTopLevelBlocks) — паритет с DOCX
+     * `_labeled_paragraph`/render_block_segments(first_paragraph=para): первый
+     * абзац инлайнится рядом с меткой в ТОМ ЖЕ `<span>` (без него блочный
+     * `<div>` внутри `<span>` рвёт инлайн-контекст, метка уезжает на свою
+     * строку), последующие абзацы — отдельными блочными строками ниже, без
+     * метки (как продолжающие w:p в DOCX).
      * @private
      */
     static _addLine(container, label, text, small) {
+        const className = small ? 'preview-violation-line preview-violation-line--small'
+                                : 'preview-violation-line';
+        const segments = splitTopLevelBlocks(text);
+        const [first, ...rest] = segments.length ? segments : [text || ''];
+
         const line = document.createElement('div');
-        line.className = small ? 'preview-violation-line preview-violation-line--small'
-                               : 'preview-violation-line';
+        line.className = className;
         if (label) {
             const labelEl = document.createElement('span');
             labelEl.className = 'preview-violation-label';
             labelEl.textContent = `${label}: `;
             line.appendChild(labelEl);
         }
-        // text — rich-HTML поле нарушения (Task 1.1); рендерим через
+        // first — rich-HTML первого абзаца поля (Task 1.1); рендерим через
         // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
         // текст-нодой — иначе сырой HTML показался бы буквально.
         const bodyEl = document.createElement('span');
-        renderActContent(bodyEl, text);
+        renderActContent(bodyEl, first);
         line.appendChild(bodyEl);
         container.appendChild(line);
+
+        // Последующие абзацы — отдельные блочные строки той же типографики,
+        // без метки (продолжение, не новое поле).
+        for (const segment of rest) {
+            const contLine = document.createElement('div');
+            contLine.className = className;
+            renderActContent(contLine, segment);
+            container.appendChild(contLine);
+        }
     }
 
     /**

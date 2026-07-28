@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
     collectViolationLines,
     imagePresentationStyle,
+    splitTopLevelBlocks,
     PreviewViolationRenderer,
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
 
@@ -246,6 +247,52 @@ test('rich-тело поля через renderActContent, не createTextNode', 
         document.createTextNode = orig;
     }
     assert.ok(!seen.some(t => t.includes('<b>')), 'сырой HTML не должен уйти в текст-ноду');
+});
+
+// --- #13: splitTopLevelBlocks (паритет с split_block_segments, inline.py) ---
+
+test('splitTopLevelBlocks: без верхнеуровневых <div>/<p> — один сегмент с исходным html', () => {
+    assert.deepEqual(splitTopLevelBlocks('до <b>x</b> после'), ['до <b>x</b> после']);
+});
+
+test('splitTopLevelBlocks: пустая строка — пустой массив', () => {
+    assert.deepEqual(splitTopLevelBlocks(''), []);
+});
+
+test('splitTopLevelBlocks: два верхнеуровневых <div> — два сегмента, теги-обёртки отброшены', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div>первая</div><div>вторая</div>'), ['первая', 'вторая']);
+});
+
+test('splitTopLevelBlocks: вложенный <div> остаётся внутри родительского сегмента', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div>внешний<div>внутренний</div></div>'), ['внешний<div>внутренний</div>']);
+});
+
+// --- #13: превью не разрывает многострочное rich-поле под меткой -----------
+
+test('#13: _addLine режет верхнеуровневые <div>-абзацы — первый инлайнится с меткой, остальные — отдельными блоками (паритет с DOCX _labeled_paragraph)', () => {
+    const created = [];
+    const origCreate = document.createElement;
+    document.createElement = (tag) => {
+        const el = origCreate(tag);
+        created.push({ tag, el });
+        return el;
+    };
+    try {
+        PreviewViolationRenderer.create(makeViolation({
+            reasons: { enabled: true, content: '<div>первая</div><div>вторая</div>' },
+        }));
+    } finally {
+        document.createElement = origCreate;
+    }
+
+    const reasonsSpan = created.find((c) => c.tag === 'span' && c.el.textContent === 'первая');
+    assert.ok(reasonsSpan, 'первый абзац рендерится в span рядом с меткой');
+    assert.ok(!/div/i.test(reasonsSpan.el.textContent), 'нет div внутри span (нет невалидного block-in-inline)');
+
+    const secondLine = created.find((c) => c.tag === 'div'
+        && c.el.className && c.el.className.includes('preview-violation-line')
+        && c.el.textContent === 'вторая');
+    assert.ok(secondLine, 'второй абзац рендерится отдельным блоком ниже');
 });
 
 // --- imagePresentationStyle (Б-1.4 / Б-1.6) ---
