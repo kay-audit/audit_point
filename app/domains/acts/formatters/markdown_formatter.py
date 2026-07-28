@@ -215,11 +215,13 @@ class MarkdownFormatter(BaseFormatter):
         `\]`/`\"` в тексте пользователя гасят экранирование и позволяют
         «впрыснуть» поддельную ссылку/картинку в экспорт, #7). caption —
         rich-HTML (Task 6, rich-редактор подписи): конвертируется в markdown
-        через HTMLUtils.html_to_markdown (как кейс/свободный текст, без
-        дополнительного экранирования — сама markdown-разметка **bold**/
-        *italic* должна дойти до вывода). В alt результат ДОПОЛНИТЕЛЬНО
-        экранируется по '[]' — та же защита #7, теперь от структурного
-        разрыва `![...]` содержимым caption.
+        через HTMLUtils.html_to_markdown (как кейс/свободный текст) — сама
+        markdown-разметка **bold**/*italic* должна дойти до вывода как есть.
+        Результат ДОПОЛНИТЕЛЬНО экранируется по '[]' в обеих ветках (alt и
+        текстовый fallback черновика, #15) — защита от структурного разрыва
+        `![...]`/впрыска поддельной ссылки `[...](...)` содержимым caption;
+        живая text-link ссылка в подписи черновика тем самым гасится — тот же
+        трейдофф, что alt-ветка уже приняла для непустого url.
 
         Args:
             lines: Список строк для добавления
@@ -237,7 +239,8 @@ class MarkdownFormatter(BaseFormatter):
             lines.append(f'![{alt}]({url} "{title}")')
         elif caption:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
-            lines.append(f"*{filename_esc}* - {caption}")
+            caption_esc = MarkdownUtils.escape_inline(caption, '[]')
+            lines.append(f"*{filename_esc}* - {caption_esc}")
         else:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
             lines.append(f"*{filename_esc}*")
