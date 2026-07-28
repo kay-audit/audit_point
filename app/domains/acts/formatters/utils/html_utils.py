@@ -49,6 +49,23 @@ def _capture_span_inner(content: str, start: int) -> tuple[str, int]:
     return content[start:], n
 
 
+def _convert_block_boundaries(content: str, break_str: str) -> str:
+    """Схлопывает границы блоков (div/p) и <br> в перенос ``break_str``.
+
+    Общий шаг для ``clean_html`` (перенос — "\\n") и ``html_to_markdown``
+    (перенос — Markdown hard break "  \\n"). <br> непосредственно перед
+    закрытием блока невидим в браузере (перенос даёт сама граница блока),
+    поэтому вырезаем его ДО общей замены <br> -> break_str, иначе строка
+    задвоится.
+    """
+    result = re.sub(
+        r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
+    )
+    result = re.sub(r"<br\s*/?>", break_str, result, flags=re.IGNORECASE)
+    result = re.sub(r"</(?:div|p)>", break_str, result, flags=re.IGNORECASE)
+    return result
+
+
 def _resolve_special_spans(content: str, link_fmt) -> str:
     """Разворачивает спец-span'ы (ссылка/сноска) в текстовый вид.
 
@@ -106,20 +123,10 @@ class HTMLUtils:
         Returns:
             Очищенный plain text
         """
-        # <br> непосредственно перед закрытием блока (div/p) невидим в
-        # браузере (в т.ч. placeholder пустой строки <div><br></div>) —
-        # перенос даст сама граница блока (ниже), поэтому такой <br>
-        # вырезаем ДО общей замены <br> -> \n, иначе строка задвоится.
-        clean = re.sub(
-            r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
-        )
-
-        # Замена оставшихся <br> на переносы строк
-        clean = re.sub(r"<br\s*/?>", "\n", clean, flags=re.IGNORECASE)
-
-        # Границы блоков (div/p) -> перенос строки; открывающие теги
-        # вырезает общий стрип тегов ниже.
-        clean = re.sub(r"</(?:div|p)>", "\n", clean, flags=re.IGNORECASE)
+        # Границы блоков (div/p) и <br> -> перенос строки (общий шаг с
+        # html_to_markdown, см. _convert_block_boundaries); открывающие
+        # теги вырезает общий стрип тегов ниже.
+        clean = _convert_block_boundaries(content, "\n")
 
         # Спец-span'ы редактора: ссылка → «текст (url)», сноска →
         # «якорь (сноска: текст)» — иначе данные атрибутов теряются.
@@ -152,19 +159,10 @@ class HTMLUtils:
         Returns:
             Markdown-текст
         """
-        # <br> непосредственно перед закрытием блока (div/p) невидим в
-        # браузере — перенос даст граница блока (ниже), вырезаем ДО общей
-        # замены <br> -> hard break, иначе строка задвоится.
-        result = re.sub(
-            r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
-        )
-
-        # <br> -> Markdown hard break
-        result = re.sub(r"<br\s*/?>", "  \n", result, flags=re.IGNORECASE)
-
-        # Границы блоков (div/p) -> Markdown hard break; открывающие теги
+        # Границы блоков (div/p) и <br> -> Markdown hard break (общий шаг
+        # с clean_html, см. _convert_block_boundaries); открывающие теги
         # вырезает общий стрип тегов ниже.
-        result = re.sub(r"</(?:div|p)>", "  \n", result, flags=re.IGNORECASE)
+        result = _convert_block_boundaries(content, "  \n")
 
         # Спец-span'ы редактора: ссылка → [текст](url), сноска —
         # inline «якорь (сноска: текст)» (без блока сносок: конвертер

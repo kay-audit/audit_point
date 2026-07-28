@@ -5,6 +5,8 @@
 останавливалась на первом внутреннем </span>).
 """
 
+import pytest
+
 from app.domains.acts.formatters.utils.html_utils import HTMLUtils
 
 
@@ -54,42 +56,41 @@ class TestBlockBoundaries:
 
     Раньше вырезание тегов убирало границы блоков без следа — многострочное
     rich-поле схлопывалось в одну строку («<div>a</div><div>b</div>» → «ab»).
+
+    Параметризовано по обеим функциям (V22): clean_html и html_to_markdown
+    делят один и тот же 3-шаговый перевод границ блоков
+    (``_convert_block_boundaries``), различается только строка переноса
+    ("\\n" против MD hard break "  \\n") — тестовые фикстуры общие.
     """
 
-    def test_clean_html_blank_line_placeholder_between_blocks(self):
-        src = "<div>a</div><div><br></div><div>b</div>"
-        assert HTMLUtils.clean_html(src) == "a\n\nb"
-
-    def test_markdown_blank_line_placeholder_between_blocks(self):
-        src = "<div>a</div><div><br></div><div>b</div>"
-        assert HTMLUtils.html_to_markdown(src) == "a  \n  \nb"
-
-    def test_clean_html_two_blocks_join_with_newline(self):
-        src = "<div>a</div><div>b</div>"
-        assert HTMLUtils.clean_html(src) == "a\nb"
-
-    def test_markdown_two_blocks_join_with_newline(self):
-        src = "<div>a</div><div>b</div>"
-        assert HTMLUtils.html_to_markdown(src) == "a  \nb"
-
-    def test_clean_html_trailing_br_before_close_not_doubled(self):
-        # <br> прямо перед закрытием блока невидим в браузере — перенос уже
-        # даёт граница блока, второй (от самого <br>) не должен добавляться.
-        src = "<div>a<br></div><div>b</div>"
-        assert HTMLUtils.clean_html(src) == "a\nb"
-
-    def test_markdown_trailing_br_before_close_not_doubled(self):
-        src = "<div>a<br></div><div>b</div>"
-        assert HTMLUtils.html_to_markdown(src) == "a  \nb"
-
-    def test_clean_html_leading_empty_block_keeps_leading_newline(self):
-        # Ведущая пустая строка поля легитимна — rstrip хвостовой, не ведущий.
-        src = "<div><br></div><div>b</div>"
-        assert HTMLUtils.clean_html(src) == "\nb"
-
-    def test_markdown_leading_empty_block_keeps_leading_newline(self):
-        src = "<div><br></div><div>b</div>"
-        assert HTMLUtils.html_to_markdown(src) == "  \nb"
+    @pytest.mark.parametrize(
+        "func, src, expected",
+        [
+            (HTMLUtils.clean_html, "<div>a</div><div><br></div><div>b</div>", "a\n\nb"),
+            (HTMLUtils.html_to_markdown, "<div>a</div><div><br></div><div>b</div>", "a  \n  \nb"),
+            (HTMLUtils.clean_html, "<div>a</div><div>b</div>", "a\nb"),
+            (HTMLUtils.html_to_markdown, "<div>a</div><div>b</div>", "a  \nb"),
+            # <br> прямо перед закрытием блока невидим в браузере — перенос
+            # уже даёт граница блока, второй (от самого <br>) не добавляется.
+            (HTMLUtils.clean_html, "<div>a<br></div><div>b</div>", "a\nb"),
+            (HTMLUtils.html_to_markdown, "<div>a<br></div><div>b</div>", "a  \nb"),
+            # Ведущая пустая строка поля легитимна — rstrip хвостовой, не ведущий.
+            (HTMLUtils.clean_html, "<div><br></div><div>b</div>", "\nb"),
+            (HTMLUtils.html_to_markdown, "<div><br></div><div>b</div>", "  \nb"),
+        ],
+        ids=[
+            "clean-blank-line-placeholder",
+            "markdown-blank-line-placeholder",
+            "clean-two-blocks-join",
+            "markdown-two-blocks-join",
+            "clean-trailing-br-not-doubled",
+            "markdown-trailing-br-not-doubled",
+            "clean-leading-empty-block",
+            "markdown-leading-empty-block",
+        ],
+    )
+    def test_block_boundary_conversion(self, func, src, expected):
+        assert func(src) == expected
 
 
 class TestSimpleCasesUnchanged:
