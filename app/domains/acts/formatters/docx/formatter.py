@@ -14,9 +14,7 @@ from app.domains.acts.formatters.docx.builders.cover import build_cover_block
 from app.domains.acts.formatters.docx.builders.header_footer import apply_header_footer
 from app.domains.acts.formatters.docx.builders.inline import (
     _PX_TO_PT,
-    ALIGNMENT_MAP,
-    apply_inline_html,
-    split_block_segments,
+    render_block_segments,
 )
 from app.domains.acts.formatters.docx.builders.rubricator import build_rubricator_plate
 from app.domains.acts.formatters.docx.builders.signature import build_signature
@@ -96,15 +94,10 @@ class DocxFormatter:
         """Текстблок: верхнеуровневые блочные элементы content → отдельные w:p.
 
         Выравнивание — per-line из style="text-align" каждого верхнеуровневого
-        <div>/<p> через ALIGNMENT_MAP (TB-1: источник истины — HTML). Блок
-        без text-align и контент вне блочной разметки (голый текст/span — легаси)
-        получают
-        дефолт JUSTIFY — как прежний «нетронутый» рендер; <br> внутри блока
-        остаётся мягким переносом w:br. Вертикальная геометрия — как у прежней
-        одноабзацной модели: промежуточным w:p обнуляется space_after (граница
-        сегментов = бывший w:br, межабзацного зазора быть не должно),
-        Normal-спейсинг (3pt after) сохраняет только последний w:p блока —
-        расстояние до следующего контента не меняется.
+        <div>/<p> (TB-1: источник истины — HTML), дефолт JUSTIFY. Геометрия
+        сегментов → абзацев (ALIGNMENT_MAP, space_after промежуточных w:p) —
+        общий helper render_block_segments (V14), единый для текстблока,
+        rich-полей нарушения, подписи картинки и пунктов списка.
 
         Размер базы — единый экранный дефолт настроек ×0.75 (EXP-2: 16px → 12pt);
         span'ы с собственным font-size конвертируются тем же ×0.75 в
@@ -124,29 +117,11 @@ class DocxFormatter:
             else _DEFAULT_TB_FONT_SIZE_PX
         )
         base_size_pt = base_px * _PX_TO_PT
-        segments = split_block_segments(schema.content)
-        if not segments:
-            # Контент непуст (прошёл гейт), но без верхнеуровневых сегментов —
-            # один пустой абзац-строка (паритет с превью, рендерящим блок).
-            para = doc.add_paragraph()
-            para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            return
-        paragraphs = []
-        for segment in segments:
-            para = doc.add_paragraph()
-            para.alignment = ALIGNMENT_MAP.get(
-                segment.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY
-            )
-            # Пустой сегмент (<div><br></div>) — пустая строка-абзац;
-            # apply_inline_html сам no-op на пустом html.
-            apply_inline_html(para, segment.html, base_size_pt=base_size_pt)
-            paragraphs.append(para)
-        # Границы сегментов — бывшие w:br: без обнуления Normal (3pt after)
-        # раздвинул бы строки, разделённые Enter. space_before Normal и так
-        # даёт 0 — наследуется. Последний w:p спейсинг не трогает: расстояние
-        # от текстблока до следующего контента — как у одноабзацной модели.
-        for para in paragraphs[:-1]:
-            para.paragraph_format.space_after = Pt(0)
+        render_block_segments(
+            doc, schema.content,
+            base_size_pt=base_size_pt,
+            default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+        )
 
     def _add_table_title(self, doc, node) -> None:
         """Заголовок таблицы: жирная подпись без нумерации (таблица — не пункт)."""

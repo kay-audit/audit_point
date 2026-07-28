@@ -492,3 +492,60 @@ class TestRichFieldPerLineAlignment:
         assert first.paragraph_format.space_after == Pt(0)
         assert second.paragraph_format.space_after == Pt(0)
         assert third.paragraph_format.space_after is None
+
+
+# --- #5: подпись картинки и пункты descriptionList — per-line align ---
+
+class TestImageCaptionPerLineAlignment:
+    """Подпись режется тем же split_block_segments/ALIGNMENT_MAP, что и rich-поля
+    (общий helper, V14): CENTER остаётся дефолтом (Б-1.5), но per-line
+    text-align сегмента его переопределяет — паритет с TestRichFieldPerLineAlignment."""
+
+    def test_segment_with_left_align_overrides_default_center(self, doc):
+        """Сегмент без align — дефолт CENTER; сегмент с text-align:left — LEFT."""
+        build_violation(doc, _v_with_items(_img_item(
+            caption='<div>по центру</div><div style="text-align: left">слева</div>',
+        )))
+        default_para = next(p for p in doc.paragraphs if p.text == "по центру")
+        left_para = next(p for p in doc.paragraphs if p.text == "слева")
+        assert default_para.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        assert left_para.alignment == WD_ALIGN_PARAGRAPH.LEFT
+
+    def test_no_extra_spacing_between_caption_segments(self, doc):
+        """Границы сегментов подписи — без межабзацного просвета, как у rich-полей."""
+        build_violation(doc, _v_with_items(_img_item(
+            caption="<div>раз</div><div>два</div>",
+        )))
+        first = next(p for p in doc.paragraphs if p.text == "раз")
+        second = next(p for p in doc.paragraphs if p.text == "два")
+        assert first.paragraph_format.space_after == Pt(0)
+        assert second.paragraph_format.space_after is None
+
+
+class TestDescriptionListPerLineAlignment:
+    """Пункты descriptionList режутся тем же helper'ом: JUSTIFY остаётся
+    дефолтом, per-line text-align переопределяет его; маркер (bullet) — только
+    на первом сегменте пункта (зеркало «метки на первом абзаце»)."""
+
+    def test_segment_with_right_align_overrides_default_justify(self, doc):
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div style="text-align: right">пункт</div>'],
+        })
+        build_violation(doc, violation)
+        para = next(p for p in doc.paragraphs if "пункт" in p.text)
+        assert para.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+
+    def test_marker_only_on_first_segment_of_multiline_item(self, doc):
+        """Первый сегмент пункта — стиль "List Bullet" (маркер); продолжение —
+        обычный абзац без маркера, со своим align."""
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div>первая</div><div style="text-align: right">вторая</div>'],
+        })
+        build_violation(doc, violation)
+        first = next(p for p in doc.paragraphs if p.text == "первая")
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert first.style.name == "List Bullet"
+        assert second.style.name != "List Bullet"
+        assert second.alignment == WD_ALIGN_PARAGRAPH.RIGHT

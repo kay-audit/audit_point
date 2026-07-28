@@ -24,11 +24,7 @@ from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, Twips
 
-from app.domains.acts.formatters.docx.builders.inline import (
-    ALIGNMENT_MAP,
-    apply_inline_html,
-    split_block_segments,
-)
+from app.domains.acts.formatters.docx.builders.inline import render_block_segments
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
@@ -73,13 +69,16 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
 
     if violation.descriptionList.enabled:
         for item in violation.descriptionList.items:
-            bullet = doc.add_paragraph(style="List Bullet")
-            bullet.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            # Task 7: пункт — rich-HTML (rich-редактор); apply_inline_html
-            # парсит инлайн-разметку в runs, базовые размер/курсив — прежние
-            # свойства run'а (паритет с test_description_list_bullets_9pt_italic),
-            # внешний вид plain-пунктов не меняется.
-            apply_inline_html(bullet, item, base_size_pt=Sizes.violation_pt, base_italic=True)
+            # Task 7 + #5: пункт — rich-HTML; общий render_block_segments режет
+            # его на строки per-line align (дефолт JUSTIFY, как раньше), маркер
+            # "List Bullet" — только на первом сегменте, продолжения — без
+            # маркера (зеркало «метки на первом абзаце» из _labeled_paragraph).
+            render_block_segments(
+                doc, item,
+                base_size_pt=Sizes.violation_pt, base_italic=True,
+                default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+                paragraph_style="List Bullet",
+            )
 
     # additionalContent (case / image / freeText). Нумеруются ВСЕ кейсы, включая
     # пустые (метка + пустое тело); счётчик сбрасывается на любом не-кейсе —
@@ -146,14 +145,15 @@ def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
         )
 
     if item.caption:
-        # Task 6: подпись — rich-HTML (rich-редактор), парсится тем же
-        # inline-парсером, что и остальные rich-поля нарушения; базовые
-        # размер/курсив — прежние свойства run'а (см. тест-паритет
-        # test_image_caption_italic_centered_below), внешний вид plain-
-        # подписи не меняется.
-        cap_para = doc.add_paragraph()
-        cap_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        apply_inline_html(cap_para, item.caption, base_size_pt=Sizes.violation_pt, base_italic=True)
+        # Task 6 + #5: подпись — rich-HTML; общий render_block_segments режет
+        # её на строки per-line align, дефолт CENTER (Б-1.5) сохраняется для
+        # сегмента без text-align (см. тест-паритет
+        # test_image_caption_italic_centered_below).
+        render_block_segments(
+            doc, item.caption,
+            base_size_pt=Sizes.violation_pt, base_italic=True,
+            default_alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        )
 
 
 def _decode_data_url(url: str) -> bytes | None:
@@ -224,12 +224,11 @@ def _labeled_paragraph(
     """Параграф «Label_underlined body_plain».
 
     italic ставится и на метку, и на тело; size_pt задаёт размер обоих run'ов.
-    rich=True — тело рендерится через apply_inline_html (inline HTML → runs с
-    жирным/курсивом/подчёркиванием) вместо обычного текстового run'а (Task 1.1.2).
-    Несколько верхнеуровневых строк поля (per-line text-align, БАГ-4) —
-    каждая строка своим w:p со своим выравниванием (прецедент — formatter.
-    _render_textblock через тот же split_block_segments/ALIGNMENT_MAP);
-    метка выводится только на первом абзаце.
+    rich=True — тело рендерится через render_block_segments (общий helper,
+    V14) вместо обычного текстового run'а (Task 1.1.2). Несколько
+    верхнеуровневых строк поля (per-line text-align, БАГ-4) — каждая строка
+    своим w:p со своим выравниванием; метка выводится только на первом
+    абзаце (para передаётся helper'у как first_paragraph).
     """
     if not body and not label:
         return
@@ -243,26 +242,12 @@ def _labeled_paragraph(
         if italic:
             label_run.italic = True
     if rich:
-        segments = split_block_segments(body)
-        if len(segments) <= 1:
-            seg = segments[0] if segments else None
-            if seg is not None:
-                para.alignment = ALIGNMENT_MAP.get(seg.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
-                apply_inline_html(para, seg.html, base_size_pt=size_pt, base_italic=italic)
-            else:
-                apply_inline_html(para, body, base_size_pt=size_pt, base_italic=italic)
-            return
-        paras = [para]
-        para.alignment = ALIGNMENT_MAP.get(segments[0].alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
-        apply_inline_html(para, segments[0].html, base_size_pt=size_pt, base_italic=italic)
-        for seg in segments[1:]:
-            extra = doc.add_paragraph()
-            extra.alignment = ALIGNMENT_MAP.get(seg.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
-            apply_inline_html(extra, seg.html, base_size_pt=size_pt, base_italic=italic)
-            paras.append(extra)
-        for p_ in paras[:-1]:
-            # Бывшие границы строк поля: без межабзацного просвета (прецедент _render_textblock).
-            p_.paragraph_format.space_after = Pt(0)
+        render_block_segments(
+            doc, body,
+            base_size_pt=size_pt, base_italic=italic,
+            default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+            first_paragraph=para,
+        )
         return
     body_run = para.add_run(body)
     body_run.font.name = Fonts.main

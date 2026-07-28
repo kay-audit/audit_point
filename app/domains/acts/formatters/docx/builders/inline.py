@@ -30,6 +30,7 @@ import re
 from html.parser import HTMLParser
 from dataclasses import dataclass, replace
 
+from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
@@ -658,3 +659,64 @@ def _normalize_segment_html(inner: str) -> str:
 def _extract_text_align(attrs: dict) -> str | None:
     match = _TEXT_ALIGN_RE.search(attrs.get("style") or "")
     return match.group(1).lower() if match else None
+
+
+# ---------------------------------------------------------------------------
+# V14: общая геометрия «сегменты → абзацы документа» — единственный потребитель
+# split_block_segments/ALIGNMENT_MAP/apply_inline_html для ЛЮБОГО rich-контента
+# (текстблок, скалярные rich-поля нарушения, подпись картинки, пункты списка).
+# ---------------------------------------------------------------------------
+
+def render_block_segments(
+    doc: Document,
+    html: str,
+    *,
+    base_size_pt: float,
+    base_italic: bool = False,
+    default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+    paragraph_style: str | None = None,
+    first_paragraph: Paragraph | None = None,
+) -> list[Paragraph]:
+    """HTML → абзацы документа: единая геометрия рендера для всех хостов.
+
+    Режет html через split_block_segments; каждый сегмент — свой w:p.
+    text-align сегмента (ALIGNMENT_MAP) переопределяет default_alignment
+    хоста, сегмент без align получает default_alignment (текстблок и
+    rich-поля — justify, подпись картинки — center, см. вызывающий код).
+    Промежуточные абзацы (бывшие границы w:br) получают space_after=Pt(0);
+    последний — без прямого форматирования (наследует Normal), как у
+    прежней одноабзацной модели.
+
+    paragraph_style применяется ТОЛЬКО к первому абзацу — маркер списка
+    ("List Bullet") или иной стиль хоста не повторяется на продолжениях
+    (зеркало «метка на первом абзаце», см. first_paragraph); игнорируется,
+    если передан first_paragraph.
+
+    first_paragraph — если хост уже создал первый абзац сам (например,
+    _labeled_paragraph уже вписал в него метку "Причины:"), он используется
+    повторно для первого сегмента вместо нового doc.add_paragraph(): метка
+    остаётся на первом абзаце, продолжения — обычные абзацы без неё.
+    """
+    segments = split_block_segments(html)
+    if not segments:
+        # Нет верхнеуровневых сегментов (пустой/пробельный html) — единственный
+        # абзац с дефолтным выравниванием; apply_inline_html на исходном html
+        # безопасен (no-op на пустой строке).
+        para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        para.alignment = default_alignment
+        apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
+        return [para]
+
+    paragraphs: list[Paragraph] = []
+    for i, segment in enumerate(segments):
+        if i == 0:
+            para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        else:
+            para = doc.add_paragraph()
+        para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
+        apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
+        paragraphs.append(para)
+
+    for para in paragraphs[:-1]:
+        para.paragraph_format.space_after = Pt(0)
+    return paragraphs
