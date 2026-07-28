@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domains.acts.formatters.utils.html_utils import HTMLUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
 
 # Базовые разделы 1–5 (по id, как ValidationAct.validateStructure на фронте).
@@ -53,26 +54,43 @@ def _violation_node_labels(tree: dict | None) -> dict[str, str]:
     return labels
 
 
+def _is_html_value_empty(value: str | None) -> bool:
+    """Пусто ли rich-HTML-значение поля (снятие тегов + нормализация пробелов).
+
+    Очищенное contenteditable-поле хранит `<br>` или `<div><br></div>` —
+    оба тега входят в allowlist санитайзера и переживают очистку, поэтому
+    проверка по сырому значению (`(value or '').strip()`) даёт ложное
+    «заполнено». Снимает теги тем же экстрактором, что и TXT/MD-экспорт
+    (HTMLUtils.clean_html), и проверяет остаток на пробельность.
+    """
+    if not value:
+        return True
+    return not HTMLUtils.clean_html(value).strip()
+
+
 def _violation_has_empty_fields(violation: Any) -> bool:
     """Есть ли у нарушения незаполненные обязательные (рендерящиеся) поля.
 
     Триггер: пустой `violated` ИЛИ пустой `established` ИЛИ включённый
     список описаний с пустым/пробельным пунктом ИЛИ включённый доп.контент
-    с пустым кейсом/свободным текстом. Опциональные поля (причины,
-    принятые меры, последствия, ответственные) сознательно НЕ учитываются —
-    консервативно, вне scope находки о пустых обязательных полях.
+    с пустым кейсом/свободным текстом. Пустота — HTML-aware (см.
+    `_is_html_value_empty`): `<br>`/`<div><br></div>`/`&nbsp;`-заглушки
+    rich-редактора считаются пустыми, а не «заполнено». Опциональные поля
+    (причины, принятые меры, последствия, ответственные) сознательно НЕ
+    учитываются — консервативно, вне scope находки о пустых обязательных
+    полях.
     """
-    if not (violation.violated or "").strip():
+    if _is_html_value_empty(violation.violated):
         return True
-    if not (violation.established or "").strip():
+    if _is_html_value_empty(violation.established):
         return True
     description_list = violation.descriptionList
-    if description_list.enabled and any(not (item or "").strip() for item in description_list.items):
+    if description_list.enabled and any(_is_html_value_empty(item) for item in description_list.items):
         return True
     additional = violation.additionalContent
     if additional.enabled:
         for item in additional.items:
-            if item.type in ("case", "freeText") and not (item.content or "").strip():
+            if item.type in ("case", "freeText") and _is_html_value_empty(item.content):
                 return True
     return False
 
