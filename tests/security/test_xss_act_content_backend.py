@@ -42,6 +42,7 @@ from app.domains.acts.schemas.act_content import ViolationDescriptionListSchema
 from app.domains.acts.services.act_content_service import ActContentService
 from app.domains.acts.utils.html_sanitizer import (
     _sanitize_violation_dict,
+    _sanitize_violation_obj,
     sanitize_html,
     sanitize_plain_text,
     sanitize_rich_html,
@@ -495,6 +496,161 @@ class TestSaveContentViolationRichFieldsSanitized:
         await svc.save_content(act_id=1, data=data, username="12345")
 
         assert data.violations["v1"].additionalContent.items[0].caption is None
+
+    def test_case_content_missing_key_dict_form_not_added(self):
+        """V18/#11: ветка case/freeText dict-пути не должна добавлять
+        отсутствующий ключ content — зеркало гарда caption (:438)."""
+        v = {
+            "id": "v1", "nodeId": "n1",
+            "additionalContent": {
+                "enabled": True,
+                "items": [{"id": "i1", "type": "case"}],  # нет ключа content
+            },
+        }
+
+        _sanitize_violation_dict(v)
+
+        assert "content" not in v["additionalContent"]["items"][0]
+
+    def test_case_content_none_stays_none_dict_form(self):
+        """#11: явный content=None в dict-форме не должен превращаться в ''."""
+        v = {
+            "id": "v1", "nodeId": "n1",
+            "additionalContent": {
+                "enabled": True,
+                "items": [{"id": "i1", "type": "case", "content": None}],
+            },
+        }
+
+        _sanitize_violation_dict(v)
+
+        assert v["additionalContent"]["items"][0]["content"] is None
+
+
+class TestSanitizeViolationParity:
+    """obj-путь (_sanitize_violation_obj) и dict-путь (_sanitize_violation_dict)
+    обходят одно и то же нарушение по единой семантике (закрывает риск
+    повторного V18-расхождения между двумя параллельными walker'ами)."""
+
+    def _build_obj(self) -> ViolationSchema:
+        return ViolationSchema(
+            id="v1", nodeId="n1",
+            violated="<p>v</p><script>x</script>",
+            established="<i>e</i><svg onload=x></svg>",
+            descriptionList=ViolationDescriptionListSchema(
+                enabled=True, items=["<b>d</b><script>x</script>"],
+            ),
+            additionalContent=ViolationAdditionalContentSchema(
+                enabled=True,
+                items=[
+                    ViolationContentItemSchema(
+                        id="i1", type="case", content="<b>кейс</b><script>x</script>",
+                    ),
+                    ViolationContentItemSchema(
+                        id="i2", type="freeText", content="<b>текст</b><script>x</script>",
+                    ),
+                    ViolationContentItemSchema(
+                        id="i3", type="image", caption="<b>капшн</b><script>x</script>",
+                    ),
+                ],
+            ),
+            reasons=ViolationOptionalFieldSchema(
+                enabled=True, content="<b>причина</b><script>x</script>",
+            ),
+            measures=ViolationOptionalFieldSchema(
+                enabled=True, content="<b>мера</b><script>x</script>",
+            ),
+            consequences=ViolationOptionalFieldSchema(
+                enabled=True, content="<b>последствие</b><script>x</script>",
+            ),
+            responsible=ViolationOptionalFieldSchema(
+                enabled=True, content="<b>отв</b><script>x</script>",
+            ),
+        )
+
+    def _build_dict(self) -> dict:
+        return {
+            "id": "v1", "nodeId": "n1",
+            "violated": "<p>v</p><script>x</script>",
+            "established": "<i>e</i><svg onload=x></svg>",
+            "descriptionList": {
+                "enabled": True, "items": ["<b>d</b><script>x</script>"],
+            },
+            "additionalContent": {
+                "enabled": True,
+                "items": [
+                    {"id": "i1", "type": "case", "content": "<b>кейс</b><script>x</script>"},
+                    {"id": "i2", "type": "freeText", "content": "<b>текст</b><script>x</script>"},
+                    {"id": "i3", "type": "image", "caption": "<b>капшн</b><script>x</script>"},
+                ],
+            },
+            "reasons": {"enabled": True, "content": "<b>причина</b><script>x</script>"},
+            "measures": {"enabled": True, "content": "<b>мера</b><script>x</script>"},
+            "consequences": {"enabled": True, "content": "<b>последствие</b><script>x</script>"},
+            "responsible": {"enabled": True, "content": "<b>отв</b><script>x</script>"},
+        }
+
+    def test_full_payload_matches_across_paths(self):
+        """6 скалярных полей + descriptionList + additionalContent
+        (case/freeText/image) — идентичный результат санитизации."""
+        obj = self._build_obj()
+        d = self._build_dict()
+
+        _sanitize_violation_obj(obj)
+        _sanitize_violation_dict(d)
+
+        assert obj.violated == d["violated"]
+        assert obj.established == d["established"]
+        assert obj.descriptionList.items == d["descriptionList"]["items"]
+        assert obj.reasons.content == d["reasons"]["content"]
+        assert obj.measures.content == d["measures"]["content"]
+        assert obj.consequences.content == d["consequences"]["content"]
+        assert obj.responsible.content == d["responsible"]["content"]
+        items_obj = obj.additionalContent.items
+        items_d = d["additionalContent"]["items"]
+        assert items_obj[0].content == items_d[0]["content"]
+        assert items_obj[1].content == items_d[1]["content"]
+        assert items_obj[2].caption == items_d[2]["caption"]
+        # Санитизация реально сработала (не no-op сравнение пустышек)
+        assert "<script" not in obj.violated and "v" in obj.violated
+
+    def test_case_content_none_stays_none_both_paths(self):
+        obj = self._build_obj()
+        obj.additionalContent.items[0].content = None  # легаси-байпас, как caption
+        d = self._build_dict()
+        d["additionalContent"]["items"][0]["content"] = None
+
+        _sanitize_violation_obj(obj)
+        _sanitize_violation_dict(d)
+
+        assert obj.additionalContent.items[0].content is None
+        assert d["additionalContent"]["items"][0]["content"] is None
+
+    def test_freetext_content_none_stays_none_both_paths(self):
+        obj = self._build_obj()
+        obj.additionalContent.items[1].content = None
+        d = self._build_dict()
+        d["additionalContent"]["items"][1]["content"] = None
+
+        _sanitize_violation_obj(obj)
+        _sanitize_violation_dict(d)
+
+        assert obj.additionalContent.items[1].content is None
+        assert d["additionalContent"]["items"][1]["content"] is None
+
+    def test_caption_none_stays_none_both_paths(self):
+        """Пара к case/freeText-тестам выше: caption (image) уже был
+        гарантирован на обеих ветках, фиксируем как часть парного контракта."""
+        obj = self._build_obj()
+        obj.additionalContent.items[2].caption = None
+        d = self._build_dict()
+        d["additionalContent"]["items"][2]["caption"] = None
+
+        _sanitize_violation_obj(obj)
+        _sanitize_violation_dict(d)
+
+        assert obj.additionalContent.items[2].caption is None
+        assert d["additionalContent"]["items"][2]["caption"] is None
 
 
 class TestSanitizePlainTextDirect:

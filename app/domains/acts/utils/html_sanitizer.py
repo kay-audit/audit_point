@@ -375,6 +375,96 @@ def sanitize_tree_nodes(node: dict) -> None:
             sanitize_tree_nodes(child)
 
 
+def _sanitize_pair_field(v, key: str) -> None:
+    """Поле-пара (violated/established): скаляр верхнего уровня нарушения.
+
+    dict-форма: отсутствующий ключ пропускается (не добавляется). Обе формы
+    сознательно НЕ хранят None-семантику отдельно от '' — sanitize_rich_html
+    сам приводит None ко '' (в отличие от case/freeText.content и
+    image.caption, где None легитимен и охраняется отдельно, см.
+    _sanitize_content_item).
+    """
+    if isinstance(v, dict):
+        if key in v:
+            v[key] = sanitize_rich_html(v.get(key))
+    else:
+        setattr(v, key, sanitize_rich_html(getattr(v, key)))
+
+
+def _sanitize_optional_text_field(v, key: str) -> None:
+    """Опциональное текстовое поле (reasons/measures/consequences/responsible)."""
+    if isinstance(v, dict):
+        sub = v.get(key)
+        if isinstance(sub, dict) and "content" in sub:
+            sub["content"] = sanitize_rich_html(sub.get("content"))
+    else:
+        sub = getattr(v, key)
+        sub.content = sanitize_rich_html(sub.content)
+
+
+def _sanitize_list_field(v, key: str) -> None:
+    """Список пунктов (descriptionList.items[] — Task 7), каждый пункт отдельно."""
+    if isinstance(v, dict):
+        sub = v.get(key)
+        if isinstance(sub, dict) and isinstance(sub.get("items"), list):
+            sub["items"] = [sanitize_rich_html(item) for item in sub["items"]]
+    else:
+        sub = getattr(v, key)
+        sub.items = [sanitize_rich_html(item) for item in sub.items]
+
+
+def _sanitize_content_item(it) -> None:
+    """Один элемент additionalContent: content у case/freeText, caption у image.
+
+    additionalContent — дескриптор rich=False (контейнер), но его
+    case/freeText-элементы несут rich-текст и чистятся по типу item,
+    независимо от флага контейнера; у image caption тоже rich (Task 6,
+    рич-редактор подписи). И content, и caption могут быть None (легаси-
+    данные без значения) — гард обязателен на ОБОИХ путях: отсутствующий
+    ключ (dict-форма) не появляется, явный None не подменяется на ''
+    (V18/#11 — до этого гард стоял только у caption, у case/freeText его не
+    было, из-за чего два обхода расходились). filename/url — plain, не
+    трогаются.
+    """
+    if isinstance(it, dict):
+        item_type = it.get("type")
+        if item_type in ("case", "freeText"):
+            if "content" in it and it.get("content") is not None:
+                it["content"] = sanitize_rich_html(it.get("content"))
+        elif item_type == "image" and it.get("caption") is not None:
+            it["caption"] = sanitize_rich_html(it.get("caption"))
+    else:
+        if it.type in ("case", "freeText"):
+            if it.content is not None:
+                it.content = sanitize_rich_html(it.content)
+        elif it.type == "image" and it.caption is not None:
+            it.caption = sanitize_rich_html(it.caption)
+
+
+def _sanitize_violation_common(v) -> None:
+    """Единственный источник семантики обхода нарушения — общий для обj- и
+    dict-формы (V18: копии walker'ов расходились, гард в одной из веток не
+    зеркалился в другую). Каждая per-kind функция сама решает dict-vs-attr
+    доступ, поэтому семантика (какие поля, какой гард, где None легитимен)
+    описана ровно один раз и используется обоими вызывающими.
+    """
+    for f in VIOLATION_FIELDS:
+        if not f.rich:
+            continue
+        if f.kind == "pair":
+            _sanitize_pair_field(v, f.key)
+        elif f.kind == "optional_text":
+            _sanitize_optional_text_field(v, f.key)
+        elif f.kind == "list":
+            _sanitize_list_field(v, f.key)
+
+    items = v.get("additionalContent") if isinstance(v, dict) else v.additionalContent
+    items = items.get("items") if isinstance(items, dict) else getattr(items, "items", None)
+    if isinstance(items, list):
+        for it in items:
+            _sanitize_content_item(it)
+
+
 def _sanitize_violation_obj(v) -> None:
     """Чистит rich-поля одного нарушения (объектная форма — ViolationSchema).
 
@@ -385,58 +475,21 @@ def _sanitize_violation_obj(v) -> None:
     additionalContent (не в реестре, item-level): content у case/freeText,
     caption у image (Task 6). Plain-поля (filename/url элементов
     additionalContent) не трогаются — см. докстринг sanitize_act_data.
+    Семантика обхода — в _sanitize_violation_common (единый источник для
+    обеих форм, см. её докстринг).
     """
-    for f in VIOLATION_FIELDS:
-        if not f.rich:
-            continue
-        if f.kind == "pair":
-            setattr(v, f.key, sanitize_rich_html(getattr(v, f.key)))
-        elif f.kind == "optional_text":
-            sub = getattr(v, f.key)
-            sub.content = sanitize_rich_html(sub.content)
-        elif f.kind == "list":
-            sub = getattr(v, f.key)
-            sub.items = [sanitize_rich_html(item) for item in sub.items]
-
-    # additionalContent — дескриптор rich=False (контейнер), но его
-    # case/freeText-элементы несут rich-текст и чистятся по типу item,
-    # независимо от флага контейнера; у image caption теперь тоже rich
-    # (Task 6, rich-редактор подписи) — может быть None (легаси-данные без
-    # подписи), тогда не трогаем; filename/url — plain, не трогаем.
-    for it in v.additionalContent.items:
-        if it.type in ("case", "freeText"):
-            it.content = sanitize_rich_html(it.content)
-        elif it.type == "image" and it.caption is not None:
-            it.caption = sanitize_rich_html(it.caption)
+    _sanitize_violation_common(v)
 
 
 def _sanitize_violation_dict(v: dict) -> None:
-    """Зеркало _sanitize_violation_obj для dict-формы (restore pre-snapshot путь)."""
+    """Зеркало _sanitize_violation_obj для dict-формы (restore pre-snapshot путь).
+
+    Семантика обхода — в _sanitize_violation_common (единый источник для
+    обеих форм, см. её докстринг).
+    """
     if not isinstance(v, dict):
         return
-    for f in VIOLATION_FIELDS:
-        if not f.rich:
-            continue
-        if f.kind == "pair":
-            if f.key in v:
-                v[f.key] = sanitize_rich_html(v.get(f.key))
-        elif f.kind == "optional_text":
-            sub = v.get(f.key)
-            if isinstance(sub, dict) and "content" in sub:
-                sub["content"] = sanitize_rich_html(sub.get("content"))
-        elif f.kind == "list":
-            sub = v.get(f.key)
-            if isinstance(sub, dict) and isinstance(sub.get("items"), list):
-                sub["items"] = [sanitize_rich_html(item) for item in sub["items"]]
-
-    additional = v.get("additionalContent")
-    items = additional.get("items") if isinstance(additional, dict) else None
-    if isinstance(items, list):
-        for it in items:
-            if isinstance(it, dict) and it.get("type") in ("case", "freeText"):
-                it["content"] = sanitize_rich_html(it.get("content"))
-            elif isinstance(it, dict) and it.get("type") == "image" and it.get("caption") is not None:
-                it["caption"] = sanitize_rich_html(it.get("caption"))
+    _sanitize_violation_common(v)
 
 
 def sanitize_act_data(data) -> None:
