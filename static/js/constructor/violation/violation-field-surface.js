@@ -394,6 +394,12 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
 
     field.contentEditable = 'true';
     field.addEventListener('focus', () => EditorController.mount(surface));
+    // T7 (#6/#14b): drop-обработчик навешиваем ПРИ СОЗДАНИИ поля, НЕ на mount —
+    // focus приходит как default-action события drop (ПОСЛЕ drop-обработчиков),
+    // поэтому mount-time слушатель пропустил бы drop в несфокусированное поле
+    // (сценарий #6). Санитизация + гейт сносок по политике поверхности + commit
+    // модели — в EditorController.handleSurfaceDrop.
+    field.addEventListener('drop', (e) => EditorController.handleSurfaceDrop(e, surface));
     return field;
 }
 

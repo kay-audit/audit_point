@@ -248,3 +248,24 @@ test('_reconstructPastedCapsules: textblock (footnotes:true) — сноска р
     assert.deepEqual(footnoteCalls, [['1', 'тело']], 'сноска реконструируется как обычно (политика разрешает)');
     assert.deepEqual(children, [{ tag: 'footnote-marker' }]);
 });
+
+// T7 (#6/#14b): drop передаёт footnotesBlocked ЯВНО (из захваченной поверхности),
+// а не полагается на EditorRegistry — при drop в несфокусированное поле активной
+// может быть другая поверхность. Явный аргумент должен перекрывать реестр.
+test('_reconstructPastedCapsules: явный footnotesBlocked=true перекрывает активную поверхность (drop-путь)', () => {
+    const mgr = makeManager();
+    const footnoteCalls = [];
+    mgr.createFootnoteMarker = (text, body) => { footnoteCalls.push([text, body]); return { tag: 'footnote-marker' }; };
+    // Активна textblock (footnotes:true) — но явный аргумент true должен победить.
+    EditorRegistry.setActive({ kind: 'textblock' });
+
+    const children = [];
+    const parent = fakeParent(children);
+    const footnote = fakeCapsuleEl({ isLink: false, text: '1', footnoteBody: 'тело', parent });
+    children.push(footnote);
+
+    mgr._reconstructPastedCapsules({ querySelectorAll: () => [footnote] }, true);
+
+    assert.deepEqual(footnoteCalls, [], 'явный footnotesBlocked=true должен вырезать сноску вопреки активному textblock');
+    assert.deepEqual(children, []);
+});

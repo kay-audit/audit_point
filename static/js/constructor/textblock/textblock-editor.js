@@ -616,16 +616,19 @@ Object.assign(TextBlockManager.prototype, {
     /**
      * Общий сток санитизированной HTML-вставки для paste и drop: строит фрагмент
      * ТЕМ ЖЕ путём (_buildPasteFragment → санитизация DOMPurify + реконструкция
-     * капсул + гейт сносок по SURFACE_POLICY), вставляет в ТЕКУЩЕЕ выделение через
-     * insertHTML (атомарно за целые капсулы, остаётся в undo) и финализирует.
-     * Пустой/санитизированный-в-ноль HTML деградирует до plain-текста. Выделение/
-     * каретку выставляет ВЫЗЫВАЮЩИЙ (paste — текущее, drop — точку сброса) —
-     * сюда приходит готовым.
+     * капсул + гейт сносок), вставляет в ТЕКУЩЕЕ выделение через insertHTML
+     * (атомарно за целые капсулы, остаётся в undo) и финализирует. Пустой/
+     * санитизированный-в-ноль HTML деградирует до plain-текста. Выделение/каретку
+     * выставляет ВЫЗЫВАЮЩИЙ (paste — текущее, drop — точку сброса) — сюда приходит
+     * готовым.
      * @param {HTMLElement} editor
      * @param {string} html
      * @param {string} plain
+     * @param {boolean} [footnotesBlocked] Явный гейт сносок (drop — из захваченной
+     *   поверхности). undefined → берётся из активной поверхности EditorRegistry
+     *   (paste, у которого фокус на поле).
      */
-    _insertSanitizedHtml(editor, html, plain) {
+    _insertSanitizedHtml(editor, html, plain, footnotesBlocked) {
         // Нет HTML — прежний путь: только чистый текст.
         if (!html || !html.trim()) {
             document.execCommand('insertText', false, plain);
@@ -633,7 +636,7 @@ Object.assign(TextBlockManager.prototype, {
             return;
         }
 
-        const fragment = this._buildPasteFragment(html);
+        const fragment = this._buildPasteFragment(html, footnotesBlocked);
 
         // Гейт пустоты (CARET-6): DOMPurify мог вырезать весь фрагмент (например
         // «Копировать изображение» кладёт только <img> при пустом plain). Проверку
@@ -688,65 +691,6 @@ Object.assign(TextBlockManager.prototype, {
         // Word оживала (наведение/редактирование) только при следующем фокусе —
         // перезаход на шаг, перезагрузка или клик в другое поле и обратно.
         this.attachLinkFootnoteHandlers();
-    },
-
-    /**
-     * T7 (#6/#14b): drop в rich-поле — тот же санитайзер/гейт капсул, что у paste
-     * (_insertSanitizedHtml → _buildPasteFragment → _reconstructPastedCapsules),
-     * но данные из dataTransfer и каретка в точку сброса. Закрывает обход тройного
-     * enforcement: нативный drop выделения со сноской в поле нарушения (footnotes:
-     * false) больше не доводит капсулу до атома — сноска вырезается гейтом ДО
-     * вставки; <img onerror>/скрипт режет DOMPurify внутри _buildPasteFragment.
-     *
-     * Файловый drop (картинка из проводника) не наш путь: гасим нативную вставку
-     * сырого <img> через preventDefault и отдаём событие дальше (без
-     * stopPropagation) — загрузку картинок ведёт обработчик контейнера
-     * доп-контента (violation-file-upload.js), читающий dataTransfer.files.
-     * Drop без HTML (внутренний reorder/дерево, внешний plain) не перехватываем —
-     * нативная вставка plain-текста безопасна (нет капсул/img/скрипта).
-     *
-     * Гейт — по политике АКТИВНОЙ поверхности (EditorRegistry): в textblock
-     * (footnotes:true) сноска при внутри-textblock drag живёт как раньше (текстблок
-     * этот обработчик не навешивает — свой нативный путь).
-     * @param {DragEvent} e
-     * @param {HTMLElement} editor
-     * @param {Object|null} textBlock
-     */
-    handleEditorDrop(e, editor, textBlock) {
-        const dt = e.dataTransfer;
-        if (!dt) return;
-
-        // Файлы — гасим сырой <img>, событие всплывает к контейнеру доп-контента.
-        if (dt.files && dt.files.length > 0) {
-            e.preventDefault();
-            return;
-        }
-
-        const html = dt.getData('text/html');
-        // Без HTML — нативная вставка plain безопасна, не вмешиваемся.
-        if (!html || !html.trim()) return;
-
-        e.preventDefault();
-
-        const plain = dt.getData('text/plain');
-        // CARET-1 (зеркало paste): drop во время inline-правки капсулы → плейн в тело.
-        if (editor.querySelector('.editing-mode')) {
-            if (plain) document.execCommand('insertText', false, plain);
-            return;
-        }
-
-        // Каретка → точка сброса; без неё insertHTML ушёл бы в старое выделение,
-        // а не туда, куда бросили.
-        const dropRange = this._dropCaretRange(e, editor);
-        if (dropRange) {
-            const sel = window.getSelection();
-            if (sel) {
-                sel.removeAllRanges();
-                sel.addRange(dropRange);
-            }
-        }
-
-        this._insertSanitizedHtml(editor, html, plain);
     },
 
     /**
@@ -849,9 +793,9 @@ Object.assign(TextBlockManager.prototype, {
      * его разметка ушла бы в «только ссылки» и формат бы потерялся).
      * @private
      */
-    _buildPasteFragment(html) {
+    _buildPasteFragment(html, footnotesBlocked) {
         if (this._isOwnClipboardHtml(html)) {
-            return this._buildOwnPasteFragment(html);
+            return this._buildOwnPasteFragment(html, footnotesBlocked);
         }
         if (this._isWordHtml(html)) {
             window.EditorTelemetry?.track?.('word_paste');
@@ -910,7 +854,7 @@ Object.assign(TextBlockManager.prototype, {
      * лишь обычную ссылку/сноску, не XSS.
      * @private
      */
-    _buildOwnPasteFragment(html) {
+    _buildOwnPasteFragment(html, footnotesBlocked) {
         // §7: DOMPurify НЕ валидирует URL в data-атрибутах (только href/src),
         // поэтому data-link-url проверяем сами (validateLinkUrl в
         // _reconstructPastedCapsules). Хуки allowlist не мутируем.
@@ -928,7 +872,7 @@ Object.assign(TextBlockManager.prototype, {
         });
         const tmp = document.createElement('div');
         tmp.innerHTML = clean; // clean уже прошёл DOMPurify — безопасно для парсинга
-        this._reconstructPastedCapsules(tmp);
+        this._reconstructPastedCapsules(tmp, footnotesBlocked);
         const fragment = document.createDocumentFragment();
         while (tmp.firstChild) fragment.appendChild(tmp.firstChild);
         return fragment;
@@ -946,9 +890,15 @@ Object.assign(TextBlockManager.prototype, {
      * footnotes===false, напр. violationField) капсула-сноска выпадает из
      * фрагмента ЦЕЛИКОМ, без текстового fallback — ссылки гейт не касается.
      * @param {HTMLElement} root
+     * @param {boolean} [footnotesBlocked] Явный гейт сносок (drop — из захваченной
+     *   поверхности). undefined → берётся из активной поверхности EditorRegistry
+     *   (paste). Явная передача нужна потому, что drop может прийти в
+     *   НЕсфокусированное поле, когда активна другая поверхность или никакой нет.
      */
-    _reconstructPastedCapsules(root) {
-        const footnotesBlocked = SURFACE_POLICY[EditorRegistry.getActive()?.kind]?.footnotes === false;
+    _reconstructPastedCapsules(root, footnotesBlocked) {
+        if (footnotesBlocked === undefined) {
+            footnotesBlocked = SURFACE_POLICY[EditorRegistry.getActive()?.kind]?.footnotes === false;
+        }
         const caps = root.querySelectorAll(
             '.text-link, .text-footnote, [data-link-url], [data-footnote-text]');
         caps.forEach(el => {

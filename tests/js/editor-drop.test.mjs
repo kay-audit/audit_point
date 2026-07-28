@@ -1,161 +1,132 @@
 /**
- * T7 (находки #6/#14b): policy-driven drop в rich-поле нарушения.
+ * T7 (находки #6/#14b): policy-driven drop в rich-поле нарушения —
+ * EditorController.handleSurfaceDrop.
  *
- * Нативный drop выделения со сноской/картинкой в поле нарушения обходил
- * тройной enforcement (тулбар/хоткей/паста) и санитизацию — сноска доводилась
- * observer'ом до атома, сырой <img> из файла попадал в модель. Фикс —
- * handleEditorDrop: тот же санитайзер/гейт капсул, что у paste (_buildPasteFragment
- * → _reconstructPastedCapsules), но данные из dataTransfer и каретка в точку сброса.
+ * Слушатель drop живёт на поле с СОЗДАНИЯ (_createRichFieldEditor), НЕ на mount:
+ * focus диспатчится как default-action события drop (ПОСЛЕ drop-обработчиков),
+ * поэтому mount-time слушатель опоздал бы на drop в НЕсфокусированное поле —
+ * основной сценарий #6 (сноска создаётся только в текстблоке → поле нарушения
+ * расфокусировано). Handler не зависит от фокуса/реестра: гейт сносок — из
+ * ЗАХВАЧЕННОЙ поверхности (surface.kind), модель — явным surface.commit(), если
+ * поле не смонтировано.
  *
- * Здесь — чистая логика маршрутизации/гейтов, тестируемая без реального DOM/
- * DOMPurify (в node его нет). Полный конвейер санитизации (DOMPurify вырезает
- * <img onerror>/скрипт) — в _buildPasteFragment, покрыт e2e (playwright) и
- * paste-тестами; drop делегирует В ТУ ЖЕ функцию (тест «маршрутизация»), поэтому
- * наследует её сан-гарантии. Гейт сносок (_reconstructPastedCapsules) — Group B.
+ * Здесь — логика handleSurfaceDrop под node-стабом (без реального DOM/DOMPurify).
+ * Полный конвейер санитизации (<img onerror>/скрипт режет DOMPurify) — в
+ * _buildPasteFragment, покрыт paste-тестами/playwright; drop делегирует в ТУ ЖЕ
+ * функцию. Wiring «создание поля → drop-слушатель» — violation-rich-fields.test.mjs.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { TextBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
-import '../../static/js/constructor/textblock/textblock-editor.js';
+import { EditorController } from '../../static/js/constructor/textblock/editor-controller.js';
 import { EditorRegistry } from '../../static/js/constructor/textblock/editor-registry.js';
+import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
+import '../../static/js/constructor/textblock/textblock-editor.js';
 
-beforeEach(() => EditorRegistry.clear());
+beforeEach(() => { EditorRegistry.clear(); EditorController._surface = null; });
 
 /**
- * Прогоняет handleEditorDrop на стабах и возвращает журнал ключевых вызовов
- * (зеркало runPaste из textblock-clipboard.test.mjs). _buildPasteFragment
- * записывает переданный html — так проверяется, что drop доводит контент до ТОЙ
- * ЖЕ санитизации/гейта, что paste.
- * @param {{editing?:boolean, html?:string, plain?:string, files?:any[],
- *   fragChildren?:any[], caret?:boolean, clientX?:number, clientY?:number}} cfg
+ * Прогоняет EditorController.handleSurfaceDrop на стабах, возвращает журнал.
+ * _insertSanitizedHtml записывает html + footnotesBlocked — так проверяется, что
+ * drop доводит контент до ТОЙ ЖЕ санитизации/гейта, что paste, с политикой из
+ * ЗАХВАЧЕННОЙ поверхности.
+ * @param {{kind?:string, html?:string, plain?:string, files?:any[],
+ *   editing?:boolean, mounted?:boolean, caret?:boolean}} cfg
  */
-function runDrop(cfg = {}) {
+function runSurfaceDrop(cfg = {}) {
   const {
-    editing = false, html = '', plain = '', files = null,
-    fragChildren = [], caret = false, clientX = 0, clientY = 0,
+    kind = 'violationField', html = '', plain = '', files = null,
+    editing = false, mounted = false, caret = false,
   } = cfg;
   const calls = [];
-  const mgr = Object.create(TextBlockManager.prototype);
-  mgr._buildPasteFragment = (h) => { calls.push(`build:${h}`); return { childNodes: fragChildren }; };
-  mgr._expandRangeOutOfMarkers = () => calls.push('expand');
-  mgr.applyFormattingToNewNodes = () => calls.push('applyFmt');
-  mgr.finalizeEdit = () => calls.push('finalize');
-  mgr.attachLinkFootnoteHandlers = () => calls.push('attach');
-  const editor = {
+  const el = {
+    focus: () => calls.push('focus'),
     querySelector: (sel) => (sel === '.editing-mode' && editing ? {} : null),
     contains: () => true,
-    dataset: { textBlockId: 'tb1' },
   };
+  const surface = { kind, element: el, commit: () => calls.push('commit') };
   const e = {
-    clientX, clientY,
-    preventDefault() { calls.push('prevent'); },
-    dataTransfer: {
-      files: files || [],
-      getData: (t) => (t === 'text/html' ? html : plain),
-    },
+    clientX: 3, clientY: 4,
+    preventDefault: () => calls.push('prevent'),
+    dataTransfer: { files: files || [], getData: (t) => (t === 'text/html' ? html : plain) },
   };
-  const origExec = globalThis.document.execCommand;
+  const origInsert = textBlockManager._insertSanitizedHtml;
+  const origCaret = textBlockManager._dropCaretRange;
   const origSel = globalThis.getSelection;
-  const hadCaret = 'caretRangeFromPoint' in globalThis.document;
-  const origCaret = globalThis.document.caretRangeFromPoint;
-  globalThis.document.execCommand = (cmd, _b, val) => {
-    calls.push(`exec:${cmd}:${val == null ? '' : val}`);
-    return true;
-  };
-  globalThis.getSelection = () => ({
-    rangeCount: 1,
-    getRangeAt: () => ({}),
-    removeAllRanges() { calls.push('sel:clear'); },
-    addRange() { calls.push('sel:set'); },
-  });
-  if (caret) {
-    globalThis.document.caretRangeFromPoint = (x, y) => {
-      calls.push(`caret:${x},${y}`);
-      return { startContainer: {} };
-    };
-  } else if (hadCaret) {
-    delete globalThis.document.caretRangeFromPoint;
-  }
+  const origExec = globalThis.document.execCommand;
+  textBlockManager._insertSanitizedHtml = (element, h, p, fb) => calls.push(`insert:${h}:${fb}`);
+  textBlockManager._dropCaretRange = () => (caret ? { startContainer: {} } : null);
+  globalThis.getSelection = () => ({ removeAllRanges() { calls.push('sel:clear'); }, addRange() { calls.push('sel:set'); } });
+  globalThis.document.execCommand = (cmd, _b, val) => { calls.push(`exec:${cmd}:${val == null ? '' : val}`); return true; };
+  EditorController._surface = mounted ? surface : null;
   try {
-    mgr.handleEditorDrop(e, editor, { id: 'tb1' });
+    EditorController.handleSurfaceDrop(e, surface);
   } finally {
-    globalThis.document.execCommand = origExec;
+    textBlockManager._insertSanitizedHtml = origInsert;
+    textBlockManager._dropCaretRange = origCaret;
     globalThis.getSelection = origSel;
-    if (hadCaret) globalThis.document.caretRangeFromPoint = origCaret;
-    else delete globalThis.document.caretRangeFromPoint;
+    globalThis.document.execCommand = origExec;
+    EditorController._surface = null;
   }
   return calls;
 }
 
-// ── Group A: ответственность самого handleEditorDrop ─────────────────────────
+// ── Ответственность handleSurfaceDrop ─────────────────────────────────────────
 
-test('drop файла (картинка из проводника) → preventDefault, БЕЗ вставки (сырой <img> не попадёт в модель)', () => {
+test('drop файла (картинка из проводника) → preventDefault, БЕЗ вставки/фокуса/commit', () => {
   // #14b: файловый drop гасим, но не мешаем контейнеру доп-контента (событие
   // всплывает — stopPropagation не зовём); санитайзер HTML не запускаем.
-  const calls = runDrop({ files: [{}], html: '<p>x</p>', plain: 'x' });
-  assert.deepEqual(calls, ['prevent'], 'при файлах — только preventDefault, без build/insert');
+  const calls = runSurfaceDrop({ files: [{}], html: '<p>x</p>', plain: 'x' });
+  assert.deepEqual(calls, ['prevent']);
 });
 
 test('drop без dataTransfer → no-op без throw', () => {
-  const mgr = Object.create(TextBlockManager.prototype);
-  assert.doesNotThrow(() => mgr.handleEditorDrop({ preventDefault() {} }, { querySelector: () => null }, null));
+  const surface = { kind: 'violationField', element: {}, commit() {} };
+  assert.doesNotThrow(() => EditorController.handleSurfaceDrop({ preventDefault() {} }, surface));
 });
 
-test('drop только с text/plain (без HTML) → нативная вставка (не вмешиваемся, plain безопасен)', () => {
-  // Внутренний drag (reorder/дерево) и внешний plain-текст не несут капсул/img/
-  // скрипта — нативная вставка безопасна, preventDefault не зовём.
-  const calls = runDrop({ html: '', plain: 'просто текст' });
-  assert.deepEqual(calls, [], 'plain-only drop не перехватываем');
-});
-
-test('drop пустой (ни файлов, ни html, ни plain) → no-op', () => {
-  const calls = runDrop({ html: '', plain: '' });
+test('drop только с text/plain (без HTML) → нативная вставка (не вмешиваемся)', () => {
+  // Внутренний drag (reorder/дерево) и внешний plain не несут капсул/img/скрипта.
+  const calls = runSurfaceDrop({ html: '', plain: 'просто текст' });
   assert.deepEqual(calls, []);
 });
 
-test('drop HTML → preventDefault + каретка в точку сброса + _buildPasteFragment(html) + insertHTML/finalize/attach', () => {
-  const calls = runDrop({
-    html: '<p>текст</p>', plain: 'текст', fragChildren: [{}], caret: true, clientX: 5, clientY: 7,
-  });
-  assert.ok(calls.includes('prevent'), 'нативная вставка не погашена');
-  assert.ok(calls.includes('caret:5,7'), 'каретка не выставлена в точку сброса');
-  assert.ok(calls.includes('build:<p>текст</p>'),
-    'HTML не доведён до _buildPasteFragment — санитизация/гейт сносок paste не переиспользованы');
-  assert.ok(calls.some((c) => c.startsWith('exec:insertHTML')), 'вставка не через insertHTML');
-  assert.ok(!calls.some((c) => c.startsWith('exec:insertText')), 'HTML не должен уходить в insertText');
-  assert.ok(calls.includes('finalize') && calls.includes('attach'));
+test('drop пустой (ни файлов, ни html, ни plain) → no-op', () => {
+  assert.deepEqual(runSurfaceDrop({ html: '', plain: '' }), []);
 });
 
-test('drop HTML без caretRangeFromPoint → деградирует в текущее выделение (build+insertHTML всё равно)', () => {
-  const calls = runDrop({ html: '<p>x</p>', plain: 'x', fragChildren: [{}], caret: false });
-  assert.ok(!calls.some((c) => c.startsWith('caret:')), 'без API каретки не двигаем');
-  assert.ok(calls.includes('build:<p>x</p>'));
-  assert.ok(calls.some((c) => c.startsWith('exec:insertHTML')));
+test('drop HTML в НЕсмонтированное поле нарушения → prevent + focus + каретка + insert(footnotesBlocked=true) + commit', () => {
+  const calls = runSurfaceDrop({ kind: 'violationField', html: '<p>текст</p>', plain: 'текст', caret: true });
+  assert.deepEqual(calls, [
+    'prevent', 'focus', 'sel:clear', 'sel:set', 'insert:<p>текст</p>:true', 'commit',
+  ]);
 });
 
-test('drop HTML во время inline-правки капсулы → только insertText(plain), без build (зеркало paste CARET-1)', () => {
-  const calls = runDrop({
-    editing: true, html: '<span data-footnote-text="t">X</span>', plain: 'ВСТАВКА', caret: true,
-  });
-  assert.deepEqual(calls, ['prevent', 'exec:insertText:ВСТАВКА']);
+test('drop HTML: гейт сносок берётся из ЗАХВАЧЕННОЙ поверхности (textblock → footnotesBlocked=false)', () => {
+  // Политика — из surface.kind, НЕ из EditorRegistry (при drop в несфокус. поле
+  // активной может быть другая/никакая). Ставим чужую активную — не должна влиять.
+  EditorRegistry.setActive({ kind: 'violationField' });
+  const calls = runSurfaceDrop({ kind: 'textblock', html: '<p>x</p>', caret: true });
+  assert.ok(calls.includes('insert:<p>x</p>:false'),
+    'footnotesBlocked должен читаться из surface.kind (textblock=false), не из активной поверхности');
 });
 
-test('drop HTML с пустым санитизированным фрагментом → деградирует в plain (гейт пустоты paste)', () => {
-  // <img onerror> санитизируется в ноль (в реальном _buildPasteFragment); здесь
-  // fragChildren=[] имитирует пустой фрагмент — как в paste, падаем в plain.
-  const calls = runDrop({ html: '<img onerror=alert(1)>', plain: 'запасной', fragChildren: [], caret: true });
-  assert.ok(calls.includes('build:<img onerror=alert(1)>'));
-  assert.ok(calls.includes('exec:insertText:запасной'));
-  assert.ok(!calls.some((c) => c.startsWith('exec:insertHTML')));
+test('drop HTML в СМОНТИРОВАННОЕ поле → явного commit НЕТ (коммитит input-хендлер, без двойного commit)', () => {
+  const calls = runSurfaceDrop({ kind: 'violationField', html: '<p>x</p>', caret: true, mounted: true });
+  assert.ok(calls.includes('insert:<p>x</p>:true'));
+  assert.ok(!calls.includes('commit'),
+    'смонтированную поверхность коммитит её input-хендлер — явный commit был бы двойным');
 });
 
-// ── Group B: гейт сносок переиспользован через drop (_reconstructPastedCapsules) ──
-// Реальный own-путь _buildPasteFragment зовёт _reconstructPastedCapsules (тот
-// читает политику АКТИВНОЙ поверхности из EditorRegistry). В node без DOMPurify
-// повторяем эту связку делегатом: _buildPasteFragment → РЕАЛЬНЫЙ гейт. Так
-// проверяем поведение «drop сноски» напрямую (зеркало гейта из
-// editor-surface-wiring.test.mjs, но доведённое через handleEditorDrop).
+test('drop HTML во время inline-правки капсулы → только insertText(plain), без insert-фрагмента', () => {
+  const calls = runSurfaceDrop({ kind: 'violationField', html: '<span data-footnote-text="t">X</span>', plain: 'ВСТАВКА', editing: true });
+  assert.deepEqual(calls, ['prevent', 'focus', 'exec:insertText:ВСТАВКА', 'commit']);
+});
+
+// ── Мандат ревью: гейт+commit на НЕсмонтированном поле через РЕАЛЬНЫЙ гейт ──────
+// Реальный own-путь _buildPasteFragment зовёт _reconstructPastedCapsules с
+// переданным footnotesBlocked. В node без DOMPurify имитируем связку делегатом:
+// _buildPasteFragment → РЕАЛЬНЫЙ гейт с fb из захваченной поверхности.
 
 /** Фейковая капсула сноски: поля, что читает _reconstructPastedCapsules. */
 function fakeFootnoteEl(parent) {
@@ -175,51 +146,71 @@ function fakeParent(children) {
   };
 }
 
-/** Прогоняет drop HTML со сноской через РЕАЛЬНЫЙ гейт при активной поверхности kind. */
-function dropFootnoteUnderKind(kind) {
-  const mgr = Object.create(TextBlockManager.prototype);
+/** Прогоняет handleSurfaceDrop с РЕАЛЬНЫМ гейтом через делегат _buildPasteFragment. */
+function dropFootnoteIntoUnmounted(kind) {
+  const committed = [];
+  const el = { focus() {}, querySelector: () => null, contains: () => true, innerHTML: '<sanitized>' };
+  const surface = { kind, element: el, commit: () => committed.push(el.innerHTML) };
   const footnoteCalls = [];
-  mgr.createFootnoteMarker = (t, b) => { footnoteCalls.push([t, b]); return { tag: 'footnote' }; };
-  mgr._expandRangeOutOfMarkers = () => {};
-  mgr.applyFormattingToNewNodes = () => {};
-  mgr.finalizeEdit = () => {};
-  mgr.attachLinkFootnoteHandlers = () => {};
   const children = [];
   const footnote = fakeFootnoteEl(fakeParent(children));
   children.push(footnote);
-  // Имитация own-ветки _buildPasteFragment: зовём РЕАЛЬНЫЙ гейт, возвращаем
-  // непустой фрагмент (чтобы drop дошёл до вставки).
-  mgr._buildPasteFragment = () => {
-    mgr._reconstructPastedCapsules({ querySelectorAll: () => [footnote] });
-    return { childNodes: [{}] };
-  };
-  const editor = { querySelector: () => null, contains: () => true, dataset: { textBlockId: 'tb1' } };
+  const prevented = [];
   const e = {
-    clientX: 0, clientY: 0, preventDefault() {},
+    clientX: 0, clientY: 0, preventDefault: () => prevented.push(1),
     dataTransfer: { files: [], getData: (t) => (t === 'text/html' ? '<span data-footnote-text="тело">1</span>' : '') },
   };
-  const origExec = globalThis.document.execCommand;
+  const orig = {
+    build: textBlockManager._buildPasteFragment,
+    caret: textBlockManager._dropCaretRange,
+    expand: textBlockManager._expandRangeOutOfMarkers,
+    fmt: textBlockManager.applyFormattingToNewNodes,
+    fin: textBlockManager.finalizeEdit,
+    attach: textBlockManager.attachLinkFootnoteHandlers,
+    createFn: textBlockManager.createFootnoteMarker,
+  };
+  textBlockManager.createFootnoteMarker = (t, b) => { footnoteCalls.push([t, b]); return { tag: 'footnote' }; };
+  textBlockManager._buildPasteFragment = (html, fb) => {
+    textBlockManager._reconstructPastedCapsules({ querySelectorAll: () => [footnote] }, fb);
+    return { childNodes: [{}] };
+  };
+  textBlockManager._dropCaretRange = () => null;
+  textBlockManager._expandRangeOutOfMarkers = () => {};
+  textBlockManager.applyFormattingToNewNodes = () => {};
+  textBlockManager.finalizeEdit = () => {};
+  textBlockManager.attachLinkFootnoteHandlers = () => {};
   const origSel = globalThis.getSelection;
-  globalThis.document.execCommand = () => true;
+  const origExec = globalThis.document.execCommand;
   globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({}), removeAllRanges() {}, addRange() {} });
-  EditorRegistry.setActive({ kind });
+  globalThis.document.execCommand = () => true;
+  EditorController._surface = null; // НЕ смонтировано
   try {
-    mgr.handleEditorDrop(e, editor, null);
+    EditorController.handleSurfaceDrop(e, surface);
   } finally {
-    globalThis.document.execCommand = origExec;
+    textBlockManager._buildPasteFragment = orig.build;
+    textBlockManager._dropCaretRange = orig.caret;
+    textBlockManager._expandRangeOutOfMarkers = orig.expand;
+    textBlockManager.applyFormattingToNewNodes = orig.fmt;
+    textBlockManager.finalizeEdit = orig.fin;
+    textBlockManager.attachLinkFootnoteHandlers = orig.attach;
+    textBlockManager.createFootnoteMarker = orig.createFn;
     globalThis.getSelection = origSel;
+    globalThis.document.execCommand = origExec;
+    EditorController._surface = null;
   }
-  return { footnoteCalls, children };
+  return { prevented, footnoteCalls, children, committed };
 }
 
-test('drop HTML со сноской в violation-поле → сноска вырезана (гейт footnotes:false), маркер не реконструирован', () => {
-  const { footnoteCalls, children } = dropFootnoteUnderKind('violationField');
-  assert.deepEqual(footnoteCalls, [], 'createFootnoteMarker не должен звать — сноска под запретом политики');
-  assert.deepEqual(children, [], 'капсула-сноска удалена из фрагмента до вставки');
+test('handleSurfaceDrop: НЕсмонтированное поле нарушения, drop HTML со сноской → default погашен, сноска вырезана, МОДЕЛЬ обновлена', () => {
+  const { prevented, footnoteCalls, children, committed } = dropFootnoteIntoUnmounted('violationField');
+  assert.deepEqual(prevented, [1], 'нативный default drop не погашен — капсула ушла бы в DOM мимо гейта');
+  assert.deepEqual(footnoteCalls, [], 'сноска реконструирована (гейт не сработал под footnotes:false)');
+  assert.deepEqual(children, [], 'капсула-сноска не удалена из фрагмента до вставки');
+  assert.equal(committed.length, 1, 'модель не обновлена (commit не вызван для несмонтированного поля)');
 });
 
-test('drop того же HTML в textblock → сноска сохранена (гейт footnotes:true, поведение не меняется)', () => {
-  const { footnoteCalls, children } = dropFootnoteUnderKind('textblock');
+test('handleSurfaceDrop: тот же drop в textblock-поверхность → сноска сохранена (footnotesBlocked=false)', () => {
+  const { footnoteCalls, children } = dropFootnoteIntoUnmounted('textblock');
   assert.deepEqual(footnoteCalls, [['1', 'тело']], 'сноска реконструируется — политика textblock разрешает');
   assert.deepEqual(children, [{ tag: 'footnote' }]);
 });

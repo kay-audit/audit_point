@@ -82,7 +82,6 @@ beforeEach(() => {
     textBlockManager.handleSelectionChange = (...args) => parityLog.push(['handleSelectionChange', ...args]);
     textBlockManager.handleEditorInput = (...args) => parityLog.push(['handleEditorInput', ...args]);
     textBlockManager.handleEditorPaste = (...args) => parityLog.push(['handleEditorPaste', ...args]);
-    textBlockManager.handleEditorDrop = (...args) => parityLog.push(['handleEditorDrop', ...args]);
     // Без typeof-гварда в реализации (в отличие от _cleanOrphanSizeAnchors) —
     // должен существовать всегда, иначе unmount rich-поверхности бросит TypeError.
     textBlockManager._clearNodeSelected = (...args) => parityLog.push(['_clearNodeSelected', ...args]);
@@ -267,35 +266,19 @@ test('mount: rich violationField — paste вызывает textBlockManager.han
     assert.deepEqual(parityLog, [['handleEditorPaste', fakeEvent, s.element, null]]);
 });
 
-// ── T7 (#6/#14b): policy-driven drop в rich-поле нарушения ────────────────────
+// ── T7 (#6/#14b): drop — НЕ на mount ──────────────────────────────────────────
+// Критично: focus диспатчится как default-action drop'а (ПОСЛЕ drop-обработчиков),
+// поэтому mount-time слушатель опоздал бы на drop в несфокусированное поле.
+// Слушатель drop живёт на самом поле с СОЗДАНИЯ (_createRichFieldEditor →
+// EditorController.handleSurfaceDrop), см. violation-rich-fields.test.mjs. Здесь —
+// регресс-страж: mount его НЕ навешивает (иначе снова зависимость от фокуса).
 
-test('mount: rich violationField — drop навешен и вызывает textBlockManager.handleEditorDrop(e, element, null)', () => {
+test('mount: rich violationField — drop НЕ навешивается контроллером (он creation-time, не mount)', () => {
     const s = fakeSurface('v1', 'violationField', true);
     EditorController.mount(s);
 
-    assert.equal(s.element._hasListener('drop'), true, 'drop-слушатель не навешен (санитизация/гейт сносок в обход)');
-
-    const fakeEvent = { type: 'drop' };
-    s.element._fire('drop', fakeEvent);
-
-    assert.deepEqual(parityLog, [['handleEditorDrop', fakeEvent, s.element, null]]);
-});
-
-test('mount: НЕ-capsuleLifecycle поверхность (textblock) — drop НЕ навешен', () => {
-    const s = fakeSurface('tb1', 'textblock', true);
-    EditorController.mount(s);
-
-    assert.equal(s.element._hasListener('drop'), false, 'drop не должен вешаться вне capsule-lifecycle');
-});
-
-test('unmount: rich violationField — снимает drop-слушатель', () => {
-    const s = fakeSurface('v1', 'violationField', true);
-    EditorController.mount(s);
-    assert.equal(s.element._hasListener('drop'), true);
-
-    EditorController.unmount();
-
-    assert.equal(s.element._hasListener('drop'), false, 'drop-слушатель не снят на unmount');
+    assert.equal(s.element._hasListener('drop'), false,
+        'drop не должен вешаться на mount — иначе опоздает на focus-after-drop (сценарий #6)');
 });
 
 test('mount: rich violationField — input вызывает commit() И textBlockManager.handleEditorInput(element, null) (БАГ-1)', () => {

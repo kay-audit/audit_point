@@ -51,7 +51,7 @@ function recordingEl() {
             contains: (c) => classes.has(c),
         },
         addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
-        _fire(t) { (listeners[t] || []).forEach((fn) => fn()); },
+        _fire(t, ev) { (listeners[t] || []).forEach((fn) => fn(ev)); },
         _has(t) { return Array.isArray(listeners[t]) && listeners[t].length > 0; },
     };
 }
@@ -92,6 +92,41 @@ test('_createRichFieldEditor: contenteditable .violation-field, наполнен
         el._fire('focus');
         assert.deepEqual(mounts, [surface], 'focus монтирует контроллер на переданную поверхность');
     });
+});
+
+test('_createRichFieldEditor: не-RO — drop-слушатель навешан при СОЗДАНИИ и зовёт EditorController.handleSurfaceDrop(e, surface)', () => {
+    // T7 (#6/#14b): drop навешивается на СОЗДАНИИ, не на mount — focus приходит
+    // как default-action drop'а (ПОСЛЕ него), поэтому mount-time слушатель
+    // опоздал бы на drop в несфокусированное поле. Захваченная поверхность
+    // передаётся в handleSurfaceDrop (политика/commit читаются из неё).
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const drops = [];
+    const origDrop = EditorController.handleSurfaceDrop;
+    EditorController.handleSurfaceDrop = (e, s) => drops.push([e, s]);
+    try {
+        withMountSpy(() => {
+            const surface = { kind: 'violationField', element: null, getContent: () => '', commit() {} };
+            withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: false }));
+
+            assert.equal(el._has('drop'), true, 'drop-слушатель не навешан при создании поля');
+            const ev = { type: 'drop' };
+            el._fire('drop', ev);
+            assert.deepEqual(drops, [[ev, surface]],
+                'drop должен звать handleSurfaceDrop(e, захваченная поверхность)');
+        });
+    } finally {
+        EditorController.handleSurfaceDrop = origDrop;
+    }
+});
+
+test('_createRichFieldEditor: read-only — drop-слушатель НЕ навешан (поле нередактируемо)', () => {
+    const vm = new ViolationManager();
+    const el = recordingEl();
+    const surface = { kind: 'violationField', element: null, getContent: () => '', commit() {} };
+    withCreateElement(el, () => vm._createRichFieldEditor(surface, { isReadOnly: true }));
+
+    assert.equal(el._has('drop'), false, 'RO-поле не должно принимать drop');
 });
 
 test('_createRichFieldEditor: read-only — contenteditable=false, класс read-only, focus НЕ монтирует', () => {
