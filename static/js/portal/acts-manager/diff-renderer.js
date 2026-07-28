@@ -399,7 +399,12 @@ export class DiffRenderer {
                 SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fieldDiff.wordDiff));
                 fieldDiv.appendChild(wordDiffEl);
             } else {
-                fieldDiv.appendChild(document.createTextNode(val));
+                // Поле без изменений (внутри modified-нарушения) ИЛИ нарушение
+                // целиком added/removed (движок не кладёт скаляры в fieldDiffs
+                // для этих статусов, см. _diffViolations) — val сырой HTML,
+                // показываем видимый текст (зеркало соседних веток списка/
+                // доп.контента, которые уже стрипают через DiffEngine._stripHtml).
+                fieldDiv.appendChild(document.createTextNode(DiffEngine._stripHtml(val)));
             }
 
             div.appendChild(fieldDiv);

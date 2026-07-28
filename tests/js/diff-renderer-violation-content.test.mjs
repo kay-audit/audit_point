@@ -383,3 +383,58 @@ test('_appendImagePreview: caption — видимый текст (_stripHtml), �
     assert.ok(cap, 'подпись не создана');
     assert.equal(cap.textContent, 'важно', 'видимый текст без тегов');
 });
+
+// --- #3: неизменённые/added/removed скалярные rich-поля нарушения — видимый
+// текст (_stripHtml), а не сырой HTML буквально. Раньше _renderDiffViolation
+// выводил val = _getViolFieldValue(...) напрямую через createTextNode — теги
+// были видны буквально («<b>важно</b>»). Затрагивает: (1) поле без изменений
+// внутри modified-нарушения (fieldDiffs[field] не выставлен движком); (2)
+// added/removed нарушение целиком — движок вообще не кладёт скаляры в
+// fieldDiffs для этих статусов, поэтому рендер читает newData/oldData прямо.
+
+/** Перехватывает и document.createElement, и document.createTextNode. */
+function renderViolationCollectingAll(violDiff) {
+    const els = [];
+    const textNodes = [];
+    const origEl = document.createElement;
+    const origText = document.createTextNode;
+    document.createElement = (tag) => { const el = origEl(tag); els.push(el); return el; };
+    document.createTextNode = (text) => { const node = origText(text); textNodes.push(node); return node; };
+    try {
+        DiffRenderer._renderDiffViolation({ appendChild() {} }, violDiff);
+    } finally {
+        document.createElement = origEl;
+        document.createTextNode = origText;
+    }
+    return { els, textNodes };
+}
+
+test('_renderDiffViolation: неизменённое rich-поле modified-нарушения — видимый текст, не raw HTML', () => {
+    const violDiff = {
+        status: 'modified',
+        fieldDiffs: {
+            measures: {
+                old: 'старое', new: 'новое', changed: true, formattingOnly: false,
+                wordDiff: [{ type: 'delete', text: 'старое' }, { type: 'insert', text: 'новое' }],
+            },
+        },
+        newData: { violated: '<b>важно</b> текст', measures: 'новое' },
+    };
+    const { textNodes } = renderViolationCollectingAll(violDiff);
+    assert.ok(textNodes.some(n => n.textContent === 'важно текст'), 'неизменённое поле должно показывать видимый текст без тегов');
+    assert.ok(!textNodes.some(n => n.textContent.includes('<b>')), 'сырой HTML не должен просочиться в неизменённое поле');
+});
+
+test('_renderDiffViolation: добавленное нарушение — скалярные rich-поля показывают видимый текст', () => {
+    const violDiff = { status: 'added', fieldDiffs: {}, newData: { violated: '<b>жирное</b> нарушение' } };
+    const { textNodes } = renderViolationCollectingAll(violDiff);
+    assert.ok(textNodes.some(n => n.textContent === 'жирное нарушение'));
+    assert.ok(!textNodes.some(n => n.textContent.includes('<b>')));
+});
+
+test('_renderDiffViolation: удалённое нарушение — скалярные rich-поля показывают видимый текст', () => {
+    const violDiff = { status: 'removed', fieldDiffs: {}, oldData: { established: '<i>установлено</i> давно' } };
+    const { textNodes } = renderViolationCollectingAll(violDiff);
+    assert.ok(textNodes.some(n => n.textContent === 'установлено давно'));
+    assert.ok(!textNodes.some(n => n.textContent.includes('<i>')));
+});
