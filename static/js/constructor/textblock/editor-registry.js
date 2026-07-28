@@ -1,10 +1,16 @@
 /**
  * Реестр активной поверхности редактора + политика тулбара по типу поверхности.
  * Лист графа импортов: без app-импортов (не тянет textblock-core и пр.).
+ *
+ * capsuleLifecycle — капсульный жизненный цикл (heal-observer, гейт сносок,
+ * copy/cut/paste/drop, tooltip) ведёт ИМЕННО EditorController. Текстблоки держат
+ * капсулы своим путём (handleEditorFocus) и через EditorController не монтируются
+ * → false. Будущий kind='cell' включит lifecycle одной строкой политики
+ * (capsuleLifecycle:true), без правки контроллера.
  */
 export const SURFACE_POLICY = {
-  textblock:      { footnotes: true,  fontSize: true, align: true, links: true, findReplace: true, improveText: true },
-  violationField: { footnotes: false, fontSize: true, align: true, links: true, findReplace: true, improveText: true },
+  textblock:      { footnotes: true,  fontSize: true, align: true, links: true, findReplace: true, improveText: true, capsuleLifecycle: false },
+  violationField: { footnotes: false, fontSize: true, align: true, links: true, findReplace: true, improveText: true, capsuleLifecycle: true },
   // cell — Фаза 2
 };
 

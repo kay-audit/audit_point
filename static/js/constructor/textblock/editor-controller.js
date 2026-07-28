@@ -10,7 +10,7 @@
  * mount(surface) на фокусе; contenteditable — свойство самого поля, контроллер
  * его не выставляет и не снимает.
  */
-import { EditorRegistry } from './editor-registry.js';
+import { EditorRegistry, SURFACE_POLICY } from './editor-registry.js';
 import { textBlockManager } from './textblock-core.js';
 
 export const EditorController = {
@@ -24,6 +24,19 @@ export const EditorController = {
     _onCut: null,
     _onPaste: null,
 
+    /**
+     * Гейт интерактивного capsule-lifecycle: rich-поверхность, чью капсульную
+     * логику ведёт ИМЕННО EditorController (флаг capsuleLifecycle в
+     * SURFACE_POLICY). Заменяет прежний литерал `kind === 'violationField'` —
+     * появление kind='cell' в Фазе 2 включит lifecycle одной строкой политики,
+     * без правки контроллера. Гейт по `rich` сохранён (non-rich поле капсул не
+     * держит независимо от политики).
+     * @param {{kind:string, rich:boolean}} surface
+     */
+    _usesCapsuleLifecycle(surface) {
+        return !!(surface?.rich && SURFACE_POLICY[surface.kind]?.capsuleLifecycle);
+    },
+
     /** @param {{kind:string,element:HTMLElement,commit:()=>void}} surface EditableSurface (editable-surface.js) */
     mount(surface) {
         if (this._surface === surface) return; // уже активна — не перевешивать
@@ -36,7 +49,7 @@ export const EditorController = {
             // Паритет textblock-пути (БАГ-1): debounce-самолечение живого DOM —
             // normalizeMarkers пере-расставляет caret-guard'ы у новых границ строк;
             // без него guard'ы разъезжаются со структурой и навигация у капсул ломается.
-            if (surface.rich && surface.kind === 'violationField') {
+            if (this._usesCapsuleLifecycle(surface)) {
                 textBlockManager.handleEditorInput(surface.element, null);
             }
         };
@@ -50,14 +63,15 @@ export const EditorController = {
         surface.element.addEventListener('mouseup', this._onSelectionPing);
         surface.element.addEventListener('keyup', this._onSelectionPing);
 
-        // Task 1.3.4-B2: интерактивный capsule-lifecycle — ТОЛЬКО для полей
-        // нарушения (rich + kind='violationField'). Текстблоки сюда не заходят
-        // (свой handleEditorFocus-путь, EditorController.mount на них не зовётся),
-        // будущий kind='cell' — тоже нет, пока для него не заведена своя политика.
-        // attachToolbarTo выше уже вызвал setActiveEditor(surface.element), поэтому
+        // Task 1.3.4-B2: интерактивный capsule-lifecycle — по политике поверхности
+        // (SURFACE_POLICY.capsuleLifecycle, см. _usesCapsuleLifecycle). Сейчас true
+        // только у поля нарушения; текстблоки сюда не заходят (свой
+        // handleEditorFocus-путь, EditorController.mount на них не зовётся), а
+        // будущий kind='cell' включится одной строкой политики. attachToolbarTo
+        // выше уже вызвал setActiveEditor(surface.element), поэтому
         // attachLinkFootnoteHandlers() (сигнатура без аргумента — берёт
         // this.activeEditor) навешивает обработчики на ПРАВИЛЬНЫЙ элемент.
-        if (surface.rich && surface.kind === 'violationField') {
+        if (this._usesCapsuleLifecycle(surface)) {
             textBlockManager.installCapsuleObserver(surface.element); // heal-observer (prevent-then-heal)
             this._onBeforeInput = (e) => textBlockManager.handleEditorBeforeInput(e, surface.element, null);
             this._onKeydown = (e) => textBlockManager.handleEditorKeydown(e, surface.element);
@@ -83,7 +97,7 @@ export const EditorController = {
     unmount() {
         const surface = this._surface;
         if (!surface) return;
-        if (surface.rich && surface.kind === 'violationField') {
+        if (this._usesCapsuleLifecycle(surface)) {
             // Гигиена ДО commit — зеркало handleEditorBlur (textblock-editor.js:479-537):
             // висящий save-таймер повторил бы работу после отрыва, «вся капсула как
             // юнит» должна снять визуальную отметку (её уже не почистит
@@ -106,7 +120,7 @@ export const EditorController = {
         surface.element.removeEventListener('blur', this._onBlur);
         surface.element.removeEventListener('mouseup', this._onSelectionPing);
         surface.element.removeEventListener('keyup', this._onSelectionPing);
-        if (surface.rich && surface.kind === 'violationField') {
+        if (this._usesCapsuleLifecycle(surface)) {
             surface.element.removeEventListener('paste', this._onPaste);
             surface.element.__capsuleObserver?.disconnect();
             surface.element.removeEventListener('beforeinput', this._onBeforeInput);

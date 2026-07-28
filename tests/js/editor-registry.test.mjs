@@ -21,3 +21,10 @@ test('SURFACE_POLICY: textblock всё включено; violationField — foot
   assert.equal(SURFACE_POLICY.violationField.footnotes, false);
   assert.equal(SURFACE_POLICY.violationField.improveText, true);
 });
+test('SURFACE_POLICY: capsuleLifecycle — EditorController ведёт капсулы только у violationField', () => {
+  // Гейт _usesCapsuleLifecycle (editor-controller.js) читает этот флаг вместо
+  // прежнего литерала kind==='violationField'. Текстблоки держат капсулы своим
+  // путём (handleEditorFocus), через EditorController не монтируются → false.
+  assert.equal(SURFACE_POLICY.violationField.capsuleLifecycle, true);
+  assert.equal(SURFACE_POLICY.textblock.capsuleLifecycle, false);
+});
