@@ -6,10 +6,12 @@
 переданного фрагмента рендерятся как мягкий перенос строки между блоками.
 Любой другой тег игнорируется (содержимое сохраняется).
 
-TB-1: ВЕРХНЕУРОВНЕВЫЕ <div>/<p> контента текстблока — отдельные абзацы Word
-со своим выравниванием из style="text-align". Разбиение делает
-split_block_segments (ниже), потребитель — formatter._render_textblock:
-каждый сегмент → свой w:p → apply_inline_html только для внутренностей.
+TB-1: ВЕРХНЕУРОВНЕВЫЕ <div>/<p> rich-контента (текстблок, rich-поля нарушения,
+подпись картинки, пункты списка) — отдельные абзацы Word со своим
+выравниванием из style="text-align". Разбиение делает split_block_segments
+(ниже), материализация сегментов в абзацы — общий render_block_segments
+(V14, тоже ниже): каждый сегмент → свой w:p → apply_inline_html только для
+внутренностей.
 
 Зачёркивание (M.19): Chromium execCommand('strikeThrough') эмитит <strike>
 (тег-форма, styleWithCSS в приложении не включается); CSS-форма
@@ -32,7 +34,7 @@ from dataclasses import dataclass, replace
 
 from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.shared import Pt
+from docx.shared import Pt, Twips
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -504,9 +506,10 @@ class BlockSegment:
     html: str
 
 
-# text-align сегмента → выравнивание Word. Общая карта для потребителей
-# split_block_segments (formatter._render_textblock, violation._labeled_paragraph);
-# дефолт (align=None либо нераспознанное значение) — justify, через .get().
+# text-align сегмента → выравнивание Word. Потребитель — render_block_segments
+# (ниже): текстблок, rich-поля нарушения, подпись картинки, пункты списка;
+# дефолт (align=None либо нераспознанное значение) — default_alignment хоста
+# через .get().
 ALIGNMENT_MAP = {
     "left": WD_ALIGN_PARAGRAPH.LEFT,
     "center": WD_ALIGN_PARAGRAPH.CENTER,
@@ -667,6 +670,18 @@ def _extract_text_align(attrs: dict) -> str | None:
 # (текстблок, скалярные rich-поля нарушения, подпись картинки, пункты списка).
 # ---------------------------------------------------------------------------
 
+# Отступ ТЕКСТА маркированной строки стиля "List Bullet" (built-in стиль
+# дефолтного шаблона python-docx, docx/templates/default.docx). Сам стиль
+# несёт только w:numPr numId=1 без своего w:ind — реальный отступ живёт в
+# определении уровня нумерации (numbering.xml: numId=1 → abstractNumId=8 →
+# w:lvl[ilvl=0]/w:pPr/w:ind left="360" hanging="360"). hanging=360 отодвигает
+# МАРКЕР первой строки на позицию 0, а текст строки — на left=360. Продолжение
+# многосегментного пункта (обычный абзац без стиля/маркера) получает тот же
+# left_indent, чтобы визуально начинаться под текстом первой строки, а не под
+# маркером (иначе вторая строка «проваливается» на 0.25" левее первой).
+_LIST_BULLET_TEXT_INDENT = Twips(360)
+
+
 def render_block_segments(
     doc: Document,
     html: str,
@@ -690,7 +705,10 @@ def render_block_segments(
     paragraph_style применяется ТОЛЬКО к первому абзацу — маркер списка
     ("List Bullet") или иной стиль хоста не повторяется на продолжениях
     (зеркало «метка на первом абзаце», см. first_paragraph); игнорируется,
-    если передан first_paragraph.
+    если передан first_paragraph. Для "List Bullet" продолжения получают
+    left_indent, совпадающий с текстовой позицией маркированной строки
+    (_LIST_BULLET_TEXT_INDENT) — иначе вторая строка пункта визуально
+    выпадает левее текста первой.
 
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
@@ -713,6 +731,10 @@ def render_block_segments(
             para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
         else:
             para = doc.add_paragraph()
+            if paragraph_style == "List Bullet":
+                # Маркер только на первом сегменте (см. докстринг) — но текст
+                # продолжения должен стоять под текстом маркированной строки.
+                para.paragraph_format.left_indent = _LIST_BULLET_TEXT_INDENT
         para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
         apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
         paragraphs.append(para)

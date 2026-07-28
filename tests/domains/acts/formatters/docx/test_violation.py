@@ -549,3 +549,16 @@ class TestDescriptionListPerLineAlignment:
         assert first.style.name == "List Bullet"
         assert second.style.name != "List Bullet"
         assert second.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+
+    def test_continuation_left_indent_matches_bullet_text_position(self, doc):
+        """Продолжение без маркера должно начинаться под ТЕКСТОМ первой строки,
+        а не под маркером: left_indent = 360 твип (0.25") — позиция текста
+        строки "List Bullet" (w:ind left=360 hanging=360 в определении уровня
+        нумерации default-шаблона python-docx, см. render_block_segments)."""
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div>первая</div><div style="text-align: right">вторая</div>'],
+        })
+        build_violation(doc, violation)
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert second.paragraph_format.left_indent == Twips(360)

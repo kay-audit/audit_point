@@ -39,8 +39,9 @@ from app.domains.acts.formatters.docx.styles import (
 _DEFAULT_TB_FONT_SIZE_PX = 16
 
 # px → pt (16px → 12pt) — единый источник в builders/inline.py (_PX_TO_PT).
-# Карта text-align → выравнивание Word — там же (ALIGNMENT_MAP), рядом с
-# split_block_segments (общий потребитель — и текстблок, и rich-поля нарушения).
+# Геометрия сегментов → абзацев (ALIGNMENT_MAP/split_block_segments) — там же,
+# в render_block_segments (общий потребитель — текстблок, rich-поля нарушения,
+# подпись картинки, пункты списка).
 
 
 class DocxFormatter:
