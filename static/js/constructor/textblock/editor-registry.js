@@ -19,6 +19,10 @@ export const EditorRegistry = {
   setActive(surface) { this._active = surface; },
   getActive() { return this._active; },
   clear() { this._active = null; },
+  // On-demand флаш активной поверхности перед сериализацией. V20: единый путь
+  // сброса зависшей правки rich-поля нарушения для persistence-воронок —
+  // вызывается из StorageManager._flushPendingEdits. Аналог flushActiveEditor
+  // для текстблока, но по контракту EditableSurface (любой kind).
   flushActive() { this._active?.commit?.(); },
 };
 

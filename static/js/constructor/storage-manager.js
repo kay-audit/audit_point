@@ -782,6 +782,9 @@ export class StorageManager {
      * PUT /content, экспорт): ни один путь не должен читать AppState.exportData()
      * без предварительного flush'а. Покрывает:
      *  - активный textblock-редактор с непогашенным debounce (500мс);
+     *  - активную rich-поверхность поля нарушения (V20/V26): её правка уходит в
+     *    модель только через debounce-мост, отдельного always-fresh write-through
+     *    у неё больше нет;
      *  - редактируемую ячейку таблицы (textarea в `.editing`).
      * Ячейки таблиц вне редактирования пишутся в state синхронно, поэтому
      * специального flush'а не требуют.
@@ -794,6 +797,17 @@ export class StorageManager {
         try {
             if (window.textBlockManager && typeof window.textBlockManager.flushActiveEditor === 'function') {
                 window.textBlockManager.flushActiveEditor();
+            }
+            // V20: активная rich-поверхность (поле нарушения) коммитит правку в
+            // модель только через debounce-мост (V26) — воронка обязана сбросить её
+            // ДО сериализации, иначе сохранение/экспорт внутри окна дебаунса уедет
+            // без последних символов. flushActiveEditor выше её НЕ покрывает (ловит
+            // только document.activeElement с классом .textblock-editor).
+            // flushActive коммитит активную поверхность ЛЮБОГО типа; для текстблока
+            // идемпотентно — его TextBlockSurface.commit уходит в тот же
+            // flushActiveEditor, уже погашенный строкой выше.
+            if (window.EditorRegistry && typeof window.EditorRegistry.flushActive === 'function') {
+                window.EditorRegistry.flushActive();
             }
             const cellsOps = window.tableManager?.cellsOps;
             if (cellsOps && typeof cellsOps.commitPendingEdit === 'function') {
