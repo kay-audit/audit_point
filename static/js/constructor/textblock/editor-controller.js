@@ -45,12 +45,22 @@ export const EditorController = {
         EditorRegistry.setActive(surface);
         textBlockManager.attachToolbarTo(surface); // тулбар с политикой по surface.kind
         this._onInput = () => {
-            surface.commit(); // write-through: element → модель на каждый ввод
-            // Паритет textblock-пути (БАГ-1): debounce-самолечение живого DOM —
-            // normalizeMarkers пере-расставляет caret-guard'ы у новых границ строк;
-            // без него guard'ы разъезжаются со структурой и навигация у капсул ломается.
             if (this._usesCapsuleLifecycle(surface)) {
+                // V26: capsule-поверхность (поле нарушения) коммитит ввод в модель
+                // ЕДИНЫМ debounce-стоком handleEditorInput → finalizeEdit →
+                // active.commit() (мост персистентности). Отдельный write-through
+                // убран: он коммитил сразу на каждый ввод, а debounce-мост — ещё
+                // раз через 500мс, из-за чего на паузу набора правка коммитилась
+                // ДВАЖДЫ. Свежесть модели на случай сохранения ВНУТРИ окна дебаунса
+                // держит EditorRegistry.flushActive в persistence-воронке
+                // (StorageManager._flushPendingEdits, V20). Здесь же — debounce-
+                // самолечение живого DOM (normalizeMarkers пере-расставляет
+                // caret-guard'ы у новых границ строк, БАГ-1).
                 textBlockManager.handleEditorInput(surface.element, null);
+            } else {
+                // Не-capsule поверхность: debounce-стока нет — держим write-through
+                // (element → модель на каждый ввод).
+                surface.commit();
             }
         };
         this._onBlur = () => this.unmount();

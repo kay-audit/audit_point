@@ -281,15 +281,16 @@ test('mount: rich violationField — drop НЕ навешивается конт
         'drop не должен вешаться на mount — иначе опоздает на focus-after-drop (сценарий #6)');
 });
 
-test('mount: rich violationField — input вызывает commit() И textBlockManager.handleEditorInput(element, null) (БАГ-1)', () => {
+test('mount: rich violationField — input идёт единым debounce-стоком handleEditorInput, БЕЗ write-through (V26, БАГ-1)', () => {
     const s = fakeSurface('v1', 'violationField', true);
     EditorController.mount(s);
 
     s.element._fire('input');
 
-    assert.deepEqual(s.log, ['commit'], 'write-through в модель выполнен');
+    assert.deepEqual(s.log, [],
+        'write-through убран (V26) — иначе на паузу набора коммит задваивался: write-through сразу + debounce-мост через 500мс');
     assert.deepEqual(parityLog, [['handleEditorInput', s.element, null]],
-        'handleEditorInput не вызван — guard\'ы не переставятся, навигация у капсул останется битой');
+        'коммит и capsule-самолечение (normalizeMarkers) идут через handleEditorInput → finalizeEdit');
 });
 
 test('unmount: rich violationField — вызывает _clearNodeSelected(element) и _cleanOrphanSizeAnchors(element, {ignoreCaret:true})', () => {
