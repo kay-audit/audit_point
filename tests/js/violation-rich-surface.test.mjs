@@ -183,6 +183,44 @@ test('setContent: changed=false — DOM без повторного ре-рен�
   }
 });
 
+// ── #12 (основа): нормализация пустого коммита ────────────────────────────
+
+test('commit: элемент содержит только \'<br>\' (пустой contenteditable) — в модель пишется \'\'', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: 'было' }, 'violated');
+
+  s.element = { innerHTML: '<br>' };
+  s.commit();
+
+  assert.deepEqual(calls, [{ p: 'violated', val: '' }], 'визуально пустой <br>-остаток нормализован в \'\'');
+});
+
+test('commit: элемент содержит только \'<div><br></div>\' — в модель пишется \'\'', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: 'было' }, 'violated');
+
+  s.element = { innerHTML: '<div><br></div>' };
+  s.commit();
+
+  assert.deepEqual(calls, [{ p: 'violated', val: '' }]);
+});
+
+test('commit: непустой текст — в модель пишется исходный HTML (без нормализации)', () => {
+  const vm = new ViolationManager();
+  const calls = [];
+  vm.setViolationField = (v, p, val) => { calls.push({ p, val }); return true; };
+  const s = vm._makeViolationSurface({ id: 'v1', violated: '' }, 'violated');
+
+  s.element = { innerHTML: '<b>текст</b>' };
+  s.commit();
+
+  assert.deepEqual(calls, [{ p: 'violated', val: '<b>текст</b>' }]);
+});
+
 test('setContent: changed=true — DOM получает повторный ре-рендер репаренным значением', () => {
   const vm = new ViolationManager();
   vm.setViolationField = () => true;

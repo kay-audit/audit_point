@@ -319,6 +319,22 @@ test('ViolationContentItemSurface: setContent — модель получает 
     }
 });
 
+// ── #12 (основа): нормализация пустого коммита ────────────────────────────
+
+test('ViolationContentItemSurface: commit — визуально пустое поле (\'<div><br></div>\') нормализуется в \'\'', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: 'было' };
+    const s = vm._makeContentItemSurface(violation, item);
+
+    s.element = { innerHTML: '<div><br></div>', textContent: '' };
+    s.commit();
+
+    assert.deepEqual(calls, [{ field: 'content', val: '' }]);
+});
+
 test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {
     const vm = new ViolationManager();
     const calls = [];
@@ -376,6 +392,19 @@ test('ViolationListItemSurface: commit снимает caret-guard\'ы (U+FEFF) �
     } finally {
         textBlockManager._stripGuards = origStrip;
     }
+});
+
+test('ViolationListItemSurface: commit — визуально пустое поле (\'<br>\') нормализуется в \'\'', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
+    const violation = { id: 'v1', descriptionList: { items: ['было'] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+
+    s.element = { innerHTML: '<br>' };
+    s.commit();
+
+    assert.deepEqual(calls, ['']);
 });
 
 test('ViolationListItemSurface: persist делегирует в commit — ОБЯЗАТЕЛЕН для корректора (прецедент фикса 1.3.3)', () => {

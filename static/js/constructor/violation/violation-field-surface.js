@@ -34,6 +34,7 @@ import { ViolationManager } from './violation-core.js';
 import { EditorController } from '../textblock/editor-controller.js';
 import { EditorRegistry } from '../textblock/editor-registry.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
+import { isFieldEmpty } from './violation-field-empty.js';
 
 /**
  * Читает значение поля нарушения по пути мутатора (плоский 'violated' либо
@@ -77,6 +78,21 @@ function _repairCapsuleHtml(html) {
     return typeof textBlockManager._repairCapsulesReport === 'function'
         ? textBlockManager._repairCapsulesReport(stripped)
         : { html: stripped, changed: false };
+}
+
+/**
+ * #12 (основа) + V24: очищенное contenteditable-поле оставляет в DOM
+ * `<br>`/`<div><br></div>` — без нормализации write-path коммитил бы этот
+ * мусор в модель как есть. Визуально пустое поле (нет текста и значимых
+ * inline-элементов, isFieldEmpty — violation-field-empty.js, тот же предикат,
+ * что и у подсветки `--empty`) коммитится как `''`. Даёт согласованность:
+ * рендер-проверка пустоты по модели после коммита совпадает с DOM-проверкой
+ * (пустое поле = '').
+ * @param {string} html - Уже репаренный HTML (после _repairCapsuleHtml)
+ * @returns {string}
+ */
+function _normalizeEmptyHtml(html) {
+    return isFieldEmpty(html) ? '' : html;
 }
 
 /**
@@ -147,9 +163,11 @@ export class ViolationFieldSurface {
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
         // Guard-strip + repair ПЕРЕД записью в модель — зеркало saveContent
-        // (textblock-core.js:127-131).
+        // (textblock-core.js:127-131). Визуально пустое поле нормализуется в
+        // '' (_normalizeEmptyHtml) — см. её докстринг.
         this._manager.setViolationField(
-            this._violation, this._path, _repairCapsuleHtml(this.element.innerHTML).html);
+            this._violation, this._path,
+            _normalizeEmptyHtml(_repairCapsuleHtml(this.element.innerHTML).html));
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -212,9 +230,10 @@ export class ViolationContentItemSurface {
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
-        // Guard-strip + repair ПЕРЕД записью — см. ViolationFieldSurface.commit.
+        // Guard-strip + repair + нормализация пустоты — см. ViolationFieldSurface.commit.
         this._manager.setContentItemField(
-            this._violation, this._item, this._field, _repairCapsuleHtml(this.element.innerHTML).html);
+            this._violation, this._item, this._field,
+            _normalizeEmptyHtml(_repairCapsuleHtml(this.element.innerHTML).html));
     }
 
     /** Полный сток поверхности (контракт EditableSurface). Отдельного
@@ -255,11 +274,11 @@ export class ViolationListItemSurface {
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
-        // Guard-strip + repair ПЕРЕД записью в модель — зеркало
+        // Guard-strip + repair + нормализация пустоты в модель — зеркало
         // ViolationFieldSurface.commit/ViolationContentItemSurface.commit.
         this._manager.setViolationListItem(
             this._violation, this._fieldName, this._index,
-            _repairCapsuleHtml(this.element.innerHTML).html);
+            _normalizeEmptyHtml(_repairCapsuleHtml(this.element.innerHTML).html));
     }
 
     /** Полный сток поверхности (контракт EditableSurface). ОБЯЗАТЕЛЕН: корректор
