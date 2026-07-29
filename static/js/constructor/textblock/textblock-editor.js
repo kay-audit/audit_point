@@ -641,8 +641,11 @@ Object.assign(TextBlockManager.prototype, {
      * @param {boolean} [footnotesBlocked] Явный гейт сносок (drop — из захваченной
      *   поверхности). undefined → берётся из активной поверхности EditorRegistry
      *   (paste, у которого фокус на поле).
+     * @param {boolean} [fromDrop] Вставка пришла из drop. Включает опознание
+     *   own-пути по капсульным маркерам (нативный drag теряет метку data-aw-clip).
+     *   На paste не передаётся → капсульный детект не активен, поведение прежнее.
      */
-    _insertSanitizedHtml(editor, html, plain, footnotesBlocked) {
+    _insertSanitizedHtml(editor, html, plain, footnotesBlocked, fromDrop) {
         // Нет HTML — прежний путь: только чистый текст.
         if (!html || !html.trim()) {
             document.execCommand('insertText', false, plain);
@@ -650,7 +653,7 @@ Object.assign(TextBlockManager.prototype, {
             return;
         }
 
-        const fragment = this._buildPasteFragment(html, footnotesBlocked);
+        const fragment = this._buildPasteFragment(html, footnotesBlocked, fromDrop);
 
         // Гейт пустоты (CARET-6): DOMPurify мог вырезать весь фрагмент (например
         // «Копировать изображение» кладёт только <img> при пустом plain). Проверку
@@ -805,10 +808,21 @@ Object.assign(TextBlockManager.prototype, {
      *  - прочий внешний HTML → строгая политика «только ссылки».
      * Порядок веток: свой → Word → внешний (Word проверяем ДО внешнего, иначе
      * его разметка ушла бы в «только ссылки» и формат бы потерялся).
+     *
+     * DROP (fromDrop=true): нативный drag выделения сериализуется браузером БЕЗ
+     * метки data-aw-clip, поэтому капсулы из нашего же поля не опознаются
+     * _isOwnClipboardHtml и ушли бы внешним путём (ссылка → текст, сноска —
+     * санитайзером мимо гейта). Дополнительно опознаём own-путь по нашим
+     * капсульным маркерам (_hasCapsuleMarkers). Детект УЗКИЙ (только drop +
+     * только при наличии капсул): paste поведения не меняет; спуф data-link-url
+     * безопасен — own-путь пересобирает капсулы заново и валидирует URL
+     * (validateLinkUrl в _reconstructPastedCapsules), не-капсульный контент
+     * идёт через тот же SafeHTML.sanitize (img/script/on* режутся, см.
+     * _buildOwnPasteFragment).
      * @private
      */
-    _buildPasteFragment(html, footnotesBlocked) {
-        if (this._isOwnClipboardHtml(html)) {
+    _buildPasteFragment(html, footnotesBlocked, fromDrop) {
+        if (this._isOwnClipboardHtml(html) || (fromDrop && this._hasCapsuleMarkers(html))) {
             return this._buildOwnPasteFragment(html, footnotesBlocked);
         }
         if (this._isWordHtml(html)) {
@@ -857,6 +871,28 @@ Object.assign(TextBlockManager.prototype, {
         const tpl = document.createElement('template');
         tpl.innerHTML = html;
         return tpl.content.querySelector('[data-aw-clip]') !== null;
+    },
+
+    /**
+     * @private Содержит ли HTML наши капсульные маркеры (ссылка/сноска)? Нужен
+     * ТОЛЬКО для DROP: нативный drag выделения сериализуется БЕЗ метки
+     * data-aw-clip, поэтому _isOwnClipboardHtml не опознаёт капсулы из нашего же
+     * поля. Опознаём по data-link-url / data-footnote-text — атрибутам, что
+     * несут реконструируемую нагрузку (URL / тело сноски); именно их выставляют
+     * фабрики createLinkMarker/createFootnoteMarker. Точная проверка АТРИБУТА
+     * (не подстроки — иначе слово в тексте/чужом атрибуте ложно включило бы
+     * own-путь): инертный <template> + querySelector. Дешёвый substring-
+     * префильтр отсекает обычный HTML без парса. Спуф маркеров безопасен:
+     * own-путь пересобирает капсулы заново и валидирует URL (validateLinkUrl),
+     * XSS не даёт.
+     */
+    _hasCapsuleMarkers(html) {
+        if (typeof html !== 'string') return false;
+        if (html.indexOf('data-link-url') === -1
+            && html.indexOf('data-footnote-text') === -1) return false;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        return tpl.content.querySelector('[data-link-url], [data-footnote-text]') !== null;
     },
 
     /**

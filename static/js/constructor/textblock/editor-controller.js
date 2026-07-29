@@ -219,8 +219,10 @@ export const EditorController = {
         }
 
         // Гейт сносок — по политике ЗАХВАЧЕННОЙ поверхности (не из реестра).
+        // fromDrop=true: нативный drag теряет метку data-aw-clip, поэтому капсулы
+        // из нашего же поля опознаём по маркерам (см. _buildPasteFragment).
         const footnotesBlocked = SURFACE_POLICY[surface.kind]?.footnotes === false;
-        textBlockManager._insertSanitizedHtml(el, html, plain, footnotesBlocked);
+        textBlockManager._insertSanitizedHtml(el, html, plain, footnotesBlocked, true);
 
         // Смонтированная поверхность коммитит через input-хендлер (insertHTML →
         // input → _onInput → commit). НЕ смонтированная (focus не смонтировал) —
