@@ -216,12 +216,14 @@ class MarkdownFormatter(BaseFormatter):
         «впрыснуть» поддельную ссылку/картинку в экспорт, #7). caption —
         rich-HTML (Task 6, rich-редактор подписи): конвертируется в markdown
         через HTMLUtils.html_to_markdown (как кейс/свободный текст) — сама
-        markdown-разметка **bold**/*italic* должна дойти до вывода как есть.
-        Результат ДОПОЛНИТЕЛЬНО экранируется по '[]' в обеих ветках (alt и
-        текстовый fallback черновика, #15) — защита от структурного разрыва
-        `![...]`/впрыска поддельной ссылки `[...](...)` содержимым caption;
-        живая text-link ссылка в подписи черновика тем самым гасится — тот же
-        трейдофф, что alt-ветка уже приняла для непустого url.
+        markdown-разметка **bold**/*italic* доходит до вывода как есть, а
+        текстовые узлы (в т.ч. `[...](...)`) уже экранированы узловым
+        конвертером (F1) РОВНО один раз. Поэтому повторного escape_inline по
+        '[]' здесь НЕТ (дал бы двойное экранирование). Но alt/подпись —
+        ОДНОСТРОЧНЫЙ контекст: переносы из <br>/границ блоков сворачиваем в
+        пробел (как раньше это делал escape_inline), не трогая проставленные
+        конвертером '\'. При пустой подписи в alt-ветке fallback — имя файла
+        (plain-строка, конвертер её не видел) — экранируется как раньше.
 
         Args:
             lines: Список строк для добавления
@@ -230,17 +232,20 @@ class MarkdownFormatter(BaseFormatter):
         # caption может быть None (легаси-данные без подписи, Task 6) —
         # html_to_markdown падает на None (нет собственного null-guard).
         caption = HTMLUtils.html_to_markdown(item.get('caption') or '')
+        # Однострочный контекст alt/подписи: сворачиваем переносы в пробел БЕЗ
+        # повторного backslash-экранирования (escape_inline экранирует '\'
+        # первым и удвоил бы уже проставленные конвертером слэши).
+        caption = caption.replace("\r", " ").replace("\n", " ")
         filename = item.get('filename', '')
         url = item.get('url', '')
 
         if url:
-            alt = MarkdownUtils.escape_inline(caption or filename, '[]')
+            alt = caption or MarkdownUtils.escape_inline(filename, '[]')
             title = MarkdownUtils.escape_inline(filename, '"')
             lines.append(f'![{alt}]({url} "{title}")')
         elif caption:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
-            caption_esc = MarkdownUtils.escape_inline(caption, '[]')
-            lines.append(f"*{filename_esc}* - {caption_esc}")
+            lines.append(f"*{filename_esc}* - {caption}")
         else:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
             lines.append(f"*{filename_esc}*")
