@@ -423,6 +423,20 @@ test('ViolationContentItemSurface: commit — визуально пустое п
     assert.deepEqual(calls, [{ field: 'content', val: '' }]);
 });
 
+test('ViolationContentItemSurface: commit — поле из одного \'&nbsp;\' нормализуется в \'\' (F2/Пункт 2)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
+    const violation = { id: 'v1' };
+    const item = { id: 'c1', content: 'было' };
+    const s = vm._makeContentItemSurface(violation, item);
+
+    s.element = { innerHTML: '&nbsp;', textContent: ' ' };
+    s.commit();
+
+    assert.deepEqual(calls, [{ field: 'content', val: '' }]);
+});
+
 test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {
     const vm = new ViolationManager();
     const calls = [];

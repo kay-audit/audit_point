@@ -30,6 +30,32 @@ test('isFieldEmpty: непустой текст — не пусто', () => {
     assert.equal(isFieldEmpty('текст'), false);
 });
 
+// --- F2/Пункт 2: строковая ветка декодирует &nbsp; перед проверкой пустоты
+// (паритет с DOM-веткой, где браузер decode'ит entity в textContent ДО trim,
+// и с бэкенд-валидацией clean_html, которая тот же ввод считает пустым) -----
+
+test('isFieldEmpty: \'&nbsp;\' — пусто (decode перед проверкой)', () => {
+    assert.equal(isFieldEmpty('&nbsp;'), true);
+});
+
+test('isFieldEmpty: \'<div>&nbsp;</div>\' — пусто', () => {
+    assert.equal(isFieldEmpty('<div>&nbsp;</div>'), true);
+});
+
+test('isFieldEmpty: несколько &nbsp; подряд/с пробелами — пусто', () => {
+    assert.equal(isFieldEmpty('&nbsp;&nbsp; &nbsp;'), true);
+});
+
+test('isFieldEmpty: числовые формы &#160;/&#xa0; — тоже пусто', () => {
+    assert.equal(isFieldEmpty('&#160;'), true);
+    assert.equal(isFieldEmpty('&#xa0;'), true);
+    assert.equal(isFieldEmpty('&#xA0;'), true);
+});
+
+test('isFieldEmpty: nbsp вперемешку с реальным текстом — не пусто', () => {
+    assert.equal(isFieldEmpty('&nbsp;текст&nbsp;'), false);
+});
+
 test('isFieldEmpty: теги без текста (\'<b></b>\') — пусто', () => {
     assert.equal(isFieldEmpty('<b></b>'), true);
 });

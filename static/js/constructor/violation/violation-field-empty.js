@@ -27,6 +27,12 @@ const SIGNIFICANT_INLINE_SELECTOR = '.text-link, .text-footnote, img';
 // капсула без видимого текста (пустой data-link-url и т.п.) или картинка
 // ошибочно сочлась бы пустой.
 const SIGNIFICANT_INLINE_MARKER_RE = /<img[\s>]|class="[^"]*\b(?:text-link|text-footnote)\b/;
+// F2/Пункт 2: строковая ветка проверяет СЫРУЮ HTML-строку модели, где
+// &nbsp; ещё не декодирован в U+00A0 (в отличие от DOM-ветки, где браузер
+// декодирует entity в textContent сам). Без декодирования '&nbsp;' не trim'ится
+// в пустоту, хотя визуально это пробел — рассинхрон с DOM-веткой и с
+// бэкенд-валидацией (clean_html), которая тот же ввод считает пустым.
+const NBSP_ENTITY_RE = /&nbsp;|&#0*160;|&#x0*a0;/gi;
 
 /**
  * @param {HTMLElement|string} source - Живой элемент поля ИЛИ сырой HTML модели
@@ -36,7 +42,10 @@ export function isFieldEmpty(source) {
     if (source == null) return true;
     if (typeof source === 'string') {
         if (SIGNIFICANT_INLINE_MARKER_RE.test(source)) return false;
-        const text = source.replace(/<[^>]*>/g, '').replace(INVISIBLE_CHARS_RE, '').trim();
+        // U+00A0 (decode ниже) входит в WhiteSpace ECMAScript — .trim() сам
+        // его срезает, отдельный invisible-класс не нужен.
+        const decoded = source.replace(NBSP_ENTITY_RE, '\u00A0');
+        const text = decoded.replace(/<[^>]*>/g, '').replace(INVISIBLE_CHARS_RE, '').trim();
         return text.length === 0;
     }
     const hasText = (source.textContent || '').replace(INVISIBLE_CHARS_RE, '').trim().length > 0;

@@ -184,6 +184,17 @@ test('createCaseElement: модельное значение \'<br>\' (лега�
     assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), '<br>-остаток считается пустым');
 });
 
+test('createCaseElement: модельное значение \'&nbsp;\' — предикат считает пустым (F2/Пункт 2)', () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    const item = { id: 'c1', type: CONTENT_TYPE_CASE, content: '&nbsp;' };
+
+    const { result: wrapper } = withTrackedDom(() => vm.createCaseElement(violation, item, 0, 1, false));
+
+    assert.ok(wrapper.classList.contains('content-item-wrapper--empty'), 'одинокий &nbsp; считается пустым');
+});
+
 // --- createFreeTextElement ---
 
 test('createFreeTextElement: ввод текста снимает класс --empty динамически (визуальный класс)', () => {
