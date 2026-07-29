@@ -5,8 +5,8 @@
  *  - ViolationContentItemSurface: поверхность кейса/свободного текста
  *    (commit/setContent → setContentItemField);
  *  - ViolationListItemSurface (Task 7): поверхность пункта списка описаний
- *    (commit/persist → setViolationListItem по индексу, БЕЗ setContent —
- *    ничто не пишет в пункт списка программно, см. её докстринг);
+ *    (commit/persist → setViolationListItem по индексу; setContent (T10) —
+ *    для одношагового undo «Заменить всё», см. её докстринг);
  *  - _teardownActiveRichField: снятие контроллера при пересоздании DOM нарушения;
  *  - createViolationElement: 6 текстовых полей карточки идут через rich-поле с
  *    корректными путями поверхности.
@@ -508,12 +508,64 @@ test('ViolationListItemSurface: persist делегирует в commit — ОБ�
     assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 0, val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
 });
 
-test('ViolationListItemSurface: без setContent — пункт списка не пишется программно (формализатор/корректор его не трогают, см. докстринг)', () => {
+// T10: setContent добавлен для одношагового undo «Заменить всё» (раньше его НЕ
+// было — «ничто не пишет в пункт списка программно»; undo replace-all меняет
+// сам факт). Зеркало ViolationContentItemSurface.setContent: repair →
+// setViolationListItem → renderActContent → harden, с гейтом changed. Пустоту
+// setContent НЕ нормализует (это делает commit) — как у образца.
+test('ViolationListItemSurface: setContent (T10) → setViolationListItem по индексу (для undo «Заменить всё»)', () => {
     const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
+    const violation = { id: 'v1', descriptionList: { items: ['', ''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 1);
+    s.element = { textContent: '' };
+
+    s.setContent('<b>восстановленный</b> пункт');
+
+    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 1, val: '<b>восстановленный</b> пункт' }],
+        'setContent пишет переданный html в items[index] через мутатор списка');
+});
+
+test('ViolationListItemSurface: setContent — normalizeMarkers + tooltip вызваны на element (harden, Task 1.3.4-B1)', () => {
+    const vm = new ViolationManager();
+    vm.setViolationListItem = () => true;
     const violation = { id: 'v1', descriptionList: { items: [''] } };
     const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+    s.element = { textContent: '' };
 
-    assert.equal(typeof s.setContent, 'undefined');
+    const normalizeCalls = [];
+    const tooltipCalls = [];
+    const origNormalize = textBlockManager.normalizeMarkers;
+    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
+    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
+    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
+    try {
+        s.setContent('<b>x</b>');
+        assert.deepEqual(normalizeCalls, [s.element], 'normalizeMarkers вызван на element');
+        assert.deepEqual(tooltipCalls, [s.element], '_attachInitialTooltipHandlers вызван на element');
+    } finally {
+        textBlockManager.normalizeMarkers = origNormalize;
+        textBlockManager._attachInitialTooltipHandlers = origTooltip;
+    }
+});
+
+test('ViolationListItemSurface: setContent — модель получает report.html ОДНИМ вызовом даже при changed=false (Task 1.3.4-A)', () => {
+    const vm = new ViolationManager();
+    const calls = [];
+    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
+    const violation = { id: 'v1', descriptionList: { items: [''] } };
+    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
+    const guard = String.fromCharCode(0xFEFF);
+
+    const origReport = textBlockManager._repairCapsulesReport;
+    textBlockManager._repairCapsulesReport = () => ({ html: '<i>чисто</i>', changed: false });
+    try {
+        s.setContent(`${guard}<i contenteditable="true">чисто</i>${guard}`);
+        assert.deepEqual(calls, ['<i>чисто</i>'], 'модель получает report.html ОДНИМ вызовом независимо от changed');
+    } finally {
+        textBlockManager._repairCapsulesReport = origReport;
+    }
 });
 
 // ── _teardownActiveRichField: снятие контроллера при пересоздании DOM ─────────

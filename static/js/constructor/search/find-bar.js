@@ -39,6 +39,8 @@ import {
     groupMatchesByTarget,
     snapshotTextBlockContents,
     applySnapshotRestore,
+    snapshotSurfaceContents,
+    restoreSurfaceSnapshot,
 } from './act-search-replace.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
@@ -83,10 +85,18 @@ export const FindBar = {
     /**
      * @private
      * @type {Map<string,{before:string,after:string}>|null}
-     * Снимок content'а затронутых блоков для одношагового undo: `before` — до
-     * пакета, `after` — сразу после (divergence-guard в `_undoReplaceAll`).
+     * Снимок content'а затронутых текстблоков для одношагового undo: `before` —
+     * до пакета, `after` — сразу после (divergence-guard в `_undoReplaceAll`).
      */
     _lastUndo: null,
+    /**
+     * @private
+     * @type {Map<string,{before:string,after:string}>|null}
+     * ПАРАЛЛЕЛЬНЫЙ снимок rich-полей нарушений (A-full undo): их модель НЕ в
+     * AppState.textBlocks, снимается через поверхность (target.getContent).
+     * Восстановление — target.setContent с тем же divergence-guard.
+     */
+    _lastUndoSurfaces: null,
 
     /**
      * Устанавливает горячую клавишу Ctrl+F / Cmd+F (capture-фаза): перехватывает
@@ -626,6 +636,14 @@ export const FindBar = {
 
         // Снимок ДО пакета — «before» для одношагового undo.
         const before = snapshotTextBlockContents(blockIdsTouched, AppState.textBlocks);
+        // Violation-цели (rich-поля нарушений) — ПАРАЛЛЕЛЬНЫЙ снимок через
+        // поверхности: их модель не в AppState.textBlocks (см. snapshotSurfaceContents).
+        const surfaceTargets = [];
+        for (const targetId of groups.keys()) {
+            const t = targets.get(targetId);
+            if (t && t.isViolationField) surfaceTargets.push(t);
+        }
+        const beforeSurfaces = snapshotSurfaceContents(surfaceTargets);
 
         let replaced = 0;
         let skipped = 0;
@@ -665,7 +683,15 @@ export const FindBar = {
         for (const [id, beforeContent] of before) {
             this._lastUndo.set(id, { before: beforeContent, after: after.get(id) });
         }
-        if (this._lastUndo.size > 0 && this._els.undoBtn) {
+        // «after» violation-полей: те же цели — persist=commit пишет модель
+        // синхронно, хост НЕ пере-рендерится, поэтому getContent видит результат
+        // замены. Divergence-guard undo сверяет текущий getContent с этим «after».
+        const afterSurfaces = snapshotSurfaceContents(surfaceTargets);
+        this._lastUndoSurfaces = new Map();
+        for (const [id, beforeContent] of beforeSurfaces) {
+            this._lastUndoSurfaces.set(id, { before: beforeContent, after: afterSurfaces.get(id) });
+        }
+        if ((this._lastUndo.size > 0 || this._lastUndoSurfaces.size > 0) && this._els.undoBtn) {
             this._els.undoBtn.classList.remove('hidden');
         }
 
@@ -681,33 +707,50 @@ export const FindBar = {
 
     /**
      * @private Одношаговая отмена последней «Заменить всё» с divergence-guard:
-     * блок возвращается к снимку «before» ТОЛЬКО если его текущий content всё
-     * ещё равен снимку «after» (т.е. блок не редактировался с момента замены).
-     * Изменённые/исчезнувшие блоки пропускаются, чтобы не затереть правки.
+     * цель возвращается к снимку «before» ТОЛЬКО если её текущий content всё ещё
+     * равен снимку «after» (т.е. не редактировалась с момента замены). Изменённые/
+     * исчезнувшие цели пропускаются, чтобы не затереть правки. Две поверхности
+     * снимка: текстблоки/сноски — по AppState.textBlocks; rich-поля нарушений —
+     * через сами цели (getContent/setContent, снимок _lastUndoSurfaces).
      */
     _undoReplaceAll() {
-        if (!this._lastUndo) return;
-        const toRestore = new Map();
+        if (!this._lastUndo && !this._lastUndoSurfaces) return;
+        let reverted = 0;
         let skipped = 0;
-        for (const [id, snap] of this._lastUndo) {
-            const tb = AppState.textBlocks ? AppState.textBlocks[id] : null;
-            if (!tb || tb.content !== snap.after) {
-                skipped++;   // изменён или удалён с момента замены — не трогаем
-                continue;
+
+        // 1) Текстблоки/сноски — снимок по AppState.textBlocks.
+        if (this._lastUndo) {
+            const toRestore = new Map();
+            for (const [id, snap] of this._lastUndo) {
+                const tb = AppState.textBlocks ? AppState.textBlocks[id] : null;
+                if (!tb || tb.content !== snap.after) {
+                    skipped++;   // изменён или удалён с момента замены — не трогаем
+                    continue;
+                }
+                toRestore.set(id, snap.before);
             }
-            toRestore.set(id, snap.before);
+            reverted += applySnapshotRestore(toRestore, AppState.textBlocks, (id) => {
+                ItemsRenderer.updateTextBlock(id);
+                // Откат — тот же сток, что прямая замена: changelog + точечный патч
+                // превью (шаг 1). Без него превью оставалось бы с текстом ПОСЛЕ замены,
+                // а откат не попадал в аудит-историю. saveContent читает уже
+                // восстановленный tb.content (applySnapshotRestore записал его выше).
+                const tb = AppState.textBlocks ? AppState.textBlocks[id] : null;
+                if (tb && typeof textBlockManager.saveContent === 'function') {
+                    textBlockManager.saveContent(id, tb.content);
+                }
+            });
         }
-        const reverted = applySnapshotRestore(toRestore, AppState.textBlocks, (id) => {
-            ItemsRenderer.updateTextBlock(id);
-            // Откат — тот же сток, что прямая замена: changelog + точечный патч
-            // превью (шаг 1). Без него превью оставалось бы с текстом ПОСЛЕ замены,
-            // а откат не попадал в аудит-историю. saveContent читает уже
-            // восстановленный tb.content (applySnapshotRestore записал его выше).
-            const tb = AppState.textBlocks ? AppState.textBlocks[id] : null;
-            if (tb && typeof textBlockManager.saveContent === 'function') {
-                textBlockManager.saveContent(id, tb.content);
-            }
-        });
+
+        // 2) Rich-поля нарушений — снимок через поверхности; цели пере-резолвим
+        // по СВЕЖЕМУ DOM (targetsById), divergence-guard по getContent()===after,
+        // restore через target.setContent(before) (ре-рендер + синк --empty внутри).
+        if (this._lastUndoSurfaces) {
+            const res = restoreSurfaceSnapshot(this._lastUndoSurfaces, this._targetsById());
+            reverted += res.restored;
+            skipped += res.skipped;
+        }
+
         // #7: паритет с «Заменить всё» (та тоже перенумеровывает после пакета).
         // Прямой триггер — опустевшая сноска, менявшая сквозной счёт — снят
         // защитой от опустошения (#1), но откат обязан быть точным инверсом:
@@ -729,9 +772,10 @@ export const FindBar = {
         this._runSearch();
     },
 
-    /** @private Инвалидирует снимок одношагового undo и прячет его кнопку. */
+    /** @private Инвалидирует снимок одношагового undo (обе поверхности) и прячет его кнопку. */
     _clearUndo() {
         this._lastUndo = null;
+        this._lastUndoSurfaces = null;
         if (this._els.undoBtn) this._els.undoBtn.classList.add('hidden');
     },
 };

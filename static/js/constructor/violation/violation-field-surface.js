@@ -9,10 +9,12 @@
  * Обе — воплощения контракта после TextBlockSurface (тот остаётся образцом).
  *
  * Task 7 — ViolationListItemSurface: пункт списка описаний (descriptionList),
- * запись по индексу через setViolationListItem. У неё нет setContent — ничто
- * не пишет в пункт списка программно (формализатор раскладывает только 6
- * именованных текстовых полей карточки, см. _applyFormalized); persist
- * ОБЯЗАТЕЛЕН — корректор принимает правку через EditorRegistry.getActive().persist().
+ * запись по индексу через setViolationListItem. persist ОБЯЗАТЕЛЕН — корректор
+ * принимает правку через EditorRegistry.getActive().persist(). setContent
+ * (T10) нужен ОДНОШАГОВОМУ undo «Заменить всё» (восстановление пункта
+ * после пакетной замены, act-search-engine.js::ViolationFieldSearchTarget);
+ * формализатор/корректор его по-прежнему не зовут (первый пишет 6 полей
+ * карточки, второй — через persist).
  *
  * Два режима записи в модель (см. EditorController, editor-controller.js):
  *  - commit()     — element → модель, БЕЗ ре-рендера (обычный ввод, каретка жива);
@@ -272,6 +274,25 @@ export class ViolationListItemSurface {
     }
 
     getContent() { return this._violation[this._fieldName].items[this._index]; }
+
+    /**
+     * Модель → element, С ре-рендером (восстановление одношагового undo
+     * «Заменить всё»). Зеркало ViolationContentItemSurface.setContent, но точка
+     * записи — setViolationListItem по индексу. Единственный программный писатель
+     * пункта списка (формализатор/корректор его не трогают, см. модульный докстринг).
+     */
+    setContent(html) {
+        // Task 1.3.4-A: модель ВСЕГДА получает report.html безусловно, ре-рендер
+        // DOM повторно — только при реальной структурной починке (changed).
+        const report = _repairCapsuleHtml(html);
+        this._manager.setViolationListItem(this._violation, this._fieldName, this._index, report.html);
+        renderActContent(this.element, html);
+        if (report.changed) {
+            renderActContent(this.element, report.html);
+        }
+        // Task 1.3.4-B1: ре-применяем ce=false/caret-guard'ы и tooltip (_hardenCapsuleField).
+        _hardenCapsuleField(this.element);
+    }
 
     /** element → модель, БЕЗ ре-рендера (обычный ввод — каретка жива). */
     commit() {
