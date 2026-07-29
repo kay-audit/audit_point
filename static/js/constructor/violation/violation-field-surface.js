@@ -356,6 +356,12 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
     // Хост становится element поверхности ДО наполнения — commit/setContent
     // читают/пишут именно его.
     surface.element = field;
+    // Обратная ссылка хост→поверхность (линчпин поиска/замены): даёт
+    // ViolationFieldSearchTarget (act-search-engine.js) адресовать persist/undo
+    // без data-*-атрибутов — движок остаётся violation-агностичным. Ставим в
+    // ЕДИНСТВЕННОЙ точке создания поля, ДО RO-ветки ниже (RO-поля тоже ищутся,
+    // строка замены в них скрыта отдельным механизмом).
+    field.__surface = surface;
     renderActContent(field, surface.getContent() || '');
 
     // Task 1.3.4-B1: чиним уже-битые капсулы старых актов при открытии

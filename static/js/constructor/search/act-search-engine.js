@@ -174,6 +174,67 @@ export class FootnoteBodySearchTarget {
     }
 }
 
+/**
+ * Реализация SearchTarget над rich-полем нарушения (.violation-field). В отличие
+ * от TextBlockSearchTarget адресуется не data-*-атрибутом, а обратной ссылкой
+ * host.__surface (её ставит _createRichFieldEditor, violation-field-surface.js):
+ * поверхность инкапсулирует точный мутатор + путь + капсуле-репар, поэтому движок
+ * остаётся violation-агностичным — духотипизация на контракт поверхности
+ * {id, commit, getContent, setContent}. id/blockId берутся из поверхности;
+ * blockId === id — своего «владеющего блока» у поля нет, оно само себе цель
+ * (симметрично TextBlockSearchTarget, где blockId===id). isViolationField —
+ * дискриминатор для FindBar: параллельный снимок/undo replace-all идёт через
+ * getContent/setContent поверхности, а не AppState.textBlocks.
+ */
+export class ViolationFieldSearchTarget {
+    /** @param {HTMLElement} host Элемент .violation-field с host.__surface. */
+    constructor(host) {
+        this._host = host;
+        const surface = host.__surface;
+        this.id = surface ? surface.id : null;
+        this.blockId = this.id; // нет textblock — id сам себе «блок»
+        this.isViolationField = true;
+    }
+
+    /** @returns {Array} Пробеги текста хоста (тот же кэш движка, что у текстблока). */
+    collectRuns() {
+        return ActSearchEngine._collectRunsCached(this._host);
+    }
+
+    /** Текущее значение модели поля (снимок «before/after» для undo replace-all). */
+    getContent() {
+        return this._host.__surface.getContent();
+    }
+
+    /** Модель → element С ре-рендером (восстановление undo) + синк класса --empty. */
+    setContent(html) {
+        this._host.__surface.setContent(html);
+        this._syncEmptyClass();
+    }
+
+    /**
+     * Фиксирует правку: commit поверхности (element → модель, без ре-рендера) +
+     * синк класса --empty. Паритет с finalizeEdit текстблока (тот в persist зовёт
+     * _toggleEmptyClass): программная замена НЕ шлёт input, поэтому placeholder-
+     * класс сам не обновится после замены, опустошившей/сократившей поле.
+     */
+    persist() {
+        this._host.__surface.commit();
+        this._syncEmptyClass();
+    }
+
+    /**
+     * @private Тоглит .textblock-editor--empty на живом хосте по текущему DOM —
+     * тот же метод, что ставит его _createRichFieldEditor. До домешивания
+     * капсульного миксина (textblock-editor.js) в граф импортов — no-op.
+     */
+    _syncEmptyClass() {
+        if (typeof textBlockManager._toggleEmptyClass === 'function') {
+            textBlockManager._toggleEmptyClass(this._host);
+        }
+    }
+}
+
 export const ActSearchEngine = {
     /**
      * Жёсткий лимит совпадений: при превышении поиск останавливается и помечает
@@ -238,24 +299,35 @@ export const ActSearchEngine = {
     },
 
     /**
-     * Собирает цели поиска в порядке документа: на каждый текстблок — его
-     * TextBlockSearchTarget (видимый текст), сразу следом — по одной
-     * FootnoteBodySearchTarget на КАЖДУЮ сноску этого блока (их может быть
-     * несколько), в порядке появления в DOM. Ячейки таблиц — будущая цель
-     * через ту же SearchTarget-абстракцию.
-     * @returns {Array<TextBlockSearchTarget|FootnoteBodySearchTarget>}
+     * Собирает цели поиска в ПОРЯДКЕ ДОКУМЕНТА единым комбинированным селектором
+     * (.textblock-editor + .violation-field): текстблоки и rich-поля нарушений
+     * идут вперемешку как в DOM (нарушение между двумя текстблоками → v, tb, v —
+     * не «уплывает» в конец, иначе навигация/счётчик сбились бы). На каждый
+     * текстблок — его TextBlockSearchTarget (видимый текст), сразу следом — по
+     * FootnoteBodySearchTarget на КАЖДУЮ сноску блока (их может быть несколько);
+     * на каждое rich-поле нарушения (host.__surface) — ViolationFieldSearchTarget
+     * (сносок в полях нет — footnotes:false у violationField). Ячейки таблиц —
+     * будущая цель через ту же SearchTarget-абстракцию.
+     * @returns {Array<TextBlockSearchTarget|FootnoteBodySearchTarget|ViolationFieldSearchTarget>}
      */
     buildTargets() {
         const container = (typeof document !== 'undefined' && document.getElementById)
             ? (document.getElementById('itemsContainer') || document)
             : document;
-        const editors = container.querySelectorAll('.textblock-editor[data-text-block-id]');
+        const nodes = container.querySelectorAll(
+            '.textblock-editor[data-text-block-id], .violation-field');
         const targets = [];
-        editors.forEach((ed) => {
-            targets.push(new TextBlockSearchTarget(ed));
-            ed.querySelectorAll('.text-footnote').forEach((fn) => {
-                targets.push(new FootnoteBodySearchTarget(fn));
-            });
+        nodes.forEach((el) => {
+            if (el.dataset && el.dataset.textBlockId) {
+                targets.push(new TextBlockSearchTarget(el));
+                el.querySelectorAll('.text-footnote').forEach((fn) => {
+                    targets.push(new FootnoteBodySearchTarget(fn));
+                });
+            } else if (el.__surface) {
+                targets.push(new ViolationFieldSearchTarget(el));
+            }
+            // .violation-field без __surface — адресовать persist/undo некуда,
+            // бесполезная цель: молча пропускаем (в бою бэкреф всегда проставлен).
         });
         return targets;
     },
@@ -737,3 +809,4 @@ export const ActSearchEngine = {
 window.ActSearchEngine = ActSearchEngine;
 window.TextBlockSearchTarget = TextBlockSearchTarget;
 window.FootnoteBodySearchTarget = FootnoteBodySearchTarget;
+window.ViolationFieldSearchTarget = ViolationFieldSearchTarget;
