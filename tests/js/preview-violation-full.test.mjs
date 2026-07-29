@@ -294,6 +294,30 @@ test('splitTopLevelBlocks: <div> без style — align: null (нераспоз�
     assert.deepEqual(splitTopLevelBlocks('<div style="text-align:start">старт</div>'), [{ html: 'старт', align: null }]);
 });
 
+// --- Ревью F2/Minor: align извлекается ТОЛЬКО из атрибута style, не из всего
+// текста открывающего тега (паритет со скоупом бэкового _extract_text_align,
+// inline.py: он ищет только в attrs['style']) — иначе `class="text-align:center"`
+// (class — разрешённый атрибут без ограничений на содержимое) давал бы align в
+// превью при отсутствии его в DOCX ------------------------------------------
+
+test('splitTopLevelBlocks: "text-align:center" в class (не в style) — align: null, не подделка', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div class="text-align:center">текст</div>'), [
+        { html: 'текст', align: null },
+    ]);
+});
+
+test('splitTopLevelBlocks: class с "text-align" И реальный style — align берётся только из style', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div class="text-align:left" style="text-align:right">текст</div>'), [
+        { html: 'текст', align: 'right' },
+    ]);
+});
+
+test('splitTopLevelBlocks: style в одинарных кавычках — align распознаётся', () => {
+    assert.deepEqual(splitTopLevelBlocks("<div style='text-align:center'>текст</div>"), [
+        { html: 'текст', align: 'center' },
+    ]);
+});
+
 // --- #13: превью не разрывает многострочное rich-поле под меткой -----------
 
 test('#13: _addLine режет верхнеуровневые <div>-абзацы — первый инлайнится с меткой, остальные — отдельными блоками (паритет с DOCX _labeled_paragraph)', () => {

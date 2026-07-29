@@ -103,17 +103,27 @@ export function collectViolationLines(violation) {
 // (app/domains/acts/formatters/docx/builders/inline.py): нераспознанные
 // значения (start/end/-webkit-*) сознательно игнорируются, align = null.
 const TEXT_ALIGN_RE = /text-align\s*:\s*(left|center|right|justify)\b/i;
+// Значение атрибута style (обе кавычки) — скоуп поиска align ОГРАНИЧЕН им же,
+// зеркало бэкового _extract_text_align (ищет только в attrs['style'], не по
+// всему тегу): иначе `class="text-align:center"` (class — разрешённый атрибут
+// без ограничений на содержимое) подделал бы align, которого нет в DOCX
+// (ревью F2/Minor).
+const STYLE_ATTR_RE = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 
 /**
- * text-align открывающего тега сегмента (F2/Пункт 1) — паритет с DOCX
- * BlockSegment.alignment: без него превью теряло пользовательское
+ * text-align атрибута style открывающего тега сегмента (F2/Пункт 1) — паритет
+ * с DOCX BlockSegment.alignment: без него превью теряло пользовательское
  * выравнивание строки, которое DOCX (render_block_segments) сохраняет.
+ * Скоуп поиска — ТОЛЬКО значение style, не весь текст тега (см. STYLE_ATTR_RE).
  * @param {string} openTagText - Сырой текст открывающего тега (с атрибутами)
  * @returns {string|null}
  */
 function extractTextAlign(openTagText) {
-    const match = TEXT_ALIGN_RE.exec(openTagText);
-    return match ? match[1].toLowerCase() : null;
+    const styleMatch = STYLE_ATTR_RE.exec(openTagText);
+    if (!styleMatch) return null;
+    const styleValue = styleMatch[1] ?? styleMatch[2] ?? '';
+    const alignMatch = TEXT_ALIGN_RE.exec(styleValue);
+    return alignMatch ? alignMatch[1].toLowerCase() : null;
 }
 
 /**
