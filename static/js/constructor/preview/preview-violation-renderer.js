@@ -99,6 +99,23 @@ export function collectViolationLines(violation) {
     return lines;
 }
 
+// text-align верхнеуровневого <div>/<p> — зеркало _TEXT_ALIGN_RE
+// (app/domains/acts/formatters/docx/builders/inline.py): нераспознанные
+// значения (start/end/-webkit-*) сознательно игнорируются, align = null.
+const TEXT_ALIGN_RE = /text-align\s*:\s*(left|center|right|justify)\b/i;
+
+/**
+ * text-align открывающего тега сегмента (F2/Пункт 1) — паритет с DOCX
+ * BlockSegment.alignment: без него превью теряло пользовательское
+ * выравнивание строки, которое DOCX (render_block_segments) сохраняет.
+ * @param {string} openTagText - Сырой текст открывающего тега (с атрибутами)
+ * @returns {string|null}
+ */
+function extractTextAlign(openTagText) {
+    const match = TEXT_ALIGN_RE.exec(openTagText);
+    return match ? match[1].toLowerCase() : null;
+}
+
 /**
  * Режет rich-HTML поля на верхнеуровневые блочные абзацы (упрощённый JS-аналог
  * split_block_segments, app/domains/acts/formatters/docx/builders/inline.py) —
@@ -107,13 +124,14 @@ export function collectViolationLines(violation) {
  * новый параграф) внутри `<span>` рвут инлайн-контекст (anonymous block boxes,
  * CSS 2.1 §9.2.1.1) — метка остаётся одна на строке, первая строка уезжает
  * вниз. Верхнеуровневый `<div>`/`<p>` → отдельный сегмент (его ВНУТРЕННИЙ
- * html, обёртка отбрасывается — рендерится обычной строкой превью). Смежный
- * контент вне блочных тегов (голый текст/инлайн-форматирование/`<br>`) уходит
- * в отдельный анонимный сегмент. Вложенные блочные теги остаются внутри html
- * родительского сегмента (рендерятся как есть). Нет верхнеуровневых блочных
- * тегов (частый случай — однострочные поля) → один сегмент с исходным html.
+ * html, обёртка отбрасывается; text-align обёртки сохраняется в align
+ * сегмента — F2/Пункт 1). Смежный контент вне блочных тегов (голый
+ * текст/инлайн-форматирование/`<br>`) уходит в отдельный анонимный сегмент
+ * без align. Вложенные блочные теги остаются внутри html родительского
+ * сегмента (рендерятся как есть). Нет верхнеуровневых блочных тегов (частый
+ * случай — однострочные поля) → один сегмент с исходным html без align.
  * @param {string} html
- * @returns {string[]} Сегменты в порядке появления
+ * @returns {{html: string, align: (string|null)}[]} Сегменты в порядке появления
  */
 export function splitTopLevelBlocks(html) {
     if (!html) return [];
@@ -122,25 +140,27 @@ export function splitTopLevelBlocks(html) {
     let depth = 0;
     let segStart = 0;
     let blockStart = -1;
+    let blockAlign = null;
     let match;
     while ((match = tagRe.exec(html)) !== null) {
         if (match[1]) {
             if (depth === 0) {
                 const anon = html.slice(segStart, match.index);
-                if (anon.trim()) segments.push(anon);
+                if (anon.trim()) segments.push({ html: anon, align: null });
                 blockStart = match.index + match[0].length;
+                blockAlign = extractTextAlign(match[0]);
             }
             depth++;
         } else if (depth > 0) {
             depth--;
             if (depth === 0) {
-                segments.push(html.slice(blockStart, match.index));
+                segments.push({ html: html.slice(blockStart, match.index), align: blockAlign });
                 segStart = match.index + match[0].length;
             }
         }
     }
     const tail = html.slice(segStart);
-    if (tail.trim()) segments.push(tail);
+    if (tail.trim()) segments.push({ html: tail, align: null });
     return segments;
 }
 
@@ -194,36 +214,48 @@ export class PreviewViolationRenderer {
      * `<div>` внутри `<span>` рвёт инлайн-контекст, метка уезжает на свою
      * строку), последующие абзацы — отдельными блочными строками ниже, без
      * метки (как продолжающие w:p в DOCX).
+     *
+     * F2/Пункт 1: text-align сегмента (splitTopLevelBlocks) переносится на
+     * строку превью — паритет с DOCX render_block_segments, где align
+     * сегмента задаётся на весь w:p, включая label-run. Сегмент без align
+     * (default) не получает инлайн-style — прежняя раскладка через CSS
+     * (.preview-violation-line { text-align: justify }).
      * @private
      */
     static _addLine(container, label, text, small) {
         const className = small ? 'preview-violation-line preview-violation-line--small'
                                 : 'preview-violation-line';
         const segments = splitTopLevelBlocks(text);
-        const [first, ...rest] = segments.length ? segments : [text || ''];
+        const [first, ...rest] = segments.length ? segments : [{ html: text || '', align: null }];
 
         const line = document.createElement('div');
         line.className = className;
+        if (first.align) {
+            line.style.textAlign = first.align;
+        }
         if (label) {
             const labelEl = document.createElement('span');
             labelEl.className = 'preview-violation-label';
             labelEl.textContent = `${label}: `;
             line.appendChild(labelEl);
         }
-        // first — rich-HTML первого абзаца поля (Task 1.1); рендерим через
-        // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
+        // first.html — rich-HTML первого абзаца поля (Task 1.1); рендерим
+        // через renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
         // текст-нодой — иначе сырой HTML показался бы буквально.
         const bodyEl = document.createElement('span');
-        renderActContent(bodyEl, first);
+        renderActContent(bodyEl, first.html);
         line.appendChild(bodyEl);
         container.appendChild(line);
 
         // Последующие абзацы — отдельные блочные строки той же типографики,
-        // без метки (продолжение, не новое поле).
+        // без метки (продолжение, не новое поле), каждая — со своим align.
         for (const segment of rest) {
             const contLine = document.createElement('div');
             contLine.className = className;
-            renderActContent(contLine, segment);
+            if (segment.align) {
+                contLine.style.textAlign = segment.align;
+            }
+            renderActContent(contLine, segment.html);
             container.appendChild(contLine);
         }
     }

@@ -251,8 +251,8 @@ test('rich-тело поля через renderActContent, не createTextNode', 
 
 // --- #13: splitTopLevelBlocks (паритет с split_block_segments, inline.py) ---
 
-test('splitTopLevelBlocks: без верхнеуровневых <div>/<p> — один сегмент с исходным html', () => {
-    assert.deepEqual(splitTopLevelBlocks('до <b>x</b> после'), ['до <b>x</b> после']);
+test('splitTopLevelBlocks: без верхнеуровневых <div>/<p> — один сегмент с исходным html, без align', () => {
+    assert.deepEqual(splitTopLevelBlocks('до <b>x</b> после'), [{ html: 'до <b>x</b> после', align: null }]);
 });
 
 test('splitTopLevelBlocks: пустая строка — пустой массив', () => {
@@ -260,11 +260,38 @@ test('splitTopLevelBlocks: пустая строка — пустой масси
 });
 
 test('splitTopLevelBlocks: два верхнеуровневых <div> — два сегмента, теги-обёртки отброшены', () => {
-    assert.deepEqual(splitTopLevelBlocks('<div>первая</div><div>вторая</div>'), ['первая', 'вторая']);
+    assert.deepEqual(splitTopLevelBlocks('<div>первая</div><div>вторая</div>'), [
+        { html: 'первая', align: null },
+        { html: 'вторая', align: null },
+    ]);
 });
 
 test('splitTopLevelBlocks: вложенный <div> остаётся внутри родительского сегмента', () => {
-    assert.deepEqual(splitTopLevelBlocks('<div>внешний<div>внутренний</div></div>'), ['внешний<div>внутренний</div>']);
+    assert.deepEqual(splitTopLevelBlocks('<div>внешний<div>внутренний</div></div>'), [
+        { html: 'внешний<div>внутренний</div>', align: null },
+    ]);
+});
+
+// --- F2/Пункт 1: text-align сегмента сохраняется в модели (паритет с DOCX
+// BlockSegment.alignment, split_block_segments в inline.py) -----------------
+
+test('splitTopLevelBlocks: text-align верхнеуровневого <div> попадает в align сегмента', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div style="text-align:center">центр</div>'), [
+        { html: 'центр', align: 'center' },
+    ]);
+});
+
+test('splitTopLevelBlocks: разные align у соседних сегментов не путаются', () => {
+    const html = '<div style="text-align:center">первая</div><div style="text-align:right">вторая</div>';
+    assert.deepEqual(splitTopLevelBlocks(html), [
+        { html: 'первая', align: 'center' },
+        { html: 'вторая', align: 'right' },
+    ]);
+});
+
+test('splitTopLevelBlocks: <div> без style — align: null (нераспознанные значения тоже игнорируются)', () => {
+    assert.deepEqual(splitTopLevelBlocks('<div>обычная</div>'), [{ html: 'обычная', align: null }]);
+    assert.deepEqual(splitTopLevelBlocks('<div style="text-align:start">старт</div>'), [{ html: 'старт', align: null }]);
 });
 
 // --- #13: превью не разрывает многострочное rich-поле под меткой -----------
@@ -293,6 +320,60 @@ test('#13: _addLine режет верхнеуровневые <div>-абзацы
         && c.el.className && c.el.className.includes('preview-violation-line')
         && c.el.textContent === 'вторая');
     assert.ok(secondLine, 'второй абзац рендерится отдельным блоком ниже');
+});
+
+// --- F2/Пункт 1: превью теряло per-line text-align многострочных полей -----
+// (паритет с DOCX render_block_segments: align сегмента переопределяет
+// default_alignment абзаца целиком, включая метку) ---------------------------
+
+test('F2-1: _addLine переносит text-align первого сегмента на строку с меткой, второго — на строку-продолжение', () => {
+    const created = [];
+    const origCreate = document.createElement;
+    document.createElement = (tag) => {
+        const el = origCreate(tag);
+        created.push({ tag, el });
+        return el;
+    };
+    try {
+        PreviewViolationRenderer.create(makeViolation({
+            reasons: { enabled: true, content: '<div style="text-align:center">первая</div><div style="text-align:right">вторая</div>' },
+        }));
+    } finally {
+        document.createElement = origCreate;
+    }
+
+    // Стаб appendChild — no-op, textContent родителя не собирается из детей
+    // (в отличие от реального DOM), поэтому строки различаем по порядку
+    // создания: violated/established всегда рендерятся первыми (#14/Q1), reasons —
+    // последним из optionalFields; _addLine создаёт line ДО body-span, затем
+    // contLine — в цикле по остальным сегментам (гарантированный порядок).
+    const lineDivs = created.filter((c) => c.tag === 'div'
+        && c.el.className && c.el.className.includes('preview-violation-line'));
+    assert.equal(lineDivs.length, 4, 'violated/established (по 1 строке) + reasons (строка с меткой + продолжение)');
+    const [reasonsLine, reasonsCont] = lineDivs.slice(-2);
+    assert.equal(reasonsLine.el.style.textAlign, 'center', 'align первого сегмента переносится на строку с меткой (DOCX выравнивает весь абзац, включая label-run)');
+    assert.equal(reasonsCont.el.style.textAlign, 'right', 'align продолжения переносится на его строку');
+});
+
+test('F2-1: поле без text-align — раскладка прежняя, инлайн-style не проставляется (default через CSS)', () => {
+    const created = [];
+    const origCreate = document.createElement;
+    document.createElement = (tag) => {
+        const el = origCreate(tag);
+        created.push({ tag, el });
+        return el;
+    };
+    try {
+        PreviewViolationRenderer.create(makeViolation({
+            reasons: { enabled: true, content: '<div>первая</div><div>вторая</div>' },
+        }));
+    } finally {
+        document.createElement = origCreate;
+    }
+    const lines = created.filter((c) => c.tag === 'div'
+        && c.el.className && c.el.className.includes('preview-violation-line'));
+    assert.ok(lines.length >= 2, 'ожидались строки нарушения');
+    assert.ok(lines.every((l) => !l.el.style.textAlign), 'без явного align инлайн text-align не задаётся');
 });
 
 // --- imagePresentationStyle (Б-1.4 / Б-1.6) ---
