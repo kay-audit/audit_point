@@ -51,12 +51,14 @@ test('pluralRu: три формы по стандартному правилу �
 
 // ── buildReplaceAllConfirmMessage ───────────────────────────────────────────
 
-test('buildReplaceAllConfirmMessage: корректное склонение «совпадение/блок»', () => {
-  assert.equal(buildReplaceAllConfirmMessage(1, 1), 'Заменить 1 совпадение в 1 блоке?');
-  assert.equal(buildReplaceAllConfirmMessage(3, 2), 'Заменить 3 совпадения в 2 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(5, 5), 'Заменить 5 совпадений в 5 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(7, 3), 'Заменить 7 совпадений в 3 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(0, 0), 'Заменить 0 совпадений в 0 блоках?');
+// «Фрагмент», а не «блок»: цели смешанные (текстблоки И rich-поля нарушений),
+// «блок» — доменное имя текстблока, для поля нарушения вводило бы в заблуждение.
+test('buildReplaceAllConfirmMessage: корректное склонение «совпадение/фрагмент»', () => {
+  assert.equal(buildReplaceAllConfirmMessage(1, 1), 'Заменить 1 совпадение в 1 фрагменте?');
+  assert.equal(buildReplaceAllConfirmMessage(3, 2), 'Заменить 3 совпадения в 2 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(5, 5), 'Заменить 5 совпадений в 5 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(7, 3), 'Заменить 7 совпадений в 3 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(0, 0), 'Заменить 0 совпадений в 0 фрагментах?');
 });
 
 // ── formatMatchCounter ──────────────────────────────────────────────────────

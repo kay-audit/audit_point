@@ -26,15 +26,17 @@ export function pluralRu(n, forms) {
 }
 
 /**
- * Текст подтверждения «Заменить всё» (с корректным склонением).
+ * Текст подтверждения «Заменить всё» (с корректным склонением). Единица счёта —
+ * «фрагмент», а не «блок»: цели теперь смешанные (текстблоки И rich-поля
+ * нарушений), «блок» — доменное имя именно текстблока и вводил бы в заблуждение.
  * @param {number} matchCount Число совпадений.
- * @param {number} blockCount Число затронутых блоков.
+ * @param {number} fragmentCount Число затронутых фрагментов (текстблоков/полей нарушений).
  * @returns {string}
  */
-export function buildReplaceAllConfirmMessage(matchCount, blockCount) {
+export function buildReplaceAllConfirmMessage(matchCount, fragmentCount) {
     const matchWord = pluralRu(matchCount, ['совпадение', 'совпадения', 'совпадений']);
-    const blockWord = pluralRu(blockCount, ['блоке', 'блоках', 'блоках']);
-    return `Заменить ${matchCount} ${matchWord} в ${blockCount} ${blockWord}?`;
+    const fragmentWord = pluralRu(fragmentCount, ['фрагменте', 'фрагментах', 'фрагментах']);
+    return `Заменить ${matchCount} ${matchWord} в ${fragmentCount} ${fragmentWord}?`;
 }
 
 /**

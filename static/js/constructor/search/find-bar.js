@@ -762,12 +762,15 @@ export const FindBar = {
         }
         this._clearUndo();
 
-        const blockWord = pluralRu(reverted, ['блок', 'блока', 'блоков']);
+        // «Фрагмент» — нейтрально к типу цели (текстблок / rich-поле нарушения);
+        // «блок» — доменное имя текстблока и вводил бы в заблуждение (см.
+        // buildReplaceAllConfirmMessage).
+        const fragmentWord = pluralRu(reverted, ['фрагмент', 'фрагмента', 'фрагментов']);
         if (skipped > 0) {
             Notifications.warning(
-                `Возвращено ${reverted} ${blockWord}; ${skipped} пропущено (изменены после замены)`);
+                `Возвращено ${reverted} ${fragmentWord}; ${skipped} пропущено (изменены после замены)`);
         } else {
-            Notifications.success(`Возвращено ${reverted} ${blockWord}`);
+            Notifications.success(`Возвращено ${reverted} ${fragmentWord}`);
         }
         this._runSearch();
     },
