@@ -85,6 +85,18 @@ def test_description_list_bullets_9pt_italic(doc):
     assert all(r.italic for r in bullet_runs)
 
 
+def test_description_list_bullet_bold_html_renders_bold_run(doc):
+    """Task 7: жирный фрагмент rich-пункта → bold run (не текст тегов), базовые курсив/размер сохраняются."""
+    violation = _v(descriptionList={"enabled": True, "items": ["<b>важно</b>: пункт"]})
+    build_violation(doc, violation)
+    bullet_para = next(p for p in doc.paragraphs if "пункт" in p.text)
+    assert "<b>" not in bullet_para.text
+    bold_run = next(r for r in bullet_para.runs if r.text.strip() == "важно")
+    assert bold_run.bold is True
+    assert bold_run.italic is True
+    assert bold_run.font.size == Pt(Sizes.violation_pt)
+
+
 def test_reasons_block_stays_12pt_non_italic(doc):
     """Причины/Принятые меры/Последствия/Ответственные — 12pt без курсива."""
     build_violation(doc, _v())
@@ -172,6 +184,17 @@ def test_image_caption_italic_centered_below(doc):
     cap_runs = [r for r in cap_para.runs if r.text.strip()]
     assert all(r.italic for r in cap_runs)
     assert all(r.font.size == Pt(Sizes.violation_pt) for r in cap_runs)
+
+
+def test_image_caption_bold_html_renders_bold_run(doc):
+    """Task 6: жирный фрагмент rich-подписи → bold run (не текст тегов), базовые курсив/размер сохраняются."""
+    build_violation(doc, _v_with_items(_img_item(caption="<b>важно</b>: подпись")))
+    cap_para = next(p for p in doc.paragraphs if "подпись" in p.text)
+    assert "<b>" not in cap_para.text
+    bold_run = next(r for r in cap_para.runs if r.text.strip() == "важно")
+    assert bold_run.bold is True
+    assert bold_run.italic is True
+    assert bold_run.font.size == Pt(Sizes.violation_pt)
 
 
 def test_broken_base64_renders_placeholder(doc):
@@ -394,3 +417,148 @@ def test_scale_picture_wide_image_not_capped_by_height():
     _scale_picture(shape, width_percent=100, max_height_percent=40)
     assert shape.width == usable_w
     assert shape.height == usable_w // 10
+
+
+# --- БАГ-4: per-line выравнивание rich-полей нарушения ---
+
+def _paras_containing(doc, text):
+    """Абзацы документа, чей текст содержит подстроку text."""
+    return [p for p in doc.paragraphs if text in p.text]
+
+
+class TestRichFieldPerLineAlignment:
+    """rich-поля (Нарушено/Установлено/Причины/...) режутся на строки тем же
+    split_block_segments, что и текстблок (прецедент — _render_textblock):
+    каждая верхнеуровневая строка со своим text-align — свой w:p."""
+
+    def test_center_line_becomes_centered_paragraph(self, doc):
+        """Строка с text-align: center внутри поля — отдельный center-абзац."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True,
+            content='<div>обычная</div><div style="text-align: center">по центру</div>',
+        )))
+        paras = _paras_containing(doc, "по центру")
+        assert len(paras) == 1
+        assert paras[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+    def test_default_stays_justify(self, doc):
+        """Строка без text-align — прежний дефолт justify."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True, content="обычный текст без разметки",
+        )))
+        paras = _paras_containing(doc, "Причины:")
+        assert len(paras) == 1
+        assert paras[0].alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    def test_label_only_on_first_paragraph(self, doc):
+        """«Причины:» выводится один раз — на первом абзаце; продолжение без метки."""
+        build_violation(doc, _v(reasons=ViolationOptionalFieldSchema(
+            enabled=True,
+            content='<div>первая</div><div style="text-align: center">вторая</div>',
+        )))
+        label_paras = _paras_containing(doc, "Причины:")
+        assert len(label_paras) == 1
+        assert "первая" in label_paras[0].text
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert "Причины:" not in second.text
+        assert second.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        # Метка сохраняет текущее форматирование (test_labels_are_underlined,
+        # test_reasons_block_stays_12pt_non_italic): подчёркнута, 12pt, без курсива.
+        label_run, _ = _runs_for_label(doc, "Причины:")
+        assert label_run.underline is True
+        assert label_run.font.size == Pt(Sizes.body_pt)
+        assert not label_run.italic
+
+    def test_size_italic_preserved_on_continuation(self, doc):
+        """9pt+italic у «Нарушено:» сохраняется на 2-м (continuation) абзаце."""
+        build_violation(doc, _v(
+            violated='<div>первая</div><div style="text-align: right">вторая</div>',
+        ))
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert second.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+        body_run = next(r for r in second.runs if r.text == "вторая")
+        assert body_run.font.size == Pt(Sizes.violation_pt)
+        assert body_run.italic is True
+
+    def test_no_extra_spacing_between_segments(self, doc):
+        """space_after == Pt(0) у всех бывших строк-границ, кроме последней
+        (прецедент _render_textblock: строки поля не растягиваются в разные абзацы)."""
+        build_violation(doc, _v(
+            violated="<div>раз</div><div>два</div><div>три</div>",
+        ))
+        first = next(p for p in doc.paragraphs if "раз" in p.text)
+        second = next(p for p in doc.paragraphs if p.text == "два")
+        third = next(p for p in doc.paragraphs if p.text == "три")
+        assert first.paragraph_format.space_after == Pt(0)
+        assert second.paragraph_format.space_after == Pt(0)
+        assert third.paragraph_format.space_after is None
+
+
+# --- #5: подпись картинки и пункты descriptionList — per-line align ---
+
+class TestImageCaptionPerLineAlignment:
+    """Подпись режется тем же split_block_segments/ALIGNMENT_MAP, что и rich-поля
+    (общий helper, V14): CENTER остаётся дефолтом (Б-1.5), но per-line
+    text-align сегмента его переопределяет — паритет с TestRichFieldPerLineAlignment."""
+
+    def test_segment_with_left_align_overrides_default_center(self, doc):
+        """Сегмент без align — дефолт CENTER; сегмент с text-align:left — LEFT."""
+        build_violation(doc, _v_with_items(_img_item(
+            caption='<div>по центру</div><div style="text-align: left">слева</div>',
+        )))
+        default_para = next(p for p in doc.paragraphs if p.text == "по центру")
+        left_para = next(p for p in doc.paragraphs if p.text == "слева")
+        assert default_para.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        assert left_para.alignment == WD_ALIGN_PARAGRAPH.LEFT
+
+    def test_no_extra_spacing_between_caption_segments(self, doc):
+        """Границы сегментов подписи — без межабзацного просвета, как у rich-полей."""
+        build_violation(doc, _v_with_items(_img_item(
+            caption="<div>раз</div><div>два</div>",
+        )))
+        first = next(p for p in doc.paragraphs if p.text == "раз")
+        second = next(p for p in doc.paragraphs if p.text == "два")
+        assert first.paragraph_format.space_after == Pt(0)
+        assert second.paragraph_format.space_after is None
+
+
+class TestDescriptionListPerLineAlignment:
+    """Пункты descriptionList режутся тем же helper'ом: JUSTIFY остаётся
+    дефолтом, per-line text-align переопределяет его; маркер (bullet) — только
+    на первом сегменте пункта (зеркало «метки на первом абзаце»)."""
+
+    def test_segment_with_right_align_overrides_default_justify(self, doc):
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div style="text-align: right">пункт</div>'],
+        })
+        build_violation(doc, violation)
+        para = next(p for p in doc.paragraphs if "пункт" in p.text)
+        assert para.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+
+    def test_marker_only_on_first_segment_of_multiline_item(self, doc):
+        """Первый сегмент пункта — стиль "List Bullet" (маркер); продолжение —
+        обычный абзац без маркера, со своим align."""
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div>первая</div><div style="text-align: right">вторая</div>'],
+        })
+        build_violation(doc, violation)
+        first = next(p for p in doc.paragraphs if p.text == "первая")
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert first.style.name == "List Bullet"
+        assert second.style.name != "List Bullet"
+        assert second.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+
+    def test_continuation_left_indent_matches_bullet_text_position(self, doc):
+        """Продолжение без маркера должно начинаться под ТЕКСТОМ первой строки,
+        а не под маркером: left_indent = 360 твип (0.25") — позиция текста
+        строки "List Bullet" (w:ind left=360 hanging=360 в определении уровня
+        нумерации default-шаблона python-docx, см. render_block_segments)."""
+        violation = _v(descriptionList={
+            "enabled": True,
+            "items": ['<div>первая</div><div style="text-align: right">вторая</div>'],
+        })
+        build_violation(doc, violation)
+        second = next(p for p in doc.paragraphs if p.text == "вторая")
+        assert second.paragraph_format.left_indent == Twips(360)

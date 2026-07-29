@@ -15,8 +15,13 @@ export const RENDER_CLASSES = {
     TEXTBLOCK_EDITOR: 'textblock-editor',
     /** Секция нарушения (создаёт ViolationManager.createViolationElement). */
     VIOLATION_SECTION: 'violation-section',
-    /** Многострочное поле нарушения — live-запись в state на input. */
+    /**
+     * Rich-поле нарушения — живой contenteditable-хост (Task 1.3.3, создаёт
+     * ViolationManager._createRichFieldEditor). По этому классу + атрибуту
+     * contenteditable="true" read-only-проход в app.js гасит поля в режиме
+     * просмотра — класс load-bearing, не переименовывать без правки app.js.
+     */
+    VIOLATION_FIELD: 'violation-field',
+    /** Визуальный стиль текстового поля нарушения (рамка/паддинги/фокус). */
     VIOLATION_TEXTAREA: 'violation-textarea',
-    /** Поле пункта списка описаний нарушения — live-запись в state на input. */
-    VIOLATION_LIST_INPUT: 'violation-list-input',
 };

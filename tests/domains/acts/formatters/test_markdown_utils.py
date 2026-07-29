@@ -11,6 +11,19 @@
 Источник правила экранирования — CommonMark spec, backslash escapes:
 любой ASCII punctuation может быть экранирован `\\`, и обратный слэш
 экранируется ПЕРВЫМ (иначе он «съедает» экранирование следующего символа).
+
+Task 6: caption стал rich-HTML-полем (rich-редактор подписи) — конвертируется
+через HTMLUtils.html_to_markdown (как кейс/свободный текст) и больше НЕ
+экранируется по `*` в текстовом fallback черновика (пустой url) — иначе
+конвертированная разметка (**bold**) сама превращалась бы в текст тегов.
+filename остаётся дословным plain-полем и экранируется как раньше.
+
+#15 (найден код-ревью): caption в текстовом fallback черновика вставлялся
+БЕЗ экранирования `[`/`]` — подпись `[текст](url)` давала живую MD-ссылку
+(структурный аналог #7, только в draft-ветке, не в alt). Экранирование по
+`[]` ПОСЛЕ конвертации теперь применяется в обеих ветках `_add_image` —
+паритет с alt-веткой (непустой url), где защита от структурного разрыва
+`![...]` уже сдвинута после html_to_markdown (см. TestAddImageUrlBranchEscaping).
 """
 from app.domains.acts.formatters.markdown_formatter import MarkdownFormatter
 from app.domains.acts.formatters.utils.markdown_utils import MarkdownUtils
@@ -109,20 +122,43 @@ class TestAddImageUrlBranchEscaping:
 class TestAddImageDraftBranchEscaping:
     """Пустой url (черновик): `*{filename}* - {caption}` / `*{filename}*`."""
 
-    def test_caption_with_asterisk_and_fake_link_is_escaped(self):
+    def test_caption_html_bold_converted_not_escaped(self):
+        """Task 6: caption — rich HTML, конвертируется через html_to_markdown
+        (как кейс/свободный текст, add_case/add_free_text в
+        violation_render.py). Экранирование caption (#15) — только по '[]',
+        `**bold**` эти символы не содержит и доходит до markdown-вывода как
+        есть. filename остаётся plain и экранируется по-прежнему
+        (test_filename_with_asterisk_does_not_break_italic_wrapper ниже).
+        """
         lines: list[str] = []
         item = {
-            "caption": "*bold* [x](http://e)",
+            "caption": "<b>bold</b> caption",
             "filename": "f.png",
             "url": "",
         }
         _md()._add_image(lines, item)
         out = "\n".join(lines)
 
-        assert "\\*bold\\*" in out
-        assert "\\[x\\]" in out
-        # Никакая живая ссылка не должна получиться из подписи.
-        assert "[x](http://e)" not in out
+        assert "*f.png* - **bold** caption" in out
+
+    def test_caption_fake_link_escaped_but_bold_stays_live(self):
+        """#15: caption после html_to_markdown вставлялся в текстовый
+        fallback без экранирования '[]' — подпись `[текст](url)` давала
+        живую MD-ссылку. Паритет с url-веткой (TestAddImageUrlBranchEscaping):
+        экранируем ТОЛЬКО '[]' — bold/italic (**...**/*...*) остаются живой
+        разметкой (Task 6)."""
+        lines: list[str] = []
+        item = {
+            "caption": "<b>bold</b> [evil](http://x)",
+            "filename": "f.png",
+            "url": "",
+        }
+        _md()._add_image(lines, item)
+        out = "\n".join(lines)
+
+        assert "**bold**" in out
+        assert "\\[evil\\](http://x)" in out
+        assert "[evil](http://x)" not in out
 
     def test_filename_with_asterisk_does_not_break_italic_wrapper(self):
         lines: list[str] = []

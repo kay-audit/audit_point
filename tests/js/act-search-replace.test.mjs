@@ -17,7 +17,24 @@ import {
   groupMatchesByTarget,
   snapshotTextBlockContents,
   applySnapshotRestore,
+  snapshotSurfaceContents,
+  restoreSurfaceSnapshot,
 } from '../../static/js/constructor/search/act-search-replace.js';
+
+/**
+ * Фейковая цель-поверхность (ViolationFieldSearchTarget-контракт для undo):
+ * id + getContent/setContent над локальной моделью. setCalls фиксирует
+ * восстановление.
+ */
+function fakeSurfaceTarget(id, content) {
+  return {
+    id,
+    _content: content,
+    setCalls: [],
+    getContent() { return this._content; },
+    setContent(html) { this.setCalls.push(html); this._content = html; },
+  };
+}
 
 // ── pluralRu ────────────────────────────────────────────────────────────────
 
@@ -34,12 +51,14 @@ test('pluralRu: три формы по стандартному правилу �
 
 // ── buildReplaceAllConfirmMessage ───────────────────────────────────────────
 
-test('buildReplaceAllConfirmMessage: корректное склонение «совпадение/блок»', () => {
-  assert.equal(buildReplaceAllConfirmMessage(1, 1), 'Заменить 1 совпадение в 1 блоке?');
-  assert.equal(buildReplaceAllConfirmMessage(3, 2), 'Заменить 3 совпадения в 2 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(5, 5), 'Заменить 5 совпадений в 5 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(7, 3), 'Заменить 7 совпадений в 3 блоках?');
-  assert.equal(buildReplaceAllConfirmMessage(0, 0), 'Заменить 0 совпадений в 0 блоках?');
+// «Фрагмент», а не «блок»: цели смешанные (текстблоки И rich-поля нарушений),
+// «блок» — доменное имя текстблока, для поля нарушения вводило бы в заблуждение.
+test('buildReplaceAllConfirmMessage: корректное склонение «совпадение/фрагмент»', () => {
+  assert.equal(buildReplaceAllConfirmMessage(1, 1), 'Заменить 1 совпадение в 1 фрагменте?');
+  assert.equal(buildReplaceAllConfirmMessage(3, 2), 'Заменить 3 совпадения в 2 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(5, 5), 'Заменить 5 совпадений в 5 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(7, 3), 'Заменить 7 совпадений в 3 фрагментах?');
+  assert.equal(buildReplaceAllConfirmMessage(0, 0), 'Заменить 0 совпадений в 0 фрагментах?');
 });
 
 // ── formatMatchCounter ──────────────────────────────────────────────────────
@@ -143,4 +162,69 @@ test('applySnapshotRestore: отсутствующий в store блок про�
 test('applySnapshotRestore: пустой снимок → 0, без исключения', () => {
   assert.equal(applySnapshotRestore(null, {}, () => {}), 0);
   assert.equal(applySnapshotRestore(new Map(), {}, () => {}), 0);
+});
+
+// ── snapshotSurfaceContents (undo replace-all для violation-полей) ───────────
+// Модель rich-поля нарушения НЕ в AppState.textBlocks — снимаем через саму
+// цель (getContent), симметрично snapshotTextBlockContents по .content блока.
+
+test('snapshotSurfaceContents: снимает getContent по id цели', () => {
+  const targets = [fakeSurfaceTarget('viol:v1:violated', 'AAA'), fakeSurfaceTarget('viol:v2:established', 'BBB')];
+  const snap = snapshotSurfaceContents(targets);
+  assert.equal(snap.size, 2);
+  assert.equal(snap.get('viol:v1:violated'), 'AAA');
+  assert.equal(snap.get('viol:v2:established'), 'BBB');
+});
+
+test('snapshotSurfaceContents: цель без getContent / нестроковый content пропускаются', () => {
+  const noGetter = { id: 'x' };                                  // нет getContent
+  const nonString = { id: 'y', getContent: () => ({}) };         // не строка (мусор)
+  const ok = fakeSurfaceTarget('z', '');                         // пустая строка — валидна
+  const snap = snapshotSurfaceContents([noGetter, nonString, ok]);
+  assert.deepEqual([...snap.keys()], ['z']);
+  assert.equal(snap.get('z'), '');
+});
+
+test('snapshotSurfaceContents: пустой/битый вход → пустой Map, без исключения', () => {
+  assert.equal(snapshotSurfaceContents([]).size, 0);
+  assert.equal(snapshotSurfaceContents(null).size, 0);
+});
+
+// ── restoreSurfaceSnapshot (divergence-guard по getContent()===after) ────────
+
+test('restoreSurfaceSnapshot: восстанавливает before через setContent, когда поле не менялось (getContent===after)', () => {
+  const t = fakeSurfaceTarget('viol:v1:violated', 'ПОСЛЕ');       // текущее === after
+  const targetsById = new Map([[t.id, t]]);
+  const undoMap = new Map([['viol:v1:violated', { before: 'ДО', after: 'ПОСЛЕ' }]]);
+  const res = restoreSurfaceSnapshot(undoMap, targetsById);
+  assert.deepEqual(res, { restored: 1, skipped: 0 });
+  assert.deepEqual(t.setCalls, ['ДО']);
+  assert.equal(t.getContent(), 'ДО');
+});
+
+test('restoreSurfaceSnapshot: поле изменилось после замены (getContent!==after) → пропуск, без затирания', () => {
+  const t = fakeSurfaceTarget('viol:v1:violated', 'ПРАВКА ЮЗЕРА'); // разошлось с after
+  const targetsById = new Map([[t.id, t]]);
+  const undoMap = new Map([['viol:v1:violated', { before: 'ДО', after: 'ПОСЛЕ' }]]);
+  const res = restoreSurfaceSnapshot(undoMap, targetsById);
+  assert.deepEqual(res, { restored: 0, skipped: 1 });
+  assert.deepEqual(t.setCalls, []);                                // не тронуто
+});
+
+test('restoreSurfaceSnapshot: цель исчезла из DOM (нет в targetsById) → пропуск', () => {
+  const undoMap = new Map([['viol:gone:violated', { before: 'ДО', after: 'ПОСЛЕ' }]]);
+  const res = restoreSurfaceSnapshot(undoMap, new Map());
+  assert.deepEqual(res, { restored: 0, skipped: 1 });
+});
+
+test('restoreSurfaceSnapshot: цель без setContent (поверхность не умеет писать) → пропуск, не падение', () => {
+  const t = { id: 'viol:v1:list:descriptionList:0', getContent: () => 'ПОСЛЕ' }; // без setContent
+  const undoMap = new Map([[t.id, { before: 'ДО', after: 'ПОСЛЕ' }]]);
+  const res = restoreSurfaceSnapshot(undoMap, new Map([[t.id, t]]));
+  assert.deepEqual(res, { restored: 0, skipped: 1 });
+});
+
+test('restoreSurfaceSnapshot: пустой снимок → {0,0}, без исключения', () => {
+  assert.deepEqual(restoreSurfaceSnapshot(null, new Map()), { restored: 0, skipped: 0 });
+  assert.deepEqual(restoreSurfaceSnapshot(new Map(), new Map()), { restored: 0, skipped: 0 });
 });

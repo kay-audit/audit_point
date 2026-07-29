@@ -26,15 +26,17 @@ export function pluralRu(n, forms) {
 }
 
 /**
- * Текст подтверждения «Заменить всё» (с корректным склонением).
+ * Текст подтверждения «Заменить всё» (с корректным склонением). Единица счёта —
+ * «фрагмент», а не «блок»: цели теперь смешанные (текстблоки И rich-поля
+ * нарушений), «блок» — доменное имя именно текстблока и вводил бы в заблуждение.
  * @param {number} matchCount Число совпадений.
- * @param {number} blockCount Число затронутых блоков.
+ * @param {number} fragmentCount Число затронутых фрагментов (текстблоков/полей нарушений).
  * @returns {string}
  */
-export function buildReplaceAllConfirmMessage(matchCount, blockCount) {
+export function buildReplaceAllConfirmMessage(matchCount, fragmentCount) {
     const matchWord = pluralRu(matchCount, ['совпадение', 'совпадения', 'совпадений']);
-    const blockWord = pluralRu(blockCount, ['блоке', 'блоках', 'блоках']);
-    return `Заменить ${matchCount} ${matchWord} в ${blockCount} ${blockWord}?`;
+    const fragmentWord = pluralRu(fragmentCount, ['фрагменте', 'фрагментах', 'фрагментах']);
+    return `Заменить ${matchCount} ${matchWord} в ${fragmentCount} ${fragmentWord}?`;
 }
 
 /**
@@ -126,6 +128,54 @@ export function applySnapshotRestore(snapshot, store, onEach) {
     return restored;
 }
 
+/**
+ * Снимок контента ЦЕЛЕЙ-ПОВЕРХНОСТЕЙ нарушения (rich-полей) для одношагового
+ * undo replace-all — параллель snapshotTextBlockContents, но модель поля НЕ в
+ * AppState.textBlocks: читаем её через саму цель (target.getContent(), которая
+ * делегирует в поверхность). По id цели. Нестроковый/отсутствующий content
+ * пропускается (симметрично snapshotTextBlockContents с `typeof ... === 'string'`).
+ * @param {Iterable<{id:string, getContent:()=>*}>} targets Затронутые violation-цели.
+ * @returns {Map<string, string>} id цели → исходный content поля.
+ */
+export function snapshotSurfaceContents(targets) {
+    const snap = new Map();
+    for (const t of (targets || [])) {
+        if (!t || t.id == null || typeof t.getContent !== 'function') continue;
+        const c = t.getContent();
+        if (typeof c === 'string') snap.set(t.id, c);
+    }
+    return snap;
+}
+
+/**
+ * Восстанавливает снимок violation-полей (см. snapshotSurfaceContents) с
+ * divergence-guard — параллель ветки textblock в FindBar._undoReplaceAll:
+ * поле возвращается к `before` ТОЛЬКО если его текущий content всё ещё равен
+ * `after` (не редактировалось с момента замены). Цели пере-резолвит вызывающий
+ * по СВЕЖЕМУ DOM (targetsById) — исчезнувшая/изменённая/не умеющая писать
+ * (без setContent) цель пропускается, чтобы не затереть правки и не упасть.
+ * Запись + ре-рендер + синк класса --empty инкапсулированы в target.setContent.
+ * @param {Map<string, {before:string, after:string}>} undoMap Снимок «до/после».
+ * @param {Map<string, {getContent:()=>*, setContent:(html:string)=>void}>} targetsById
+ * @returns {{restored:number, skipped:number}}
+ */
+export function restoreSurfaceSnapshot(undoMap, targetsById) {
+    let restored = 0;
+    let skipped = 0;
+    if (!undoMap) return { restored, skipped };
+    for (const [id, snap] of undoMap) {
+        const t = targetsById ? targetsById.get(id) : null;
+        if (!t || typeof t.getContent !== 'function' || typeof t.setContent !== 'function'
+            || t.getContent() !== snap.after) {
+            skipped++;
+            continue;
+        }
+        t.setContent(snap.before);
+        restored++;
+    }
+    return { restored, skipped };
+}
+
 // Window-globals для совместимости с inline-скриптами в шаблонах.
 window.ActSearchReplace = {
     pluralRu,
@@ -135,4 +185,6 @@ window.ActSearchReplace = {
     groupMatchesByTarget,
     snapshotTextBlockContents,
     applySnapshotRestore,
+    snapshotSurfaceContents,
+    restoreSurfaceSnapshot,
 };

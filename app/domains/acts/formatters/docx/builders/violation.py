@@ -24,6 +24,7 @@ from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, Twips
 
+from app.domains.acts.formatters.docx.builders.inline import render_block_segments
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
@@ -59,21 +60,25 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
     """Рендерит нарушение в документ (без заголовка и нумерации)."""
     _labeled_paragraph(
         doc, "Нарушено:", violation.violated,
-        italic=True, size_pt=Sizes.violation_pt,
+        italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
     _labeled_paragraph(
         doc, "Установлено:", violation.established,
-        italic=True, size_pt=Sizes.violation_pt,
+        italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
 
     if violation.descriptionList.enabled:
         for item in violation.descriptionList.items:
-            bullet = doc.add_paragraph(style="List Bullet")
-            bullet.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            run = bullet.add_run(item)
-            run.font.name = Fonts.main
-            run.font.size = Pt(Sizes.violation_pt)
-            run.italic = True
+            # Task 7 + #5: пункт — rich-HTML; общий render_block_segments режет
+            # его на строки per-line align (дефолт JUSTIFY, как раньше), маркер
+            # "List Bullet" — только на первом сегменте, продолжения — без
+            # маркера (зеркало «метки на первом абзаце» из _labeled_paragraph).
+            render_block_segments(
+                doc, item,
+                base_size_pt=Sizes.violation_pt, base_italic=True,
+                default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+                paragraph_style="List Bullet",
+            )
 
     # additionalContent (case / image / freeText). Нумеруются ВСЕ кейсы, включая
     # пустые (метка + пустое тело); счётчик сбрасывается на любом не-кейсе —
@@ -85,7 +90,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
             if item.type == "case":
                 _labeled_paragraph(
                     doc, f"Кейс {case_number}:", item.content,
-                    italic=True, size_pt=Sizes.violation_pt,
+                    italic=True, size_pt=Sizes.violation_pt, rich=True,
                 )
                 case_number += 1
             elif item.type == "image":
@@ -94,7 +99,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
             elif item.type == "freeText":
                 _labeled_paragraph(
                     doc, "", item.content,
-                    italic=True, size_pt=Sizes.violation_pt,
+                    italic=True, size_pt=Sizes.violation_pt, rich=True,
                 )
                 case_number = 1
 
@@ -106,7 +111,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
         ("Ответственные:", violation.responsible),
     ]:
         if field.enabled and field.content:
-            _labeled_paragraph(doc, label, field.content)
+            _labeled_paragraph(doc, label, field.content, rich=True)
 
 
 def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
@@ -140,12 +145,15 @@ def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
         )
 
     if item.caption:
-        cap_para = doc.add_paragraph()
-        cap_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        cap_run = cap_para.add_run(item.caption)
-        cap_run.font.name = Fonts.main
-        cap_run.font.size = Pt(Sizes.violation_pt)
-        cap_run.italic = True
+        # Task 6 + #5: подпись — rich-HTML; общий render_block_segments режет
+        # её на строки per-line align, дефолт CENTER (Б-1.5) сохраняется для
+        # сегмента без text-align (см. тест-паритет
+        # test_image_caption_italic_centered_below).
+        render_block_segments(
+            doc, item.caption,
+            base_size_pt=Sizes.violation_pt, base_italic=True,
+            default_alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        )
 
 
 def _decode_data_url(url: str) -> bytes | None:
@@ -211,10 +219,16 @@ def _labeled_paragraph(
     *,
     italic: bool = False,
     size_pt: int = Sizes.body_pt,
+    rich: bool = False,
 ) -> None:
     """Параграф «Label_underlined body_plain».
 
     italic ставится и на метку, и на тело; size_pt задаёт размер обоих run'ов.
+    rich=True — тело рендерится через render_block_segments (общий helper,
+    V14) вместо обычного текстового run'а (Task 1.1.2). Несколько
+    верхнеуровневых строк поля (per-line text-align, БАГ-4) — каждая строка
+    своим w:p со своим выравниванием; метка выводится только на первом
+    абзаце (para передаётся helper'у как first_paragraph).
     """
     if not body and not label:
         return
@@ -227,6 +241,14 @@ def _labeled_paragraph(
         label_run.underline = True
         if italic:
             label_run.italic = True
+    if rich:
+        render_block_segments(
+            doc, body,
+            base_size_pt=size_pt, base_italic=italic,
+            default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+            first_paragraph=para,
+        )
+        return
     body_run = para.add_run(body)
     body_run.font.name = Fonts.main
     body_run.font.size = Pt(size_pt)

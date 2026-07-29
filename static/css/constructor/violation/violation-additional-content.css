@@ -267,33 +267,6 @@
     color: var(--text-secondary);
 }
 
-/* Поле ввода подписи к изображению */
-.image-item .violation-list-input {
-    width: 100%;
-    padding: var(--spacing-sm) var(--spacing);
-    border: var(--border-width-thin) solid var(--border);
-    border-radius: var(--radius);
-    font-family: var(--font-family-base);
-    font-size: var(--font-size-sm);
-    transition: all var(--transition-base);
-    background-color: var(--input-bg);
-    color: var(--input-text);
-}
-
-.image-item .violation-list-input:hover {
-    border-color: var(--input-border-hover);
-}
-
-.image-item .violation-list-input:focus {
-    outline: none;
-    border-color: var(--input-border-focus);
-    box-shadow: var(--input-shadow-focus);
-}
-
-.image-item .violation-list-input::placeholder {
-    color: var(--input-placeholder);
-}
-
 /* Компактный контрол ширины картинки (Б-1.4): «Ширина: Авто/25/50/75/100%» */
 .image-width-control {
     display: flex;

@@ -14,6 +14,7 @@ import '../shared/notifications.js';
 import '../shared/error-boundary.js';
 import '../shared/escape-stack.js';
 import '../shared/sanitize.js';
+import '../shared/rich-text.js';
 import '../shared/api.js';
 
 // Constructor: storage/lifecycle/changelog
@@ -95,6 +96,9 @@ import '../constructor/preview/preview-violation-renderer.js';
 
 // Textblock
 import '../constructor/textblock/textblock-core.js';
+import '../constructor/textblock/editor-registry.js';
+import '../constructor/textblock/editable-surface.js';
+import '../constructor/textblock/editor-controller.js';
 import '../constructor/textblock/textblock-editor.js';
 import '../constructor/textblock/textblock-formatting.js';
 import '../constructor/textblock/textblock-toolbar.js';
@@ -104,6 +108,7 @@ import '../constructor/textblock/textblock-capsule-integrity.js';
 // Violation (violation-init.js — последним, инстанцирует ViolationManager)
 import '../constructor/violation/violation-core.js';
 import '../constructor/violation/violation-mutations.js';
+import '../constructor/violation/violation-field-surface.js';
 import '../constructor/violation/violation-paste.js';
 import '../constructor/violation/violation-additional-content.js';
 import '../constructor/violation/violation-rendering.js';

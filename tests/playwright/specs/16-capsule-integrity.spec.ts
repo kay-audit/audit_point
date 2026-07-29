@@ -884,6 +884,59 @@ test.describe('capsule-integrity: буфер обмена (Task 3)', () => {
     expect(res.external).toBe(false);
   });
 
+  test('F3 _hasCapsuleMarkers: точная attribute-проверка (data-link-url/footnote), устойчива к CF_HTML', async ({ page }) => {
+    await openStep2AndActivate(page);
+    const res = await page.evaluate(() => {
+      const tbm = (window as any).textBlockManager;
+      return {
+        link: tbm._hasCapsuleMarkers('<span class="text-link" data-link-url="http://a.ru">a</span>'),
+        footnote: tbm._hasCapsuleMarkers('<span class="text-footnote" data-footnote-text="тело">1</span>'),
+        wrapped: tbm._hasCapsuleMarkers(
+          '<html><body><!--StartFragment--><span data-link-url="http://a.ru">a</span><!--EndFragment--></body></html>'),
+        substringInText: tbm._hasCapsuleMarkers('<p>про data-link-url в тексте</p>'),
+        external: tbm._hasCapsuleMarkers('<p>внешний <a href="http://x">линк</a></p>'),
+      };
+    });
+    expect(res.link).toBe(true);             // капсула-ссылка нашего формата
+    expect(res.footnote).toBe(true);         // капсула-сноска нашего формата
+    expect(res.wrapped).toBe(true);          // капсула под обёрткой браузера (CF_HTML)
+    expect(res.substringInText).toBe(false); // подстрока в ТЕКСТЕ — НЕ капсула
+    expect(res.external).toBe(false);        // внешний <a href> — НЕ наша капсула
+  });
+
+  test('F3 drop-путь: капсулы БЕЗ метки data-aw-clip → own-реконструкция (ссылка жива, img/js вырезаны)', async ({ page }) => {
+    await openStep2AndActivate(page);
+    // Нативный drag выделения теряет data-aw-clip. _buildPasteFragment с
+    // fromDrop=true опознаёт капсулы по маркерам и ведёт own-путём: ссылка с
+    // валидным URL выживает, спуф javascript:-URL разворачивается в текст,
+    // <img onerror> рядом режется ТЕМ ЖЕ DOMPurify (own-путь не слабее внешнего).
+    const res = await page.evaluate(() => {
+      const tbm = (window as any).textBlockManager;
+      const html = '<span class="text-link" data-link-url="http://a.ru">жив</span>'
+        + '<img src=x onerror="window.__xss=1">'
+        + '<span class="text-link" data-link-url="javascript:alert(1)">спуф</span>';
+      // footnotesBlocked=false (textblock-политика): ссылки гейт не касается.
+      const frag = tbm._buildPasteFragment(html, false, true);
+      const holder = document.createElement('div');
+      holder.appendChild(frag);
+      return {
+        links: holder.querySelectorAll('.text-link').length,
+        liveUrl: holder.querySelector('.text-link')?.getAttribute('data-link-url') || null,
+        imgs: holder.querySelectorAll('img').length,
+        hasJs: holder.innerHTML.includes('javascript'),
+        xss: (window as any).__xss === 1,
+        text: holder.textContent!.replace(/[﻿​]/g, ''),
+      };
+    });
+    expect(res.links).toBe(1);            // выжила ровно валидная ссылка
+    expect(res.liveUrl).toBe('http://a.ru');
+    expect(res.imgs).toBe(0);             // <img onerror> вырезан санитайзером
+    expect(res.hasJs).toBe(false);        // javascript:-URL не просочился
+    expect(res.xss).toBe(false);          // onerror не исполнился
+    expect(res.text).toContain('жив');
+    expect(res.text).toContain('спуф');   // спуф-капсула развёрнута в видимый текст
+  });
+
   test('own-paste фильтрует style до CSS-allowlist профиля acts (font-size живёт, margin режется)', async ({ page }) => {
     await openStep2AndActivate(page);
     const res = await page.evaluate(() => {

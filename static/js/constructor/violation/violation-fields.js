@@ -7,6 +7,14 @@
  * подписей и единый рендер формы (следующие задачи бэкбона) — в этом файле
  * контракт только объявлен, рендереры не трогаются.
  *
+ * `rich` (Task 1.3.2) — поле редактируется через rich-поверхность
+ * (ViolationFieldSurface, violation-field-surface.js) и требует HTML-
+ * санитайзера; true на 6 текстовых полях (violated/established/reasons/
+ * measures/consequences/responsible) И на descriptionList (Task 7 —
+ * ViolationListItemSurface, свой UI со списком пунктов, но каждый пункт
+ * теперь rich-текст). У additionalContent флаг отсутствует (картинки/кейсы —
+ * контейнер разных типов, rich разбирается по типу item'а, не контейнера).
+ *
  * ВАЖНО: набор синхронизируется ВРУЧНУЮ с бэкенд-реестром
  * app/domains/acts/violation_fields.py (как block_types.py ↔ block-types.js):
  * бэк не импортирует JS. Точные строки меток и порядок закреплены
@@ -15,14 +23,14 @@
  */
 
 export const VIOLATION_FIELDS = Object.freeze([
-  Object.freeze({ key: 'violated', label: 'Нарушено', order: 0, kind: 'pair', small: true, showLabelInPreview: true }),
-  Object.freeze({ key: 'established', label: 'Установлено', order: 1, kind: 'pair', small: true, showLabelInPreview: true }),
-  Object.freeze({ key: 'descriptionList', label: '', order: 2, kind: 'list', small: true, showLabelInPreview: false }),
+  Object.freeze({ key: 'violated', label: 'Нарушено', order: 0, kind: 'pair', small: true, showLabelInPreview: true, rich: true }),
+  Object.freeze({ key: 'established', label: 'Установлено', order: 1, kind: 'pair', small: true, showLabelInPreview: true, rich: true }),
+  Object.freeze({ key: 'descriptionList', label: '', order: 2, kind: 'list', small: true, showLabelInPreview: false, rich: true }),
   Object.freeze({ key: 'additionalContent', label: '', order: 3, kind: 'additional', small: true, showLabelInPreview: false }),
-  Object.freeze({ key: 'reasons', label: 'Причины', order: 4, kind: 'optional_text', small: false, showLabelInPreview: true }),
-  Object.freeze({ key: 'measures', label: 'Принятые меры', order: 5, kind: 'optional_text', small: false, showLabelInPreview: true }),
-  Object.freeze({ key: 'consequences', label: 'Последствия', order: 6, kind: 'optional_text', small: false, showLabelInPreview: true }),
-  Object.freeze({ key: 'responsible', label: 'Ответственные', order: 7, kind: 'optional_text', small: false, showLabelInPreview: true }),
+  Object.freeze({ key: 'reasons', label: 'Причины', order: 4, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),
+  Object.freeze({ key: 'measures', label: 'Принятые меры', order: 5, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),
+  Object.freeze({ key: 'consequences', label: 'Последствия', order: 6, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),
+  Object.freeze({ key: 'responsible', label: 'Ответственные', order: 7, kind: 'optional_text', small: false, showLabelInPreview: true, rich: true }),
 ]);
 
 export const VIOLATION_LABELS = Object.freeze(

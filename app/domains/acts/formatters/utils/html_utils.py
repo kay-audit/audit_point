@@ -6,6 +6,7 @@
 
 import html
 import re
+from html.parser import HTMLParser
 
 # Спец-разметка редактора текстблоков (см. docx/builders/inline.py):
 # <span class="text-link" data-link-url="...">текст</span> — ссылка,
@@ -49,6 +50,23 @@ def _capture_span_inner(content: str, start: int) -> tuple[str, int]:
     return content[start:], n
 
 
+def _convert_block_boundaries(content: str, break_str: str) -> str:
+    """Схлопывает границы блоков (div/p) и <br> в перенос ``break_str``.
+
+    Общий шаг для ``clean_html`` (перенос — "\\n") и ``html_to_markdown``
+    (перенос — Markdown hard break "  \\n"). <br> непосредственно перед
+    закрытием блока невидим в браузере (перенос даёт сама граница блока),
+    поэтому вырезаем его ДО общей замены <br> -> break_str, иначе строка
+    задвоится.
+    """
+    result = re.sub(
+        r"<br\s*/?>\s*(</(?:div|p)>)", r"\1", content, flags=re.IGNORECASE,
+    )
+    result = re.sub(r"<br\s*/?>", break_str, result, flags=re.IGNORECASE)
+    result = re.sub(r"</(?:div|p)>", break_str, result, flags=re.IGNORECASE)
+    return result
+
+
 def _resolve_special_spans(content: str, link_fmt) -> str:
     """Разворачивает спец-span'ы (ссылка/сноска) в текстовый вид.
 
@@ -88,6 +106,184 @@ def _resolve_special_spans(content: str, link_fmt) -> str:
     return "".join(out)
 
 
+# ---------------------------------------------------------------------------
+# Узловой HTML → Markdown конвертер (html_to_markdown).
+#
+# В отличие от clean_html (выход инертен — plain text), MD-вывод парсится как
+# разметка. Поэтому текст пользователя нельзя отдавать в .md сырым: `[t](url)`
+# ожил бы как ссылка, а буквальный `<script>` (nh3 хранит его как `&lt;…&gt;`)
+# — как сырой HTML-тег. Узловой парсер эмитит РАЗМЕТКУ только для распознанных
+# тегов, а ТЕКСТ узлов экранирует. Границы блоков сводятся к переносам тем же
+# _convert_block_boundaries, что и clean_html (единая байт-семантика).
+# ---------------------------------------------------------------------------
+
+# Схемы, допустимые в MD-ссылке (зеркало DOCX inline.py _SAFE_LINK_PREFIXES и
+# фронтового validateLinkUrl). Небезопасная/пустая схема ссылкой не становится —
+# капсула деградирует в обычный текст (как javascript:/data: в DOCX-экспорте).
+_SAFE_LINK_PREFIXES = ("http://", "https://", "mailto:", "tel:", "ftp://", "file:")
+
+
+def _is_safe_link_url(url: str) -> bool:
+    u = url.strip().lower()
+    return u.startswith("#") or u.startswith(_SAFE_LINK_PREFIXES)
+
+
+def _escape_md_text(text: str) -> str:
+    r"""Экранирует MD-спецсимволы в ТЕКСТОВОМ узле rich-поля.
+
+    Состав (по CommonMark 0.30, приоритет — безопасность вывода при сохранении
+    читаемости):
+      ``\``  — первым, иначе гасит экранирование следующего символа;
+      ``[`` ``]`` — против впрыска поддельной ссылки/картинки ``[t](url)``
+        (`(`/`)` без предшествующих скобок инертны — их не трогаем);
+      ``<`` ``>`` — как HTML-сущности ``&lt;``/``&gt;``: буквальный ``<`` (nh3
+        хранит пользовательский ``<script>`` как ``&lt;…&gt;``, парсер декодирует
+        его обратно) НЕ должен выйти сырым — иначе CommonMark пропустит его как
+        inline-HTML (XSS-класс при рендере .md без санитайза). Сущность безопасна
+        и при рендере через движок, игнорирующий backslash-escapes; ``&gt;``
+        заодно гасит blockquote, если строка после границы блока начинается с
+        ``>``;
+      ``*`` — выделение; ``*`` рвёт даже ВНУТРИ слова (``a*b*c``), поэтому
+        экранируется;
+      ``` ` ``` — код-спан (может «проглотить» кусок текста до следующего
+        бэктика).
+
+    ``_`` сознательно НЕ экранируем: по CommonMark 0.30 ``_`` ВНУТРИ слова
+    (окружён буквенно-цифровыми) эмфазой не становится (правило snake_case), а
+    подчёркивания в реальном контенте (идентификаторы, url-фрагменты, snake_case)
+    повсеместны — их экранирование засорило бы вывод ``\_`` без выигрыша в
+    безопасности. Пограничный ``_слово_`` с пробелами вокруг — редкий чисто
+    косметический (не security) случай.
+
+    ``&`` тоже не трогаем: он уже декодирован ровно один раз (как прежний
+    финальный ``html.unescape``), тест-паритет ждёт живой ``&`` в выводе.
+    Пробелы/переносы строк несут структуру границ блоков — не экранируются.
+    """
+    text = text.replace("\\", "\\\\")
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    for ch in ("[", "]", "`", "*"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def _md_link_destination(url: str) -> str:
+    r"""URL как destination MD-ссылки (без внешних скобок).
+
+    Пробелы/табы/переносы требуют ``<...>``-формы (обычный destination их не
+    допускает); внутри ``<...>`` угловые скобки экранируются. Иначе — обычная
+    форма с экранированием ``(``/``)`` (иначе ``)`` в URL преждевременно закрыл
+    бы ссылку) и обратного слэша.
+    """
+    url = url.strip()
+    if any(c in url for c in " \t\r\n"):
+        inner = (
+            url.replace("\\", "\\\\").replace("<", "\\<").replace(">", "\\>")
+        )
+        inner = inner.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+        return f"<{inner}>"
+    return url.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _format_md_link(text: str, url: str) -> str:
+    """Готовая MD-ссылка ``[текст](url)`` для безопасной схемы; иначе — только
+    текст (небезопасная/пустая схема ссылкой не становится). ``text`` уже
+    экранирован (текстовые узлы), ``url`` готовится под destination."""
+    if not _is_safe_link_url(url):
+        return text
+    return f"[{text}]({_md_link_destination(url)})"
+
+
+class _MarkdownParser(HTMLParser):
+    """HTML-фрагмент → Markdown: распознанные теги дают разметку, текст узлов
+    экранируется (_escape_md_text).
+
+    Маппинг тегов — зеркало прежней реализации: ``b``/``strong`` → ``**``,
+    ``i``/``em`` → ``*``, ``u`` разворачивается (Markdown не имеет подчёркивания).
+    Спец-span'ы редактора: ``data-link-url`` → ссылка ``[текст](url)``,
+    ``data-footnote-text`` → ``якорь (сноска: текст)`` (ссылка приоритетнее —
+    как в прежнем _resolve_special_spans). Прочие теги отбрасываются, их текст
+    сохраняется.
+
+    Текст ссылки/сноски копится в отдельном буфере (стек _out), чтобы
+    вложенная разметка (``<b>`` внутри ссылки) и вложенные span'ы не рвали
+    капсулу — на закрытии буфер оборачивается в ``[...]``/``(сноска: …)``.
+
+    Границы блоков (``<br>``/``</div>``/``</p>``) сюда НЕ доезжают тегами: их
+    заранее сводит в переносы _convert_block_boundaries, поэтому парсер видит
+    только открывающие ``<div>``/``<p>`` (отбрасываются) и текст с переносами.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        # Стек буферов вывода; [0] — корневой. Открытие ссылки/сноски пушит
+        # новый буфер (захват текста капсулы), закрытие — снимает и оборачивает.
+        self._out: list[list[str]] = [[]]
+        # Параллельно span'ам: ("link", url) | ("footnote", text) | ("plain", None).
+        self._span_kinds: list[tuple[str, str | None]] = []
+
+    def _emit(self, s: str) -> None:
+        self._out[-1].append(s)
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self._emit(_escape_md_text(data))
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("b", "strong"):
+            self._emit("**")
+        elif tag in ("i", "em"):
+            self._emit("*")
+        elif tag == "u":
+            pass  # Подчёркивания в Markdown нет — тег разворачивается.
+        elif tag == "span":
+            self._open_span(dict(attrs))
+        # div/p/br/прочее — отбрасываются (текст сохраняется).
+
+    def handle_endtag(self, tag):
+        if tag in ("b", "strong"):
+            self._emit("**")
+        elif tag in ("i", "em"):
+            self._emit("*")
+        elif tag == "span":
+            self._close_span()
+
+    def _open_span(self, attrs: dict) -> None:
+        # Ключ — наличие атрибута (как прежний _resolve_special_spans); ссылка
+        # приоритетнее сноски. Пустой/небезопасный url отсеет _format_md_link.
+        url = attrs.get("data-link-url")
+        foot = attrs.get("data-footnote-text")
+        if url is not None:
+            self._span_kinds.append(("link", url))
+            self._out.append([])
+        elif foot is not None:
+            self._span_kinds.append(("footnote", foot))
+            self._out.append([])
+        else:
+            self._span_kinds.append(("plain", None))
+
+    def _close_span(self) -> None:
+        if not self._span_kinds:
+            return  # Непарный </span> — игнорируем.
+        kind, payload = self._span_kinds.pop()
+        if kind == "link":
+            inner = "".join(self._out.pop())
+            self._emit(_format_md_link(inner, payload))
+        elif kind == "footnote":
+            inner = "".join(self._out.pop())
+            self._emit(f"{inner} (сноска: {_escape_md_text(payload)})")
+        # plain — своего буфера нет, текст уже в текущем.
+
+    def close(self) -> None:
+        super().close()
+        # Непарные открытые капсулы (маловероятно после nh3) — закрываем, чтобы
+        # накопленный текст не потерялся и _out схлопнулся в корневой буфер.
+        while self._span_kinds:
+            self._close_span()
+
+    def result(self) -> str:
+        return "".join(self._out[0])
+
+
 class HTMLUtils:
     """
     Stateless класс-утилита для работы с HTML.
@@ -106,8 +302,10 @@ class HTMLUtils:
         Returns:
             Очищенный plain text
         """
-        # Замена <br> на переносы строк
-        clean = re.sub(r"<br\s*/?>", "\n", content, flags=re.IGNORECASE)
+        # Границы блоков (div/p) и <br> -> перенос строки (общий шаг с
+        # html_to_markdown, см. _convert_block_boundaries); открывающие
+        # теги вырезает общий стрип тегов ниже.
+        clean = _convert_block_boundaries(content, "\n")
 
         # Спец-span'ы редактора: ссылка → «текст (url)», сноска →
         # «якорь (сноска: текст)» — иначе данные атрибутов теряются.
@@ -117,7 +315,11 @@ class HTMLUtils:
         clean = re.sub(r"<[^>]+>", "", clean)
 
         # Декодирование HTML-сущностей (&nbsp;, &lt; и т.д.)
-        return html.unescape(clean)
+        clean = html.unescape(clean)
+
+        # Хвостовые переносы от последней границы блока убираем; ведущий
+        # перенос (пустая первая строка поля) — легитимен, не трогаем.
+        return clean.rstrip()
 
     @staticmethod
     def html_to_markdown(content: str) -> str:
@@ -127,8 +329,17 @@ class HTMLUtils:
         Поддерживает:
         - <b>, <strong> -> **bold**
         - <i>, <em> -> *italic*
-        - <u> -> удаление (Markdown не поддерживает)
-        - <br> -> hard break (два пробела + \\n)
+        - <u> -> разворачивается (Markdown не поддерживает подчёркивание)
+        - <br>/</div>/</p> -> перенос строки (MD hard break "  \\n")
+        - спец-span'ы редактора: ссылка -> [текст](url), сноска ->
+          «якорь (сноска: текст)»
+
+        Узловой парсер (_MarkdownParser): распознанные теги дают разметку, а
+        ТЕКСТ узлов экранируется (_escape_md_text) — иначе пользовательский
+        `[t](url)` ожил бы ссылкой, а буквальный `<script>` (nh3 хранит его
+        как `&lt;…&gt;`) — сырым HTML при рендере .md. В отличие от clean_html
+        финального html.unescape НЕТ: сущности декодирует parser (convert_charrefs)
+        в handle_data, где текст сразу экранируется.
 
         Args:
             content: HTML-контент
@@ -136,38 +347,18 @@ class HTMLUtils:
         Returns:
             Markdown-текст
         """
-        # <br> -> Markdown hard break
-        result = re.sub(r"<br\s*/?>", "  \n", content, flags=re.IGNORECASE)
+        # Границы блоков (div/p) и <br> -> MD hard break тем же 3-шаговым
+        # переводом, что и clean_html (_convert_block_boundaries): байт-семантика
+        # границ не меняется. Открывающие <div>/<p> отбросит parser.
+        pre = _convert_block_boundaries(content, "  \n")
 
-        # Спец-span'ы редактора: ссылка → [текст](url), сноска —
-        # inline «якорь (сноска: текст)» (без блока сносок: конвертер
-        # работает с фрагментом и не знает контекста документа).
-        result = _resolve_special_spans(result, lambda inner, url: f"[{inner}]({url})")
+        parser = _MarkdownParser()
+        parser.feed(pre)
+        parser.close()
 
-        # <b>, <strong> -> **текст**
-        result = re.sub(
-            r"<(?:b|strong)>(.+?)</(?:b|strong)>",
-            r"**\1**",
-            result,
-            flags=re.DOTALL,
-        )
-
-        # <i>, <em> -> *текст*
-        result = re.sub(
-            r"<(?:i|em)>(.+?)</(?:i|em)>",
-            r"*\1*",
-            result,
-            flags=re.DOTALL,
-        )
-
-        # <u> -> текст (underline не поддерживается в Markdown)
-        result = re.sub(r"<u>(.+?)</u>", r"\1", result, flags=re.DOTALL)
-
-        # Удаление остальных тегов
-        result = re.sub(r"<[^>]+>", "", result)
-
-        # Декодирование HTML-сущностей
-        return html.unescape(result)
+        # Хвостовые переносы от последней границы блока убираем; ведущий
+        # перенос (пустая первая строка поля) — легитимен, не трогаем.
+        return parser.result().rstrip()
 
     @staticmethod
     def extract_style_property(

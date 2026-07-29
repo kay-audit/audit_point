@@ -1,8 +1,10 @@
 """Декларативный контракт полей нарушения (#31A, бэкбон рефакторинга «Нарушения»).
 
 Single source of truth для набора полей нарушения: ключ, метка, порядок
-отображения, вид (`kind`) и два флага рендера (`small` — мелкий шрифт,
-`show_label_in_preview` — показывать ли подпись поля в превью/форме). На этом
+отображения, вид (`kind`) и три флага (`small` — мелкий шрифт,
+`show_label_in_preview` — показывать ли подпись поля в превью/форме,
+`rich` — поле редактируется rich-редактором и санитизируется как HTML
+на сохранении; plain-поля хранятся дословно). На этом
 контракте позже стоит унификация подписей и единый рендер формы (следующие
 задачи бэкбона); в ЭТОЙ задаче он только объявлен и закреплён стражами —
 рендереры не трогаются.
@@ -43,43 +45,46 @@ class ViolationFieldDescriptor:
     kind: str  # "pair" | "list" | "additional" | "optional_text"
     small: bool
     show_label_in_preview: bool
+    rich: bool  # Поле требует rich-редактора и HTML-санитайзера
 
 
 VIOLATION_FIELDS: tuple[ViolationFieldDescriptor, ...] = (
     ViolationFieldDescriptor(
         key="violated", label="Нарушено", order=0, kind="pair",
-        small=True, show_label_in_preview=True,
+        small=True, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="established", label="Установлено", order=1, kind="pair",
-        small=True, show_label_in_preview=True,
+        small=True, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         # Заголовок убран (решение #12) — список описаний идёт без подписи.
+        # rich=True (Task 7): пункты списка — rich-редактор, HTML-санитайзер
+        # (sanitize_rich_html per-item, см. html_sanitizer._sanitize_violation_obj/_dict).
         key="descriptionList", label="", order=2, kind="list",
-        small=True, show_label_in_preview=False,
+        small=True, show_label_in_preview=False, rich=True,
     ),
     ViolationFieldDescriptor(
         key="additionalContent", label="", order=3, kind="additional",
-        small=True, show_label_in_preview=False,
+        small=True, show_label_in_preview=False, rich=False,
     ),
     ViolationFieldDescriptor(
         key="reasons", label="Причины", order=4, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="measures", label="Принятые меры", order=5, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         key="consequences", label="Последствия", order=6, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
     ViolationFieldDescriptor(
         # Канон #11: "Ответственные" (не "Ответственный", как в DOCX-builder'е —
         # выравнивание подписи форматтеров будет отдельной задачей бэкбона).
         key="responsible", label="Ответственные", order=7, kind="optional_text",
-        small=False, show_label_in_preview=True,
+        small=False, show_label_in_preview=True, rich=True,
     ),
 )
 

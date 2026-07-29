@@ -89,3 +89,21 @@ class TestKindSmallAndPreviewFlags:
             for field in VIOLATION_FIELDS
         }
         assert actual == expected
+
+
+class TestRichFlag:
+    """Флаг rich указывает, какие поля требуют rich-редактора и HTML-санитайзера."""
+
+    def test_rich_flag_values(self):
+        expected = {
+            "violated": True,
+            "established": True,
+            "descriptionList": True,
+            "additionalContent": False,
+            "reasons": True,
+            "measures": True,
+            "consequences": True,
+            "responsible": True,
+        }
+        actual = {f.key: f.rich for f in VIOLATION_FIELDS}
+        assert actual == expected

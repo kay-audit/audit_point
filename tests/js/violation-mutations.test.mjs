@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AppConfig } from '../../static/js/shared/app-config.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
-import { violationMutations as mutations } from '../../static/js/constructor/violation/violation-mutations.js';
+import { violationMutations as mutations, parseFieldPath } from '../../static/js/constructor/violation/violation-mutations.js';
 
 // Шпионы превью: записываем какой статик и с какими аргументами был вызван.
 let previewCalls = [];
@@ -41,6 +41,18 @@ function makeViolation() {
         measures: { enabled: false, content: '' },
     };
 }
+
+// --- parseFieldPath (V23): общий разбор пути для read (_readViolationField, ---
+// violation-field-surface.js) и write (setViolationField ниже) -------------
+
+test('parseFieldPath: плоский путь → key, subKey=null', () => {
+    assert.deepEqual(parseFieldPath('violated'), { key: 'violated', subKey: null });
+});
+
+test('parseFieldPath: точечный путь → key + subKey', () => {
+    assert.deepEqual(parseFieldPath('reasons.content'), { key: 'reasons', subKey: 'content' });
+    assert.deepEqual(parseFieldPath('descriptionList.enabled'), { key: 'descriptionList', subKey: 'enabled' });
+});
 
 // --- setViolationField: плоские пути (печатный ввод → scheduleTypingBlock) ---
 

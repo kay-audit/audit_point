@@ -12,7 +12,8 @@
 import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ActSearchEngine, FootnoteBodySearchTarget, TextBlockSearchTarget } from '../../static/js/constructor/search/act-search-engine.js';
+import { ActSearchEngine, FootnoteBodySearchTarget, TextBlockSearchTarget, ViolationFieldSearchTarget } from '../../static/js/constructor/search/act-search-engine.js';
+import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
 globalThis.Node = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
 
@@ -99,6 +100,32 @@ function fakeFootnoteEl({ footnoteText = '', footnoteId = 'footnote_1', blockId 
     closest: (sel) => (sel === '.textblock-editor' ? editor : null),
     classList: { contains: () => false },
   };
+}
+
+/**
+ * Фейковая поверхность rich-поля нарушения: РОВНО поля, что читает
+ * ViolationFieldSearchTarget (id + commit/getContent/setContent). Не реальная
+ * ViolationFieldSurface — цель духотипизирована на __surface, движку хватает
+ * этого контракта.
+ */
+function fakeSurface({ id = 'viol:v1:violated', content = '' } = {}) {
+  return {
+    id,
+    _content: content,
+    commitCount: 0,
+    setCalls: [],
+    commit() { this.commitCount++; },
+    getContent() { return this._content; },
+    setContent(html) { this.setCalls.push(html); this._content = html; },
+  };
+}
+
+/** Фейковый хост .violation-field с обратной ссылкой __surface (как её ставит
+ *  _createRichFieldEditor). children — как у elem (для collectRuns). */
+function fakeViolationHost(surface, children = []) {
+  const host = elem('DIV', children, 'violation-field');
+  host.__surface = surface;
+  return host;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,8 +564,12 @@ test('buildTargets: одна FootnoteBodySearchTarget НА КАЖДУЮ снос
     dataset: { textBlockId: 'tb2' },
     querySelectorAll: () => [],
   };
+  // buildTargets теперь скоупится КОМБИНИРОВАННЫМ селектором (textblock +
+  // violation-поле) ради порядка документа — мок отвечает на него. Редакторы
+  // без __surface → ветка текстблока (диспетч по __surface, не по классу).
+  const COMBINED_SELECTOR = '.textblock-editor[data-text-block-id], .violation-field';
   const fakeContainer = {
-    querySelectorAll: (sel) => (sel === '.textblock-editor[data-text-block-id]' ? [editor1, editor2] : []),
+    querySelectorAll: (sel) => (sel === COMBINED_SELECTOR ? [editor1, editor2] : []),
   };
   const originalGetById = document.getElementById;
   document.getElementById = (id) => (id === 'itemsContainer' ? fakeContainer : null);
@@ -553,6 +584,95 @@ test('buildTargets: одна FootnoteBodySearchTarget НА КАЖДУЮ снос
     assert.equal(targets[2].id, 'tb1:footnote:fn_b');
     assert.ok(targets[3] instanceof TextBlockSearchTarget);
     assert.equal(targets[3].id, 'tb2');
+  } finally {
+    document.getElementById = originalGetById;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ViolationFieldSearchTarget — rich-поля нарушения как поверхность поиска
+// (духотипизация на host.__surface; движок остаётся violation-агностичным).
+// ---------------------------------------------------------------------------
+
+test('ViolationFieldSearchTarget: id/blockId из __surface.id, isViolationField=true', () => {
+  const surface = fakeSurface({ id: 'viol:v1:violated' });
+  const target = new ViolationFieldSearchTarget(fakeViolationHost(surface));
+  assert.equal(target.id, 'viol:v1:violated');
+  assert.equal(target.blockId, 'viol:v1:violated'); // нет textblock — id сам себе «блок»
+  assert.equal(target.isViolationField, true);       // дискриминатор для undo в find-bar
+});
+
+test('ViolationFieldSearchTarget.collectRuns: пробеги хоста тем же DFS, что у текстблока', () => {
+  const host = fakeViolationHost(fakeSurface(), [txt('foo'), capsule('x'), txt('bar')]);
+  const runs = new ViolationFieldSearchTarget(host).collectRuns();
+  assert.deepEqual(runs.map((r) => r.text), ['foo', 'x', 'bar']);
+  assert.deepEqual(runs.map((r) => !!r.capsuleText), [false, true, false]);
+});
+
+test('ViolationFieldSearchTarget.getContent/setContent делегируют в поверхность', () => {
+  const surface = fakeSurface({ content: 'модель' });
+  const target = new ViolationFieldSearchTarget(fakeViolationHost(surface));
+  assert.equal(target.getContent(), 'модель');
+  target.setContent('<b>новое</b>');
+  assert.deepEqual(surface.setCalls, ['<b>новое</b>']);
+});
+
+test('ViolationFieldSearchTarget.persist: commit поверхности + toggleEmptyClass хоста (паритет finalizeEdit)', () => {
+  // Программная замена НЕ шлёт input → placeholder-класс/капсульная гигиена сами
+  // не обновятся; persist тоглит --empty явно (у текстблока это делает finalizeEdit).
+  const surface = fakeSurface();
+  const host = fakeViolationHost(surface);
+  const target = new ViolationFieldSearchTarget(host);
+  const toggled = [];
+  const orig = textBlockManager._toggleEmptyClass;
+  textBlockManager._toggleEmptyClass = (el) => toggled.push(el);
+  try {
+    target.persist();
+    assert.equal(surface.commitCount, 1);
+    assert.deepEqual(toggled, [host]);
+  } finally {
+    textBlockManager._toggleEmptyClass = orig;
+  }
+});
+
+test('buildTargets: violation-поля в ПОРЯДКЕ ДОКУМЕНТА между текстблоками (v1, tb, v2)', () => {
+  // Единый комбинированный селектор в порядке документа — иначе навигация/счётчик
+  // сбились бы (все текстблоки, затем все поля). Диспетч ветвей — по __surface.
+  const v1 = fakeViolationHost(fakeSurface({ id: 'viol:v1:violated' }));
+  const editor = { dataset: { textBlockId: 'tb1' }, querySelectorAll: () => [] };
+  const v2 = fakeViolationHost(fakeSurface({ id: 'viol:v2:violated' }));
+  const COMBINED_SELECTOR = '.textblock-editor[data-text-block-id], .violation-field';
+  const fakeContainer = {
+    querySelectorAll: (sel) => (sel === COMBINED_SELECTOR ? [v1, editor, v2] : []),
+  };
+  const originalGetById = document.getElementById;
+  document.getElementById = (id) => (id === 'itemsContainer' ? fakeContainer : null);
+  try {
+    const targets = ActSearchEngine.buildTargets();
+    assert.equal(targets.length, 3);
+    assert.ok(targets[0] instanceof ViolationFieldSearchTarget);
+    assert.equal(targets[0].id, 'viol:v1:violated');
+    assert.ok(targets[1] instanceof TextBlockSearchTarget);
+    assert.equal(targets[1].id, 'tb1');
+    assert.ok(targets[2] instanceof ViolationFieldSearchTarget);
+    assert.equal(targets[2].id, 'viol:v2:violated');
+  } finally {
+    document.getElementById = originalGetById;
+  }
+});
+
+test('buildTargets: violation-field без __surface (бэкреф не проставлен) — молча пропущено', () => {
+  // В бою .violation-field ВСЕГДА несёт __surface; без него цель бесполезна
+  // (persist/undo некуда адресовать) — пропускаем, а не роняем поиск.
+  const orphan = elem('DIV', [], 'violation-field'); // ни __surface, ни dataset.textBlockId
+  const COMBINED_SELECTOR = '.textblock-editor[data-text-block-id], .violation-field';
+  const fakeContainer = {
+    querySelectorAll: (sel) => (sel === COMBINED_SELECTOR ? [orphan] : []),
+  };
+  const originalGetById = document.getElementById;
+  document.getElementById = (id) => (id === 'itemsContainer' ? fakeContainer : null);
+  try {
+    assert.deepEqual(ActSearchEngine.buildTargets(), []);
   } finally {
     document.getElementById = originalGetById;
   }

@@ -12,6 +12,7 @@
  * freeText — буквально нечего рендерить; паритет с DOCX/MD/TXT, которые его
  * пропускают (см. collectViolationLines).
  */
+import { renderActContent } from '../../shared/sanitize.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
 import {
     CONTENT_TYPE_CASE,
@@ -98,6 +99,81 @@ export function collectViolationLines(violation) {
     return lines;
 }
 
+// text-align верхнеуровневого <div>/<p> — зеркало _TEXT_ALIGN_RE
+// (app/domains/acts/formatters/docx/builders/inline.py): нераспознанные
+// значения (start/end/-webkit-*) сознательно игнорируются, align = null.
+const TEXT_ALIGN_RE = /text-align\s*:\s*(left|center|right|justify)\b/i;
+// Значение атрибута style (обе кавычки) — скоуп поиска align ОГРАНИЧЕН им же,
+// зеркало бэкового _extract_text_align (ищет только в attrs['style'], не по
+// всему тегу): иначе `class="text-align:center"` (class — разрешённый атрибут
+// без ограничений на содержимое) подделал бы align, которого нет в DOCX
+// (ревью F2/Minor).
+const STYLE_ATTR_RE = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+
+/**
+ * text-align атрибута style открывающего тега сегмента (F2/Пункт 1) — паритет
+ * с DOCX BlockSegment.alignment: без него превью теряло пользовательское
+ * выравнивание строки, которое DOCX (render_block_segments) сохраняет.
+ * Скоуп поиска — ТОЛЬКО значение style, не весь текст тега (см. STYLE_ATTR_RE).
+ * @param {string} openTagText - Сырой текст открывающего тега (с атрибутами)
+ * @returns {string|null}
+ */
+function extractTextAlign(openTagText) {
+    const styleMatch = STYLE_ATTR_RE.exec(openTagText);
+    if (!styleMatch) return null;
+    const styleValue = styleMatch[1] ?? styleMatch[2] ?? '';
+    const alignMatch = TEXT_ALIGN_RE.exec(styleValue);
+    return alignMatch ? alignMatch[1].toLowerCase() : null;
+}
+
+/**
+ * Режет rich-HTML поля на верхнеуровневые блочные абзацы (упрощённый JS-аналог
+ * split_block_segments, app/domains/acts/formatters/docx/builders/inline.py) —
+ * #13: `_addLine` кладёт тело поля в инлайновый `<span>` рядом с меткой;
+ * блочные `<div>` многострочного rich-значения (Enter в rich-редакторе →
+ * новый параграф) внутри `<span>` рвут инлайн-контекст (anonymous block boxes,
+ * CSS 2.1 §9.2.1.1) — метка остаётся одна на строке, первая строка уезжает
+ * вниз. Верхнеуровневый `<div>`/`<p>` → отдельный сегмент (его ВНУТРЕННИЙ
+ * html, обёртка отбрасывается; text-align обёртки сохраняется в align
+ * сегмента — F2/Пункт 1). Смежный контент вне блочных тегов (голый
+ * текст/инлайн-форматирование/`<br>`) уходит в отдельный анонимный сегмент
+ * без align. Вложенные блочные теги остаются внутри html родительского
+ * сегмента (рендерятся как есть). Нет верхнеуровневых блочных тегов (частый
+ * случай — однострочные поля) → один сегмент с исходным html без align.
+ * @param {string} html
+ * @returns {{html: string, align: (string|null)}[]} Сегменты в порядке появления
+ */
+export function splitTopLevelBlocks(html) {
+    if (!html) return [];
+    const segments = [];
+    const tagRe = /<(div|p)\b[^>]*>|<\/(div|p)>/gi;
+    let depth = 0;
+    let segStart = 0;
+    let blockStart = -1;
+    let blockAlign = null;
+    let match;
+    while ((match = tagRe.exec(html)) !== null) {
+        if (match[1]) {
+            if (depth === 0) {
+                const anon = html.slice(segStart, match.index);
+                if (anon.trim()) segments.push({ html: anon, align: null });
+                blockStart = match.index + match[0].length;
+                blockAlign = extractTextAlign(match[0]);
+            }
+            depth++;
+        } else if (depth > 0) {
+            depth--;
+            if (depth === 0) {
+                segments.push({ html: html.slice(blockStart, match.index), align: blockAlign });
+                segStart = match.index + match[0].length;
+            }
+        }
+    }
+    const tail = html.slice(segStart);
+    if (tail.trim()) segments.push({ html: tail, align: null });
+    return segments;
+}
+
 /**
  * Чистый маппинг item.width / лимита высоты → inline-стиль картинки превью.
  *
@@ -140,21 +216,58 @@ export class PreviewViolationRenderer {
     /**
      * Добавляет абзац «Метка_подчёркнута полный текст» (паритет с DOCX:
      * label-run подчёркнут, body-run обычный). `small` → 9pt-курсив-группа.
+     *
+     * #13: многострочное rich-значение (несколько верхнеуровневых `<div>`-
+     * абзацев) режется на сегменты (splitTopLevelBlocks) — паритет с DOCX
+     * `_labeled_paragraph`/render_block_segments(first_paragraph=para): первый
+     * абзац инлайнится рядом с меткой в ТОМ ЖЕ `<span>` (без него блочный
+     * `<div>` внутри `<span>` рвёт инлайн-контекст, метка уезжает на свою
+     * строку), последующие абзацы — отдельными блочными строками ниже, без
+     * метки (как продолжающие w:p в DOCX).
+     *
+     * F2/Пункт 1: text-align сегмента (splitTopLevelBlocks) переносится на
+     * строку превью — паритет с DOCX render_block_segments, где align
+     * сегмента задаётся на весь w:p, включая label-run. Сегмент без align
+     * (default) не получает инлайн-style — прежняя раскладка через CSS
+     * (.preview-violation-line { text-align: justify }).
      * @private
      */
     static _addLine(container, label, text, small) {
+        const className = small ? 'preview-violation-line preview-violation-line--small'
+                                : 'preview-violation-line';
+        const segments = splitTopLevelBlocks(text);
+        const [first, ...rest] = segments.length ? segments : [{ html: text || '', align: null }];
+
         const line = document.createElement('div');
-        line.className = small ? 'preview-violation-line preview-violation-line--small'
-                               : 'preview-violation-line';
+        line.className = className;
+        if (first.align) {
+            line.style.textAlign = first.align;
+        }
         if (label) {
             const labelEl = document.createElement('span');
             labelEl.className = 'preview-violation-label';
             labelEl.textContent = `${label}: `;
             line.appendChild(labelEl);
         }
-        // text — пользовательское поле нарушения; вставляем как текст-ноду (без HTML).
-        line.appendChild(document.createTextNode(text));
+        // first.html — rich-HTML первого абзаца поля (Task 1.1); рендерим
+        // через renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
+        // текст-нодой — иначе сырой HTML показался бы буквально.
+        const bodyEl = document.createElement('span');
+        renderActContent(bodyEl, first.html);
+        line.appendChild(bodyEl);
         container.appendChild(line);
+
+        // Последующие абзацы — отдельные блочные строки той же типографики,
+        // без метки (продолжение, не новое поле), каждая — со своим align.
+        for (const segment of rest) {
+            const contLine = document.createElement('div');
+            contLine.className = className;
+            if (segment.align) {
+                contLine.style.textAlign = segment.align;
+            }
+            renderActContent(contLine, segment.html);
+            container.appendChild(contLine);
+        }
     }
 
     /**
@@ -178,7 +291,11 @@ export class PreviewViolationRenderer {
                                : 'preview-violation-desclist';
         for (const item of items) {
             const li = document.createElement('li');
-            li.textContent = item;
+            // Task 7: пункт — rich-HTML поле нарушения; рендерим через
+            // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT и
+            // _addLine выше), не текст-нодой — иначе сырой HTML показался бы
+            // буквально.
+            renderActContent(li, item);
             list.appendChild(li);
         }
         container.appendChild(list);
@@ -235,7 +352,10 @@ export class PreviewViolationRenderer {
         if (!item.caption) return;
         const caption = document.createElement('div');
         caption.className = 'preview-violation-caption';
-        caption.textContent = item.caption;
+        // Task 6: подпись — rich-HTML (rich-редактор), рендерим через
+        // renderActContent (профиль 'acts'), а не textContent — иначе
+        // форматирование показалось бы буквальными тегами.
+        renderActContent(caption, item.caption);
         container.appendChild(caption);
     }
 }

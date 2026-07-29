@@ -90,6 +90,37 @@ test('descriptionList: выключенный список в обеих вер�
     assert.equal(d.fieldDiffs.descriptionList, undefined);
 });
 
+// --- Task 7: пункт descriptionList — rich-поле, word-diff по видимому тексту
+// (зеркало case/freeText выше), а не по сырому HTML.
+
+test('descriptionList: изменение пункта — word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['<b>старый</b> пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>новый</b> пункт'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.status, 'modified');
+    assert.ok(item.wordDiff.some(p => p.type === 'insert' && p.text === 'новый'));
+    assert.ok(item.wordDiff.some(p => p.type === 'delete' && p.text === 'старый'));
+    assert.ok(item.wordDiff.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+    // old/new сохранены сырыми (рендерер решает, показывать их напрямую или нет).
+    assert.equal(item.old, '<b>старый</b> пункт');
+    assert.equal(item.new, '<b>новый</b> пункт');
+});
+
+test('descriptionList: правка только формата пункта → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>пункт</b>'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.formattingOnly, true);
+    assert.ok(item.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('descriptionList: правка текста пункта → formattingOnly=false', () => {
+    const oldV = makeViol({ descriptionList: { enabled: true, items: ['<b>старый</b> пункт'] } });
+    const newV = makeViol({ descriptionList: { enabled: true, items: ['<b>новый</b> пункт'] } });
+    const item = diffOne(oldV, newV).fieldDiffs.descriptionList.items[0];
+    assert.equal(item.formattingOnly, false);
+});
+
 // --- additionalContent: case / freeText -------------------------------------
 
 test('additionalContent: изменение кейса → modified + word-diff', () => {
@@ -157,6 +188,47 @@ test('additionalContent: смена подписи/ширины картинки
     assert.equal(e.fields.caption.new, 'новая');
     assert.equal(String(e.fields.width.new), '60');
     assert.equal(e.fields.url, undefined);
+});
+
+// --- Task 6: caption картинки — rich-поле, word-diff по видимому тексту
+// (зеркало case/freeText выше), а не строковое сравнение как у filename/width.
+
+test('additionalContent: caption картинки — word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>старая</b> подпись', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>новая</b> подпись', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified');
+    const wd = e.fields.caption.wordDiff;
+    assert.ok(wd.some(p => p.type === 'insert' && p.text === 'новая'));
+    assert.ok(wd.some(p => p.type === 'delete' && p.text === 'старая'));
+    assert.ok(wd.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+    // old/new сохранены сырыми (рендерер решает, показывать их напрямую или нет).
+    assert.equal(e.fields.caption.old, '<b>старая</b> подпись');
+    assert.equal(e.fields.caption.new, '<b>новая</b> подпись');
+});
+
+test('additionalContent: caption картинки — правка только формата → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'подпись', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>подпись</b>', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified');
+    assert.equal(e.fields.caption.formattingOnly, true);
+    assert.ok(e.fields.caption.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('additionalContent: caption картинки — правка текста → formattingOnly=false', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>старая</b>', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: '<b>новая</b>', filename: 'p.png', width: 0 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.fields.caption.formattingOnly, false);
+});
+
+test('additionalContent: caption картинки без изменений — fields.caption не выставляется', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'та же', filename: 'p.png', width: 0 }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'i1', type: 'image', url: 'u', caption: 'та же', filename: 'p.png', width: 60 }] } });
+    const e = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(e.status, 'modified', 'width изменился — элемент изменён');
+    assert.equal(e.fields.caption, undefined, 'caption не менялась — поля caption в fields нет');
 });
 
 test('additionalContent: огромный base64-url НЕ гоняется через _wordDiff (строковое сравнение, без зависания)', () => {
@@ -272,4 +344,70 @@ test('добавленное нарушение с выключенными desc
     assert.equal(d.status, 'added');
     assert.equal(d.fieldDiffs.descriptionList, undefined);
     assert.equal(d.fieldDiffs.additionalContent, undefined);
+});
+
+// --- #1.1.5: word-diff по видимому тексту для скалярных rich-полей ---------
+// Rich-поля нарушения (violated/established/reasons/measures/consequences/
+// responsible) со временем станут rich-HTML (rich-редактор — в планах). Раньше
+// fieldDiffs[field] нёс только {old, new, changed} — сырой HTML/текст без
+// word-diff. Теперь, зеркало _diffTextBlocks (:281-291): при различии считаем
+// wordDiff/formattingOnly по _stripHtml, сохраняя old/new/changed как раньше.
+
+test('rich-поле: правка только форматирования → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    // Адаптация примера из брифа: _wordDiff на РАВНЫХ (после _stripHtml) строках
+    // возвращает не пустой массив, а один сгруппированный op {type:'equal'}
+    // (см. diff-engine-textblock-format.test.mjs) — проверяем отсутствие
+    // insert/delete-частей, а не пустоту массива.
+    const oldV = makeViol({ reasons: { enabled: true, content: 'важный текст' } });
+    const newV = makeViol({ reasons: { enabled: true, content: '<b>важный текст</b>' } });
+    const d = diffOne(oldV, newV);
+    assert.equal(d.status, 'modified');
+    assert.equal(d.fieldDiffs.reasons.formattingOnly, true);
+    assert.ok(d.fieldDiffs.reasons.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('rich-поле: правка текста → word-diff по видимому тексту, formattingOnly=false', () => {
+    const oldV = makeViol({ reasons: { enabled: true, content: '<b>старый</b> текст' } });
+    const newV = makeViol({ reasons: { enabled: true, content: '<b>новый</b> текст' } });
+    const d = diffOne(oldV, newV);
+    assert.equal(d.fieldDiffs.reasons.formattingOnly, false);
+    assert.ok(d.fieldDiffs.reasons.wordDiff.some(p => p.type === 'insert' && p.text.includes('новый')));
+});
+
+test('rich-поле: old/new/changed сохраняются нетронутыми (сырой HTML), wordDiff/formattingOnly — новые поля', () => {
+    const oldV = makeViol({ violated: 'старый <i>текст</i>' });
+    const newV = makeViol({ violated: 'новый <i>текст</i>' });
+    const fd = diffOne(oldV, newV).fieldDiffs.violated;
+    assert.equal(fd.old, 'старый <i>текст</i>');
+    assert.equal(fd.new, 'новый <i>текст</i>');
+    assert.equal(fd.changed, true);
+});
+
+test('additionalContent case/freeText: word-diff по видимому тексту (HTML-теги не попадают в слова)', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>старый</b> кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>новый</b> кейс' }] } });
+    const wd = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0].wordDiff;
+    assert.ok(wd.some(p => p.type === 'insert' && p.text === 'новый'));
+    assert.ok(wd.some(p => p.type === 'delete' && p.text === 'старый'));
+    assert.ok(wd.every(p => !p.text.includes('<')), 'HTML-теги не должны попадать в текст word-diff частей');
+});
+
+// --- Review Round 2: formattingOnly для case/freeText (паритет со скалярными
+// полями). Раньше правка ТОЛЬКО форматирования кейса/свободного текста дала бы
+// modified с all-equal word-diff и без явного сигнала — несогласованно с
+// формализмом скалярных полей выше. По образцу тестов rich-поля.
+
+test('additionalContent case/freeText: правка только формата → formattingOnly=true, wordDiff без вставок/удалений', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: 'кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>кейс</b>' }] } });
+    const entry = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(entry.formattingOnly, true);
+    assert.ok(entry.wordDiff.every(p => p.type === 'equal'));
+});
+
+test('additionalContent case/freeText: правка текста → formattingOnly=false', () => {
+    const oldV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>старый</b> кейс' }] } });
+    const newV = makeViol({ additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: '<b>новый</b> кейс' }] } });
+    const entry = diffOne(oldV, newV).fieldDiffs.additionalContent.entries[0];
+    assert.equal(entry.formattingOnly, false);
 });

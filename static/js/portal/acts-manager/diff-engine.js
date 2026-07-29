@@ -1,5 +1,14 @@
 import { INVOICE_DIFF_FIELD_KEYS } from './invoice-diff-fields.js';
 
+// Инлайновые теги форматирования — граница тега НЕ считается границей слова
+// (сло<b>во</b> визуально сливается с соседним текстом в «слово»). Блочные
+// теги (div/p/li/tr/h1-h6/...) и <br> — остаются границей (разрыв
+// строки/абзаца), поэтому в _stripHtml обрабатываются по умолчанию (не в
+// этом списке).
+const INLINE_FORMATTING_TAGS = new Set([
+    'b', 'i', 'u', 's', 'em', 'strong', 'span', 'a', 'sub', 'sup', 'code', 'strike', 'del',
+]);
+
 /**
  * Вычисление структурного diff между двумя снэпшотами содержимого.
  * Чистый utility-класс без DOM-зависимостей.
@@ -278,16 +287,13 @@ export class DiffEngine {
             if (oldContent === newContent) {
                 result[id] = { status: 'unchanged', content: oldContent };
             } else {
-                const strippedOld = this._stripHtml(oldContent);
-                const strippedNew = this._stripHtml(newContent);
+                // Видимый текст совпал, а raw HTML различается → правка только
+                // форматирования (word-diff пуст); рендер показывает бейдж.
                 result[id] = {
                     status: 'modified',
                     oldContent,
                     newContent,
-                    wordDiff: this._wordDiff(strippedOld, strippedNew),
-                    // Видимый текст совпал, а raw HTML различается → правка только
-                    // форматирования (word-diff пуст); рендер показывает бейдж.
-                    formattingOnly: strippedOld === strippedNew,
+                    ...this._richWordDiff(oldContent, newContent),
                 };
             }
         }
@@ -296,7 +302,9 @@ export class DiffEngine {
     }
 
     /**
-     * Diff нарушений. Возвращает {vId: {status, fieldDiffs}}
+     * Diff нарушений. Возвращает {vId: {status, fieldDiffs}}. Для 6 скалярных
+     * rich-полей fieldDiffs[field] несёт wordDiff/formattingOnly — word-diff
+     * по видимому тексту, зеркало _diffTextBlocks.
      */
     static _diffViolations(oldViols, newViols) {
         const result = {};
@@ -332,7 +340,16 @@ export class DiffEngine {
                 const oldVal = this._getViolationFieldValue(oldV, field);
                 const newVal = this._getViolationFieldValue(newV, field);
                 if (oldVal !== newVal) {
-                    fieldDiffs[field] = { old: oldVal, new: newVal, changed: true };
+                    // Rich-поля (планируется rich-текст) — сравниваем по
+                    // ВИДИМОМУ тексту, зеркало _diffTextBlocks (через _richWordDiff).
+                    // formattingOnly — правка только разметки при совпавшем
+                    // видимом тексте.
+                    fieldDiffs[field] = {
+                        old: oldVal,
+                        new: newVal,
+                        changed: true,
+                        ...this._richWordDiff(oldVal, newVal),
+                    };
                     hasFieldChanges = true;
                 }
             }
@@ -450,7 +467,9 @@ export class DiffEngine {
     /**
      * Структурный дифф списка описаний (descriptionList: {enabled, items:[str]}).
      * Выключенный список канонизируется как пустой (в акте не показан).
-     * Пер-элементный diff по позиции: added/removed/modified (modified → word-diff).
+     * Пер-элементный diff по позиции: added/removed/modified (modified → word-diff
+     * по видимому тексту + formattingOnly, Task 7 — пункты стали rich-полем,
+     * зеркало case/freeText).
      * @returns {{kind, changed, enabled, oldEnabled, items: Array}}
      */
     static _diffDescriptionList(oldV, newV) {
@@ -476,7 +495,15 @@ export class DiffEngine {
                 items.push({ status: 'removed', old: oldItem });
                 changed = true;
             } else if (oldItem !== newItem) {
-                items.push({ status: 'modified', old: oldItem, new: newItem, wordDiff: this._wordDiff(oldItem, newItem) });
+                // Пункт — rich-поле (Task 7): word-diff по ВИДИМОМУ тексту
+                // (_stripHtml), зеркало case/freeText (_diffContentItem) —
+                // detect-modified остаётся по сырому значению (см. там же),
+                // formattingOnly — правка только разметки при совпавшем
+                // видимом тексте (паритет со скалярными rich-полями).
+                items.push({
+                    status: 'modified', old: oldItem, new: newItem,
+                    ...this._richWordDiff(oldItem, newItem),
+                });
                 changed = true;
             } else {
                 items.push({ status: 'unchanged', old: oldItem, new: newItem });
@@ -489,10 +516,12 @@ export class DiffEngine {
      * Структурный дифф доп.контента (additionalContent: {enabled, items:[{id,type,...}]}).
      * Выключенный контент канонизируется как пустой. Матчинг элементов по item.id
      * (стабилен в пределах истории ОДНОГО акта). Классификация:
-     * added/removed/modified/reordered. case/freeText → word-diff по content;
-     * image → строковое сравнение url/caption/filename/width (base64-url НЕ через
-     * word-diff). reordered — по относительному порядку общих id (устойчив к
-     * вставкам/удалениям).
+     * added/removed/modified/reordered. case/freeText → word-diff по видимому
+     * тексту (_stripHtml); image → строковое сравнение url/filename/width
+     * (base64-url НЕ через word-diff); caption (Task 6, rich-поле) — тоже
+     * word-diff по видимому тексту, зеркало case/freeText (см. _diffContentItem).
+     * reordered — по относительному порядку общих id (устойчив к вставкам/
+     * удалениям).
      * @returns {{kind, changed, enabled, oldEnabled, entries: Array}}
      */
     static _diffAdditionalContent(oldV, newV) {
@@ -550,20 +579,34 @@ export class DiffEngine {
     /**
      * Сравнение пары элементов доп.контента одного id.
      * image → строковое сравнение метаданных (url — многомегабайтный data-URL,
-     * сравнивается СТРОКОЙ, НЕ через word-diff). case/freeText → word-diff по content.
+     * сравнивается СТРОКОЙ, НЕ через word-diff); caption (Task 6, rich-поле) —
+     * отдельно, word-diff по видимому тексту (_stripHtml), зеркало
+     * case/freeText-ветки ниже — raw HTML в fields.caption.old/new НЕ рендерят
+     * напрямую (см. diff-renderer._renderImageEntry). case/freeText → word-diff
+     * по видимому тексту (_stripHtml).
      * @returns {{changed: boolean, detail: Object}}
      */
     static _diffContentItem(oldItem, newItem) {
         if ((newItem && newItem.type) === 'image') {
             const fields = {};
             let changed = false;
-            for (const key of ['url', 'caption', 'filename', 'width']) {
+            for (const key of ['url', 'filename', 'width']) {
                 const oldFv = (oldItem && oldItem[key] != null) ? oldItem[key] : '';
                 const newFv = (newItem && newItem[key] != null) ? newItem[key] : '';
                 if (String(oldFv) !== String(newFv)) {
                     fields[key] = { old: oldFv, new: newFv };
                     changed = true;
                 }
+            }
+            const oldCaption = (oldItem && oldItem.caption) || '';
+            const newCaption = (newItem && newItem.caption) || '';
+            if (oldCaption !== newCaption) {
+                fields.caption = {
+                    old: oldCaption,
+                    new: newCaption,
+                    ...this._richWordDiff(oldCaption, newCaption),
+                };
+                changed = true;
             }
             return { changed, detail: { fields } };
         }
@@ -573,7 +616,11 @@ export class DiffEngine {
         if (oldContent === newContent && !typeChanged) {
             return { changed: false, detail: {} };
         }
-        return { changed: true, detail: { typeChanged, wordDiff: this._wordDiff(oldContent, newContent) } };
+        // Rich-поля (case/freeText) — word-diff по ВИДИМОМУ тексту, тем же
+        // приёмом, что и скалярные поля нарушения (_diffViolations выше).
+        // formattingOnly — правка только разметки при совпавшем видимом
+        // тексте (паритет со скалярными полями нарушения).
+        return { changed: true, detail: { typeChanged, ...this._richWordDiff(oldContent, newContent) } };
     }
 
     /**
@@ -643,9 +690,38 @@ export class DiffEngine {
         return grouped;
     }
 
+    /**
+     * Word-diff + флаг formattingOnly по паре rich-HTML строк — общее ядро
+     * для всех rich-полей (текстблоки, скалярные поля нарушения, пункты
+     * descriptionList, case/freeText, подпись под фото): сравнение по
+     * ВИДИМОМУ тексту (_stripHtml). formattingOnly — правка затронула
+     * только разметку (видимый текст совпал, word-diff без вставок/удалений).
+     * @returns {{wordDiff: Array, formattingOnly: boolean}}
+     */
+    static _richWordDiff(oldHtml, newHtml) {
+        const strippedOld = this._stripHtml(oldHtml);
+        const strippedNew = this._stripHtml(newHtml);
+        return {
+            wordDiff: this._wordDiff(strippedOld, strippedNew),
+            formattingOnly: strippedOld === strippedNew,
+        };
+    }
+
+    /**
+     * Видимый текст HTML-строки. Инлайновые теги форматирования (см.
+     * INLINE_FORMATTING_TAGS) вырезаются БЕЗ пробела — тег внутри слова не
+     * должен разбивать его на два («сло<b>во</b>» → «слово», не «сло во»).
+     * Прочие теги (блочные, <br>) заменяются пробелом — граница слова.
+     */
     static _stripHtml(html) {
         if (!html) return '';
-        return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        return html
+            .replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g, (match, tag) => (
+                INLINE_FORMATTING_TAGS.has(tag.toLowerCase()) ? '' : ' '
+            ))
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 }
 

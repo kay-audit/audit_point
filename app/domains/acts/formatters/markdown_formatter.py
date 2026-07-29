@@ -148,7 +148,7 @@ class MarkdownFormatter(BaseFormatter):
             label: Текст метки
             content: Текст поля (может быть пустым)
         """
-        add_required_pair(lines, label, content, wrap_bold)
+        add_required_pair(lines, label, content, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_labeled_section(self, lines: list[str], label: str, data: dict):
         """
@@ -160,17 +160,20 @@ class MarkdownFormatter(BaseFormatter):
             label: Текст метки
             data: Данные секции (dict с enabled/content)
         """
-        add_labeled_section(lines, label, data, wrap_bold)
+        add_labeled_section(lines, label, data, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_description_list(self, lines: list[str], desc_list: dict):
         """
         Добавляет список описаний.
 
+        Пункты — rich-поле (Task 7, rich-редактор): HTML конвертируется в
+        markdown через HTMLUtils.html_to_markdown (как кейс/свободный текст).
+
         Args:
             lines: Список строк для добавления
             desc_list: Данные списка с items
         """
-        add_description_list(lines, desc_list, "- ")
+        add_description_list(lines, desc_list, "- ", text_conv=HTMLUtils.html_to_markdown)
 
     def _add_additional_content(self, lines: list[str], additional_content: dict):
         """
@@ -196,7 +199,7 @@ class MarkdownFormatter(BaseFormatter):
         Returns:
             Следующий номер кейса
         """
-        return add_case(lines, item, case_number, wrap_bold)
+        return add_case(lines, item, case_number, wrap_bold, text_conv=HTMLUtils.html_to_markdown)
 
     def _add_image(self, lines: list[str], item: dict):
         r"""
@@ -207,27 +210,42 @@ class MarkdownFormatter(BaseFormatter):
         теряться при непустом url). Пустой url (черновик) → текстовый
         fallback `*filename*` (с подписью, если есть).
 
-        filename/caption хранятся дословно (без bleach, T4) — экранируем их
-        через MarkdownUtils.escape_inline (backslash экранируется первым,
-        иначе `\]`/`\"` в тексте пользователя гасят экранирование и позволяют
-        «впрыснуть» поддельную ссылку/картинку в экспорт, #7).
+        filename хранится дословно (без bleach, T4) — экранируем через
+        MarkdownUtils.escape_inline (backslash экранируется первым, иначе
+        `\]`/`\"` в тексте пользователя гасят экранирование и позволяют
+        «впрыснуть» поддельную ссылку/картинку в экспорт, #7). caption —
+        rich-HTML (Task 6, rich-редактор подписи): конвертируется в markdown
+        через HTMLUtils.html_to_markdown (как кейс/свободный текст) — сама
+        markdown-разметка **bold**/*italic* доходит до вывода как есть, а
+        текстовые узлы (в т.ч. `[...](...)`) уже экранированы узловым
+        конвертером (F1) РОВНО один раз. Поэтому повторного escape_inline по
+        '[]' здесь НЕТ (дал бы двойное экранирование). Но alt/подпись —
+        ОДНОСТРОЧНЫЙ контекст: переносы из <br>/границ блоков сворачиваем в
+        пробел (как раньше это делал escape_inline), не трогая проставленные
+        конвертером '\'. При пустой подписи в alt-ветке fallback — имя файла
+        (plain-строка, конвертер её не видел) — экранируется как раньше.
 
         Args:
             lines: Список строк для добавления
             item: Данные изображения
         """
-        caption = item.get('caption', '')
+        # caption может быть None (легаси-данные без подписи, Task 6) —
+        # html_to_markdown падает на None (нет собственного null-guard).
+        caption = HTMLUtils.html_to_markdown(item.get('caption') or '')
+        # Однострочный контекст alt/подписи: сворачиваем переносы в пробел БЕЗ
+        # повторного backslash-экранирования (escape_inline экранирует '\'
+        # первым и удвоил бы уже проставленные конвертером слэши).
+        caption = caption.replace("\r", " ").replace("\n", " ")
         filename = item.get('filename', '')
         url = item.get('url', '')
 
         if url:
-            alt = MarkdownUtils.escape_inline(caption or filename, '[]')
+            alt = caption or MarkdownUtils.escape_inline(filename, '[]')
             title = MarkdownUtils.escape_inline(filename, '"')
             lines.append(f'![{alt}]({url} "{title}")')
         elif caption:
-            caption_esc = MarkdownUtils.escape_inline(caption, '*[]')
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
-            lines.append(f"*{filename_esc}* - {caption_esc}")
+            lines.append(f"*{filename_esc}* - {caption}")
         else:
             filename_esc = MarkdownUtils.escape_inline(filename, '*[]')
             lines.append(f"*{filename_esc}*")
@@ -241,7 +259,7 @@ class MarkdownFormatter(BaseFormatter):
             lines: Список строк для добавления
             item: Данные с текстом
         """
-        add_free_text(lines, item)
+        add_free_text(lines, item, text_conv=HTMLUtils.html_to_markdown)
 
 
 class _MarkdownTreeVisitor:

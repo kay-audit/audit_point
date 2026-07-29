@@ -81,10 +81,19 @@
     resize: vertical;
     min-height: var(--violation-textarea-min-height);
     max-height: var(--violation-textarea-max-height);
+    /* Хост поля — div (contenteditable), не textarea: без явного overflow
+       контент за max-height рисуется под рамкой, а resize не работает. */
+    overflow-y: auto;
     background-color: var(--input-bg);
     transition: all var(--transition-base);
     color: var(--input-text);
     line-height: var(--line-height-normal);
+}
+
+/* Компактный вариант: однострочное поле, а не полноразмерная textarea
+   (подпись под фото — Task 6; пункт списка описания — Task 7). */
+.violation-textarea--compact {
+    min-height: 2.5rem;
 }
 
 /* Подсветка границы при наведении */

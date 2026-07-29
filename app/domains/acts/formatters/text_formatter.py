@@ -195,7 +195,7 @@ class TextFormatter(BaseFormatter):
             label: Текст метки
             content: Текст поля (может быть пустым)
         """
-        add_required_pair(lines, label, content, wrap_plain)
+        add_required_pair(lines, label, content, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_labeled_section(self, lines: list[str], label: str, data: dict):
         """
@@ -207,17 +207,20 @@ class TextFormatter(BaseFormatter):
             label: Текст метки
             data: Данные секции (dict с enabled/content)
         """
-        add_labeled_section(lines, label, data, wrap_plain)
+        add_labeled_section(lines, label, data, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_description_list(self, lines: list[str], desc_list: dict):
         """
         Добавляет список описаний.
 
+        Пункты — rich-поле (Task 7, rich-редактор): HTML конвертируется в
+        видимый текст через HTMLUtils.clean_html (как кейс/свободный текст).
+
         Args:
             lines: Список строк для добавления
             desc_list: Данные списка с items
         """
-        add_description_list(lines, desc_list, "  • ")
+        add_description_list(lines, desc_list, "  • ", text_conv=HTMLUtils.clean_html)
 
     def _add_additional_content(self, lines: list[str], additional_content: dict):
         """
@@ -243,17 +246,22 @@ class TextFormatter(BaseFormatter):
         Returns:
             Следующий номер кейса
         """
-        return add_case(lines, item, case_number, wrap_plain)
+        return add_case(lines, item, case_number, wrap_plain, text_conv=HTMLUtils.clean_html)
 
     def _add_image(self, lines: list[str], item: dict):
         """
         Добавляет ссылку на изображение.
 
+        caption — rich-HTML (Task 6, rich-редактор подписи), конвертируется в
+        видимый текст через HTMLUtils.clean_html (как кейс/свободный текст).
+
         Args:
             lines: Список строк для добавления
             item: Данные изображения
         """
-        caption = item.get('caption', '')
+        # caption может быть None (легаси-данные без подписи, Task 6) —
+        # clean_html падает на None (нет собственного null-guard).
+        caption = HTMLUtils.clean_html(item.get('caption') or '')
         filename = item.get('filename', '')
 
         if caption:
@@ -270,7 +278,7 @@ class TextFormatter(BaseFormatter):
             lines: Список строк для добавления
             item: Данные с текстом
         """
-        add_free_text(lines, item)
+        add_free_text(lines, item, text_conv=HTMLUtils.clean_html)
 
 
 class _TextTreeVisitor:

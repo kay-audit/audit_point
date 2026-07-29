@@ -119,6 +119,20 @@ test('_flushPendingEdits дёргает flushActiveEditor и commitPendingEdit (
   assert.deepEqual(order, ['textblock', 'cells']);
 });
 
+// V20: активная rich-поверхность (поле нарушения) коммитит правку в модель только
+// через debounce-мост — воронка обязана сбросить её перед сериализацией через
+// EditorRegistry.flushActive (flushActiveEditor ловит лишь .textblock-editor).
+test('V20: _flushPendingEdits коммитит активную поверхность через EditorRegistry.flushActive', () => {
+  const commits = [];
+  window.EditorRegistry.setActive({ element: {}, commit: () => commits.push('surface') });
+  try {
+    StorageManager._flushPendingEdits();
+    assert.deepEqual(commits, ['surface'], 'активная поверхность поля нарушения не сброшена перед сериализацией');
+  } finally {
+    window.EditorRegistry.clear();
+  }
+});
+
 test('_flushPendingEdits не валится при отсутствии менеджеров', () => {
   delete window.textBlockManager;
   delete window.tableManager;

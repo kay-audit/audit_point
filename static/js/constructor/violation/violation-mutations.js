@@ -21,6 +21,19 @@ import { ViolationManager } from './violation-core.js';
 import { ValidationCore } from '../validation/validation-core.js';
 
 /**
+ * Разбирает путь поля нарушения (до 2 уровней): плоский 'violated' либо
+ * точечный 'reasons.content'/'reasons.enabled'. Общая точка для write
+ * (setViolationField ниже) и read (_readViolationField, violation-field-surface.js)
+ * — раньше их разбор пути расходился (read защищён `?.`, write — нет), V23.
+ * @param {string} path - Путь поля
+ * @returns {{key: string, subKey: (string|null)}}
+ */
+export function parseFieldPath(path) {
+    const parts = path.split('.');
+    return { key: parts[0], subKey: parts.length > 1 ? parts[1] : null };
+}
+
+/**
  * Планирует превью для нарушения: typing (декоративный debounce печати) либо
  * discrete (немедленный ре-рендер блока).
  * @param {string} violationId - ID нарушения
@@ -47,16 +60,16 @@ export const violationMutations = {
     setViolationField(violation, path, value) {
         if (ValidationCore.requireWrite('cannotEdit')) return false;
 
-        const parts = path.split('.');
+        const { key, subKey } = parseFieldPath(path);
         let discrete;
-        if (parts.length === 1) {
+        if (subKey === null) {
             // violated/established — печатный ввод текста.
-            violation[parts[0]] = value;
+            violation[key] = value;
             discrete = false;
         } else {
-            violation[parts[0]][parts[1]] = value;
+            violation[key][subKey] = value;
             // *.enabled — дискретный тумблер; *.content — печатный ввод.
-            discrete = parts[parts.length - 1] === 'enabled';
+            discrete = subKey === 'enabled';
         }
 
         _schedulePreview(violation.id, discrete);

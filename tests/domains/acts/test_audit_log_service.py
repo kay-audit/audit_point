@@ -569,8 +569,13 @@ class TestRestoreVersionPreSnapshot:
         Иначе несанитизированный HTML из текущего контента (записанного
         в обход save_content или до ужесточения) лёг бы в историю и при
         повторном restore такого снимка вернулся бы в БД (stored XSS).
-        Ячейки таблиц и plain-text поля нарушения при этом НЕ трогаются
-        (инвариант «всё на текст» / «нарушения хранятся дословно», #3).
+        Ячейки таблиц и plain-text поле нарушения (дескриптор rich=False —
+        additionalContent.items[].filename/url) при этом НЕ трогаются
+        (инвариант «всё на текст» / «плоские поля хранятся дословно», #3).
+        Rich-поля нарушения (violated/established/reasons/measures/
+        consequences/responsible, descriptionList.items[] — Task 7,
+        additionalContent.items[] типов case/freeText, типа image — caption,
+        Task 6) чистятся так же, как textBlock/tree — см. VIOLATION_FIELDS.rich.
         """
         svc, versions_repo = self._make_service()
         versions_repo.get_version.return_value = {
@@ -601,11 +606,15 @@ class TestRestoreVersionPreSnapshot:
                     "violated": '<img src=x onerror="alert(1)">текст',
                     "established": "",
                     "descriptionList": {"enabled": True,
-                                        "items": ["<script>x</script>пункт"]},
+                                        "items": ["<b>важно</b><script>x</script>пункт"]},
                     "additionalContent": {"enabled": True, "items": [
                         {"id": "i1", "type": "image", "url": "data:image/png;base64,AAAA",
-                         "content": "", "caption": "<b>подпись</b>",
+                         "content": "", "caption": '<b>подпись</b><img src=x onerror="a">',
                          "filename": "<script>f</script>имя.png"},
+                        {"id": "i2", "type": "case",
+                         "content": '<p>кейс</p><iframe srcdoc="x"></iframe>'},
+                        {"id": "i3", "type": "freeText",
+                         "content": '<b>текст</b><svg onload="x"></svg>'},
                     ]},
                     "reasons": {"enabled": True, "content": "<svg onload=x></svg>причина"},
                 },
@@ -630,18 +639,71 @@ class TestRestoreVersionPreSnapshot:
         tb = pre["textblocks"]["tb1"]
         assert "<iframe" not in tb["content"]
         assert "<b>жирный</b>" in tb["content"]
-        # Нарушение: plain-text поля хранятся дословно (не HTML — не чистятся)
+        # Нарушение: rich-поля санитизируются, plain — дословно (не чистятся)
         v = pre["violations"]["v1"]
-        assert v["violated"] == '<img src=x onerror="alert(1)">текст'
-        assert v["descriptionList"]["items"][0] == "<script>x</script>пункт"
+        assert v["violated"] == "текст"
+        # descriptionList.items[] — rich-поле (Task 7): allowlisted-тег
+        # переживает санитизацию, опасный payload вырезается.
+        desc_item = v["descriptionList"]["items"][0]
+        assert "<b>важно</b>" in desc_item and "пункт" in desc_item
+        assert "<script" not in desc_item
+        # additionalContent image.caption — rich (Task 6): allowlisted-тег
+        # переживает санитизацию, опасный payload вырезается; filename/url
+        # остаются plain (дословно).
         item = v["additionalContent"]["items"][0]
-        assert item["caption"] == "<b>подпись</b>"
+        assert "<b>подпись</b>" in item["caption"]
+        assert "<img" not in item["caption"] and "onerror" not in item["caption"]
         assert item["filename"] == "<script>f</script>имя.png"
         assert item["url"] == "data:image/png;base64,AAAA"
-        assert v["reasons"]["content"] == "<svg onload=x></svg>причина"
+        # additionalContent case/freeText — rich, санитизируются по типу item
+        case_item = v["additionalContent"]["items"][1]
+        assert "<iframe" not in case_item["content"] and "srcdoc" not in case_item["content"]
+        assert "<p>кейс</p>" in case_item["content"]
+        freetext_item = v["additionalContent"]["items"][2]
+        assert "<svg" not in freetext_item["content"] and "onload" not in freetext_item["content"]
+        assert "<b>текст</b>" in freetext_item["content"]
+        assert v["reasons"]["content"] == "причина"
         # Ячейки таблиц — дословно (инвариант B8)
         cell = pre["tables"]["t1"]["grid"][0][0]
         assert cell["content"] == "<script>в ячейке — дословно</script>"
+
+    async def test_pre_snapshot_image_caption_none_stays_none(self):
+        """caption=None (dict-путь, легаси-данные без подписи) — не становится ''."""
+        svc, versions_repo = self._make_service()
+        versions_repo.get_version.return_value = {
+            "version_number": 1,
+            "tree_data": {"id": "root", "label": "v1", "children": []},
+            "tables_data": {},
+            "textblocks_data": {},
+            "violations_data": {},
+        }
+        current_content = {
+            "tree": {"id": "root", "label": "Акт", "children": []},
+            "tables": {},
+            "textBlocks": {},
+            "violations": {
+                "v1": {
+                    "id": "v1", "nodeId": "n3",
+                    "additionalContent": {"enabled": True, "items": [
+                        {"id": "i1", "type": "image", "url": "", "content": "",
+                         "caption": None, "filename": "имя.png"},
+                    ]},
+                },
+            },
+        }
+
+        with patch(
+            "app.domains.acts.services.audit_log_service.ActContentRepository"
+        ) as content_cls:
+            instance = content_cls.return_value
+            instance.save_content = AsyncMock()
+            instance.get_content = AsyncMock(return_value=current_content)
+
+            await svc.restore_version(act_id=42, version_id=1, username="12345")
+
+        pre = versions_repo.create_version.await_args_list[0].kwargs
+        item = pre["violations"]["v1"]["additionalContent"]["items"][0]
+        assert item["caption"] is None
 
     async def test_pre_snapshot_skipped_when_no_current_content(self):
         """get_content вернул None/{} → pre-snapshot не создаётся."""

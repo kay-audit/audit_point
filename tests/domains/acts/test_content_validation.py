@@ -200,6 +200,74 @@ def test_violation_optional_fields_empty_not_counted():
     assert "violation_incomplete" not in _codes(issues)
 
 
+def test_violation_br_only_is_warning():
+    """Слепота к HTML (находка #4): `<br>` — визуально пустой rich-текст, но
+    `br` входит в allowlist санитайзера и переживает очистку. Прежняя
+    проверка по сырому значению считала поле заполненным."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "<br>", "established": "Установлено расхождение",
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_div_br_only_is_warning():
+    """`<div><br></div>` — плейсхолдер пустой строки contenteditable."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "<div><br></div>", "established": "Установлено расхождение",
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_nbsp_paragraph_only_is_warning():
+    """`<p>&nbsp;</p>` — неразрывный пробел визуально пуст."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "Нарушен пункт 1.1", "established": "<p>&nbsp;</p>",
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_rich_formatted_text_is_complete():
+    """Rich-форматирование с реальным текстом (`<b>`/`<div>`) — не пусто."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "<b>текст</b>", "established": "<div>а</div>",
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" not in _codes(issues)
+    assert issues == []
+
+
+def test_violation_description_item_br_only_is_warning():
+    """HTML-слепота распространяется на пункты descriptionList."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
+        "descriptionList": {"enabled": True, "items": ["пункт 1", "<div><br></div>"]},
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_additional_content_case_br_only_is_warning():
+    """HTML-слепота распространяется на content кейса additionalContent."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
+        "additionalContent": {
+            "enabled": True,
+            "items": [{"id": "c1", "type": "case", "content": "<br>"}],
+        },
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
 def test_violation_uses_custom_label_in_message():
     data = _act_with_violation(
         {"id": "v1", "nodeId": "vnode1"},

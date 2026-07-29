@@ -1,16 +1,20 @@
 """
 Санитизация HTML-контента пользовательских полей акта.
 
-Защищает от XSS: textBlock.content и узлы дерева (node.content) — это
-реальный HTML, который рендерится через innerHTML на фронте и парсится
-inline.py при DOCX-экспорте.
+Защищает от XSS: textBlock.content, узлы дерева (node.content) и rich-поля
+нарушения (violated/established, reasons/measures/consequences/responsible,
+descriptionList.items[] — Task 7 — состав см.
+``violation_fields.VIOLATION_FIELDS``, флаг ``rich``; additionalContent.items[]
+типов case/freeText — поле content, типа image — поле caption, Task 6) —
+везде реальный HTML, который рендерится через innerHTML на фронте и парсится
+inline.py при DOCX-экспорте. textBlock/tree чистит sanitize_html (bleach),
+rich-поля нарушения — sanitize_rich_html (nh3, см. его докстринг).
 
-Plain-text поля нарушения (violated/established, descriptionList.items[],
-additionalContent.items[], reasons/measures/consequences/responsible)
-через этот модуль НЕ чистятся: нигде не рендерятся как innerHTML (форма —
-textarea/input, превью — textContent, DOCX — add_run литерально), поэтому
-bleach там был не нужен и вреден — портил текст («&» → «&amp;») и мог
-терять его часть («a<b» трактовался как начало тега).
+Plain-text поля нарушения (additionalContent.items[].filename/url) через
+этот модуль НЕ чистятся: нигде не рендерятся как innerHTML (DOCX —
+add_run литерально), поэтому bleach/nh3 там не нужны и вредны — портили бы
+текст («&» → «&amp;») и могли терять его часть («a<b» трактовался как
+начало тега).
 
 Whitelist тегов/атрибутов согласован с фронтовым рендерингом через
 innerHTML. Опасные теги (script/iframe/svg/object) и on*-обработчики
@@ -23,9 +27,12 @@ import re
 from functools import lru_cache
 
 import bleach
+import nh3
 from bleach.css_sanitizer import CSSSanitizer
 from bleach.html5lib_shim import Filter
 from bleach.sanitizer import Cleaner
+
+from app.domains.acts.violation_fields import VIOLATION_FIELDS
 
 
 # Фолбэк-дефолты allowlist'а (импорт-тайм/тесты, пока реестр настроек пуст).
@@ -269,6 +276,76 @@ def sanitize_html(html: str | None) -> str:
     return cleaner.clean(html)
 
 
+def _rich_attribute_filter(tag: str, attr: str, value: str) -> str | None:
+    """attribute_filter для nh3.clean (sanitize_rich_html): per-tag правила style.
+
+    nh3 не поддерживает bleach-подобные пост-фильтры токен-потока — вместо
+    _BlockStyleFilter/_FontSizeClampFilter та же логика (TB-1/TB-6) применяется
+    здесь per-атрибут, после общего filter_style_properties. Возврат None
+    снимает атрибут целиком (как del в _BlockStyleFilter).
+    """
+    if attr != "style":
+        return value
+    if tag in _BLOCK_STYLE_TAGS:
+        match = _BLOCK_TEXT_ALIGN_RE.search(value or "")
+        return f"text-align: {match.group(1).lower()}" if match else None
+    tb = _acts_settings().textblocks
+    style = _clamp_font_size_px(
+        _strip_nonpx_font_size(value or ""), tb.font_size_min, tb.font_size_max
+    )
+    style = style.strip(" ;\t\r\n")
+    return style or None
+
+
+def sanitize_rich_html(html: str | None) -> str:
+    """
+    Чистит rich-HTML полей нарушения (описание/меры/последствия и т.п.) до
+    безопасного подмножества через nh3 — allowlist тот же (ACTS__SANITIZER__*),
+    что у sanitize_html и фронтового DOMPurify, но движок другой: nh3
+    (Rust/ammonia) вместо bleach.
+
+    Отдельная функция, а не замена sanitize_html: текстблоки (Option A)
+    остаются на bleach — своя история регрессий (TB-1/TB-6/B-5), рисковать
+    их покрытием ради унификации движка не нужно. sanitize_rich_html — под
+    rich-редактор полей нарушения (1.2.x).
+
+    link_rel=None: без этого nh3 сам добавляет rel="noopener noreferrer" на
+    каждый <a>, а ни bleach (sanitize_html), ни фронтовый DOMPurify этого не
+    делают — по умолчанию получилось бы новое расхождение рендер↔экспорт для
+    ссылочных капсул (data-link-*).
+
+    Неидемпотентна на обычном тексте: "&" сериализуется как "&amp;" (как и в
+    sanitize_html) — ожидаемое поведение HTML-санитайзера, вход/выход всегда
+    HTML, а не plain text.
+
+    Возвращает пустую строку для None/пустых значений; не-строковые значения
+    приводятся к str() (тот же защитный fallback, что в sanitize_html).
+    """
+    if html is None:
+        return ""
+    if not isinstance(html, str):
+        html = str(html)
+    if not html:
+        return ""
+    cfg = _sanitizer_cfg()
+    return nh3.clean(
+        html,
+        tags=set(cfg.allowed_tags),
+        attributes={
+            "a": {"href", "title"},
+            "span": {"class", "style", *cfg.allowed_data_attrs},
+            "div": {"class", "style"},
+            "p": {"class", "style"},
+            "*": {"class"},
+        },
+        attribute_filter=_rich_attribute_filter,
+        filter_style_properties=set(cfg.allowed_css_properties),
+        url_schemes={"http", "https", "mailto"},
+        strip_comments=True,
+        link_rel=None,
+    )
+
+
 def sanitize_plain_text(text: str | None) -> str:
     """
     Чистит plain-текстовое поле: вырезает ВСЕ теги (пустой whitelist).
@@ -298,6 +375,123 @@ def sanitize_tree_nodes(node: dict) -> None:
             sanitize_tree_nodes(child)
 
 
+def _sanitize_pair_field(v, key: str) -> None:
+    """Поле-пара (violated/established): скаляр верхнего уровня нарушения.
+
+    dict-форма: отсутствующий ключ пропускается (не добавляется). Обе формы
+    сознательно НЕ хранят None-семантику отдельно от '' — sanitize_rich_html
+    сам приводит None ко '' (в отличие от case/freeText.content и
+    image.caption, где None легитимен и охраняется отдельно, см.
+    _sanitize_content_item).
+    """
+    if isinstance(v, dict):
+        if key in v:
+            v[key] = sanitize_rich_html(v.get(key))
+    else:
+        setattr(v, key, sanitize_rich_html(getattr(v, key)))
+
+
+def _sanitize_optional_text_field(v, key: str) -> None:
+    """Опциональное текстовое поле (reasons/measures/consequences/responsible)."""
+    if isinstance(v, dict):
+        sub = v.get(key)
+        if isinstance(sub, dict) and "content" in sub:
+            sub["content"] = sanitize_rich_html(sub.get("content"))
+    else:
+        sub = getattr(v, key)
+        sub.content = sanitize_rich_html(sub.content)
+
+
+def _sanitize_list_field(v, key: str) -> None:
+    """Список пунктов (descriptionList.items[] — Task 7), каждый пункт отдельно."""
+    if isinstance(v, dict):
+        sub = v.get(key)
+        if isinstance(sub, dict) and isinstance(sub.get("items"), list):
+            sub["items"] = [sanitize_rich_html(item) for item in sub["items"]]
+    else:
+        sub = getattr(v, key)
+        sub.items = [sanitize_rich_html(item) for item in sub.items]
+
+
+def _sanitize_content_item(it) -> None:
+    """Один элемент additionalContent: content у case/freeText, caption у image.
+
+    additionalContent — дескриптор rich=False (контейнер), но его
+    case/freeText-элементы несут rich-текст и чистятся по типу item,
+    независимо от флага контейнера; у image caption тоже rich (Task 6,
+    рич-редактор подписи). И content, и caption могут быть None (легаси-
+    данные без значения) — гард обязателен на ОБОИХ путях: отсутствующий
+    ключ (dict-форма) не появляется, явный None не подменяется на ''
+    (V18/#11 — до этого гард стоял только у caption, у case/freeText его не
+    было, из-за чего два обхода расходились). filename/url — plain, не
+    трогаются.
+    """
+    if isinstance(it, dict):
+        item_type = it.get("type")
+        if item_type in ("case", "freeText"):
+            if "content" in it and it.get("content") is not None:
+                it["content"] = sanitize_rich_html(it.get("content"))
+        elif item_type == "image" and it.get("caption") is not None:
+            it["caption"] = sanitize_rich_html(it.get("caption"))
+    else:
+        if it.type in ("case", "freeText"):
+            if it.content is not None:
+                it.content = sanitize_rich_html(it.content)
+        elif it.type == "image" and it.caption is not None:
+            it.caption = sanitize_rich_html(it.caption)
+
+
+def _sanitize_violation_common(v) -> None:
+    """Единственный источник семантики обхода нарушения — общий для обj- и
+    dict-формы (V18: копии walker'ов расходились, гард в одной из веток не
+    зеркалился в другую). Каждая per-kind функция сама решает dict-vs-attr
+    доступ, поэтому семантика (какие поля, какой гард, где None легитимен)
+    описана ровно один раз и используется обоими вызывающими.
+    """
+    for f in VIOLATION_FIELDS:
+        if not f.rich:
+            continue
+        if f.kind == "pair":
+            _sanitize_pair_field(v, f.key)
+        elif f.kind == "optional_text":
+            _sanitize_optional_text_field(v, f.key)
+        elif f.kind == "list":
+            _sanitize_list_field(v, f.key)
+
+    items = v.get("additionalContent") if isinstance(v, dict) else v.additionalContent
+    items = items.get("items") if isinstance(items, dict) else getattr(items, "items", None)
+    if isinstance(items, list):
+        for it in items:
+            _sanitize_content_item(it)
+
+
+def _sanitize_violation_obj(v) -> None:
+    """Чистит rich-поля одного нарушения (объектная форма — ViolationSchema).
+
+    Реестр-driven обход VIOLATION_FIELDS: чистятся только поля с rich=True
+    (violated/established/reasons/measures/consequences/responsible —
+    скаляр/optional_text; descriptionList.items[] — Task 7, каждый пункт
+    отдельно), через sanitize_rich_html. Отдельно — rich-поля элементов
+    additionalContent (не в реестре, item-level): content у case/freeText,
+    caption у image (Task 6). Plain-поля (filename/url элементов
+    additionalContent) не трогаются — см. докстринг sanitize_act_data.
+    Семантика обхода — в _sanitize_violation_common (единый источник для
+    обеих форм, см. её докстринг).
+    """
+    _sanitize_violation_common(v)
+
+
+def _sanitize_violation_dict(v: dict) -> None:
+    """Зеркало _sanitize_violation_obj для dict-формы (restore pre-snapshot путь).
+
+    Семантика обхода — в _sanitize_violation_common (единый источник для
+    обеих форм, см. её докстринг).
+    """
+    if not isinstance(v, dict):
+        return
+    _sanitize_violation_common(v)
+
+
 def sanitize_act_data(data) -> None:
     """
     Чистит HTML-поля ActDataSchema до безопасного подмножества.
@@ -305,21 +499,28 @@ def sanitize_act_data(data) -> None:
     Изменяет объект на месте. Покрывает:
     - textBlocks[*].content
     - tree nodes[*].content (рекурсивно — узлы могут содержать HTML)
+    - violations[*] — rich-поля по реестру VIOLATION_FIELDS (violated/
+      established/reasons/measures/consequences/responsible,
+      descriptionList.items[] — Task 7, additionalContent.items[] типов
+      case/freeText, типа image — caption, Task 6) через sanitize_rich_html
+      (см. _sanitize_violation_obj).
 
-    Поля нарушений (violated/established, descriptionList.items[],
-    additionalContent.items[], reasons/measures/consequences/responsible)
-    СОЗНАТЕЛЬНО не трогаются: это plain-text поля, нигде не
-    рендерятся как innerHTML, bleach там только портил бы текст и терял его
-    часть (см. модульный docstring и TestSaveContentViolationFieldsStoredVerbatim).
+    Plain-text поле additionalContent.items[].filename СОЗНАТЕЛЬНО не
+    трогается: нигде не рендерится как innerHTML, bleach/nh3 там только
+    портили бы текст и теряли его часть (см. модульный docstring и
+    TestSaveContentViolationRichFieldsSanitized).
 
-    url элементов additionalContent тоже не чистится bleach'ем: его формат
+    url элементов additionalContent тоже не чистится: его формат
     (data:image-whitelist + лимит длины) валидирует ViolationContentItemSchema,
-    а bleach исказил бы base64-данные.
+    а санитайзер исказил бы base64-данные.
     """
     for block in data.textBlocks.values():
         block.content = sanitize_html(block.content)
 
     sanitize_tree_nodes(data.tree)
+
+    for v in data.violations.values():
+        _sanitize_violation_obj(v)
 
 
 def sanitize_act_content_dict(content: dict) -> None:
@@ -328,7 +529,8 @@ def sanitize_act_content_dict(content: dict) -> None:
 
     Зеркало sanitize_act_data для контента, загруженного из БД как plain-dict
     (pre-snapshot в AuditLogService.restore_version, pbe-6): состав очищаемых
-    полей тот же — textBlocks/tree. Таблицы и поля нарушений НЕ трогаются —
+    полей тот же — textBlocks/tree/violations (rich-поля по реестру, см.
+    _sanitize_violation_dict). Таблицы и plain-поля нарушений не трогаются —
     хранятся дословно (см. docstring sanitize_act_data). Изменяет dict на
     месте; отсутствующие ключи пропускает, новых не добавляет.
     """
@@ -342,3 +544,7 @@ def sanitize_act_content_dict(content: dict) -> None:
     tree = content.get("tree")
     if isinstance(tree, dict):
         sanitize_tree_nodes(tree)
+
+    for v in (content.get("violations") or {}).values():
+        if isinstance(v, dict):
+            _sanitize_violation_dict(v)

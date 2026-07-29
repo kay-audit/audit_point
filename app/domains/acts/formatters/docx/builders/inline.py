@@ -6,10 +6,12 @@
 переданного фрагмента рендерятся как мягкий перенос строки между блоками.
 Любой другой тег игнорируется (содержимое сохраняется).
 
-TB-1: ВЕРХНЕУРОВНЕВЫЕ <div>/<p> контента текстблока — отдельные абзацы Word
-со своим выравниванием из style="text-align". Разбиение делает
-split_block_segments (ниже), потребитель — formatter._render_textblock:
-каждый сегмент → свой w:p → apply_inline_html только для внутренностей.
+TB-1: ВЕРХНЕУРОВНЕВЫЕ <div>/<p> rich-контента (текстблок, rich-поля нарушения,
+подпись картинки, пункты списка) — отдельные абзацы Word со своим
+выравниванием из style="text-align". Разбиение делает split_block_segments
+(ниже), материализация сегментов в абзацы — общий render_block_segments
+(V14, тоже ниже): каждый сегмент → свой w:p → apply_inline_html только для
+внутренностей.
 
 Зачёркивание (M.19): Chromium execCommand('strikeThrough') эмитит <strike>
 (тег-форма, styleWithCSS в приложении не включается); CSS-форма
@@ -30,8 +32,9 @@ import re
 from html.parser import HTMLParser
 from dataclasses import dataclass, replace
 
+from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.shared import Pt
+from docx.shared import Pt, Twips
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -69,19 +72,22 @@ _SIZE_RE = re.compile(r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(px|pt)", re.IGNORECAS
 _STRIKE_RE = re.compile(r"text-decoration(?:-line)?\s*:\s*[^;]*line-through", re.IGNORECASE)
 
 
-def apply_inline_html(paragraph: Paragraph, html: str, base_size_pt: float) -> None:
+def apply_inline_html(
+    paragraph: Paragraph, html: str, base_size_pt: float, *, base_italic: bool = False
+) -> None:
     """Парсит html-фрагмент и добавляет runs в paragraph."""
     if not html:
         return
-    parser = _InlineParser(paragraph, base_size_pt)
+    parser = _InlineParser(paragraph, base_size_pt, base_italic)
     parser.feed(html)
+    parser.close()
 
 
 class _InlineParser(HTMLParser):
-    def __init__(self, paragraph: Paragraph, base_size_pt: float):
+    def __init__(self, paragraph: Paragraph, base_size_pt: float, base_italic: bool = False):
         super().__init__(convert_charrefs=True)
         self.paragraph = paragraph
-        self.stack: list[_RunState] = [_RunState(size_pt=base_size_pt)]
+        self.stack: list[_RunState] = [_RunState(size_pt=base_size_pt, italic=base_italic)]
         self._hyperlink: OxmlElement | None = None
         # Параллельно стеку span'ов: что делать при их закрытии.
         # ("footnote", текст) | ("link", None) | ("plain", None)
@@ -106,6 +112,13 @@ class _InlineParser(HTMLParser):
         # может быть placeholder'ом пустого блока (<div><br></div>) — тогда его
         # НЕ дублируем. Флаг сбрасывается на первом же реальном контенте/переносе.
         self._boundary_break_pending = False
+        # Обычный <br> не превращается в w:br НЕМЕДЛЕННО, а откладывается.
+        # Браузер не рисует строку для <br> в хвосте непустого блока
+        # (<div>a<br></div> = одна строка «a») — решение "нужен ли перенос"
+        # переносится на момент СЛЕДУЮЩЕГО вывода: реальный контент
+        # материализует его (_flush_soft_break), граница блока замещает его
+        # своим переносом (тихий сброс), конец фрагмента роняет его молча.
+        self._soft_break_pending = False
 
     @property
     def state(self) -> _RunState:
@@ -144,6 +157,10 @@ class _InlineParser(HTMLParser):
                 self._add_break()
                 # #6: перенос уже стоит; placeholder-<br> пустого блока не дублируем.
                 self._boundary_break_pending = True
+                # Отложенный хвостовой <br> предыдущего блока замещён этим
+                # переносом-границей — сбрасываем БЕЗ материализации, иначе
+                # получили бы два переноса вместо одного.
+                self._soft_break_pending = False
             self.stack.append(current)
         else:
             self.stack.append(current)
@@ -210,6 +227,11 @@ class _InlineParser(HTMLParser):
                 # вставки Word) дал бы растяжимую щель между якорем и номером
                 # под justify — срезаем его перед добавлением сноски.
                 self._strip_trailing_anchor_space()
+                # footnoteReference вставляется напрямую через paragraph.add_run(),
+                # минуя _add_run — отложенный <br> перед бестекстовым якорем
+                # иначе не материализовался бы, и номер сноски "прилип" бы
+                # к предыдущей строке.
+                self._flush_soft_break()
                 add_footnote(self.paragraph, payload)
                 # Номер сноски только что вставлен — следующий текстовый run
                 # должен начинаться с неразрывного пробела (BUG-5).
@@ -222,6 +244,12 @@ class _InlineParser(HTMLParser):
     def handle_data(self, data):
         if data:
             self._add_run(data)
+
+    def close(self) -> None:
+        """Конец фрагмента: хвостовой отложенный <br> невидим (как в браузере
+        для <br> в конце непустого блока) — молча роняем его без break'а."""
+        super().close()
+        self._soft_break_pending = False
 
     def _add_run(self, text: str) -> None:
         # Защита (гибрид Варианта 2): caret-guard'ы (U+FEFF) — рантайм-only во
@@ -245,6 +273,8 @@ class _InlineParser(HTMLParser):
         # #6: \u043F\u043E\u0448\u0451\u043B \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u0432\u0438\u0434\u0438\u043C\u044B\u0439 \u043A\u043E\u043D\u0442\u0435\u043D\u0442 \u2014 \u0441\u043D\u0438\u043C\u0430\u0435\u043C \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u0435 placeholder-<br>
         # (\u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 <br> \u0443\u0436\u0435 \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0438\u0439 \u043F\u0435\u0440\u0435\u043D\u043E\u0441, \u0430 \u043D\u0435 \u043F\u0443\u0441\u0442\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430 \u0431\u043B\u043E\u043A\u0430).
         self._boundary_break_pending = False
+        # Перед новым видимым run'ом материализуем отложенный <br>.
+        self._flush_soft_break()
         self._produced_output = True
         # Вне <a> используем высокоуровневый API python-docx — он создаёт
         # `w:r` с привычным порядком элементов (важно для обратной совместимости
@@ -307,12 +337,33 @@ class _InlineParser(HTMLParser):
         блока уже дала визуальный разрыв этой пустой строки, поэтому <br> НЕ
         дублируем (иначе одна пустая строка превращалась бы в две). Несколько
         пустых блоков подряд остаются несколькими пустыми строками: у каждого
-        своя граница-перенос. Обычный <br> (мягкий перенос, <br><br>) — как был.
+        своя граница-перенос.
+
+        Иначе (обычный <br>) перенос НЕ добавляется немедленно — браузер не
+        рисует строку для <br> в хвосте непустого блока (<div>a<br></div> =
+        одна строка «a»), а contenteditable часто оставляет такой хвостовой
+        <br> после правок. Поэтому решение откладывается (_soft_break_pending)
+        до следующего вывода: реальный контент материализует его
+        (_flush_soft_break), граница блока замещает его своим переносом (тихий
+        сброс), конец фрагмента роняет его молча (close()). Два <br> подряд —
+        первый флешится реальным переносом (иначе оба слились бы в один при
+        следующей материализации), второй взводится заново.
         """
         if self._boundary_break_pending:
             self._boundary_break_pending = False
             return
-        self._add_break()
+        self._flush_soft_break()
+        self._soft_break_pending = True
+
+    def _flush_soft_break(self) -> None:
+        """Материализует отложенный <br> перед новым видимым контентом.
+
+        Без материализации перенос между отложенным <br> и следующим run'ом/
+        ссылкой/номером сноски потерялся бы — контент "прилип" бы к предыдущей
+        строке вместо начала новой."""
+        if self._soft_break_pending:
+            self._soft_break_pending = False
+            self._add_break()
 
     def _add_break(self) -> None:
         """Реальный OOXML-перенос строки (<w:br/>).
@@ -383,6 +434,11 @@ class _InlineParser(HTMLParser):
         метода записи add_hyperlink нет. К тому же ссылка-капсула несёт свои
         run'ы с форматированием (цвет, кегль EXP-1, начертание) — простой
         текст+URL их бы не выразил."""
+        # Отложенный <br> материализуется здесь, ДО смены self._hyperlink —
+        # иначе он попал бы в _add_break() уже с НОВЫМ значением контекста
+        # (перенос между двумя ссылками вложился бы во вторую вместо уровня
+        # параграфа).
+        self._flush_soft_break()
         href = href.strip()
         hyperlink = OxmlElement("w:hyperlink")
         if href.startswith("#"):
@@ -399,6 +455,10 @@ class _InlineParser(HTMLParser):
         return True
 
     def _close_hyperlink(self) -> None:
+        # Отложенный <br>, вставленный ВНУТРИ ссылки (до </a>), материализуется
+        # здесь, ДО сброса self._hyperlink — иначе он "утёк" бы наружу на
+        # уровень параграфа вместо того, чтобы остаться внутри w:hyperlink.
+        self._flush_soft_break()
         self._hyperlink = None
 
 
@@ -444,6 +504,18 @@ class BlockSegment:
     """
     alignment: str | None
     html: str
+
+
+# text-align сегмента → выравнивание Word. Потребитель — render_block_segments
+# (ниже): текстблок, rich-поля нарушения, подпись картинки, пункты списка;
+# дефолт (align=None либо нераспознанное значение) — default_alignment хоста
+# через .get().
+ALIGNMENT_MAP = {
+    "left": WD_ALIGN_PARAGRAPH.LEFT,
+    "center": WD_ALIGN_PARAGRAPH.CENTER,
+    "right": WD_ALIGN_PARAGRAPH.RIGHT,
+    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+}
 
 
 def split_block_segments(html: str) -> list[BlockSegment]:
@@ -590,3 +662,83 @@ def _normalize_segment_html(inner: str) -> str:
 def _extract_text_align(attrs: dict) -> str | None:
     match = _TEXT_ALIGN_RE.search(attrs.get("style") or "")
     return match.group(1).lower() if match else None
+
+
+# ---------------------------------------------------------------------------
+# V14: общая геометрия «сегменты → абзацы документа» — единственный потребитель
+# split_block_segments/ALIGNMENT_MAP/apply_inline_html для ЛЮБОГО rich-контента
+# (текстблок, скалярные rich-поля нарушения, подпись картинки, пункты списка).
+# ---------------------------------------------------------------------------
+
+# Отступ ТЕКСТА маркированной строки стиля "List Bullet" (built-in стиль
+# дефолтного шаблона python-docx, docx/templates/default.docx). Сам стиль
+# несёт только w:numPr numId=1 без своего w:ind — реальный отступ живёт в
+# определении уровня нумерации (numbering.xml: numId=1 → abstractNumId=8 →
+# w:lvl[ilvl=0]/w:pPr/w:ind left="360" hanging="360"). hanging=360 отодвигает
+# МАРКЕР первой строки на позицию 0, а текст строки — на left=360. Продолжение
+# многосегментного пункта (обычный абзац без стиля/маркера) получает тот же
+# left_indent, чтобы визуально начинаться под текстом первой строки, а не под
+# маркером (иначе вторая строка «проваливается» на 0.25" левее первой).
+_LIST_BULLET_TEXT_INDENT = Twips(360)
+
+
+def render_block_segments(
+    doc: Document,
+    html: str,
+    *,
+    base_size_pt: float,
+    base_italic: bool = False,
+    default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+    paragraph_style: str | None = None,
+    first_paragraph: Paragraph | None = None,
+) -> list[Paragraph]:
+    """HTML → абзацы документа: единая геометрия рендера для всех хостов.
+
+    Режет html через split_block_segments; каждый сегмент — свой w:p.
+    text-align сегмента (ALIGNMENT_MAP) переопределяет default_alignment
+    хоста, сегмент без align получает default_alignment (текстблок и
+    rich-поля — justify, подпись картинки — center, см. вызывающий код).
+    Промежуточные абзацы (бывшие границы w:br) получают space_after=Pt(0);
+    последний — без прямого форматирования (наследует Normal), как у
+    прежней одноабзацной модели.
+
+    paragraph_style применяется ТОЛЬКО к первому абзацу — маркер списка
+    ("List Bullet") или иной стиль хоста не повторяется на продолжениях
+    (зеркало «метка на первом абзаце», см. first_paragraph); игнорируется,
+    если передан first_paragraph. Для "List Bullet" продолжения получают
+    left_indent, совпадающий с текстовой позицией маркированной строки
+    (_LIST_BULLET_TEXT_INDENT) — иначе вторая строка пункта визуально
+    выпадает левее текста первой.
+
+    first_paragraph — если хост уже создал первый абзац сам (например,
+    _labeled_paragraph уже вписал в него метку "Причины:"), он используется
+    повторно для первого сегмента вместо нового doc.add_paragraph(): метка
+    остаётся на первом абзаце, продолжения — обычные абзацы без неё.
+    """
+    segments = split_block_segments(html)
+    if not segments:
+        # Нет верхнеуровневых сегментов (пустой/пробельный html) — единственный
+        # абзац с дефолтным выравниванием; apply_inline_html на исходном html
+        # безопасен (no-op на пустой строке).
+        para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        para.alignment = default_alignment
+        apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
+        return [para]
+
+    paragraphs: list[Paragraph] = []
+    for i, segment in enumerate(segments):
+        if i == 0:
+            para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        else:
+            para = doc.add_paragraph()
+            if paragraph_style == "List Bullet":
+                # Маркер только на первом сегменте (см. докстринг) — но текст
+                # продолжения должен стоять под текстом маркированной строки.
+                para.paragraph_format.left_indent = _LIST_BULLET_TEXT_INDENT
+        para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
+        apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
+        paragraphs.append(para)
+
+    for para in paragraphs[:-1]:
+        para.paragraph_format.space_after = Pt(0)
+    return paragraphs

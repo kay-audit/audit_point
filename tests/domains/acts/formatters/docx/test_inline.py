@@ -298,3 +298,101 @@ def test_strike_nested_with_bold(doc):
     apply_inline_html(p, "<b><s>жирно-зачёркнуто</s></b>", base_size_pt=12)
     assert p.runs[0].bold is True
     assert p.runs[0].font.strike is True
+
+
+def test_base_italic_makes_default_runs_italic(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "обычный <b>жирный</b>", base_size_pt=9, base_italic=True)
+    assert all(r.italic for r in p.runs if r.text)
+    bold = [r for r in p.runs if r.text == "жирный"][0]
+    assert bold.bold and bold.italic
+
+
+def test_base_italic_default_false_unchanged(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "текст", base_size_pt=12)
+    assert not p.runs[0].italic
+
+
+def test_trailing_br_in_content_div_not_doubled(doc):
+    """Хвостовой br в строке + пустая строка — в редакторе a/пусто/b."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div><div><br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 2  # был 3 → в Word две пустые строки
+
+
+def test_trailing_br_before_block_close_invisible(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 1
+
+
+def test_leading_empty_div_single_break(doc):
+    """Пустая строка В НАЧАЛЕ поля: пусто/b = один перенос."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div><br></div><div>b</div>", base_size_pt=12)
+    assert _count_breaks(p) == 1  # было 2
+
+
+def test_trailing_br_at_fragment_end_dropped(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "<div>a<br></div>", base_size_pt=12)
+    assert _count_breaks(p) == 0
+
+
+def test_double_br_then_content_two_breaks(doc):
+    p = doc.add_paragraph()
+    apply_inline_html(p, "a<br><br>b", base_size_pt=12)
+    assert _count_breaks(p) == 2
+
+
+def test_deferred_break_flushes_before_empty_anchor_footnote(doc):
+    """<br> перед footnote-якорем БЕЗ текста материализуется до вставки
+    номера сноски — иначе перенос "уехал" бы после него (footnoteReference
+    вставляется в paragraph.add_run() напрямую, минуя _add_run/_flush_soft_break,
+    если не флешить явно перед add_footnote)."""
+    p = doc.add_paragraph()
+    apply_inline_html(
+        p,
+        'x<br><span class="text-footnote" data-footnote-text="прим"></span>tail',
+        base_size_pt=12,
+    )
+    assert _count_breaks(p) == 1
+    tags = [
+        el.tag.rsplit("}", 1)[-1]
+        for el in p._p.iter()
+        if el.tag.rsplit("}", 1)[-1] in ("br", "footnoteReference")
+    ]
+    assert tags == ["br", "footnoteReference"]
+
+
+def _break_parent_tags(p) -> list:
+    """Для каждого <w:br/> — тег родителя его run'а: 'p' (уровень параграфа)
+    или 'hyperlink' (внутри ссылки). _count_breaks не различает вложенный
+    w:br от параграфного — там, где важно РАЗМЕЩЕНИЕ, нужен этот хелпер."""
+    tags = []
+    for br in p._p.findall(".//" + qn("w:br")):
+        run = br.getparent()
+        container = run.getparent()
+        tags.append(container.tag.rsplit("}", 1)[-1])
+    return tags
+
+
+def test_break_between_closed_hyperlinks_stays_at_paragraph_level(doc):
+    """<br> МЕЖДУ двумя закрытыми ссылками остаётся на уровне параграфа, а не
+    внутри второй ссылки. Отложенный break материализуется в _add_run("more"),
+    когда self._hyperlink уже указывает на ВТОРУЮ ссылку — без флеша в
+    _open_hyperlink перед сменой контекста перенос попал бы туда же."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, '<a href="#a">text</a><br><a href="#b">more</a>', base_size_pt=12)
+    assert _count_breaks(p) == 1
+    assert _break_parent_tags(p) == ["p"]
+
+
+def test_break_inside_hyperlink_before_close_stays_inside(doc):
+    """<br> ВНУТРИ тела ссылки (до </a>) остаётся внутри w:hyperlink, а не
+    "утекает" наружу к последующему тексту после закрытия ссылки."""
+    p = doc.add_paragraph()
+    apply_inline_html(p, '<a href="#x">text<br></a>tail', base_size_pt=12)
+    assert _count_breaks(p) == 1
+    assert _break_parent_tags(p) == ["hyperlink"]

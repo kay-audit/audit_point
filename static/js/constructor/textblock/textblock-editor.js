@@ -7,6 +7,8 @@ import { RENDER_CLASSES } from '../render-classes.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { SafeHTML, SAFE_HTML_PROFILES, renderActContent } from '../../shared/sanitize.js';
 import { getStructureLimits } from '../violation/violation-image-validator.js';
+import { TextBlockSurface } from './editable-surface.js';
+import { EditorRegistry, SURFACE_POLICY } from './editor-registry.js';
 
 Object.assign(TextBlockManager.prototype, {
     /**
@@ -426,10 +428,54 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
+     * Создаёт EditableSurface-обёртку (TextBlockSurface) для DOM-редактора.
+     * @private
+     */
+    _makeTextBlockSurface(editor) {
+        return new TextBlockSurface(editor, this);
+    },
+
+    /**
+     * Единая точка активации поверхности текстблок-редактора. Источник истины
+     * «кто сейчас активен» — surface в EditorRegistry; this.activeEditor держим
+     * как его ЭЛЕМЕНТ-проекцию (мост для легаси-читателей тулбара/форматирования).
+     * V17: раньше this.activeEditor выставлялся ОТДЕЛЬНЫМ вызовом setActiveEditor
+     * в handleEditorFocus — параллельно реестру, из-за чего это были два
+     * независимых источника истины (могли разъехаться). Теперь activeEditor
+     * пишется ТОЛЬКО здесь как surface.element, в лок-степе с реестром.
+     * @private
+     */
+    _activateSurfaceForEditor(editor) {
+        const surface = this._makeTextBlockSurface(editor);
+        EditorRegistry.setActive(surface);
+        this.setActiveEditor(surface.element);
+        return surface;
+    },
+
+    /**
+     * Ownership-guard: снимает активную поверхность в EditorRegistry и её
+     * элемент-проекцию this.activeEditor, только если ими всё ещё владеет ИМЕННО
+     * этот editor. Без проверки стейл-блюр A при быстром переходе фокуса A→B
+     * затирал бы поверхность, которой уже владеет B. V17: реестр и мост
+     * this.activeEditor снимаются здесь в лок-степе (симметрия
+     * _activateSurfaceForEditor) — единый источник истины не расходится.
+     * @private
+     */
+    _clearSurfaceIfOwned(editor) {
+        if (EditorRegistry.getActive()?.element === editor) {
+            EditorRegistry.clear();
+            this.clearActiveEditor();
+        }
+    },
+
+    /**
      * Обработчик фокуса редактора
      */
     handleEditorFocus(editor, textBlock) {
-        this.setActiveEditor(editor);
+        // V17: _activateSurfaceForEditor выставляет и surface в реестре, и мост
+        // this.activeEditor (surface.element) разом — отдельный setActiveEditor
+        // здесь больше не нужен (был вторым источником истины).
+        this._activateSurfaceForEditor(editor);
         this.showToolbar();
         this.updateToolbarState();
         this.attachLinkFootnoteHandlers();
@@ -503,16 +549,20 @@ Object.assign(TextBlockManager.prototype, {
 
         setTimeout(() => {
             // Ownership-guard: если фокус ушёл на ДРУГОЙ текстблок, его
-            // handleEditorFocus уже выполнил setActiveEditor(B) → this.activeEditor
-            // указывает на B, не на этот editor(A). Стейл-таймер A не должен гасить
-            // тулбар, которым теперь владеет B (иначе тулбар мигает и пропадает при
-            // каждом переходе между блоками). Прячем только когда ЭТОТ редактор всё
-            // ещё активный владелец, а фокус ушёл наружу (не в редактор и не в тулбар).
+            // handleEditorFocus уже выполнил _activateSurfaceForEditor(B) →
+            // this.activeEditor указывает на B, не на этот editor(A). Стейл-таймер
+            // A не должен гасить тулбар, которым теперь владеет B (иначе тулбар
+            // мигает и пропадает при каждом переходе между блоками). Прячем только
+            // когда ЭТОТ редактор всё ещё активный владелец, а фокус ушёл наружу
+            // (не в редактор и не в тулбар).
             if (this.activeEditor === editor &&
                 document.activeElement !== editor &&
                 !this.globalToolbar?.contains(document.activeElement)) {
                 this.hideToolbar();
-                this.clearActiveEditor();
+                // V17: _clearSurfaceIfOwned снимает и реестр, и мост
+                // this.activeEditor разом (в лок-степе) — отдельный
+                // clearActiveEditor больше не нужен.
+                this._clearSurfaceIfOwned(editor);
             }
         }, 200);
     },
@@ -573,6 +623,29 @@ Object.assign(TextBlockManager.prototype, {
             return;
         }
 
+        // Выделение — текущее (paste вставляет в каретку); сток общий с drop.
+        this._insertSanitizedHtml(editor, html, plain);
+    },
+
+    /**
+     * Общий сток санитизированной HTML-вставки для paste и drop: строит фрагмент
+     * ТЕМ ЖЕ путём (_buildPasteFragment → санитизация DOMPurify + реконструкция
+     * капсул + гейт сносок), вставляет в ТЕКУЩЕЕ выделение через insertHTML
+     * (атомарно за целые капсулы, остаётся в undo) и финализирует. Пустой/
+     * санитизированный-в-ноль HTML деградирует до plain-текста. Выделение/каретку
+     * выставляет ВЫЗЫВАЮЩИЙ (paste — текущее, drop — точку сброса) — сюда приходит
+     * готовым.
+     * @param {HTMLElement} editor
+     * @param {string} html
+     * @param {string} plain
+     * @param {boolean} [footnotesBlocked] Явный гейт сносок (drop — из захваченной
+     *   поверхности). undefined → берётся из активной поверхности EditorRegistry
+     *   (paste, у которого фокус на поле).
+     * @param {boolean} [fromDrop] Вставка пришла из drop. Включает опознание
+     *   own-пути по капсульным маркерам (нативный drag теряет метку data-aw-clip).
+     *   На paste не передаётся → капсульный детект не активен, поведение прежнее.
+     */
+    _insertSanitizedHtml(editor, html, plain, footnotesBlocked, fromDrop) {
         // Нет HTML — прежний путь: только чистый текст.
         if (!html || !html.trim()) {
             document.execCommand('insertText', false, plain);
@@ -580,7 +653,7 @@ Object.assign(TextBlockManager.prototype, {
             return;
         }
 
-        const fragment = this._buildPasteFragment(html);
+        const fragment = this._buildPasteFragment(html, footnotesBlocked, fromDrop);
 
         // Гейт пустоты (CARET-6): DOMPurify мог вырезать весь фрагмент (например
         // «Копировать изображение» кладёт только <img> при пустом plain). Проверку
@@ -635,6 +708,24 @@ Object.assign(TextBlockManager.prototype, {
         // Word оживала (наведение/редактирование) только при следующем фокусе —
         // перезаход на шаг, перезагрузка или клик в другое поле и обратно.
         this.attachLinkFootnoteHandlers();
+    },
+
+    /**
+     * @private Range в точке сброса drag'а (курсор мыши). caretRangeFromPoint —
+     * Chromium (десктоп-онли, см. CLAUDE.md a11y). null, если API недоступно или
+     * точка вне редактора — тогда _insertSanitizedHtml вставит в текущее выделение.
+     * @param {DragEvent} e
+     * @param {HTMLElement} editor
+     * @returns {Range|null}
+     */
+    _dropCaretRange(e, editor) {
+        if (typeof document.caretRangeFromPoint !== 'function') return null;
+        const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+        if (!r) return null;
+        if (editor && typeof editor.contains === 'function' && !editor.contains(r.startContainer)) {
+            return null;
+        }
+        return r;
     },
 
     /**
@@ -717,11 +808,22 @@ Object.assign(TextBlockManager.prototype, {
      *  - прочий внешний HTML → строгая политика «только ссылки».
      * Порядок веток: свой → Word → внешний (Word проверяем ДО внешнего, иначе
      * его разметка ушла бы в «только ссылки» и формат бы потерялся).
+     *
+     * DROP (fromDrop=true): нативный drag выделения сериализуется браузером БЕЗ
+     * метки data-aw-clip, поэтому капсулы из нашего же поля не опознаются
+     * _isOwnClipboardHtml и ушли бы внешним путём (ссылка → текст, сноска —
+     * санитайзером мимо гейта). Дополнительно опознаём own-путь по нашим
+     * капсульным маркерам (_hasCapsuleMarkers). Детект УЗКИЙ (только drop +
+     * только при наличии капсул): paste поведения не меняет; спуф data-link-url
+     * безопасен — own-путь пересобирает капсулы заново и валидирует URL
+     * (validateLinkUrl в _reconstructPastedCapsules), не-капсульный контент
+     * идёт через тот же SafeHTML.sanitize (img/script/on* режутся, см.
+     * _buildOwnPasteFragment).
      * @private
      */
-    _buildPasteFragment(html) {
-        if (this._isOwnClipboardHtml(html)) {
-            return this._buildOwnPasteFragment(html);
+    _buildPasteFragment(html, footnotesBlocked, fromDrop) {
+        if (this._isOwnClipboardHtml(html) || (fromDrop && this._hasCapsuleMarkers(html))) {
+            return this._buildOwnPasteFragment(html, footnotesBlocked);
         }
         if (this._isWordHtml(html)) {
             window.EditorTelemetry?.track?.('word_paste');
@@ -772,6 +874,28 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
+     * @private Содержит ли HTML наши капсульные маркеры (ссылка/сноска)? Нужен
+     * ТОЛЬКО для DROP: нативный drag выделения сериализуется БЕЗ метки
+     * data-aw-clip, поэтому _isOwnClipboardHtml не опознаёт капсулы из нашего же
+     * поля. Опознаём по data-link-url / data-footnote-text — атрибутам, что
+     * несут реконструируемую нагрузку (URL / тело сноски); именно их выставляют
+     * фабрики createLinkMarker/createFootnoteMarker. Точная проверка АТРИБУТА
+     * (не подстроки — иначе слово в тексте/чужом атрибуте ложно включило бы
+     * own-путь): инертный <template> + querySelector. Дешёвый substring-
+     * префильтр отсекает обычный HTML без парса. Спуф маркеров безопасен:
+     * own-путь пересобирает капсулы заново и валидирует URL (validateLinkUrl),
+     * XSS не даёт.
+     */
+    _hasCapsuleMarkers(html) {
+        if (typeof html !== 'string') return false;
+        if (html.indexOf('data-link-url') === -1
+            && html.indexOf('data-footnote-text') === -1) return false;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        return tpl.content.querySelector('[data-link-url], [data-footnote-text]') !== null;
+    },
+
+    /**
      * CARET-2: свой буфер (data-aw-clip) — round-trip капсул. Щедрый allowlist
      * (инлайн-формат b/i/u/s/span[style] + разметка капсул), затем реконструкция
      * капсул фабриками со СВЕЖИМИ id. Метку data-aw-clip может подделать и внешний
@@ -780,7 +904,7 @@ Object.assign(TextBlockManager.prototype, {
      * лишь обычную ссылку/сноску, не XSS.
      * @private
      */
-    _buildOwnPasteFragment(html) {
+    _buildOwnPasteFragment(html, footnotesBlocked) {
         // §7: DOMPurify НЕ валидирует URL в data-атрибутах (только href/src),
         // поэтому data-link-url проверяем сами (validateLinkUrl в
         // _reconstructPastedCapsules). Хуки allowlist не мутируем.
@@ -798,7 +922,7 @@ Object.assign(TextBlockManager.prototype, {
         });
         const tmp = document.createElement('div');
         tmp.innerHTML = clean; // clean уже прошёл DOMPurify — безопасно для парсинга
-        this._reconstructPastedCapsules(tmp);
+        this._reconstructPastedCapsules(tmp, footnotesBlocked);
         const fragment = document.createDocumentFragment();
         while (tmp.firstChild) fragment.appendChild(tmp.firstChild);
         return fragment;
@@ -811,16 +935,30 @@ Object.assign(TextBlockManager.prototype, {
      * (DOMPurify data-атрибуты не проверяет). Невалидная/пустая капсула (нет
      * текста, пустой/битый URL, пустое тело сноски) разворачивается в plain-text.
      * validateLinkUrl лежит в window (избегаем циклического импорта с
-     * links-footnotes.js).
+     * links-footnotes.js). Гейт сносок (I-1, паттерн — KeyK/KeyF в
+     * handleEditorKeydown): под запретом политики (SURFACE_POLICY...
+     * footnotes===false, напр. violationField) капсула-сноска выпадает из
+     * фрагмента ЦЕЛИКОМ, без текстового fallback — ссылки гейт не касается.
      * @param {HTMLElement} root
+     * @param {boolean} [footnotesBlocked] Явный гейт сносок (drop — из захваченной
+     *   поверхности). undefined → берётся из активной поверхности EditorRegistry
+     *   (paste). Явная передача нужна потому, что drop может прийти в
+     *   НЕсфокусированное поле, когда активна другая поверхность или никакой нет.
      */
-    _reconstructPastedCapsules(root) {
+    _reconstructPastedCapsules(root, footnotesBlocked) {
+        if (footnotesBlocked === undefined) {
+            footnotesBlocked = SURFACE_POLICY[EditorRegistry.getActive()?.kind]?.footnotes === false;
+        }
         const caps = root.querySelectorAll(
             '.text-link, .text-footnote, [data-link-url], [data-footnote-text]');
         caps.forEach(el => {
             if (!el.parentNode) return; // уже заменён (вложенный случай)
             const text = el.textContent || '';
             const isLink = el.classList.contains('text-link') || el.hasAttribute('data-link-url');
+            if (!isLink && footnotesBlocked) {
+                el.parentNode.removeChild(el); // целиком, без текста-фолбэка
+                return;
+            }
             let replacement = null;
             if (isLink) {
                 const verdict = window.validateLinkUrl
@@ -1139,6 +1277,17 @@ Object.assign(TextBlockManager.prototype, {
     handleEditorKeydown(e, editor, textBlock) {
         // Все горячие клавиши: Ctrl+Shift+* (e.code — независимо от раскладки)
         if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+            // Политика активной поверхности (SURFACE_POLICY): кнопки тулбара уже
+            // гасятся по kind (_applyToolbarPolicy, textblock-toolbar.js) —
+            // клавиатурные шорткаты сносок/ссылок должны подчиняться той же
+            // политике, иначе Ctrl+Shift+F в поле нарушения создаёт сноску в
+            // обход запрета (footnotes:false у violationField). Блокируем
+            // ТОЛЬКО когда ключ политики ЯВНО false; нет активной поверхности/
+            // kind или ключа в политике — старое поведение (default-allow).
+            // preventDefault для KeyK/KeyF зовём безусловно (см. кейсы ниже) —
+            // шорткат проглатывается целиком даже под запретом, иначе сработает
+            // браузерный дефолт.
+            const surfacePolicy = SURFACE_POLICY[EditorRegistry.getActive()?.kind];
             switch (e.code) {
                 case 'KeyB':
                     e.preventDefault();
@@ -1162,11 +1311,11 @@ Object.assign(TextBlockManager.prototype, {
                     break;
                 case 'KeyK':
                     e.preventDefault();
-                    this.createOrEditLink();
+                    if (surfacePolicy?.links !== false) this.createOrEditLink();
                     break;
                 case 'KeyF':
                     e.preventDefault();
-                    this.createOrEditFootnote();
+                    if (surfacePolicy?.footnotes !== false) this.createOrEditFootnote();
                     break;
                 case 'KeyA':
                     e.preventDefault();

@@ -4,7 +4,6 @@
  */
 
 import { ViolationManager } from './violation-core.js';
-import { RENDER_CLASSES } from '../render-classes.js';
 import { AppConfig } from '../../shared/app-config.js';
 import {
     CONTENT_TYPE_CASE,
@@ -13,6 +12,7 @@ import {
 } from './violation-content-item.js';
 import { renderImageWithFallback } from './violation-image-render.js';
 import { computeAdditionalContentNumbers } from './violation-numbering.js';
+import { toggleEmptyClass } from './violation-field-empty.js';
 
 /**
  * Опции селекта ширины картинки (Б-1.4): [значение item.width, подпись].
@@ -108,8 +108,10 @@ Object.assign(ViolationManager.prototype, {
     createCaseElement(violation, item, index, caseNumber, isReadOnly = false) {
         const wrapper = document.createElement('div');
         wrapper.className = 'content-item-wrapper';
-        // Подсветка пустого кейса (#9-Г, Wave 2): не блокирует ввод, только визуальный сигнал.
-        wrapper.classList.toggle('content-item-wrapper--empty', !item.content?.trim());
+        // Подсветка пустого кейса (#9-Г, Wave 2): не блокирует ввод, только
+        // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24) —
+        // toggleEmptyClass (violation-field-empty.js).
+        toggleEmptyClass(wrapper, 'content-item-wrapper--empty', item.content);
 
         const label = document.createElement('div');
         label.className = 'content-item-label';
@@ -118,24 +120,21 @@ Object.assign(ViolationManager.prototype, {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'content-item';
 
-        const textarea = document.createElement('textarea');
-        textarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        textarea.placeholder = 'Описание кейса';
-        textarea.value = item.content;
-        textarea.rows = 3;
-
-        if (isReadOnly) {
-            textarea.readOnly = true;
-            textarea.classList.add('read-only');
-        } else {
-            // #18-А: Escape-откат/Enter-переход как у остальных полей нарушения.
-            this.setupTextareaHandlers(textarea, (value) => {
-                this.setContentItemField(violation, item, 'content', value);
-                wrapper.classList.toggle('content-item-wrapper--empty', !value.trim());
+        // Кейс — rich-поле (contenteditable), путь по item через content-item
+        // поверхность; ввод пишется в item.content write-through контроллера.
+        const field = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item),
+            { placeholder: 'Описание кейса', isReadOnly },
+        );
+        if (!isReadOnly) {
+            // Живая подсветка пустого кейса (#9-Г) — только визуальный класс, без
+            // записи модели (её ведёт write-through контроллера через commit).
+            field.addEventListener('input', () => {
+                toggleEmptyClass(wrapper, 'content-item-wrapper--empty', field);
             });
         }
 
-        itemDiv.appendChild(textarea);
+        itemDiv.appendChild(field);
         wrapper.appendChild(label);
         wrapper.appendChild(itemDiv);
 
@@ -184,22 +183,14 @@ Object.assign(ViolationManager.prototype, {
         filenameDiv.className = 'image-filename';
         filenameDiv.textContent = item.filename;
 
-        const captionInput = document.createElement('input');
-        captionInput.type = 'text';
-        captionInput.className = RENDER_CLASSES.VIOLATION_LIST_INPUT;
-        captionInput.placeholder = 'Подпись к изображению';
-        captionInput.value = item.caption;
-
-        if (isReadOnly) {
-            captionInput.readOnly = true;
-            captionInput.classList.add('read-only');
-        } else {
-            // #18-А: подпись — однострочный input, multiline=false
-            // (Shift+Enter для неё бессмыслен). Escape откатывает подпись.
-            this.setupTextareaHandlers(captionInput, (value) => {
-                this.setContentItemField(violation, item, 'caption', value);
-            }, false);
-        }
+        // Подпись — rich-поле (Task 6, contenteditable), путь по item.caption
+        // через content-item поверхность (field='caption'); compact-модификатор
+        // держит поле низким (однострочная подпись — не полноразмерная textarea).
+        const captionField = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item, 'caption'),
+            { placeholder: 'Подпись к изображению', isReadOnly },
+        );
+        captionField.classList.add('violation-textarea--compact');
 
         // Селект ширины картинки (Б-1.4): % полезной ширины листа, 0 — авто
         // (натуральный размер с потолком по ширине). Пишет item.width —
@@ -234,7 +225,7 @@ Object.assign(ViolationManager.prototype, {
 
         itemDiv.appendChild(imgContainer);
         itemDiv.appendChild(filenameDiv);
-        itemDiv.appendChild(captionInput);
+        itemDiv.appendChild(captionField);
         itemDiv.appendChild(widthControl);
 
         wrapper.appendChild(label);
@@ -254,8 +245,10 @@ Object.assign(ViolationManager.prototype, {
     createFreeTextElement(violation, item, index, textNumber, isReadOnly = false) {
         const wrapper = document.createElement('div');
         wrapper.className = 'content-item-wrapper';
-        // Подсветка пустого текста (#9-Г, Wave 2): не блокирует ввод, только визуальный сигнал.
-        wrapper.classList.toggle('content-item-wrapper--empty', !item.content?.trim());
+        // Подсветка пустого текста (#9-Г, Wave 2): не блокирует ввод, только
+        // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24) —
+        // toggleEmptyClass (violation-field-empty.js).
+        toggleEmptyClass(wrapper, 'content-item-wrapper--empty', item.content);
 
         const label = document.createElement('div');
         label.className = 'content-item-label';
@@ -264,24 +257,20 @@ Object.assign(ViolationManager.prototype, {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'content-item';
 
-        const textarea = document.createElement('textarea');
-        textarea.className = RENDER_CLASSES.VIOLATION_TEXTAREA;
-        textarea.placeholder = 'Произвольный текст';
-        textarea.value = item.content;
-        textarea.rows = 4;
-
-        if (isReadOnly) {
-            textarea.readOnly = true;
-            textarea.classList.add('read-only');
-        } else {
-            // #18-А: Escape-откат/Enter-переход как у остальных полей нарушения.
-            this.setupTextareaHandlers(textarea, (value) => {
-                this.setContentItemField(violation, item, 'content', value);
-                wrapper.classList.toggle('content-item-wrapper--empty', !value.trim());
+        // Свободный текст — rich-поле (contenteditable), путь по item через
+        // content-item поверхность; ввод пишется в item.content контроллером.
+        const field = this._createRichFieldEditor(
+            this._makeContentItemSurface(violation, item),
+            { placeholder: 'Произвольный текст', isReadOnly },
+        );
+        if (!isReadOnly) {
+            // Живая подсветка пустого текста (#9-Г) — только визуальный класс.
+            field.addEventListener('input', () => {
+                toggleEmptyClass(wrapper, 'content-item-wrapper--empty', field);
             });
         }
 
-        itemDiv.appendChild(textarea);
+        itemDiv.appendChild(field);
         wrapper.appendChild(label);
         wrapper.appendChild(itemDiv);
 

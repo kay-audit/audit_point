@@ -262,22 +262,45 @@ Object.assign(TextBlockManager.prototype, {
             if (!ranges.length) return;
             const hit = this._staticRangeTouchesCapsule(ranges[0], editor);
             if (hit && hit.side === 'inside') {
-                // Ввод пришёлся в тело капсулы → перенаправляем наружу.
+                // Ввод пришёлся в тело капсулы → перенаправляем наружу, СРАЗУ за
+                // капсулу (без промежуточного guard'а — вставка через индекс
+                // родителя, не через сплит текстового узла, поэтому пустого
+                // текст-узла-артефакта не остаётся).
                 e.preventDefault();
-                this._placeCaretBesideMarker(hit.capsule, true); // каретка справа от капсулы
-                const sel = window.getSelection();
-                if (sel && sel.rangeCount && e.data) {
-                    const range = sel.getRangeAt(0);
-                    range.insertNode(document.createTextNode(e.data));
-                    range.collapse(false);
-                    sel.removeAllRanges(); sel.addRange(range);
+                const insertPoint = document.createRange();
+                insertPoint.setStartAfter(hit.capsule);
+                insertPoint.collapse(true);
+                let inserted = null;
+                if (e.data) {
+                    inserted = document.createTextNode(e.data);
+                    insertPoint.insertNode(inserted);
                 }
-                this.saveContent(editor.dataset.textBlockId, editor.innerHTML);
-                this._toggleEmptyClass(editor);
+                // CARET-5: единый сток ДО установки каретки — normalizeMarkers
+                // внутри finalizeEdit пере-расставляет caret-guard'ы у капсулы, из
+                // которой перенаправлен ввод (тот guard, что мог стоять сразу за
+                // ней, больше не нужен — рядом теперь реальный текст). Каретку
+                // ставим ПОСЛЕ, иначе normalize сдвинул/убрал бы guard, в который
+                // она встала (см. delete-clipping ветку (б) выше и Enter-у-границы,
+                // textblock-editor.js).
+                this.finalizeEdit(editor);
+                const sel = window.getSelection();
+                if (sel) {
+                    const caret = document.createRange();
+                    if (inserted && inserted.parentNode) caret.setStartAfter(inserted);
+                    else caret.setStartAfter(hit.capsule);
+                    caret.collapse(true);
+                    sel.removeAllRanges();
+                    sel.addRange(caret);
+                }
             }
         }
         // insertCompositionText (IME), historyUndo/Redo, insertFromDrop —
-        // не вмешиваемся, страхует слой 3.
+        // не вмешиваемся, страхует слой 3. Для поля нарушения insertFromDrop сюда
+        // уже не доходит: drop-обработчик поля (EditorController.handleSurfaceDrop,
+        // навешен при создании поля) гасит нативный drop (preventDefault) и
+        // вставляет санитизированный фрагмент со сноской, вырезанной по политике, —
+        // observer её не «атомизирует» (T7 #6/#14b). Здесь ветка остаётся для
+        // textblock-пути (свой нативный drop, сноска жива).
     },
 
     /**

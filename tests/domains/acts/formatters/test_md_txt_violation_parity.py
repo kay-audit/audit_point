@@ -190,7 +190,31 @@ def test_markdown_image_caption_with_bracket_escaped_in_alt():
     assert '![рост\\] на 10%](data:image/png;base64,AAAA "pic.png")' in out
 
 
-# --- TXT: те же правила #9/#14 (картинка #16 в TXT не трогается) ---
+# --- Task 6: caption — rich-поле (rich-редактор подписи), паритет MD/TXT ---
+
+
+def test_markdown_image_caption_is_rich():
+    """<b> в caption → **bold** в alt (html_to_markdown, как кейс/свободный текст)."""
+    v = _violation_with_items([{
+        "type": "image",
+        "url": "data:image/png;base64,AAAA",
+        "caption": "<b>важно</b>",
+        "filename": "pic.png",
+    }])
+    out = _md()._format_violation(v)
+    assert '![**важно**](data:image/png;base64,AAAA "pic.png")' in out
+
+
+def test_markdown_image_caption_none_falls_back_to_filename():
+    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": None, "filename": "draft.png",
+    }])
+    out = _md()._format_violation(v)
+    assert "*draft.png*" in out
+
+
+# --- TXT: те же правила #9/#14 (картинка #16 — caption теперь rich, Task 6) ---
 
 
 def test_text_empty_first_case_shifts_next_to_case_2():
@@ -220,3 +244,57 @@ def test_text_required_labels_shown_when_empty():
     out = _txt()._format_violation(v)
     assert "Нарушено:" in out
     assert "Установлено:" in out
+
+
+def test_text_image_caption_is_rich():
+    """<b> в caption → видимый текст без тегов (clean_html, как кейс/свободный текст)."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": "<b>важно</b>", "filename": "pic.png",
+    }])
+    out = _txt()._format_violation(v)
+    assert "Изображение: pic.png - важно" in out
+    assert "<b>" not in out
+
+
+def test_text_image_caption_none_falls_back_to_filename_only():
+    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
+    v = _violation_with_items([{
+        "type": "image", "url": "", "caption": None, "filename": "draft.png",
+    }])
+    out = _txt()._format_violation(v)
+    assert "Изображение: draft.png" in out
+
+
+# --- Task 1.1.3: rich-поля нарушения — HTML→Markdown / HTML→plain через text_conv ---
+
+
+def test_markdown_rich_field_converts_html():
+    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+    out = _md()._format_violation(v)
+    assert "**жирное**" in out and "Ромашка & Ко" in out and "&amp;" not in out
+
+
+def test_text_rich_field_strips_html():
+    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+    out = _txt()._format_violation(v)
+    assert "жирное" in out and "<b>" not in out and "Ромашка & Ко" in out
+
+
+def test_measures_and_case_are_rich():
+    v = dict(_VIOLATION, measures={"enabled": True, "content": "<i>мера</i>"},
+             additionalContent={"enabled": True, "items": [{"type": "case", "content": "<b>кейс</b>"}]})
+    md = _md()._format_violation(v)
+    assert "*мера*" in md and "**кейс**" in md
+
+
+def test_markdown_description_list_is_rich():
+    """Task 7: <b> в пункте → **bold** в markdown (html_to_markdown, как кейс/свободный текст)."""
+    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
+    assert "**пункт**" in _md()._format_violation(v)
+
+
+def test_text_description_list_is_rich():
+    """Task 7: <b> в пункте → видимый текст без тегов (clean_html)."""
+    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
+    out = _txt()._format_violation(v)
+    assert "пункт" in out and "<b>" not in out

@@ -20,8 +20,10 @@ import { Notifications } from '../../shared/notifications.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { makeResizablePanel } from '../../shared/resizable-panel.js';
 import { makeDraggablePanel } from '../../shared/draggable-panel.js';
+import { serializeVisibleText } from '../../shared/rich-text.js';
 import { ActSearchEngine } from '../search/act-search-engine.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
+import { EditorRegistry } from '../textblock/editor-registry.js';
 import { correctText } from './text-actions-client.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 
@@ -33,6 +35,7 @@ export const CorrectorPopover = {
     _escUnsub: null,
     _controller: null,
     _editor: null,
+    _ownerSurface: null,
     _range: null,
     _sourceText: '',
     _corrected: '',
@@ -47,6 +50,13 @@ export const CorrectorPopover = {
     open({ editor, range, text }) {
         this._build();
         this._editor = editor;
+        // #1 (HIGH): захватываем поверхность-владельца редактируемого поля СЕЙЧАС.
+        // Пока поле в фокусе, EditorRegistry.getActive() гарантированно указывает
+        // на него (EditorController смонтирован на фокусе). К моменту «Принять»
+        // пользователь мог кликнуть в другое поле (getActive() уедет на него) или
+        // увести фокус (Registry опустеет) — оба случая молча коммитили правку не
+        // туда/никуда. Владелец — тот, чья поверхность держит именно этот editor.
+        this._ownerSurface = this._resolveOwnerSurface(editor);
         this._range = range;
         this._sourceText = text;
         this._corrected = '';
@@ -69,6 +79,7 @@ export const CorrectorPopover = {
         if (this._el) this._el.classList.add('hidden');
         if (this._escUnsub) { this._escUnsub(); this._escUnsub = null; }
         this._editor = null;
+        this._ownerSurface = null;
         this._range = null;
         this._corrected = '';
         this._destructive = false;
@@ -314,28 +325,12 @@ export const CorrectorPopover = {
         }
     },
 
-    // Сериализация DOM-фрагмента в plain-текст, зеркалящая Selection.toString:
-    // текстовые узлы — как есть, <br> → \n, закрытие блочного элемента —
-    // граница-\n (если строка ещё не завершена переводом). Инлайновые узлы
-    // (span-капсулы ссылок/сносок и т.п.) переносов не добавляют.
+    // Сериализация DOM-фрагмента в plain-текст, зеркалящая Selection.toString.
+    // Логика вынесена в shared/rich-text.js (переиспользуется формализатором
+    // и сводом ячеек); метод оставлен обёрткой ради обратной совместимости
+    // вызовов внутри класса и теста-стража.
     _serializeWithBreaks(root) {
-        const BLOCK = /^(?:DIV|P|LI|UL|OL|TR|TABLE|THEAD|TBODY|SECTION|ARTICLE|BLOCKQUOTE|PRE|FIGURE|FIGCAPTION|HEADER|FOOTER|ASIDE|NAV|MAIN|DL|DD|DT|H[1-6])$/;
-        let out = '';
-        const walk = (node) => {
-            for (const child of node.childNodes) {
-                if (child.nodeType === 3) {
-                    out += child.textContent;
-                } else if (child.nodeType === 1) {
-                    if (child.tagName === 'BR') { out += '\n'; continue; }
-                    const block = BLOCK.test(child.tagName);
-                    if (block && out && !out.endsWith('\n')) out += '\n';
-                    walk(child);
-                    if (block && out && !out.endsWith('\n')) out += '\n';
-                }
-            }
-        };
-        walk(root);
-        return out;
+        return serializeVisibleText(root);
     },
 
     // Изменился ли исходный фрагмент с момента отправки на обработку.
@@ -389,9 +384,46 @@ export const CorrectorPopover = {
         if (ActSearchEngine && typeof ActSearchEngine.invalidateRunsCache === 'function') {
             ActSearchEngine.invalidateRunsCache();
         }
-        textBlockManager.finalizeEdit(this._editor);
-        Notifications.success('Текст исправлен');
+        // Персист исправления в модель. Тост «Текст исправлен» — ТОЛЬКО при
+        // фактическом коммите: молчаливая потеря правки (getActive() уехал в другое
+        // поле / Registry пуст / поле отвязано) больше не выдаётся за успех.
+        if (this._persistCorrection()) {
+            Notifications.success('Текст исправлен');
+        } else {
+            Notifications.error('Не удалось сохранить исправление: поле недоступно');
+        }
         this.close();
+    },
+
+    // Поверхность-владелец редактируемого поля НА МОМЕНТ запуска корректора:
+    // getActive() сейчас указывает на редактируемое поле, но захватываем ссылку
+    // с гардом element===editor (отсекает чужую активную поверхность и пустой
+    // Registry) — источником истины для коммита служит именно она, а не
+    // getActive() на момент клика «Принять».
+    _resolveOwnerSurface(editor) {
+        const active = EditorRegistry.getActive();
+        return (active && active.element === editor) ? active : null;
+    },
+
+    // Коммитит принятую правку в модель. Возвращает true при реальной записи.
+    // Текстблок (dataset.textBlockId) — прежним путём finalizeEdit (saveContent
+    // по textBlockId, EditorRegistry ему не нужен). Поле нарушения (textBlockId
+    // не несёт, см. _createRichFieldEditor) — через ЗАХВАЧЕННУЮ при открытии
+    // поверхность-владельца; повторный гард element===editor страхует от
+    // ре-рендера/отвязки поля между открытием и «Принять».
+    _persistCorrection() {
+        const editor = this._editor;
+        if (!editor) return false;
+        if (editor.dataset && editor.dataset.textBlockId) {
+            textBlockManager.finalizeEdit(editor);
+            return true;
+        }
+        const surface = this._ownerSurface;
+        if (surface && surface.element === editor && typeof surface.persist === 'function') {
+            surface.persist();
+            return true;
+        }
+        return false;
     },
 
     _abort() {
