@@ -125,3 +125,59 @@ test('#23: removeViolation без активной зоны не падает', 
     assert.doesNotThrow(() => vm.removeViolation('v1'));
     assert.equal(vm.currentActiveContainer, null);
 });
+
+// ── §5.9: смысл ESC определяет фокус, а не положение мыши ────────────────────
+
+/** Вызывает верхний хэндлер стека, собирая info-тосты и возвращая его вердикт. */
+function fireTopHandler(activeElement) {
+    const infos = [];
+    const origInfo = Notifications.info;
+    Notifications.info = (m) => infos.push(m);
+    document.activeElement = activeElement;
+    try {
+        const top = EscapeStack._stack[EscapeStack._stack.length - 1];
+        return { result: top({ key: 'Escape' }), infos };
+    } finally {
+        Notifications.info = origInfo;
+        document.activeElement = null;
+    }
+}
+
+test('§5.9: каретка в rich-поле → зона отдаёт ESC редактору (passthrough), зона цела', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    const zone = makeZone('v1');
+    vm._setActiveZone(zone);
+
+    const inEditor = { tagName: 'SPAN', closest: (s) => (s === '[contenteditable="true"]' ? {} : null) };
+    const { result, infos } = fireTopHandler(inEditor);
+
+    assert.equal(result, false, 'строго false — EscapeStack пропустит ESC дальше к редактору');
+    assert.equal(vm.currentActiveContainer, zone, 'зона НЕ сброшена');
+    assert.equal(EscapeStack.size(), 1, 'хэндлер зоны остался в стеке');
+    assert.deepEqual(infos, [], 'тост о сбросе зоны не показан');
+});
+
+test('§5.9: каретка в textarea/input → тот же passthrough', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    vm._setActiveZone(makeZone('v1'));
+
+    assert.equal(fireTopHandler({ tagName: 'TEXTAREA' }).result, false);
+    assert.equal(fireTopHandler({ tagName: 'INPUT' }).result, false);
+    assert.equal(EscapeStack.size(), 1);
+});
+
+test('§5.9: фокус вне полей → прежнее поведение (сброс зоны + тост)', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    vm._setActiveZone(makeZone('v1'));
+
+    const plainDiv = { tagName: 'DIV', closest: () => null };
+    const { result, infos } = fireTopHandler(plainDiv);
+
+    assert.notEqual(result, false, 'событие съедено стеком');
+    assert.equal(vm.currentActiveContainer, null, 'зона сброшена');
+    assert.equal(EscapeStack.size(), 0);
+    assert.deepEqual(infos, ['Активная зона сброшена']);
+});

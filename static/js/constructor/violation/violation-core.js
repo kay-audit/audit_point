@@ -12,6 +12,28 @@ import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
 import { plainToRichHtml } from '../../shared/html-text.js';
 import { toggleEmptyClass } from './violation-field-empty.js';
 
+/**
+ * true, если элемент редактируемый: поле ввода (textarea/input) либо
+ * contenteditable-редактор (rich-поле нарушения, текстблок).
+ *
+ * Два потребителя: paste-обработчик (#19 — Ctrl+V в редакторе не должен уходить
+ * в дополнительный контент, когда мышь/фокус рядом с зоной) и ESC-хэндлер зоны
+ * в _setActiveZone (§5.9 — Escape при каретке в поле принадлежит редактору).
+ * Предикат жил в violation-paste.js под именем pasteTargetIsEditable, но
+ * обратный импорт core → paste замкнул бы цикл: paste расширяет
+ * ViolationManager.prototype на module-level и упал бы на TDZ класса (граф
+ * входит через violation-core.js). Общее место обоих — этот hub-модуль.
+ *
+ * @param {EventTarget} target - Элемент (e.target события или document.activeElement)
+ * @returns {boolean}
+ */
+export function isEditableTarget(target) {
+    if (!target) return false;
+    if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return true;
+    if (target.closest && target.closest('[contenteditable="true"]')) return true;
+    return false;
+}
+
 export class ViolationManager {
     constructor() {
         this.selectedViolation = null;
@@ -56,6 +78,13 @@ export class ViolationManager {
         this.currentActiveContainer = container;
         if (!this._escapeZoneUnsub) {
             this._escapeZoneUnsub = EscapeStack.push(() => {
+                // §5.9: смысл ESC определяет ФОКУС, а не положение мыши. Каретка
+                // в редактируемом поле — событие принадлежит редактору (blur поля
+                // или отмена inline-правки капсулы): отдаём его через passthrough
+                // EscapeStack (строго false = не съедать), иначе один и тот же ESC
+                // означал бы разное в зависимости от того, где висит мышь.
+                // Сброс зоны — только когда фокус вне поля, а мышь в зоне.
+                if (isEditableTarget(document.activeElement)) return false;
                 this._resetActiveZone();
                 Notifications.info('Активная зона сброшена');
             });

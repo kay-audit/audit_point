@@ -3,7 +3,7 @@
  * Поддержка Ctrl+V для изображений и текста
  */
 
-import { ViolationManager } from './violation-core.js';
+import { ViolationManager, isEditableTarget } from './violation-core.js';
 import { Notifications } from '../../shared/notifications.js';
 import { AppConfig } from '../../shared/app-config.js';
 import {
@@ -39,18 +39,28 @@ export function parseClipboardText(textContent) {
 }
 
 /**
- * true, если стандартную вставку в этот target перехватывать НЕЛЬЗЯ:
- * поле ввода (textarea/input) или contenteditable-редактор (текстблок).
- * Иначе Ctrl+V в редакторе, когда мышь/фокус рядом с зоной нарушения,
- * ушёл бы в дополнительный контент (#19).
+ * true, если вставку с редактируемым target'ом всё же нужно перехватить ради
+ * КАРТИНОК (§5.8): каретка стоит в rich-поле зоны дополнительного контента
+ * (кейс / свободный текст / подпись), а в буфере есть image-элементы.
+ *
+ * Редактор поверхности читает из буфера только text/html|text/plain — файлы он
+ * молча игнорирует, поэтому до этой ветки вставить картинку с клавиатуры можно
+ * было, только сфокусировав сам контейнер зоны (клик по пустому месту).
+ *
+ * Строго ограничено зоной: rich-поля нарушения вне `.additional-content-wrapper`
+ * (нарушено / установлено / причины / …) и текстблоки под предикат не попадают —
+ * их поведение прежнее (#19).
  *
  * @param {EventTarget} target - e.target события paste
+ * @param {DataTransferItemList} items - e.clipboardData.items
  * @returns {boolean}
  */
-export function pasteTargetIsEditable(target) {
-    if (!target) return false;
-    if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return true;
-    if (target.closest && target.closest('[contenteditable="true"]')) return true;
+export function shouldInterceptImagesFromEditable(target, items) {
+    if (!items || !isEditableTarget(target)) return false;
+    if (!target.closest || !target.closest('.additional-content-wrapper')) return false;
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) return true;
+    }
     return false;
 }
 
@@ -65,26 +75,35 @@ Object.assign(ViolationManager.prototype, {
             // Глобальный слушатель живёт всегда — guard именно здесь обязателен.
             if (AppConfig.readOnlyMode?.isReadOnly) return;
 
+            // Получаем данные из буфера обмена
+            const items = e.clipboardData?.items;
+            if (!items) {
+                return;
+            }
+
             // Стандартную вставку в поля ввода и contenteditable-редактор
             // (текстблок) не перехватываем — даже если мышь/фокус рядом с зоной
             // нарушения (#19). Без этого Ctrl+V в текстблоке уходил бы в
             // дополнительный контент по hover-модели.
-            if (pasteTargetIsEditable(e.target)) return;
+            // Исключение §5.8 — каретка в rich-поле САМОЙ зоны и в буфере
+            // картинки: их редактор поверхности игнорирует, забираем себе
+            // ТОЛЬКО ветку картинок (текстовая ниже отключена для editable).
+            const targetIsEditable = isEditableTarget(e.target);
+            const interceptImages = shouldInterceptImagesFromEditable(e.target, items);
+            if (targetIsEditable && !interceptImages) return;
 
             // Целевую зону определяем по ФОКУСУ (activeElement), а НЕ по hover (#19):
             // hover-модель (currentActiveContainer/cursorInsertPosition) осталась
             // только для визуального индикатора позиции при drag файлов. Контейнер
             // зоны focusable (tabindex=0) — клик по нему даёт фокус.
-            const targetContainer = document.activeElement && document.activeElement.closest
-                ? document.activeElement.closest('.additional-content-wrapper')
+            // В §5.8-ветке фокус стоит на самом rich-поле, лежащем ВНУТРИ зоны, —
+            // путь тот же closest, но считаем его от e.target, чтобы зона бралась
+            // строго от каретки, породившей событие.
+            const focusSource = interceptImages ? e.target : document.activeElement;
+            const targetContainer = focusSource && focusSource.closest
+                ? focusSource.closest('.additional-content-wrapper')
                 : null;
             if (!targetContainer) {
-                return;
-            }
-
-            // Получаем данные из буфера обмена
-            const items = e.clipboardData?.items;
-            if (!items) {
                 return;
             }
 
@@ -135,8 +154,11 @@ Object.assign(ViolationManager.prototype, {
                 // тост об успехе с верным числом покажет insertImageFilesInOrder.
                 this.promptQualityThenInsertImages(violation, targetContainer, insertIndex, accepted);
             }
-            // Текст обрабатываем только если картинок в буфере нет.
-            else if (textItem) {
+            // Текст обрабатываем только если картинок в буфере нет И каретка не
+            // в редактируемом поле: в §5.8-ветке текст уже вставил редактор
+            // поверхности (его handler отрабатывает раньше по bubbling), наша
+            // текстовая ветка добавила бы дубль отдельным элементом зоны.
+            else if (textItem && !targetIsEditable) {
                 const textContent = e.clipboardData.getData('text/plain').trim();
 
                 if (textContent) {

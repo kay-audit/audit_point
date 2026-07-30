@@ -18,6 +18,13 @@
  *   unsub();  // или EscapeStack.remove(handler)
  *
  * Возвращаемая функция-unsubscribe идемпотентна.
+ *
+ * Протокол passthrough (§5.9): хэндлер может вернуть строго `false` — тогда
+ * событие НЕ останавливается и уходит дальше к обычным listener'ам. Нужно
+ * слоям, чья принадлежность ESC зависит от состояния: активная зона нарушений
+ * забирает ESC только когда каретка НЕ в редактируемом поле, иначе отдаёт его
+ * редактору. Любое другое возвращаемое значение (в т.ч. undefined) и исключение
+ * в хэндлере означают «событие съедено» — обратная совместимость полная.
  */
 export class EscapeStack {
     static _stack = [];
@@ -31,19 +38,25 @@ export class EscapeStack {
             if (e.key !== 'Escape') return;
             if (this._stack.length === 0) return;
             const top = this._stack[this._stack.length - 1];
-            e.stopImmediatePropagation();
+            // stopImmediatePropagation — ПОСЛЕ хэндлера, чтобы он мог отказаться
+            // от события (вернуть false). Порядок безопасен: остановка,
+            // вызванная синхронно внутри listener'а, всё равно блокирует все
+            // последующие listener'ы. Исключение = «съедено» (прежняя семантика).
+            let passthrough = false;
             try {
-                top(e);
+                passthrough = top(e) === false;
             } catch (err) {
                 console.error('[EscapeStack] handler threw:', err);
             }
+            if (!passthrough) e.stopImmediatePropagation();
         }, true);
     }
 
     /**
      * Регистрирует обработчик ESC. Хэндлер вызывается, только если он на вершине стека.
      * Возвращает функцию-unsubscribe.
-     * @param {(e: KeyboardEvent) => void} handler
+     * @param {(e: KeyboardEvent) => void|false} handler - Вернуть `false`, чтобы
+     *   пропустить ESC дальше (passthrough, см. шапку класса)
      * @returns {() => void}
      */
     static push(handler) {
