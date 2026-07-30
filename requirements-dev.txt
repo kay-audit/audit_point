@@ -2,3 +2,6 @@
 pytest==8.3.5
 pytest-asyncio==0.25.3
 httpx==0.28.1
+# starlette.testclient с httpx выдаёт StarletteDeprecationWarning; httpx2 — отдельный
+# пакет, ставится рядом с httpx 0.28 (его тянет openai), конфликта версий нет
+httpx2>=2.9.1
