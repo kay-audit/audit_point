@@ -31,10 +31,10 @@ Audit Workstation — Server-side rendered (Jinja2) + vanilla JS приложе�
 
 | Параметр | Значение |
 |---|---|
-| Всего JS-файлов | приблизительно на момент написания: 155 (`static/js/**/*.js`) |
-| `constructor/` (редактор актов) | приблизительно 88 файлов (включая новый `search/`, §1.2) |
-| `shared/` (cross-zone модули + чат) | приблизительно 40 файлов (включая 13 модулей чата) |
-| `portal/` (sidebar-страницы) | приблизительно 25 файлов |
+| Всего JS-файлов | приблизительно на момент написания: 176 (`static/js/**/*.js`) |
+| `constructor/` (редактор актов) | приблизительно 105 файлов (включая `search/` и инфраструктуру поверхностей, §1.2) |
+| `shared/` (cross-zone модули + чат) | приблизительно 41 файл (включая 13 модулей чата) |
+| `portal/` (sidebar-страницы) | приблизительно 28 файлов |
 | Всего CSS-файлов | 92 |
 | `constructor/` CSS | 45 файлов |
 | `portal/` CSS | 16 файлов |
@@ -68,12 +68,15 @@ static/js/
     │                 #   ItemsTitleEditing
     ├── table/        # TableManager + cells-operations + sizes
     ├── textblock/    # TextBlockManager + editor + formatting + toolbar
-    │                 #   + links-footnotes + capsule-integrity — deep-dive:
-    │                 #   docs/architecture/textblock-editor-architecture.md
+    │                 #   + links-footnotes + capsule-integrity
+    │                 #   + инфраструктура поверхностей (editable-surface,
+    │                 #   editor-registry/SURFACE_POLICY, editor-controller) —
+    │                 #   deep-dive: docs/architecture/textblock-editor-architecture.md
     ├── search/       # FindBar (Ctrl+F) + ActSearchEngine/Highlight/Replace —
-    │                 #   поиск/замена по текстблокам, deep-dive §12 в
-    │                 #   textblock-editor-architecture.md
-    ├── violation/    # ViolationManager (17 файлов)
+    │                 #   поиск/замена по текстблокам и rich-полям нарушений,
+    │                 #   deep-dive §12 в textblock-editor-architecture.md
+    ├── violation/    # ViolationManager (19 файлов, включая
+    │                 #   violation-field-surface.js — rich-поверхности полей)
     ├── preview/      # PreviewManager + per-type renderer'ы
     ├── dialog/       # HelpManager, InvoiceDialog
     ├── context-menu/ # 5 файлов (tree, cells, violation, links-footnotes, core)
@@ -157,6 +160,8 @@ CSS повторяет тройное разделение — см. главу 
 | `shared/format-units.js` | `formatMb`, `formatFileSize` | утилиты форматирования |
 | `shared/notifications-center/notification-center.js` | `NotificationCenter` | class |
 | `shared/api-errors.js` | `formatValidationDetail` | функция (window-публикация с guard для node:test) |
+| `shared/html-text.js` | `plainToRichHtml` | функция (plain → rich-HTML: escape + `\n`→`<br>`; формализатор/корректор) |
+| `shared/rich-text.js` | `serializeVisibleText` | функция (rich-HTML → видимый plain-текст с переносами) |
 
 **`shared/chat/`** — 13 модулей (ChatEventBus, ChatRenderer, ClientActionsRegistry, ChatStream, ChatHistory, ChatUI, ChatFiles, ChatTitle, ChatContext, ChatMessages, ChatManager, ChatModalManager, ChatFeedback). Полный реестр — [`docs/architecture/chat-frontend-architecture.md`](chat-frontend-architecture.md).
 
@@ -188,8 +193,12 @@ CSS повторяет тройное разделение — см. главу 
 | `constructor/tree/tree-utils.js` | `TreeUtils` |
 | `constructor/table/table-core.js` | `TableManager`, `tableManager` |
 | `constructor/textblock/textblock-core.js` | `TextBlockManager`, `textBlockManager` (расширяется через `Object.assign` из `textblock-{formatting,editor,toolbar,links-footnotes,capsule-integrity}.js` — deep-dive: [`textblock-editor-architecture.md`](textblock-editor-architecture.md)); + standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (единый источник истины для капсул, используются `constructor/search/act-search-engine.js`) |
+| `constructor/textblock/editor-registry.js` | `EditorRegistry` (активная поверхность), `SURFACE_POLICY` (политика возможностей по kind; deep-dive §15 в `textblock-editor-architecture.md`) |
+| `constructor/textblock/editable-surface.js` | `TextBlockSurface` (контракт `EditableSurface`) |
+| `constructor/textblock/editor-controller.js` | `EditorController` (mount/unmount поверхности, capsule-lifecycle, drop) |
+| `constructor/violation/violation-field-surface.js` | `ViolationFieldSurface`, `ViolationContentItemSurface`, `ViolationListItemSurface`, `_createRichFieldEditor` (rich-поля нарушений) |
 | `constructor/search/find-bar.js` | `FindBar` (немодальная панель поиска/замены; `installHotkey()` — `Ctrl+F`, зовётся в bootstrap после `App.init`, по образцу `NodeClipboard.installHotkey()`) |
-| `constructor/search/act-search-engine.js` | `ActSearchEngine`, `TextBlockSearchTarget` (движок поиска/замены по текстблокам, без UI) |
+| `constructor/search/act-search-engine.js` | `ActSearchEngine`, `TextBlockSearchTarget`, `FootnoteBodySearchTarget`, `ViolationFieldSearchTarget` (движок поиска/замены по текстблокам и rich-полям нарушений, без UI) |
 | `constructor/search/act-search-highlight.js` | `ActSearchHighlight` (подсветка через CSS Custom Highlight API) |
 | `constructor/search/act-search-replace.js` | `ActSearchReplace` (чистые хелперы форматирования/снимков для replace-all) |
 | `constructor/violation/violation-init.js` | `violationManager` (instance, инстанциируется при загрузке модуля) |
@@ -615,7 +624,7 @@ Per-node API (вместо полного `renderAll()`):
 
 - `_updateTbBadgeInItems(badge, node)` (`:553-567`) — апдейт чекбокса TB в шаге 2.
 - `_updateParentTbInItems(node)` (`:574-...`) — каскад вверх.
-- Обратной синхронизации DOM → AppState нет: ввод в ячейку таблицы пишется в состояние сразу (write-through, `table/cell-write-through.js`), текстблоки/нарушения — через live-обработчики blur/input.
+- Обратной синхронизации DOM → AppState нет: ввод в ячейку таблицы пишется в состояние сразу (write-through, `table/cell-write-through.js`), текстблоки и rich-поля нарушений — через debounce/blur-коммит своей поверхности (`EditorController`/`finalizeEdit`, deep-dive §15 в `textblock-editor-architecture.md`).
 
 ### 7.5 `renderAll` — оставшиеся call-sites
 
@@ -704,7 +713,7 @@ static scheduleTyping(options = {}) {
 }
 ```
 
-Используется в обработчиках `input`-событий (textblock-editor, violation textarea). Серия мутаций при наборе текста не запускает рендер на каждый кадр — только через 150мс тишины.
+Используется в обработчиках `input`-событий (textblock-editor, rich-поля нарушений). Серия мутаций при наборе текста не запускает рендер на каждый кадр — только через 150мс тишины.
 
 `update` и `scheduleTyping` — взаимозаменяемые для callsite'а: тяжёлая структурная операция (add/delete table) использует `update` (немедленный RAF), typing-flow — `scheduleTyping` (debounce).
 
@@ -857,7 +866,7 @@ Fallback: если `BroadcastChannel` недоступен (старый Safari)
 
 ### 11.1 SafeHTML (frontend)
 
-`shared/sanitize.js` (99 строк) — единый wrapper над `window.DOMPurify` (`static/vendor/dompurify/purify.min.js`):
+`shared/sanitize.js` (296 строк) — единый wrapper над `window.DOMPurify` (`static/vendor/dompurify/purify.min.js`):
 
 ```js
 window.SafeHTML = { set, sanitize, escapeHtml };
@@ -868,14 +877,15 @@ window.SafeHTML = { set, sanitize, escapeHtml };
 **Конфигурация (`DEFAULT_CONFIG`, `sanitize.js:17-38`):**
 
 - Дефолт-профиль (blocklist, используется чатом/diff-renderer): `USE_PROFILES: { html: true }` (SVG/MathML отключены), `FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button']`, `FORBID_ATTR` — полный список 60+ inline event-handlers (`onerror`, `onclick`, и т.п.).
-- Профиль `'acts'` (strict allowlist, используется рендером текстблоков конструктора): `ALLOWED_TAGS`/`ALLOWED_ATTR`, зеркальные бэк-whitelist'у `html_sanitizer.py` (включая `s/strike/del` и data-атрибуты ссылок/сносок). Вызов: `SafeHTML.set(el, html, 'acts')`. Состав закреплён стражем `tests/js/sanitize-profiles.test.mjs`.
-  - **Allowlist CSS-свойств для inline-`style`.** Профиль `'acts'` дополнительно фильтрует атрибут `style`, оставляя только свойства из `ACTS_CSS_PROPERTIES` (`font-size`, `color`, `background-color`, `font-weight`, `font-style`, `text-decoration`, `text-decoration-line`) — **зеркало бэкендового `html_sanitizer.ALLOWED_CSS_PROPERTIES`**. Реализация — хук `afterSanitizeAttributes` + модульная переменная активного allowlist'а, выставляемая на время синхронного `DOMPurify.sanitize` (реентрантности нет; кастомный ключ конфига в хук-арг DOMPurify надёжно не пробрасывается). Без этого превью показывало бы инлайн-CSS (`font-family`/`position`/`display`/…), который бэк потом срезает → расхождение превью ↔ сохранённого акта/экспорта. **Список свойств синхронизируется с бэком вручную.**
+- Профиль `'acts'` (strict allowlist, используется рендером текстблоков конструктора И rich-полей нарушений): `ALLOWED_TAGS`/`ALLOWED_ATTR`, зеркальные бэк-whitelist'у `html_sanitizer.py` (включая `s/strike/del` и data-атрибуты ссылок/сносок). Вызов: `SafeHTML.set(el, html, 'acts')`; основной sink rich-контента — обёртка `renderActContent(el, html)` (`sanitize.js:292`). Состав закреплён стражем `tests/js/sanitize-profiles.test.mjs`.
+  - **Allowlist CSS-свойств для inline-`style`.** Профиль `'acts'` дополнительно фильтрует атрибут `style`, оставляя только свойства из `ACTS_CSS_PROPERTIES` (`font-size`, `color`, `background-color`, `font-weight`, `font-style`, `text-decoration`, `text-decoration-line`, `text-align`) — **зеркало бэкендового allowlist'а**. Реализация — хук `afterSanitizeAttributes` + модульная переменная активного allowlist'а, выставляемая на время синхронного `DOMPurify.sanitize` (реентрантности нет; кастомный ключ конфига в хук-арг DOMPurify надёжно не пробрасывается). Без этого превью показывало бы инлайн-CSS (`font-family`/`position`/`display`/…), который бэк потом срезает → расхождение превью ↔ сохранённого акта/экспорта.
+  - **Рантайм-синхронизация с бэком**: хардкод-списки — фолбэк; источник истины — `applyActsAllowlist(cfg)` (`sanitize.js:91`) по данным `GET /acts/limits` (секция sanitizer, из `ACTS__SANITIZER__*`), с диагностикой дрейфа `_warnIfDrift`. Известное расхождение: DOMPurify не умеет per-tag политику style (у бэка div/p несут только `text-align`) — превью может показать `font-size` на `div`, который бэк снимет на save.
 
-**Потребители**: `textblock-editor.js`, `preview-violation-renderer.js`, `preview-textblock-renderer.js`, `diff-renderer.js`, `chat-renderer.js`. Все `innerHTML`-sink'и в коде обязаны идти через `SafeHTML.set` или (если HTML заведомо безопасен) через `textContent` напрямую.
+**Потребители**: `textblock-editor.js`, `violation-core.js`, `violation-field-surface.js`, `preview-violation-renderer.js`, `preview-textblock-renderer.js`, `diff-renderer.js`, `formalizer-popover.js`, `chat-renderer.js`. Все `innerHTML`-sink'и в коде обязаны идти через `SafeHTML.set`/`renderActContent` или (если HTML заведомо безопасен) через `textContent` напрямую.
 
-### 11.2 bleach (backend)
+### 11.2 bleach + nh3 (backend)
 
-Defense in depth: на бэке HTML-поля акта проходят повторную санитизацию через `bleach.clean` (whitelist тегов/атрибутов) перед записью в БД — даже если фронтовый SafeHTML обойдут, script-tag не сохранится. Детали — `app/domains/acts/services/act_content_service.py::ActContentService._sanitize_html_fields` и dev-guide.
+Defense in depth: на бэке HTML-поля акта проходят повторную санитизацию перед записью в БД — даже если фронтовый SafeHTML обойдут, script-tag не сохранится. С PR #37 движка два (`app/domains/acts/utils/html_sanitizer.py`): `sanitize_html` (bleach) — `textBlocks[*].content` и узлы дерева; `sanitize_rich_html` (nh3) — rich-поля нарушений, состав по флагу `rich` реестра `violation_fields.py`. Allowlist общий (`ACTS__SANITIZER__*`). Ячейки таблиц — verbatim (Фаза 2 не реализована). Детали — §9.3 в [`textblock-editor-architecture.md`](textblock-editor-architecture.md) и dev-guide §10.6a.
 
 ### 11.3 Security headers (CSP enforce + nonce)
 

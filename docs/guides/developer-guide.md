@@ -7,7 +7,7 @@
 - [`docs/operations/operations-recovery.md`](../operations/operations-recovery.md) — operator playbook: что делать при инцидентах в проде (завис forward-запрос к агенту, singleton-lock, batcher overflow, denied access).
 - [`docs/architecture/frontend-architecture.md`](../architecture/frontend-architecture.md) — **единый deep-dive по фронту** (constructor + portal + shared): ES-модули и entry-файлы, AppState/StorageManager/LockManager, per-node render API, диалоги, безопасность, a11y, CSS. Чат — отдельным документом ниже.
 - [`docs/architecture/chat-frontend-architecture.md`](../architecture/chat-frontend-architecture.md) — deep-dive по фронт-архитектуре чата: 13 ядерных модулей, polling сообщений, режимы inline/modal/popup.
-- [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — deep-dive по редактору текстблоков: капсулы ссылок/сносок, caret-guard, целостность капсул (prevent-then-heal), DOCX-экспорт (`inline.py`).
+- [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — deep-dive по движку rich-редактора (текстблоки + rich-поля нарушений через поверхности EditableSurface): капсулы ссылок/сносок, caret-guard, целостность капсул (prevent-then-heal), DOCX-экспорт (`inline.py`), поверхности и SURFACE_POLICY (§15).
 - [`docs/integrations/external-agent-imitation.sql`](../integrations/external-agent-imitation.sql) — SQL-сниппеты для имитации внешнего ИИ-агента (см. §7.8).
 - Retention bus-таблицы `chat_agent_messages_bus` — см. §9.6 (кода ретеншена в приложении нет, очистка — задача DBA).
 - [`docs/testing/manual-qa-agent-channel.md`](../testing/manual-qa-agent-channel.md) — чек-лист ручного QA моста к внешнему агенту.
@@ -775,7 +775,7 @@ async def app_error_handler(request, exc):
 >
 > **Чат-фронт — отдельно**: [`docs/architecture/chat-frontend-architecture.md`](../architecture/chat-frontend-architecture.md), плюс event-driven раздел §7.7 ниже.
 >
-> **Редактор текстблоков — отдельно**: [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — капсулы ссылок/сносок, caret-guard (`U+FEFF`), 3-слойная целостность капсул, DOCX-экспорт.
+> **Движок rich-редактора — отдельно**: [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — капсулы ссылок/сносок, caret-guard (`U+FEFF`), 3-слойная целостность капсул, DOCX-экспорт; с PR #37 движок обобщён до поверхностей (EditableSurface) и обслуживает и rich-поля нарушений (§15 там же).
 
 ### 4.1 Зоны и страницы
 
@@ -3158,6 +3158,9 @@ def test_chat_settings_defaults():
 | `ACTS__TABLES__MIN_COL_WIDTH_PX` | int | `80` | Мин. ширина колонки (px) |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока |
+| `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (23 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
+| `ACTS__SANITIZER__ALLOWED_CSS_PROPERTIES` | list | `font-size/…/text-align` (8 свойств) | Allowlist CSS-свойств inline-`style` |
+| `ACTS__SANITIZER__ALLOWED_DATA_ATTRS` | list | `data-footnote-*`, `data-link-*` | Data-атрибуты капсул ссылок/сносок |
 
 Лимиты картинок и жёсткие границы таблиц/текстблоков фронт получает через `GET /api/v1/acts/limits` (образец — chat `GET /limits`). Эти настройки — **единый источник истины** end-to-end: и UI-гейты, и `/limits`, и Pydantic-валидаторы схемы (`grid`/`colWidths`/`colSpan`/`rowSpan`/`fontSize`, число элементов нарушения, whitelist MIME картинок) читают их в рантайме. Статические константы в `schemas/act_content.py` (`VIOLATION_CONTENT_ITEMS_MAX`, `IMAGE_DATA_URL_PATTERN`, и т.п.) остаются только как фолбэк на импорт-тайм/тесты; whitelist-регекс MIME выводится из `ACTS__IMAGES__ALLOWED_MIME_TYPES` (с сохранённым алиасом `jpe?g` для `image/jpg`).
 
@@ -3560,7 +3563,7 @@ Deep-dive — [`docs/architecture/frontend-architecture.md`](../architecture/fro
 5. Метод создания `addChartToNode()` в `state-content.js` + render-метод и запись в `ItemsRenderer._leafRenderers` (`items-renderer.js`).
 6. Preview-рендерер: `preview-chart-renderer.js` + диспетч в `preview.js`.
 7. Три форматтера экспорта: обход у всех общий — `formatters/tree_walker.py` (`walk(tree, visitor, blocks)` сам диспетчит leaf-типы по `LEAF_BLOCK_REFS`, включая «item с прикреплённой таблицей»), поэтому достаточно по **одному визитор-методу `on_chart` на формат**: `_TextTreeVisitor` (`text_formatter.py`), `_MarkdownTreeVisitor` (`markdown_formatter.py`), `_DocxTreeVisitor` (`docx/formatter.py`, + builder).
-8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py`). Пропуск = молчаливая XSS-дыра.
+8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py`). Санитайзера два: `sanitize_html` (bleach — текстблоки/дерево) и `sanitize_rich_html` (nh3 — rich-поля нарушений, состав по флагу `rich` реестра `violation_fields.py`); для нового блока выбери движок сознательно и задокументируй выбор. Пропуск = молчаливая XSS-дыра.
 9. Фикстура типа в `_BLOCK_PAYLOADS` тест-стража (`test_block_types_guard.py`) — параметризация по `LEAF_BLOCK_TYPES` сама потребует её.
 10. Иконка типа в `AppConfig.tree.icons` и, при необходимости, названия в `typeNames` / `limitNames` (`app-config.js`).
 

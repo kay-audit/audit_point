@@ -145,14 +145,23 @@ underline}` **вырезан целиком** (директива владель
 |-----------------------|-------------------------------------------|-------------------------------------------------------------|
 | `id`                  | str                                       | ID нарушения                                                 |
 | `nodeId`              | str                                       | ID узла-носителя                                             |
-| `violated`            | str, default `""`                         | секция «Нарушено»                                            |
-| `established`         | str, default `""`                         | секция «Установлено»                                         |
-| `descriptionList`     | `ViolationDescriptionListSchema`          | `{enabled: bool, items: list[str]}`                          |
+| `violated`            | str, default `""`                         | секция «Нарушено» — **rich-HTML** (см. ниже)                 |
+| `established`         | str, default `""`                         | секция «Установлено» — **rich-HTML**                         |
+| `descriptionList`     | `ViolationDescriptionListSchema`          | `{enabled: bool, items: list[str]}` — каждый пункт **rich-HTML** |
 | `additionalContent`   | `ViolationAdditionalContentSchema`        | `{enabled: bool, items: list[ViolationContentItemSchema]}`   |
-| `reasons`             | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Причины»                  |
-| `measures`            | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Принятые меры» (под «Причинами») |
-| `consequences`        | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Последствия»              |
-| `responsible`         | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Ответственные»            |
+| `reasons`             | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Причины», content **rich-HTML** |
+| `measures`            | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Принятые меры» (под «Причинами»), content **rich-HTML** |
+| `consequences`        | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Последствия», content **rich-HTML** |
+| `responsible`         | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Ответственные», content **rich-HTML** |
+
+С PR #37 (`rich-editor-integration`) текстовые поля нарушения — **rich-HTML**
+по образцу `TextBlockSchema.content` (формат, выравнивание, размер,
+капсулы-ссылки; сноски запрещены политикой). Канон состава — реестр
+`app/domains/acts/violation_fields.py` (флаг `rich=True` у 7 дескрипторов) +
+фронт-зеркало `violation-fields.js`; guard-тесты пиннят флаги. На save
+rich-поля санитизируются `sanitize_rich_html` (nh3; текстблоки — bleach,
+общий allowlist `ACTS__SANITIZER__*`) — deep-dive §9.3/§15 в
+[`textblock-editor-architecture.md`](textblock-editor-architecture.md).
 
 Текстовые поля нарушения (`violated`/`established`/`reasons`/`responsible`/
 `consequences`/`measures`) можно автозаполнить из свободного описания — кнопка
@@ -160,7 +169,10 @@ underline}` **вырезан целиком** (директива владель
 (`app/domains/chat/services/text_actions/formalizer_service.py`, эндпоинт
 `POST /api/v1/chat/text-actions/formalize-violation`): 4 экстрактора D17 разбирают
 текст параллельно и раскладывают его по полям (что не извлеклось — поле пустое; уже
-заполненное поле пустым ответом не затирается). Заголовок панели подставляет реальный
+заполненное поле пустым ответом не затирается). Плоские строки LLM пишутся в
+rich-поля через `plainToRichHtml` (`static/js/shared/html-text.js`: escape +
+`\n`→`<br>`) и `surface.setContent`; чтение полей в промпт — через экстрактор
+видимого текста (`_richToPlain`). Заголовок панели подставляет реальный
 номер родительского пункта, свободный текст предзаполняется текущими полями карточки.
 Вторым этапом (по извлечённым полям) формализатор возвращает `recommendations` —
 дисплей-онли подсказки «чего не хватает в описании»: показываются в панели рядом с
@@ -172,10 +184,10 @@ underline}` **вырезан целиком** (директива владель
 |------------|------------------------------------|-------------------------------------------|
 | `id`       | str                                | ID элемента                               |
 | `type`     | `"case" | "image" | "freeText"`    | тип                                       |
-| `content`  | str, default `""`                  | текст (для `case`, `freeText`)            |
-| `url`      | str, default `""`                  | URL изображения (для `image`)             |
-| `caption`  | str, default `""`                  | подпись изображения                       |
-| `filename` | str, default `""`                  | имя файла                                 |
+| `content`  | str, default `""`                  | текст (для `case`, `freeText`) — **rich-HTML**, санитизируется по типу item'а |
+| `url`      | str, default `""`                  | URL изображения (для `image`) — plain/verbatim (base64 data-URL, свой валидатор) |
+| `caption`  | str, default `""`                  | подпись изображения — **rich-HTML**       |
+| `filename` | str, default `""`                  | имя файла — plain/verbatim                |
 | `width`    | int 0–100, default `0`             | ширина картинки, % полезной ширины листа (0 = авто: натуральный размер с потолком по ширине) |
 
 ---
