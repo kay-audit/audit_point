@@ -5,16 +5,21 @@
  * (#2). Перед вставкой предлагаем пользователю режим сжатия (диалог качества,
  * Q3) и уменьшаем длинную сторону + перекодируем в JPEG на клиенте.
  *
- * Пережимаем ТОЛЬКО JPEG. GIF (потеряет анимацию) и PNG (потеряет
- * прозрачность и чёткость на тексте/линиях при JPEG-перекодировании) в режимах
- * сжатия отдаём как есть — фактический источник бюджета это фотографии, а они
- * приходят в JPEG. Детекция альфы PNG требует декодирования пикселей и всё
- * равно неточна для палитровых PNG с tRNS, поэтому PNG пропускаем целиком —
- * прагматичный выбор из двух, предложенных в брифе.
+ * Пережимаем JPEG и PNG. GIF (потеряет анимацию) в режимах сжатия отдаём как
+ * есть. Непрозрачные PNG-скриншоты — самый массовый тип вложений в актах, и
+ * раньше пропускались целиком наравне с прозрачными «на всякий случай»; теперь
+ * прозрачность проверяется по факту декодированных пикселей — createImageBitmap
+ * + canvas отдают честный альфа-канал даже для палитровых PNG с tRNS, так что
+ * прежнее возражение про неточную детекцию снято. Полупрозрачные PNG остаются
+ * оригиналом, непрозрачные перекодируются в JPEG наравне с фото. Защитный
+ * размерный гейт (blob.size < file.size) не даёт перекодированному JPEG
+ * проиграть исходнику по весу — актуально и для PNG со сплошным текстом/
+ * линиями, и для обычного JPEG-пути.
  *
- * Чистая логика (resolveResizeMode / shouldDownscale / computeScaledSize) и
- * skip-ветки downscaleImage покрыты node-тестами; сам canvas-конвейер
- * (createImageBitmap / toBlob) исполняется только в браузере — LIVE.
+ * Чистая логика (resolveResizeMode / shouldDownscale / computeScaledSize /
+ * hasTransparentPixels) и skip-ветки downscaleImage покрыты node-тестами; сам
+ * canvas-конвейер (createImageBitmap / toBlob / getImageData) исполняется
+ * только в браузере — LIVE.
  */
 
 import { readFileAsDataUrl } from './violation-file-reading.js';
@@ -36,7 +41,11 @@ export function resolveResizeMode(mode) {
 }
 
 /**
- * Нужно ли пережимать файл: только JPEG и только в режиме сжатия.
+ * Нужно ли пережимать файл: JPEG/PNG и только в режиме сжатия.
+ *
+ * Итоговое решение по PNG (сохранить прозрачный оригинал или перекодировать
+ * непрозрачный в JPEG) принимается позже, в downscaleImage, по факту
+ * декодированных пикселей — здесь только грубый фильтр по MIME-типу.
  *
  * @param {string} fileType - MIME-тип файла (file.type)
  * @param {string} mode - Выбранный режим качества
@@ -44,8 +53,24 @@ export function resolveResizeMode(mode) {
  */
 export function shouldDownscale(fileType, mode) {
     if (!resolveResizeMode(mode)) return false; // 'original' / неизвестный
-    // GIF — анимация, PNG — прозрачность/чёткость: JPEG их портит.
-    return fileType === 'image/jpeg';
+    // GIF — анимация: JPEG её убьёт, пропускаем целиком.
+    return fileType === 'image/jpeg' || fileType === 'image/png';
+}
+
+/**
+ * Есть ли хоть один полупрозрачный/прозрачный пиксель в RGBA-буфере.
+ *
+ * Чистая функция без DOM/canvas — принимает уже декодированные пиксели
+ * (например, ImageData.data). Шагает по каждому 4-му байту (альфа-канал).
+ *
+ * @param {Uint8ClampedArray|number[]} data - RGBA-буфер (4 байта на пиксель)
+ * @returns {boolean}
+ */
+export function hasTransparentPixels(data) {
+    for (let i = 3; i < data.length; i += 4) {
+        if (data[i] < 255) return true;
+    }
+    return false;
 }
 
 /**
@@ -72,10 +97,14 @@ export function computeScaledSize(width, height, maxDim) {
 /**
  * Читает файл в data-URL, при необходимости пережав его на canvas.
  *
- * Для 'original', GIF и PNG (см. shouldDownscale) возвращает оригинальные
- * байты через обычный readAsDataURL. Для JPEG в режиме сжатия — уменьшает
- * длинную сторону до maxDim и перекодирует в JPEG с заданным quality. Любой
- * сбой canvas/bitmap деградирует к оригиналу (размерный гейт прикроет).
+ * Для 'original' и GIF (см. shouldDownscale) возвращает оригинальные байты
+ * через обычный readAsDataURL. Для JPEG/PNG в режиме сжатия — уменьшает
+ * длинную сторону до maxDim; для PNG дополнительно проверяет альфа-канал
+ * уменьшенного изображения (hasTransparentPixels) и при наличии прозрачности
+ * отдаёт оригинал, не перекодируя. Непрозрачные PNG и JPEG перекодируются в
+ * JPEG с заданным quality, но только если это реально выигрывает в размере
+ * (blob.size < file.size) — иначе тоже оригинал. Любой сбой canvas/bitmap
+ * деградирует к оригиналу.
  *
  * @param {File|Blob} file - Исходный файл картинки
  * @param {Object} [options]
@@ -105,13 +134,26 @@ export async function downscaleImage(file, options = {}) {
             canvas.height = height;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(bitmap, 0, 0, width, height);
+
+            if (file.type === 'image/png') {
+                // Альфа проверяется на уже уменьшенном canvas — дешевле, а
+                // интерполяция drawImage сохраняет полупрозрачность (полностью
+                // непрозрачный источник останется непрозрачным).
+                const { data } = ctx.getImageData(0, 0, width, height);
+                if (hasTransparentPixels(data)) return readAsDataUrl(file);
+            }
+
             const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
-            if (blob) return readAsDataUrl(blob);
+            // Защитный гейт: перекодированный JPEG отдаём, только если он
+            // реально меньше исходника (актуально для PNG-скринов с текстом/
+            // линиями, где JPEG может проиграть; заодно прикрывает и JPEG-путь).
+            if (blob && blob.size < file.size) return readAsDataUrl(blob);
         } finally {
             if (typeof bitmap.close === 'function') bitmap.close();
         }
     } catch (_) {
-        // Canvas/bitmap недоступны или упали — отдаём оригинал.
+        // Canvas/bitmap недоступны или упали (в т.ч. getImageData на tainted
+        // canvas) — отдаём оригинал, как и остальные сбои конвейера.
     }
     return readAsDataUrl(file);
 }
@@ -123,5 +165,6 @@ if (typeof window !== 'undefined') {
         resolveResizeMode,
         shouldDownscale,
         computeScaledSize,
+        hasTransparentPixels,
     };
 }
