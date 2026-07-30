@@ -6,16 +6,23 @@
  * но записи, испорченные до появления этих гардов, могли остаться.
  *
  * Правила:
- *  (а) записи словарей tables/textBlocks/violations отбрасываются, если
- *      nodeId не существует в дереве, ИЛИ ни один узел дерева реально не
- *      ссылается на эту запись через своё поле-ссылку (обратная сверка,
- *      находка #21: раньше проверялось только существование узла с таким
- *      id — фантомная запись, чей "хозяин" на деле ссылается на другую
- *      запись словаря, могла уцелеть);
+ *  (а) записи словарей tables/textBlocks/violations отбрасываются, если ни один
+ *      узел дерева реально не ссылается на эту запись через своё поле-ссылку
+ *      (обратная сверка, находка #21: раньше проверялось только существование
+ *      узла с таким id — фантомная запись, чей "хозяин" на деле ссылается на
+ *      другую запись словаря, могла уцелеть). Само по себе значение
+ *      entry.nodeId условием дропа НЕ является — см. (в);
  *  (б) листовой узел (tableId/textBlockId/violationId) без записи в словаре —
  *      удаляется ЦЕЛИКОМ из дерева (зеркало бэкового _strip_dangling_refs):
  *      снять только ссылку мало — пустой узел-зомби всё равно отрисуется в
- *      экспорте («Таблица N» без данных) и не вычистится пересохранением.
+ *      экспорте («Таблица N» без данных) и не вычистится пересохранением;
+ *  (в) устаревший бэк-референс (§5.10e): на запись ссылается живой узел X, но
+ *      её entry.nodeId ≠ X.id — указывает на другой узел, на несуществующий
+ *      или отсутствует вовсе. Это рассинхрон, а не мусор: не отбрасываем, а
+ *      ЛЕЧИМ (entry.nodeId = id узла X). Источник истины — ссылка узла дерева,
+ *      а не денормализованный обратный указатель записи. Раньше «мёртвый»
+ *      nodeId уводил запись под правило (а), и каскад (а)→(б) сносил заодно
+ *      живой узел — потеря целой таблицы/нарушения из-за починяемого поля.
  *
  * Применяется в loadActContent ПОСЛЕ получения контента (включая
  * восстановленный черновик) и ДО присвоения в AppState.
@@ -31,16 +38,20 @@ const DICT_REFS = LEAF_BLOCK_TYPES.map((t) => [BLOCK_TYPES[t].dictName, BLOCK_TY
  * Чистит несогласованные данные контента акта на месте.
  *
  * @param {Object} content Контент акта ({tree, tables, textBlocks, violations, ...})
- * @returns {{changed: boolean, droppedEntries: Object<string, string[]>, removedNodes: Array<{id:string,type:string}>}}
+ * @returns {{changed: boolean, droppedEntries: Object<string, string[]>,
+ *            removedNodes: Array<{id:string,type:string}>,
+ *            healedNodeIds: Object<string, Array<{id:string,from:string,to:string}>>}}
  *   Отчёт: changed — было ли что-то исправлено; droppedEntries — id отброшенных
  *   записей по словарям; removedNodes — {id,type} удалённых узлов-зомби (B-38:
- *   структурно, т.к. отчёт уходит в серверный лог).
+ *   структурно, т.к. отчёт уходит в серверный лог); healedNodeIds — записи с
+ *   вылеченным по правилу (в) nodeId (было → стало).
  */
 export function sanitizeActContent(content) {
     const report = {
         changed: false,
         droppedEntries: { tables: [], textBlocks: [], violations: [] },
         removedNodes: [],
+        healedNodeIds: { tables: [], textBlocks: [], violations: [] },
     };
 
     if (!content || !content.tree || typeof content.tree !== 'object') {
@@ -50,26 +61,34 @@ export function sanitizeActContent(content) {
     // (а) и (б) взаимозависимы: вырезание зомби-узла уносит и его поддерево,
     // осиротив записи словарей у потомков; отброшенная запись делает ссылку
     // другого узла висячей. Поэтому повторяем оба правила до стабилизации —
-    // множество живых id и список {node, parent} строятся заново по ТЕКУЩЕМУ
+    // обратный индекс и список {node, parent} строятся заново по ТЕКУЩЕМУ
     // (уже обрезанному) дереву. Каждый результативный проход строго что-то
     // удаляет (id-узлов/записей конечно) → цикл завершается.
     for (;;) {
-        const nodeIds = new Set();
         const linked = [];
-        // Обратный индекс (находка #21, Вариант Б): для каждого словаря —
-        // множество id, на которые РЕАЛЬНО ссылается хотя бы один узел через
-        // своё поле-ссылку (node[refField]). Перестраивается каждый проход
-        // по ТЕКУЩЕМУ дереву — как и nodeIds.
-        const referenced = Object.fromEntries(DICT_REFS.map(([dictName]) => [dictName, new Set()]));
+        // Обратный индекс (находка #21, Вариант Б): для каждого словаря — id
+        // записей, на которые РЕАЛЬНО ссылается хотя бы один узел через своё
+        // поле-ссылку (node[refField]). Значение — id ссылающегося узла: он же
+        // «настоящий» владелец записи для правила (в). Перестраивается каждый
+        // проход по ТЕКУЩЕМУ дереву.
+        const referrers = Object.fromEntries(DICT_REFS.map(([dictName]) => [dictName, new Map()]));
         const stack = [{ node: content.tree, parent: null }];
         while (stack.length) {
             const { node, parent } = stack.pop();
             if (!node || typeof node !== 'object') continue;
             linked.push({ node, parent });
-            if (node.id) nodeIds.add(node.id);
             for (const [dictName, refField] of DICT_REFS) {
                 const ref = node[refField];
-                if (ref) referenced[dictName].add(ref);
+                // Ссылающихся узлов может оказаться несколько (битые данные) —
+                // владельцем считаем ПЕРВЫЙ встреченный в этом обходе (порядок
+                // стека, детерминированный). Узел без id владельцем быть не
+                // может (лечить entry.nodeId нечем, да и сам узел неадресуем),
+                // поэтому такие ссылки не регистрируем: запись без опознаваемого
+                // владельца — сирота по (а), и каскад (б) заодно вынесет
+                // безымянный узел.
+                if (ref && node.id && !referrers[dictName].has(ref)) {
+                    referrers[dictName].set(ref, node.id);
+                }
             }
             if (Array.isArray(node.children)) {
                 for (const child of node.children) stack.push({ node: child, parent: node });
@@ -78,22 +97,39 @@ export function sanitizeActContent(content) {
 
         let changedThisPass = false;
 
-        // (а) сироты словарей: nodeId записи не существует в (текущем) дереве
-        //     (в т.ч. потомки удалённых на прошлом проходе зомби-узлов), ИЛИ
-        //     ни один узел реально не ссылается на entryId (находка #21).
+        // (а) сироты словарей: ни один узел (текущего) дерева не ссылается на
+        //     entryId — находка #21, в т.ч. записи потомков удалённых на
+        //     прошлом проходе зомби-узлов (их узлов в дереве уже нет, значит
+        //     и ссылок на записи не осталось).
+        // (в) рассинхрон: ссылающийся узел есть, но entry.nodeId указывает не
+        //     на него — лечим (§5.10e).
         for (const [dictName] of DICT_REFS) {
             const dict = content[dictName];
             if (!dict || typeof dict !== 'object') continue;
             for (const [entryId, entry] of Object.entries(dict)) {
-                // B-38: явная проверка отсутствия nodeId (раньше срабатывала
-                // косвенно через nodeIds.has(undefined)===false — неочевидно).
-                const noOwnerNode = !entry || !entry.nodeId || !nodeIds.has(entry.nodeId);
-                const notReferencedBack = !referenced[dictName].has(entryId);
-                if (noOwnerNode || notReferencedBack) {
+                // Единственный критерий сироты — отсутствие опознаваемого
+                // ссылающегося узла. Значение entry.nodeId (мёртвое/чужое/
+                // пустое) сиротой запись НЕ делает: это денормализованный
+                // указатель, он чинится правилом (в).
+                const ownerNodeId = referrers[dictName].get(entryId);
+                if (!entry || ownerNodeId === undefined) {
                     delete dict[entryId];
                     report.droppedEntries[dictName].push(entryId);
                     report.changed = true;
                     changedThisPass = true;
+                } else if (entry.nodeId !== ownerNodeId) {
+                    // Лечение идемпотентно и не трогает ни дерево, ни ссылки
+                    // узлов, поэтому changedThisPass НЕ поднимаем: повторный
+                    // проход по этой записи уже ничего не изменит, а инвариант
+                    // «результативный проход строго что-то удаляет» (условие
+                    // завершения цикла ниже) сохраняется.
+                    report.healedNodeIds[dictName].push({
+                        id: entryId,
+                        from: entry.nodeId,
+                        to: ownerNodeId,
+                    });
+                    entry.nodeId = ownerNodeId;
+                    report.changed = true;
                 }
             }
         }

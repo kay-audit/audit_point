@@ -4,7 +4,12 @@
  * sanitizeActContent — последний рубеж для исторически испорченных данных
  * в БД: (а) отбрасывает записи словарей, чей nodeId не существует в дереве;
  * (б) удаляет листовой узел-зомби, ссылка которого не имеет записи в словаре
- * (зеркало бэкового _strip_dangling_refs).
+ * (зеркало бэкового _strip_dangling_refs); (в) лечит устаревший бэк-референс —
+ * запись, на которую ссылается живой узел X, но её nodeId ≠ X.id (§5.10e).
+ *
+ * Критерий сироты в (а) — ТОЛЬКО отсутствие ссылающегося узла: мёртвый или
+ * пустой nodeId при живом владельце чинится правилом (в), а не карается
+ * удалением записи и каскадным вырезанием узла.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -58,8 +63,10 @@ test('чистые данные → без изменений (changed=false, к
   assert.deepEqual(report.removedNodes, []);
 });
 
-test('сирота словаря таблиц (nodeId не в дереве) отбрасывается', () => {
+test('истинная сирота (мёртвый nodeId И никто не ссылается) отбрасывается', () => {
   const content = makeCleanContent();
+  // Ни одного узла со ссылкой на t_orphan — лечить нечем, это мусор (в
+  // отличие от мёртвого nodeId при живом ссылающемся узле, см. §5.10e ниже).
   content.tables.t_orphan = { id: 't_orphan', nodeId: 'нет_такого_узла', grid: [] };
 
   const report = sanitizeActContent(content);
@@ -85,7 +92,7 @@ test('сироты текстблоков и нарушений отбрасыв
   assert.deepEqual(report.droppedEntries.violations, ['v_orphan']);
 });
 
-test('запись без nodeId считается сиротой', () => {
+test('запись без nodeId, на которую никто не ссылается, считается сиротой', () => {
   const content = makeCleanContent();
   content.tables.t_no_node = { id: 't_no_node', grid: [] };
 
@@ -161,17 +168,115 @@ test('зомби-текстблок и зомби-нарушение (вложе
   assert.deepEqual([...report.removedNodes].map((n) => n.id).sort(), ['n2', 'n4']);
 });
 
-test('цепочка: сирота словаря + узел, ссылающийся на неё → запись отброшена, узел удалён', () => {
+test('§5.10e: nodeId записи мёртв, но узел на неё ссылается → лечится, каскад (а)→(б) НЕ срабатывает', () => {
   const content = makeCleanContent();
-  // Запись указывает на несуществующий узел, а легитимный узел n1 — на неё
+  // Запись указывает на несуществующий узел, а легитимный узел n1 — на неё.
+  // Раньше это трактовалось как сирота: (а) сносила запись, следом (б) вырезала
+  // живой узел n1 — потеря целой таблицы из-за починяемого бэк-референса.
   content.tables.t1.nodeId = 'призрак';
 
   const report = sanitizeActContent(content);
 
-  assert.equal(content.tables.t1, undefined);          // (а) сирота отброшена
-  assert.ok(!nodeIdsOf(content.tree).has('n1'), 'узел n1 не удалён'); // (б) узел вырезан
+  assert.ok(content.tables.t1, 'запись с живым ссылающимся узлом не сирота');
+  assert.equal(content.tables.t1.nodeId, 'n1', 'мёртвый nodeId вылечен по ссылающемуся узлу');
+  assert.ok(nodeIdsOf(content.tree).has('n1'), 'узел-владелец остаётся в дереве');
+  assert.deepEqual(report.droppedEntries.tables, []);
+  assert.deepEqual(report.removedNodes, []);
+  assert.deepEqual(report.healedNodeIds.tables, [{ id: 't1', from: 'призрак', to: 'n1' }]);
+});
+
+test('§5.10e: у записи нет nodeId вовсе, но узел на неё ссылается → лечится', () => {
+  const content = makeCleanContent();
+  delete content.violations.v1.nodeId;
+
+  const report = sanitizeActContent(content);
+
+  assert.ok(content.violations.v1, 'запись не отброшена');
+  assert.equal(content.violations.v1.nodeId, 'n4');
+  assert.deepEqual(report.healedNodeIds.violations, [{ id: 'v1', from: undefined, to: 'n4' }]);
+  assert.deepEqual(report.droppedEntries.violations, []);
+});
+
+// ── §5.10e: правило (в) — лечение устаревшего бэк-референса ────────────────
+
+test('§5.10e: nodeId записи указывает на ДРУГОЙ существующий узел → лечится, запись цела', () => {
+  const content = makeCleanContent();
+  // n1.tableId === 't1' (ссылка узла валидна), но сама запись t1 считает своим
+  // узлом n2 — тоже существующий, но чужой. Оба условия правила (а) ложны, и
+  // раньше запись проходила сверку с рассинхроном.
+  content.tables.t1.nodeId = 'n2';
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(report.changed, true);
+  assert.ok(content.tables.t1, 'запись с валидной ссылкой узла не должна отбрасываться');
+  assert.equal(content.tables.t1.nodeId, 'n1', 'nodeId вылечен по ссылающемуся узлу');
+  assert.deepEqual(report.healedNodeIds.tables, [{ id: 't1', from: 'n2', to: 'n1' }]);
+  assert.deepEqual(report.droppedEntries.tables, []);
+  // Узел-владелец не задет правилом (б) — ссылка осталась разрешимой.
+  assert.ok(nodeIdsOf(content.tree).has('n1'));
+});
+
+test('§5.10e: лечатся записи всех словарей (textBlocks/violations)', () => {
+  const content = makeCleanContent();
+  content.textBlocks.tb1.nodeId = 'n1';
+  content.violations.v1.nodeId = 'n3';
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.textBlocks.tb1.nodeId, 'n2');
+  assert.equal(content.violations.v1.nodeId, 'n4');
+  assert.deepEqual(report.healedNodeIds.textBlocks, [{ id: 'tb1', from: 'n1', to: 'n2' }]);
+  assert.deepEqual(report.healedNodeIds.violations, [{ id: 'v1', from: 'n3', to: 'n4' }]);
+  assert.deepEqual(report.droppedEntries, { tables: [], textBlocks: [], violations: [] });
+});
+
+test('§5.10e: второй проход по вылеченным данным ничего не меняет (идемпотентность)', () => {
+  const content = makeCleanContent();
+  content.tables.t1.nodeId = 'n2';
+
+  sanitizeActContent(content);
+  const afterFirst = JSON.parse(JSON.stringify(content));
+
+  const second = sanitizeActContent(content);
+
+  assert.equal(second.changed, false, 'повторный прогон не должен ничего править');
+  assert.deepEqual(second.healedNodeIds, { tables: [], textBlocks: [], violations: [] });
+  assert.deepEqual(content, afterFirst, 'контент после второго прохода идентичен');
+});
+
+test('§5.10e: ссылающийся узел БЕЗ id владельцем не считается — запись дропается, узел вынесен каскадом', () => {
+  // Вырожденные данные: узел ссылается на запись, но сам без id — вылечить
+  // entry.nodeId нечем (нечего подставить), и сам узел неадресуем.
+  const content = {
+    tree: {
+      id: 'root', label: 'Акт',
+      children: [{ type: 'table', tableId: 't1', children: [] }],
+    },
+    tables: { t1: { id: 't1', nodeId: 'n1', grid: [] } },
+    textBlocks: {},
+    violations: {},
+  };
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.tables.t1, undefined, 'запись без опознаваемого владельца — сирота');
   assert.deepEqual(report.droppedEntries.tables, ['t1']);
-  assert.deepEqual(report.removedNodes, [{ id: 'n1', type: 'table' }]);
+  assert.equal(content.tree.children.length, 0, 'безымянный узел вынесен каскадом (б)');
+  assert.deepEqual(report.healedNodeIds.tables, []);
+});
+
+test('§5.10e: лечение не мешает правилу (а) — не ссылающаяся запись по-прежнему дропается', () => {
+  const content = makeCleanContent();
+  content.tables.t1.nodeId = 'n2';                                   // лечится
+  content.tables.t_stale = { id: 't_stale', nodeId: 'n1', grid: [] }; // на неё никто не ссылается
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.tables.t1.nodeId, 'n1');
+  assert.equal(content.tables.t_stale, undefined);
+  assert.deepEqual(report.droppedEntries.tables, ['t_stale']);
+  assert.deepEqual(report.healedNodeIds.tables, [{ id: 't1', from: 'n2', to: 'n1' }]);
 });
 
 test('пустое/отсутствующее дерево → no-op', () => {

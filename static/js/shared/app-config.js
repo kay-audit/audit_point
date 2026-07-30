@@ -442,6 +442,10 @@ export class AppConfig {
             cannotAddToTextBlock: (type) => `Нельзя добавить ${type} к текстовому блоку`,
             cannotAddToViolation: (type) => `Нельзя добавить ${type} к нарушению`,
             limitReached: (type, limit) => `Достигнуто максимальное количество ${type} (${limit}) для этого пункта`,
+            // §5.10b: лимит элементов дополнительного контента — не «на пункт»,
+            // а внутри одного нарушения, поэтому отдельная фраза, а не limitReached.
+            contentItemsLimitReached: (limit) =>
+                `Во вставляемом нарушении превышен лимит элементов дополнительного контента (${limit})`,
             protectedFromDeletion: 'Эта таблица защищена от удаления',
             notFound: (type) => `${type} не найден`
         },

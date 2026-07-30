@@ -174,7 +174,12 @@ export const UndoDeleteManager = {
         // лимит транзиентен: пользователь может освободить место и повторить
         // Ctrl+Z, поэтому снимок при отказе по лимиту остаётся в стеке.
         if (AppState._findNodeRaw?.(snapshot.parentId)) {
-            const limitCheck = ValidationTree.canInsertSubtree(snapshot.parentId, snapshot.node);
+            // Словарь нарушений снимка — для лимита элементов доп. контента (§5.10b).
+            const limitCheck = ValidationTree.canInsertSubtree(
+                snapshot.parentId,
+                snapshot.node,
+                snapshot.dicts.violations,
+            );
             if (!limitCheck.valid) {
                 Notifications.error(limitCheck.message);
                 return false;

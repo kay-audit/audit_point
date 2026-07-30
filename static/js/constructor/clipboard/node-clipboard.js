@@ -421,8 +421,13 @@ export const NodeClipboard = {
 
         // PERSIST-2/#7: лимиты блоков-на-узел (текстблоки/нарушения/таблицы).
         // insertNodeAt не зовёт canAddContent — без этой проверки paste мог дать
-        // узлу N+1 блоков лимитируемого типа.
-        const blockLimitCheck = ValidationTree.canInsertSubtree(targetNodeId, regenerated.node);
+        // узлу N+1 блоков лимитируемого типа. Словарь нарушений фрагмента —
+        // для лимита элементов доп. контента внутри них (§5.10b).
+        const blockLimitCheck = ValidationTree.canInsertSubtree(
+            targetNodeId,
+            regenerated.node,
+            regenerated.dicts.violations,
+        );
         if (!blockLimitCheck.valid) {
             Notifications.error(blockLimitCheck.message);
             return false;

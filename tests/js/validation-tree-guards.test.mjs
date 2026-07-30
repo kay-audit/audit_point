@@ -16,6 +16,7 @@ import '../../static/js/constructor/state/state-content.js';
 import { ValidationTree } from '../../static/js/constructor/validation/validation-tree.js';
 import { AppConfig } from '../../static/js/shared/app-config.js';
 import {
+    getImageLimits,
     getStructureLimits,
     resetImageLimitsForTests,
 } from '../../static/js/constructor/violation/violation-image-validator.js';
@@ -308,6 +309,88 @@ test('canInsertSubtree: reorder таблицы ВНУТРИ родителя н�
     const t1 = AppState.findNodeById('p').children[0];
     assert.equal(ValidationTree.canInsertSubtree('p', t1).valid, true,
         'self-exclusion по id: reorder таблицы внутри родителя на лимите не блокируется');
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// §5.10b: лимит элементов дополнительного контента у нарушений вставляемого
+// фрагмента. Элементы лежат не в узлах дерева, а в записях словаря violations,
+// которые едут рядом с поддеревом при paste/undo — без словаря проверить их
+// нечем, и единственным гейтом оставался бэкенд (400 на сохранение акта).
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Плоский узел-нарушение + запись словаря с n элементами доп. контента. */
+function violationEntry(id, itemsCount) {
+    return {
+        id,
+        nodeId: `node-${id}`,
+        additionalContent: {
+            enabled: true,
+            items: Array.from({ length: itemsCount }, (_, i) => ({ id: `${id}-i${i}`, type: 'freeText' })),
+        },
+    };
+}
+
+function emptyParentTree() {
+    AppState.treeData = { id: 'root', label: 'Акт', children: [{ id: 'p', label: 'Пункт', children: [] }] };
+    AppState._rebuildNodeIndex();
+}
+
+test('canInsertSubtree: нарушение фрагмента с items сверх лимита → отказ', () => {
+    getImageLimits().maxItemsPerViolation = 2;
+    emptyParentTree();
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    const result = ValidationTree.canInsertSubtree('p', node, { v1: violationEntry('v1', 3) });
+    assert.equal(result.valid, false, '3 элемента при лимите 2 не должны проходить');
+    assert.match(result.message, /дополнительного контента/);
+});
+
+test('canInsertSubtree: items ровно по лимиту → success', () => {
+    getImageLimits().maxItemsPerViolation = 2;
+    emptyParentTree();
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    assert.equal(ValidationTree.canInsertSubtree('p', node, { v1: violationEntry('v1', 2) }).valid, true);
+});
+
+test('canInsertSubtree: нарушение с переполнением ВГЛУБИ поддерева тоже ловится', () => {
+    getImageLimits().maxItemsPerViolation = 1;
+    emptyParentTree();
+
+    const subtree = {
+        id: 'sub', type: 'item', children: [
+            { id: 'inner', type: 'item', children: [
+                { id: 'v9', type: 'violation', violationId: 'v9', children: [] },
+            ] },
+        ],
+    };
+    const result = ValidationTree.canInsertSubtree('p', subtree, { v9: violationEntry('v9', 5) });
+    assert.equal(result.valid, false, 'обход поддерева не должен останавливаться на первом уровне');
+});
+
+test('canInsertSubtree: без словаря нарушений — прежнее поведение (проверка не выполняется)', () => {
+    getImageLimits().maxItemsPerViolation = 1;
+    emptyParentTree();
+
+    // Тот же узел, что отказал бы со словарём: вызов drag'а (state-tree.js)
+    // словарь не передаёт — перемещение элементов не добавляет.
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    assert.equal(ValidationTree.canInsertSubtree('p', node).valid, true);
+});
+
+test('canInsertSubtree: словарь без записи для узла нарушения → success (нечего проверять)', () => {
+    getImageLimits().maxItemsPerViolation = 1;
+    emptyParentTree();
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    assert.equal(ValidationTree.canInsertSubtree('p', node, {}).valid, true);
+});
+
+test('canInsertSubtree: дефолтный лимит (50) обычный фрагмент пропускает', () => {
+    emptyParentTree(); // resetImageLimitsForTests в beforeEach вернул дефолты
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    assert.equal(ValidationTree.canInsertSubtree('p', node, { v1: violationEntry('v1', 10) }).valid, true);
 });
 
 // ──────────────────────────────────────────────────────────────────────────

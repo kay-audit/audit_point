@@ -10,7 +10,7 @@ import { TreeUtils } from '../tree/tree-utils.js';
 import { ValidationCore } from './validation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { getBlockType } from '../block-types.js';
-import { getStructureLimits } from '../violation/violation-image-validator.js';
+import { getImageLimits, getStructureLimits } from '../violation/violation-image-validator.js';
 
 // #8: тип узла → рантайм-ключ структурных лимитов (/acts/limits). Общий для
 // _validateContentLimits (гейт кнопки «Добавить …») и canInsertSubtree (гейт
@@ -190,11 +190,19 @@ export const ValidationTree = {
      *    могло стать невалидным, если лимит с тех пор снизился (буфер обмена в
      *    localStorage переживает перезагрузку страницы).
      *
+     * Третий (опциональный) параметр — словарь нарушений вставляемого фрагмента
+     * (§5.10b). Элементы дополнительного контента лежат не в узлах дерева, а в
+     * записях словаря violations, которые едут рядом с поддеревом при paste/undo,
+     * поэтому проверить их можно только имея этот словарь. Без параметра —
+     * прежнее поведение (drag/move элементов не добавляет, словарь не нужен).
+     *
      * @param {string} parentId - ID узла, в children которого встанет node
      * @param {Object} node - Вставляемый/перемещаемый узел (возможно, с поддеревом)
+     * @param {Object} [violationsDict] - Словарь нарушений фрагмента
+     *        (id записи → нарушение) для проверки лимита доп. элементов
      * @returns {Object} Результат с полями valid, message
      */
-    canInsertSubtree(parentId, node) {
+    canInsertSubtree(parentId, node, violationsDict = null) {
         const { TEXTBLOCK, VIOLATION, TABLE } = AppConfig.nodeTypes;
         const structure = getStructureLimits();
 
@@ -228,6 +236,56 @@ export const ValidationTree = {
                 if (TreeUtils.countChildrenByType(current, type) > limit) return fail();
                 stack.push(...current.children);
             }
+        }
+
+        const itemsCheck = this._validateSubtreeContentItems(node, violationsDict);
+        if (!itemsCheck.valid) return itemsCheck;
+
+        return ValidationCore.success();
+    },
+
+    /**
+     * Проверяет лимит числа элементов дополнительного контента у нарушений
+     * вставляемого поддерева (§5.10b).
+     *
+     * До этого фронтовый гейт лимита стоял только на путях ДОБАВЛЕНИЯ элемента
+     * (_insertContentItemsBulk), а paste/undo проносили готовые нарушения с уже
+     * набитым additionalContent мимо него — финальным гейтом оставался бэкенд,
+     * отклонявший сохранение всего акта.
+     *
+     * Проверка — та же самосогласованность, что у лимитов блоков-на-узел: у
+     * фрагмента, скопированного/удалённого раньше, число элементов могло стать
+     * невалидным, если админ с тех пор снизил лимит. Effective-лимит — из
+     * getImageLimits().maxItemsPerViolation (рантайм /acts/limits с собственным
+     * фолбэком DEFAULT_IMAGE_LIMITS внутри модуля).
+     *
+     * @private
+     * @param {Object} node - Корень вставляемого поддерева
+     * @param {Object|null} violationsDict - Словарь нарушений фрагмента
+     * @returns {Object} Результат с полями valid, message
+     */
+    _validateSubtreeContentItems(node, violationsDict) {
+        if (!violationsDict) return ValidationCore.success();
+
+        const maxItems = getImageLimits().maxItemsPerViolation;
+        if (typeof maxItems !== 'number') return ValidationCore.success();
+
+        // Поле-ссылка нарушения — из реестра block-types, не хардкодом.
+        const refField = getBlockType(AppConfig.nodeTypes.VIOLATION)?.idProp;
+        if (!refField) return ValidationCore.success();
+
+        const stack = [node];
+        while (stack.length) {
+            const current = stack.pop();
+            if (!current || typeof current !== 'object') continue;
+            const entry = current[refField] ? violationsDict[current[refField]] : null;
+            const itemsCount = entry?.additionalContent?.items?.length || 0;
+            if (itemsCount > maxItems) {
+                return ValidationCore.failure(
+                    AppConfig.content.errors.contentItemsLimitReached(maxItems)
+                );
+            }
+            if (Array.isArray(current.children)) stack.push(...current.children);
         }
 
         return ValidationCore.success();
