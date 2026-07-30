@@ -3148,16 +3148,20 @@ def test_chat_settings_defaults():
 | `ACTS__AUDIT_LOG__MAX_CONTENT_VERSIONS` | int | `50` | Макс. версий содержимого |
 | `ACTS__AUDIT_LOG__MAX_DIFF_ELEMENTS` | int | `20` | Макс. элементов в diff |
 | `ACTS__AUDIT_LOG__MAX_DIFF_CELLS_PER_TABLE` | int | `50` | Макс. ячеек diff на таблицу |
-| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `10485760` | Макс. размер картинки нарушения (байт) |
-| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `31457280` | Суммарный размер картинок на акт (байт) |
+| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `4194304` | Макс. размер картинки нарушения (сырые байты; согласован с лимитом HTTP-запроса по base64) |
+| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `5242880` | Суммарный размер картинок на акт (сырые байты) |
 | `ACTS__IMAGES__ALLOWED_MIME_TYPES` | list | `jpeg/png/gif` | Whitelist MIME картинок (без SVG; без webp — python-docx не встраивает его в DOCX) |
 | `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` | int | `50` | Макс. элементов additionalContent на нарушение |
 | `ACTS__IMAGES__IMAGE_MAX_HEIGHT_PERCENT` | int | `40` | Макс. высота картинки нарушения (% листа A4) — превью и DOCX |
 | `ACTS__TABLES__MAX_ROWS` | int | `64` | Макс. строк таблицы |
 | `ACTS__TABLES__MAX_COLS` | int | `16` | Макс. колонок таблицы |
 | `ACTS__TABLES__MIN_COL_WIDTH_PX` | int | `80` | Мин. ширина колонки (px) |
+| `ACTS__TABLES__PER_NODE` | int | `10` | Макс. таблиц-детей одного узла (серверный гейт, включая закреплённые metrics/risk) |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `16` | Базовый экранный размер текстблока (px; 16px → 12pt в DOCX) |
+| `ACTS__TEXTBLOCKS__PER_NODE` | int | `10` | Макс. текстблоков-детей одного узла (серверный гейт) |
+| `ACTS__VIOLATIONS__PER_NODE` | int | `10` | Макс. нарушений-детей одного узла (серверный гейт) |
 | `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (23 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
 | `ACTS__SANITIZER__ALLOWED_CSS_PROPERTIES` | list | `font-size/…/text-align` (8 свойств) | Allowlist CSS-свойств inline-`style` |
 | `ACTS__SANITIZER__ALLOWED_DATA_ATTRS` | list | `data-footnote-*`, `data-link-*` | Data-атрибуты капсул ссылок/сносок |
@@ -3851,17 +3855,20 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 ### 14.5 Acts: `GET /limits` и `SaveContentResponse`
 
-**`GET /api/v1/acts/limits`** (`app/domains/acts/api/limits.py`) — единый источник лимитов конструктора для фронта. Отдаёт три секции, читаемые из настроек (`ACTS__IMAGES__*`/`ACTS__TABLES__*`/`ACTS__TEXTBLOCKS__*`):
+**`GET /api/v1/acts/limits`** (`app/domains/acts/api/limits.py`) — единый источник лимитов конструктора для фронта. Отдаёт пять секций плюс скаляр, читаемые из настроек (`ACTS__IMAGES__*`/`ACTS__TABLES__*`/`ACTS__TEXTBLOCKS__*`/`ACTS__VIOLATIONS__*`/`ACTS__SANITIZER__*`):
 
 ```json
 {
   "images":     { "max_file_size", "max_total_size_per_act", "allowed_mime_types",
                   "max_items_per_violation", "image_max_height_percent" },
-  "tables":     { "max_rows", "max_cols", "min_col_width_px" },
-  "textblocks": { "font_size_min", "font_size_max" }
+  "tables":     { "max_rows", "max_cols", "min_col_width_px", "per_node" },
+  "textblocks": { "font_size_min", "font_size_max", "font_size_default", "per_node" },
+  "violations": { "per_node" },
+  "sanitizer":  { "allowed_tags", "allowed_css_properties", "allowed_data_attrs" },
+  "editor_telemetry_enabled": true
 }
 ```
 
-Все три секции **реально читаются** фронтом: картинки — в `violation-image-validator.js`, таблицы/текстблоки — через `getStructureLimits()` (раньше `tables`/`textblocks` отдавались «в никуда»). Те же настройки питают Pydantic-валидаторы схемы, так что env-лимит меняется по всей цепочке (см. §9.5).
+Секции **реально читаются** фронтом: картинки — в `violation-image-validator.js`, лимиты `per_node` таблиц/текстблоков/нарушений — рантайм-перекрытие фронт-гейтов дерева, санитайзер — `applyActsAllowlist` в `shared/sanitize.js` (синхронизация DOMPurify с бэком), `editor_telemetry_enabled` — kill-switch телеметрии редактора. Те же настройки питают Pydantic-валидаторы схемы, так что env-лимит меняется по всей цепочке (см. §9.5).
 
 **`SaveContentResponse`** (`PUT /api/v1/acts/{id}/content`) несёт, помимо `status`/`message`/`updated_at`/`warning`, **статус валидации содержимого**: `validation_status` (`"ok"`/`"warning"`/`"error"`) и `validation_issues` (список замечаний). Те же поля выставлены в `ActListItem` (для карточек списка) и `ActResponse`. Семантика и поверхности — §10.5a.
