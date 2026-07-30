@@ -1,4 +1,5 @@
 import { INVOICE_DIFF_FIELD_KEYS } from './invoice-diff-fields.js';
+import { VIOLATION_SCALAR_RICH_KEYS } from '../../constructor/violation/violation-fields.js';
 
 // Инлайновые теги форматирования — граница тега НЕ считается границей слова
 // (сло<b>во</b> визуально сливается с соседним текстом в «слово»). Блочные
@@ -77,6 +78,13 @@ export class DiffEngine {
                 if (parentChanged || reordered) {
                     node._moved = true;
                     hasChanges = true;
+                    // Направление — только для reordered (тот же родитель, ранги
+                    // сопоставимы). При смене родителя ранги считаются СРЕДИ
+                    // ОБЩИХ сиблингов разных родителей и несравнимы — направление
+                    // не выставляем (_moveDirection остаётся undefined).
+                    if (reordered) {
+                        node._moveDirection = newRanks[node.id] < oldRanks[node.id] ? 'up' : 'down';
+                    }
                 }
 
                 // Атрибуты узла (content НЕ диффим — во фронт-модели поле мёртвое,
@@ -309,7 +317,7 @@ export class DiffEngine {
     static _diffViolations(oldViols, newViols) {
         const result = {};
         const allKeys = new Set([...Object.keys(oldViols), ...Object.keys(newViols)]);
-        const fields = ['violated', 'established', 'reasons', 'measures', 'consequences', 'responsible'];
+        const fields = VIOLATION_SCALAR_RICH_KEYS;
 
         for (const id of allKeys) {
             const oldV = oldViols[id];
@@ -433,6 +441,9 @@ export class DiffEngine {
      * *_code (см. diff-renderer._invoiceFieldText). Сравнение всего объекта
      * через JSON.stringify реагировало бы на служебные атрибуты и помечало
      * фактуру «изменено» при неизменном видимом тексте (фантомный дифф).
+     * Коды сортируются перед join СОЗНАТЕЛЬНО — сравнение порядко-независимое:
+     * перестановка тех же кодов не смысловая правка (рендер _invoiceFieldText
+     * в diff-renderer.js показывает хранимый порядок как есть, здесь не трогаем).
      * Прочие объекты — JSON.stringify, скаляры — String().
      */
     static _invoiceFieldValue(inv, field) {
@@ -440,11 +451,11 @@ export class DiffEngine {
         if (val === null || val === undefined) return '';
         if (field === 'metrics' && Array.isArray(val)) {
             return val.map(m => (m && (m.metric_code || m.code || m.metric_name)) || '')
-                .filter(Boolean).join(', ');
+                .filter(Boolean).sort().join(', ');
         }
         if (field === 'process' && Array.isArray(val)) {
             return val.map(m => (m && (m.process_code || m.process_name)) || '')
-                .filter(Boolean).join(', ');
+                .filter(Boolean).sort().join(', ');
         }
         if (typeof val === 'object') return JSON.stringify(val);
         return String(val);

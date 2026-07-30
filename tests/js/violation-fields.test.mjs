@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import {
   VIOLATION_FIELDS,
   VIOLATION_LABELS,
+  VIOLATION_SCALAR_RICH_KEYS,
   CASE_LABEL_TEMPLATE,
   FREE_TEXT_LABEL,
 } from '../../static/js/constructor/violation/violation-fields.js';
@@ -76,6 +77,15 @@ test('rich-флаг на 6 текстовых полях + descriptionList (Task
   );
   assert.equal(VIOLATION_FIELDS.find(f => f.key === 'descriptionList').rich, true);
   assert.equal(VIOLATION_FIELDS.find(f => f.key === 'additionalContent').rich, undefined);
+});
+
+test('VIOLATION_SCALAR_RICH_KEYS: 6 скалярных rich-полей (kind pair/optional_text) в порядке реестра (§5.7)', () => {
+  assert.equal(Object.isFrozen(VIOLATION_SCALAR_RICH_KEYS), true, 'VIOLATION_SCALAR_RICH_KEYS должен быть frozen');
+  assert.deepEqual(
+    VIOLATION_SCALAR_RICH_KEYS,
+    ['violated', 'established', 'reasons', 'measures', 'consequences', 'responsible'],
+    'diff-engine/diff-renderer используют этот список вместо своих копий (dedup §5.7)'
+  );
 });
 
 test('защита от prototype-pollution: ключи Object.prototype не входят в VIOLATION_LABELS', () => {

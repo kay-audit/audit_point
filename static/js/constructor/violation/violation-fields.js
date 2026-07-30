@@ -37,6 +37,15 @@ export const VIOLATION_LABELS = Object.freeze(
   Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f.label]))
 );
 
+// Ключи 6 скалярных rich-полей (kind pair/optional_text) в порядке реестра:
+// violated, established, reasons, measures, consequences, responsible.
+// descriptionList/additionalContent — структурные под-диффы (kind list/additional),
+// в этот список не входят. Используется diff-engine/diff-renderer вместо
+// собственных копий списка (§5.7 аудита «Нарушения»).
+export const VIOLATION_SCALAR_RICH_KEYS = Object.freeze(
+  VIOLATION_FIELDS.filter(f => f.kind === 'pair' || f.kind === 'optional_text').map(f => f.key)
+);
+
 // Подпись кейса дополнительного контента ("Кейс 1", "Кейс 2", ...).
 export const CASE_LABEL_TEMPLATE = 'Кейс {n}';
 
@@ -47,6 +56,7 @@ export const FREE_TEXT_LABEL = '';
 if (typeof window !== 'undefined') {
   window.VIOLATION_FIELDS = VIOLATION_FIELDS;
   window.VIOLATION_LABELS = VIOLATION_LABELS;
+  window.VIOLATION_SCALAR_RICH_KEYS = VIOLATION_SCALAR_RICH_KEYS;
   window.CASE_LABEL_TEMPLATE = CASE_LABEL_TEMPLATE;
   window.FREE_TEXT_LABEL = FREE_TEXT_LABEL;
 }

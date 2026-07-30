@@ -187,6 +187,48 @@ test('репарент: узел ушёл к новому родителю → �
     assert.equal(findAnnotated(d.tree, 'p1')._moved, undefined, 'новый родитель не должен помечаться');
 });
 
+// --- направление перемещения (§5.10d) ---------------------------------------
+// _moveDirection — только при перестановке среди сиблингов ОДНОГО родителя
+// (ранги сопоставимы); при смене родителя ранги считаются в разных группах и
+// несравнимы, поэтому направление не выставляется.
+
+test('перестановка сиблингов: узел поднялся выше по списку → _moveDirection = "up"', () => {
+    const oldTree = node({ id: 'root', children: [node({ id: 'x' }), node({ id: 'y' }), node({ id: 'z' })] });
+    const newTree = node({ id: 'root', children: [node({ id: 'z' }), node({ id: 'x' }), node({ id: 'y' })] });
+    const d = DiffEngine._diffTree(oldTree, newTree);
+    // z был на индексе 2, стал на индексе 0 — поднялся.
+    assert.equal(findAnnotated(d.tree, 'z')._moveDirection, 'up');
+});
+
+test('перестановка сиблингов: узел опустился ниже по списку → _moveDirection = "down"', () => {
+    const oldTree = node({ id: 'root', children: [node({ id: 'x' }), node({ id: 'y' }), node({ id: 'z' })] });
+    const newTree = node({ id: 'root', children: [node({ id: 'y' }), node({ id: 'z' }), node({ id: 'x' })] });
+    const d = DiffEngine._diffTree(oldTree, newTree);
+    // x был на индексе 0, стал на индексе 2 — опустился.
+    assert.equal(findAnnotated(d.tree, 'x')._moveDirection, 'down');
+});
+
+test('смена родителя (репарент): _moved true, но _moveDirection не выставляется (ранги несравнимы)', () => {
+    const oldTree = node({
+        id: 'root',
+        children: [
+            node({ id: 'a', children: [node({ id: 'c' })] }),
+            node({ id: 'b' }),
+        ],
+    });
+    const newTree = node({
+        id: 'root',
+        children: [
+            node({ id: 'a' }),
+            node({ id: 'b', children: [node({ id: 'c' })] }),
+        ],
+    });
+    const d = DiffEngine._diffTree(oldTree, newTree);
+    const c = findAnnotated(d.tree, 'c');
+    assert.equal(c._moved, true);
+    assert.equal(c._moveDirection, undefined);
+});
+
 test('перемещённый узел без правок атрибутов → _diff остаётся unchanged, но _moved true', () => {
     const oldTree = node({
         id: 'root',
