@@ -32,6 +32,7 @@ from app.domains.acts.schemas.act_content import (
     ViolationContentItemSchema,
     ViolationSchema,
 )
+from app.domains.acts.violation_fields import CASE_LABEL_TEMPLATE, LABELS
 
 # Полезная ширина страницы (A4 минус поля) в твипах — потолок ширины картинок.
 _USABLE_WIDTH_TWIPS = Page.width_twips - Margins.left - Margins.right
@@ -59,11 +60,11 @@ def _data_url_re() -> re.Pattern:
 def build_violation(doc: Document, violation: ViolationSchema) -> None:
     """Рендерит нарушение в документ (без заголовка и нумерации)."""
     _labeled_paragraph(
-        doc, "Нарушено:", violation.violated,
+        doc, f"{LABELS['violated']}:", violation.violated,
         italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
     _labeled_paragraph(
-        doc, "Установлено:", violation.established,
+        doc, f"{LABELS['established']}:", violation.established,
         italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
 
@@ -89,7 +90,7 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
         for item in violation.additionalContent.items:
             if item.type == "case":
                 _labeled_paragraph(
-                    doc, f"Кейс {case_number}:", item.content,
+                    doc, f"{CASE_LABEL_TEMPLATE.format(n=case_number)}:", item.content,
                     italic=True, size_pt=Sizes.violation_pt, rich=True,
                 )
                 case_number += 1
@@ -104,11 +105,10 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
                 case_number = 1
 
     for label, field in [
-        ("Причины:", violation.reasons),
-        ("Принятые меры:", violation.measures),
-        ("Последствия:", violation.consequences),
-        # Канон #11 (violation_fields.LABELS['responsible']) — «Ответственные».
-        ("Ответственные:", violation.responsible),
+        (f"{LABELS['reasons']}:", violation.reasons),
+        (f"{LABELS['measures']}:", violation.measures),
+        (f"{LABELS['consequences']}:", violation.consequences),
+        (f"{LABELS['responsible']}:", violation.responsible),
     ]:
         if field.enabled and field.content:
             _labeled_paragraph(doc, label, field.content, rich=True)

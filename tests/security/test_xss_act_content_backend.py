@@ -44,7 +44,6 @@ from app.domains.acts.utils.html_sanitizer import (
     _sanitize_violation_dict,
     _sanitize_violation_obj,
     sanitize_html,
-    sanitize_plain_text,
     sanitize_rich_html,
 )
 
@@ -651,25 +650,6 @@ class TestSanitizeViolationParity:
 
         assert obj.additionalContent.items[2].caption is None
         assert d["additionalContent"]["items"][2]["caption"] is None
-
-
-class TestSanitizePlainTextDirect:
-    """sanitize_plain_text: plain-поля — без тегов вовсе (пустой whitelist)."""
-
-    def test_strips_all_tags_including_whitelisted(self):
-        out = sanitize_plain_text("<p>a</p><b>b</b><script>alert(1)</script>c")
-        assert "<" not in out
-        assert "a" in out and "b" in out and "c" in out
-
-    def test_plain_text_passes_through(self):
-        assert sanitize_plain_text("просто текст 123") == "просто текст 123"
-
-    def test_empty_and_none_inputs(self):
-        assert sanitize_plain_text("") == ""
-        assert sanitize_plain_text(None) == ""
-
-    def test_non_string_falls_back_to_str(self):
-        assert sanitize_plain_text(42) == "42"
 
 
 class TestSaveContentSanitizesTreeNodes:

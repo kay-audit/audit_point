@@ -14,6 +14,8 @@
 """
 from typing import Callable
 
+from app.domains.acts.violation_fields import CASE_LABEL_TEMPLATE, LABELS
+
 
 def wrap_bold(text: str) -> str:
     """Оборачивает текст в жирное markdown-начертание."""
@@ -50,14 +52,14 @@ def format_violation(
 
     # #14: обязательные поля — метка выводится всегда, даже при пустом
     # content (паритет с DOCX-эталоном «метка + пустое тело»).
-    add_required_pair(lines, "Нарушено", violation_data.get('violated', ''))
-    add_required_pair(lines, "Установлено", violation_data.get('established', ''))
+    add_required_pair(lines, LABELS['violated'], violation_data.get('violated', ''))
+    add_required_pair(lines, LABELS['established'], violation_data.get('established', ''))
     add_description_list(lines, violation_data.get('descriptionList', {}))
     add_additional_content(lines, violation_data.get('additionalContent', {}))
-    add_labeled_section(lines, "Причины", violation_data.get('reasons', {}))
-    add_labeled_section(lines, "Принятые меры", violation_data.get('measures', {}))
-    add_labeled_section(lines, "Последствия", violation_data.get('consequences', {}))
-    add_labeled_section(lines, "Ответственные", violation_data.get('responsible', {}))
+    add_labeled_section(lines, LABELS['reasons'], violation_data.get('reasons', {}))
+    add_labeled_section(lines, LABELS['measures'], violation_data.get('measures', {}))
+    add_labeled_section(lines, LABELS['consequences'], violation_data.get('consequences', {}))
+    add_labeled_section(lines, LABELS['responsible'], violation_data.get('responsible', {}))
 
     return "\n".join(lines)
 
@@ -156,7 +158,8 @@ def add_case(
     # #9/Q1: нумеруются ВСЕ кейсы, включая пустые (метка + пустое тело);
     # счётчик всегда двигается вперёд.
     content = item.get('content', '')
-    lines.append(f"{bold_wrap(f'Кейс {case_number}:')} {text_conv(content)}".rstrip())
+    label = CASE_LABEL_TEMPLATE.format(n=case_number)
+    lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}".rstrip())
     lines.append("")
     return case_number + 1
 
