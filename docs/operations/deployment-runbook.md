@@ -20,7 +20,7 @@
   Особо проверить: `CHAT__*`, `ACTS__*`, `OBSERVABILITY__*`, `SECURITY__*`. Канал к внешнему ИИ-агенту настраивается префиксом `CHAT__AGENT_CHANNEL__*` (`TABLE_NAME=chat_agent_messages_bus`, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`); лимит одновременных запросов — `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3).
 - [ ] **`DATABASE__TABLE_PREFIX`** соответствует БД. Дефолт `t_db_oarb_audit_act_`. При смене окружения проверить, что таблицы существуют под тем же префиксом — иначе `create_tables_if_not_exist` поднимет новый набор пустых таблиц и фактические данные «исчезнут».
 - [ ] **Свободен ли singleton-lock**. См. `troubleshooting.md` №20: если предыдущий процесс упал по kill -9, строка в `app_singleton_lock` живёт до `SECURITY__SINGLETON_LOCK_STALE_TTL_SEC` сек (default 60). В пределах окна старт упадёт.
-- [ ] **Версия миграций**. Все одноразовые SQL из `docs/migrations/` для апгрейда с предыдущей версии применены (см. §3).
+- [ ] **Схема БД соответствует коду**. Если с прошлого деплоя менялась `schema.sql` любого домена — БД пересоздана (`docs/migrations/drop-all-tables.md`, см. §3); startup-диагностика дрейфа колонок (developer-guide §6.5.4) не сыпет WARNING'ами.
 - [ ] **Внешний ИИ-агент жив**. Если деплой завязан на форварды в «Базу знаний ОАРБ» — убедиться, что внешний worker читает bus-таблицу `chat_agent_messages_bus` (вопросы со `status='pending'`/`role='user'`) и пишет ответы туда же. Без него форварды будут висеть до `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` (600 сек default) и финализироваться как ошибка таймаута.
 
 ---
@@ -82,17 +82,9 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8005
 
 ---
 
-## 3. Миграции БД (одноразовые)
+## 3. Миграции БД
 
-При апгрейде с предыдущих версий могут понадобиться SQL-миграции — `create_tables_if_not_exist` создаёт **только новые** таблицы, не дописывает колонки/индексы в существующие.
-
-Текущий каталог миграций — `docs/migrations/`:
-
-| Файл | Когда применять |
-|---|---|
-| `drop-all-tables.md` | Тотальная очистка под пересоздание схемы (только dev) |
-
-**Канал к внешнему ИИ-агенту** при апгрейде с версий со старой шиной (3 таблицы `agent_requests` / `agent_response_events` / `agent_responses`) требует ручных шагов: единая bus-таблица `chat_agent_messages_bus` создаётся `create_tables_if_not_exist` автоматически, но в `chat_messages` добавилась колонка `agent_ref VARCHAR(36)` — её нужно дописать ALTER'ом на существующей БД. Старые 3 таблицы можно дропнуть после миграции. Настройки канала живут только в коде (`CHAT__AGENT_CHANNEL__*`). Для имитации внешнего агента см. [`external-agent-imitation.sql`](../integrations/external-agent-imitation.sql).
+Апгрейд-миграций нет: `create_tables_if_not_exist` создаёт **только отсутствующие** таблицы, не дописывает колонки/индексы в существующие. При изменении схемы БД пересоздаётся — `docs/migrations/drop-all-tables.md` (дроп строго в обратном порядке FK) и рестарт приложения. Для имитации внешнего агента см. [`external-agent-imitation.sql`](../integrations/external-agent-imitation.sql).
 
 **Если таблица не создалась автоматически** (старая версия create_tables, специфичные права):
 
@@ -114,7 +106,7 @@ sed 's/{SCHEMA}/<gp_schema>/g; s/{PREFIX}/t_db_oarb_audit_act_/g' \
 
 1. **`SIGTERM`** на текущий процесс (uvicorn ждёт ≤5с graceful drain). Singleton-lock освободится в lifespan-shutdown (`app/main.py:266-280`).
 2. **`git checkout <previous-tag>`** в рабочем каталоге.
-3. **Проверить совместимость БД-схемы.** Если в новой версии были `ALTER TABLE` / новые колонки, и старая версия их не ждёт — это OK (старая версия читает подмножество колонок). Если же старая версия пишет в колонку, которой в новой версии нет — деплой нельзя откатывать без backup'а.
+3. **Проверить совместимость БД-схемы.** Если новая версия меняла `schema.sql`, лишние для старой версии колонки не мешают (она читает своё подмножество). При несовместимом изменении (переименование, смена типа) — пересоздание БД по старой `schema.sql`; при необходимости сохранить данные — backup/restore.
 4. **Старт по §2.**
 5. **Проверить zombie streaming-сообщения.** Форвард в «Базу знаний ОАРБ» создаёт черновик `chat_messages` со `status='streaming'`, который финализирует `AgentChannelPoller`; после рестарта зависшие черновики подхватываются reconcile при старте поллера. Здесь — только проверка факта: `SELECT count(*) FROM t_db_oarb_audit_act_chat_messages WHERE status='streaming' AND created_at < now() - interval '5 minutes';`. Если ненулевое — открыть [operations-recovery.md §1](operations-recovery.md).
 
