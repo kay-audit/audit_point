@@ -62,8 +62,18 @@ def get_templates() -> Jinja2Templates:
     Регистрирует глобал ``app_version`` и фильтр ``versioned`` для
     cache-busting статических ресурсов в шаблонах.
     """
-    templates = Jinja2Templates(directory=str(get_settings().templates_dir))
+    settings = get_settings()
+    # Убедимся, что директория шаблонов существует
+    if not settings.templates_dir.exists():
+        raise RuntimeError(f"Директория шаблонов не найдена: {settings.templates_dir}")
+
+    templates = Jinja2Templates(directory=str(settings.templates_dir))
     version = _resolve_app_version()
-    templates.env.globals["app_version"] = version
-    templates.env.filters["versioned"] = lambda u: _versioned(str(u), version)
+    # Убедимся, что version - это строка, а не словарь
+    version_str = version if isinstance(version, str) else "dev"
+
+    # Установка глобальных переменных и фильтров
+    templates.env.globals["app_version"] = version_str
+    templates.env.filters["versioned"] = lambda u: _versioned(str(u), version_str)
+
     return templates

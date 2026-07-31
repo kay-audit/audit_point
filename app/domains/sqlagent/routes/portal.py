@@ -2,16 +2,17 @@
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse
 
 from app.api.v1.deps.role_deps import get_user_roles
-from app.api.v1.endpoints.auth import get_current_user_from_env
+from app.auth.dependencies import get_current_user
 from app.core.config import get_settings
 from app.core.navigation import get_knowledge_bases_as_dicts, get_nav_items_for_user
 from app.core.settings_registry import get as get_domain_settings
 from app.core.templating import get_templates
 from app.domains.sqlagent.settings import SQLAgentSettings
+from fastapi import HTTPException
 
 templates = get_templates()
 
@@ -35,7 +36,15 @@ def _build_sqlagent_src(sidecar_port: int) -> str | None:
     """
     app_settings = get_settings()
     if app_settings.database.type == "greenplum":
-        user = get_current_user_from_env(truncate=False)
+        try:
+            user = get_current_user(Depends())
+        except HTTPException:
+            return None
+
+        # Если возвращен RedirectResponse, пропускаем дальнейшую обработку
+        if hasattr(user, "status_code") and user.status_code == 307:
+            return None
+
         if not user:
             return None
         return f"/user/{user}/proxy/{sidecar_port}/"

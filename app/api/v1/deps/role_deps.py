@@ -32,6 +32,7 @@ async def get_user_roles(username: str = Depends(get_username)) -> list[dict]:
     Кешируется на 5 секунд. Если у пользователя нет ролей,
     автоматически назначает дефолтные роли (см. DEFAULT_ROLE_NAMES).
     """
+    logger.debug("get_user_roles: username=%s", username)
     if username in _roles_cache:
         return _roles_cache[username]
 

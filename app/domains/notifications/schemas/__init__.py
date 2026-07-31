@@ -5,6 +5,27 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.domains.notifications.schemas.email import (
+    EmailSendRequest,
+    EmailSendResponse,
+    EmailTemplate,
+    EmailTemplateCreate,
+    EmailTemplateUpdate,
+)
+
+__all__ = [
+    "NotificationOut",
+    "NotificationCreate",
+    "InternalNotificationCreate",
+    "UnreadCount",
+    "NotificationsConfigResponse",
+    "EmailSendRequest",
+    "EmailSendResponse",
+    "EmailTemplate",
+    "EmailTemplateCreate",
+    "EmailTemplateUpdate",
+]
+
 
 class NotificationOut(BaseModel):
     """Уведомление в ответе списка (GET /api/v1/notifications)."""
@@ -73,3 +94,4 @@ class NotificationsConfigResponse(BaseModel):
     """
 
     pollIntervalSeconds: int
+    emailEnabled: bool

@@ -13,6 +13,8 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domains.notifications.settings import NotificationsSettings
+
 # Реэкспорт для обратной совместимости: исторически request_id_var,
 # RequestIdFilter и setup_logging жили в этом модуле.
 from app.core.logging import RequestIdFilter, request_id_var, setup_logging  # noqa: F401
@@ -77,8 +79,8 @@ class DatabaseSettings(BaseModel):
     name: str = Field(default="audit_workstation")
     user: str = Field(default="postgres")
     password: SecretStr = SecretStr("")
-    pool_min_size: int = Field(default=5, ge=1)
-    pool_max_size: int = Field(default=20, ge=2)
+    pool_min_size: int = Field(default=1, ge=1)
+    pool_max_size: int = Field(default=1, ge=1)
     command_timeout: int = Field(default=60, gt=0)
     # Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула
     # acquire() ждёт не бесконечно, а отдаёт 503 — иначе запрос виснет до
@@ -181,6 +183,30 @@ class ObservabilitySettings(BaseModel):
     )
 
 
+class RedisSettings(BaseModel):
+    """Настройки подключения к Redis для OTP."""
+    host: str = Field(default="localhost", alias="HOST")
+    port: int = Field(default=6379, ge=1, le=65535, alias="PORT")
+    db: int = Field(default=0, ge=0, le=15)
+    password: str = Field(default="")
+
+class AuthSettings(BaseModel):
+    """Настройки аутентификации."""
+    enabled: bool = Field(default=False)
+    jwt_secret: SecretStr = Field(default="your-secret-key")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_access_ttl: int = Field(default=900, gt=0)
+    jwt_refresh_ttl: int = Field(default=604800, gt=0)
+    cookie_secure: bool = Field(default=False)
+    cookie_domain: str = Field(default="")
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    # OTP settings
+    otp_length: int = Field(default=6, gt=0, le=10, description="Длина OTP-кода в цифрах")
+    otp_ttl: int = Field(default=300, gt=0, description="Время жизни OTP-кода в секундах (5 минут по умолчанию)")
+
+    model_config = {"populate_by_name": True}
+
+
 class Settings(BaseSettings):
     """
     Класс настроек приложения на основе Pydantic.
@@ -207,6 +233,11 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     security: SecuritySettings = SecuritySettings()
     observability: ObservabilitySettings = ObservabilitySettings()
+    auth: AuthSettings = AuthSettings()
+
+    # Notifications - используем model_construct для правильной инициализации
+    notifications: 'NotificationsSettings' = None  # type: ignore
+
     # Базовая директория проекта.
     # Относительный путь от конфига до корня проекта.
     base_dir: ClassVar[Path] = Path(__file__).resolve().parent.parent.parent
@@ -277,4 +308,16 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     """Возвращает singleton экземпляр Settings с кэшированием."""
-    return Settings()
+    settings = Settings()
+
+    # Инициализируем notifications с правильной загрузкой переменных окружения
+    from app.domains.notifications.settings import NotificationsSettings, EmailSettings
+
+    # Создаем email settings и notifications через конструктор (не model_construct)
+    # чтобы Pydantic загрузил переменные окружения
+    email_settings = EmailSettings()
+    notifications = NotificationsSettings(email=email_settings)
+
+    object.__setattr__(settings, 'notifications', notifications)
+
+    return settings
