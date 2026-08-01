@@ -23,33 +23,3 @@ class EmailSendResponse(BaseModel):
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-
-
-class EmailTemplate(BaseModel):
-    """Шаблон email-сообщения."""
-
-    id: str
-    name: str
-    subject: str
-    body_html: str
-    body_text: Optional[str] = None
-    created_at: str
-    updated_at: str
-
-
-class EmailTemplateCreate(BaseModel):
-    """Создание шаблона email."""
-
-    name: str = Field(max_length=100)
-    subject: str = Field(max_length=500)
-    body_html: str
-    body_text: Optional[str] = None
-
-
-class EmailTemplateUpdate(BaseModel):
-    """Обновление шаблона email."""
-
-    name: Optional[str] = Field(default=None, max_length=100)
-    subject: Optional[str] = Field(default=None, max_length=500)
-    body_html: Optional[str] = None
-    body_text: Optional[str] = None

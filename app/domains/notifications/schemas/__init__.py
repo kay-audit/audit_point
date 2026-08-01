@@ -8,9 +8,6 @@ from pydantic import BaseModel, Field
 from app.domains.notifications.schemas.email import (
     EmailSendRequest,
     EmailSendResponse,
-    EmailTemplate,
-    EmailTemplateCreate,
-    EmailTemplateUpdate,
 )
 
 __all__ = [
@@ -21,9 +18,6 @@ __all__ = [
     "NotificationsConfigResponse",
     "EmailSendRequest",
     "EmailSendResponse",
-    "EmailTemplate",
-    "EmailTemplateCreate",
-    "EmailTemplateUpdate",
 ]
 
 

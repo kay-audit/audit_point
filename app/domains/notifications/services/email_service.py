@@ -2,8 +2,9 @@
 
 import logging
 import asyncio
-import os
 from typing import Optional
+
+import asyncpg
 
 from app.services.mail import Mail as MailClient
 from app.domains.notifications.schemas.email import (
@@ -24,7 +25,7 @@ class EmailService:
     _mail_client (инициализируется при старте приложения).
     """
 
-    def __init__(self, conn: Optional[None] = None):
+    def __init__(self, conn: asyncpg.Connection | None = None):
         """
         Args:
             conn: Соединение с БД (не используется в первой версии, оставлено
@@ -188,13 +189,13 @@ async def send_email(
 
     try:
         # Выполняем синхронный метод в пуле потоков
-        loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
             loop.run_in_executor(None, _sync_send),
             timeout=timeout,
         )
 
-        return EmailSendResponse(success=True, message_id=str(result))
+        return EmailSendResponse(success=True, message_id=None)
 
     except asyncio.TimeoutError:
         logger.error("Email sending timed out after %.1f seconds", timeout)

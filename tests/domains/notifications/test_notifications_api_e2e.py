@@ -170,7 +170,8 @@ def test_unread_count_severity_null_when_no_unread():
 
 
 def test_config_returns_poll_interval():
-    """GET /config отдаёт частоту опроса из настроек домена (camelCase)."""
+    """GET /config отдаёт частоту опроса из настроек домена (camelCase) и
+    флаг доступности email-отправки (emailEnabled, дефолт False)."""
     svc = _make_service()
     app = _build_app(svc)
     app.dependency_overrides[get_notifications_settings] = (
@@ -179,7 +180,7 @@ def test_config_returns_poll_interval():
     with TestClient(app) as client:
         resp = client.get("/api/v1/notifications/config")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"pollIntervalSeconds": 15}
+    assert resp.json() == {"pollIntervalSeconds": 15, "emailEnabled": False}
 
 
 def test_settings_default_poll_interval():
