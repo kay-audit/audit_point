@@ -181,6 +181,30 @@ class ObservabilitySettings(BaseModel):
     )
 
 
+class RedisSettings(BaseModel):
+    """Настройки подключения к Redis для OTP."""
+    host: str = Field(default="localhost", alias="HOST")
+    port: int = Field(default=6379, ge=1, le=65535, alias="PORT")
+    db: int = Field(default=0, ge=0, le=15)
+    password: str = Field(default="")
+
+class AuthSettings(BaseModel):
+    """Настройки аутентификации."""
+    enabled: bool = Field(default=False)
+    jwt_secret: SecretStr = Field(default="your-secret-key")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_access_ttl: int = Field(default=900, gt=0)
+    jwt_refresh_ttl: int = Field(default=604800, gt=0)
+    cookie_secure: bool = Field(default=False)
+    cookie_domain: str = Field(default="")
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    # OTP settings
+    otp_length: int = Field(default=6, gt=0, le=10, description="Длина OTP-кода в цифрах")
+    otp_ttl: int = Field(default=300, gt=0, description="Время жизни OTP-кода в секундах (5 минут по умолчанию)")
+
+    model_config = {"populate_by_name": True}
+
+
 class Settings(BaseSettings):
     """
     Класс настроек приложения на основе Pydantic.
@@ -207,6 +231,8 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     security: SecuritySettings = SecuritySettings()
     observability: ObservabilitySettings = ObservabilitySettings()
+    auth: AuthSettings = AuthSettings()
+
     # Базовая директория проекта.
     # Относительный путь от конфига до корня проекта.
     base_dir: ClassVar[Path] = Path(__file__).resolve().parent.parent.parent

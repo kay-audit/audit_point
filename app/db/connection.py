@@ -68,21 +68,40 @@ def _is_kerberos_token_expired(error_message: str) -> bool:
 
 def _is_kerberos_ticket_valid() -> bool:
     """
-    Проверяет наличие действующего (не истёкшего) Kerberos билета через klist -s.
+    Проверяет наличие действующего (не истёкшего) Kerberos билета.
+
+    Использует klist на всех платформах, с платформенно-зависимой логикой проверки.
 
     Returns:
-        True если билет валиден, или если проверка невозможна (klist не найден)
+        True если билет валиден, или если проверка невозможна
     """
     try:
+        # На всех платформах используем klist (в Windows это klist.exe)
         result = _subprocess.run(
-            ["klist", "-s"],
+            ["klist"],
             capture_output=True,
-            timeout=5
+            timeout=5,
+            text=True,
+            shell=True  # Для Windows, чтобы найти klist в PATH
         )
-        return result.returncode == 0
-    except (FileNotFoundError, _subprocess.TimeoutExpired):
-        # klist недоступен или зависает — не блокируем запуск
+
+        # Если команда выполнилась успешно, проверяем вывод
+        if result.returncode == 0:
+            output = result.stdout.lower()
+            # Проверяем наличие признаков действительного билета
+            return 'ticket' in output and 'expired' not in output
+
+        # Для некоторых систем klist возвращает код 1 если билетов нет
+        # Это нормально, значит аутентификации нет
+        if result.returncode == 1:
+            return False
+
+    except (FileNotFoundError, _subprocess.TimeoutExpired, PermissionError):
+        # klist недоступен, зависает или нет прав — не блокируем запуск
+        # Позволяем продолжить, ошибка будет позже при подключении к БД
         return True
+
+    return False
 
 
 def _log_kerberos_instructions() -> None:
@@ -241,6 +260,12 @@ async def open_pool(
                 "Kerberos токен протух. Выполните 'kinit' для обновления."
             ) from e
         logger.error(f"Ошибка PostgreSQL при создании пула: {e}")
+        logger.info(
+            "Database pool ready: %s (min=%d, max=%d)",
+            settings.database.type,
+            settings.database.pool_min_size,
+            settings.database.pool_max_size,
+        )
         raise RuntimeError(f"Не удалось подключиться к БД: {e}") from e
     except Exception as e:
         # Для Greenplum: OSError / ConnectionRefused часто означает протухший билет

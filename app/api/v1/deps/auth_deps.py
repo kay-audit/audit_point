@@ -9,27 +9,18 @@ import logging
 
 from fastapi import HTTPException
 
-from app.api.v1.endpoints.auth import get_current_user_from_env
+from fastapi import Depends
+from app.auth.dependencies import get_current_user
+from app.auth.value_objects import UserContext
 
-logger = logging.getLogger("audit_workstation.api.deps.auth")
-
-
-def get_username() -> str:
+async def get_username(user: UserContext = Depends(get_current_user)) -> str:
     """
-    Извлекает имя пользователя из переменной окружения JUPYTERHUB_USER.
+    Извлекает имя пользователя через модуль app/auth.
 
     Returns:
-        Username в виде цифр
+        Username в виде логина пользователя
 
     Raises:
         HTTPException: 401 если пользователь не авторизован
     """
-    username = get_current_user_from_env()
-
-    if not username:
-        raise HTTPException(
-            status_code=401,
-            detail="Требуется авторизация"
-        )
-
-    return username
+    return user.login

@@ -19,6 +19,11 @@ def register_factories() -> None:
             async for svc in factory():
                 await svc.push(source="acts", title=..., recipient_user_id=...)
 
+    Контракт фабрики ``notifications.email``:
+    callable без аргументов, возвращающий async-генератор, который оборачивает
+    ``get_db()`` и отдаёт ``EmailService(conn)``. Продьюсеры используют её для
+    отправки email-уведомлений.
+
     Вызывается на этапе сборки DomainDescriptor (``_build_domain``) — это
     гарантирует, что фабрика доступна до старта lifespan'а продьюсеров.
     Идемпотентна: повторный вызов перезаписывает фабрику.
@@ -28,6 +33,7 @@ def register_factories() -> None:
     from app.domains.notifications.services.notification_service import (
         NotificationService,
     )
+    from app.domains.notifications.services.email_service import EmailService
 
     def _push_factory():
         """Создаёт NotificationService, оборачивая get_db() в async-генератор.
@@ -41,3 +47,16 @@ def register_factories() -> None:
         return _gen()
 
     register_factory("notifications.push", _push_factory)
+
+    def _email_factory():
+        """Создаёт EmailService, оборачивая get_db() в async-генератор.
+
+        Возвращает async-генератор — продьюсеры используют его через
+        ``async for svc in factory():`` (соединение освобождается по выходу).
+        """
+        async def _gen():
+            async with get_db() as conn:
+                yield EmailService(conn)
+        return _gen()
+
+    register_factory("notifications.email", _email_factory)

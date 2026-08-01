@@ -7,14 +7,15 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import admin_diagnostics, auth, roles, system
+from app.api.v1.endpoints import admin_diagnostics, roles, system
+from app.auth.router import router as auth_router
 
 # Создание главного роутера для API v1
 api_router = APIRouter()
 
 # Shared роутеры (доменные регистрируются через auto-discovery)
 ROUTERS = [
-    (auth, "/auth", ["Авторизация"]),
+    (auth_router, "/auth", ["Авторизация"]),
     (system, "/system", ["Системные операции"]),
     (roles, "/roles", ["Роли пользователей"]),
     (admin_diagnostics, "/admin/diagnostics", ["Администрирование"]),
