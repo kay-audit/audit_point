@@ -31,21 +31,19 @@ async def show_landing(request: Request):
     Авторизация проверяется фронтендом через /api/v1/auth/me.
     Роли загружаются опционально — при ошибке показываем все nav items.
     """
-    logger.debug("show_landing: вход в show_landing")
     is_admin = False
     try:
-        from app.auth.dependencies import get_current_user
+        from app.auth.dependencies import get_optional_user_id
         from app.api.v1.deps.role_deps import get_user_roles
 
-        # Используем нового пользователя из контекста запроса (установлен AuthMiddleware)
-        user = await get_current_user(request)
-
-        # Если возвращен RedirectResponse, пропускаем получение ролей
-        if hasattr(user, "status_code") and user.status_code == 307:
-            return user
-        roles = await get_user_roles(username=user.login)
-        nav_groups = get_nav_items_for_user(roles)
-        is_admin = any(r["name"] == "Админ" for r in roles)
+        # Username кладёт AuthMiddleware (ОТП-режим) либо тест-режим из окружения.
+        username = get_optional_user_id(request)
+        if username:
+            roles = await get_user_roles(username=username)
+            nav_groups = get_nav_items_for_user(roles)
+            is_admin = any(r["name"] == "Админ" for r in roles)
+        else:
+            nav_groups = get_nav_items_grouped()
     except Exception as e:
         logger.debug("Не удалось загрузить роли для landing, показываем все nav items: %s", e)
         nav_groups = get_nav_items_grouped()

@@ -10,16 +10,22 @@ from app.auth.redis_adapter import RedisAdapter, RedisConfig
 
 logger = logging.getLogger("audit_workstation.auth.lifecycle")
 
-# Глобальная переменная для хранения адаптера Redis
-_redis_adapter: RedisAdapter | None = None
+# Защита от повторной регистрации hooks при повторном create_app (тесты).
+_hooks_registered = False
 
 
 def register_lifespan_hooks() -> None:
     """
-    Регистрирует startup/shutdown hooks домена auth в общем реестре.
+    Регистрирует startup/shutdown hooks модуля auth в общем реестре.
 
-    Вызывается на этапе сборки DomainDescriptor (``_build_domain``).
+    Вызывается из create_app. Идемпотентна: повторный вызов — no-op
+    (реестр hooks — append-only, дубликаты исполнялись бы дважды).
     """
+    global _hooks_registered
+    if _hooks_registered:
+        return
+    _hooks_registered = True
+
     from app.core.domain_registry import register_shutdown_hook, register_startup_hook
 
     async def _startup_auth(app: FastAPI) -> None:
@@ -41,8 +47,6 @@ def register_lifespan_hooks() -> None:
         try:
             await adapter.connect()
             app.state.redis_adapter = adapter
-            global _redis_adapter
-            _redis_adapter = adapter
             logger.info("Redis для auth подключён: %s:%s", redis_cfg.host, redis_cfg.port)
         except Exception as exc:
             logger.error("Не удалось подключиться к Redis для auth: %s", exc)
@@ -50,14 +54,13 @@ def register_lifespan_hooks() -> None:
 
     async def _shutdown_auth(app: FastAPI) -> None:
         """Закрывает соединение с Redis."""
-        global _redis_adapter
         adapter = getattr(app.state, "redis_adapter", None)
         if adapter is not None:
             try:
                 await adapter.close()
             except Exception:
                 logger.exception("Ошибка при закрытии Redis auth")
-        _redis_adapter = None
+        app.state.redis_adapter = None
 
     register_startup_hook("auth.redis", _startup_auth)
     register_shutdown_hook("auth.redis", _shutdown_auth)

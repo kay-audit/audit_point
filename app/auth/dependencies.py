@@ -40,38 +40,40 @@ async def get_user_repository():
 
 
 async def get_current_user(request: Request) -> UserContext:
-    """Извлекает контекст пользователя из scope (заполняется AuthMiddleware).
+    """Полный контекст пользователя (профиль и роли из БД).
 
-    Для HTML-запросов перенаправляет на страницу авторизации,
-    для API запросов возвращает 401 Unauthorized.
+    Использовать только там, где нужен профиль (/auth/me, /auth/profile).
+    Для username в обычных эндпоинтах — get_username (без похода в БД).
+    Незавершённая авторизация — всегда 401; редиректами занимается AuthMiddleware.
+
+    В тест-режиме (AUTH__ENABLED=false) собирает минимальный контекст из окружения.
     """
-    state = request.scope.get("state", {})
-    user_data = state.get("user")
+    from app.auth.context import resolve_env_username
+    from app.core.config import get_settings
 
-    if not user_data:
-        if "/api/" not in request.url.path:
-            # Для HTML-страниц делаем редирект на авторизацию
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url="/auth/login")
-        raise HTTPException(status_code=401, detail="Не авторизован")
+    if not get_settings().auth.enabled:
+        username = resolve_env_username()
+        if not username:
+            raise HTTPException(status_code=401, detail="Не авторизован")
+        return UserContext(
+            sub=username,
+            email="",
+            login=username,
+            fullname=f"Пользователь {username}",
+        )
 
+    user_data = request.scope.get("state", {}).get("user") or {}
     user_id = user_data.get("sub")
     if not user_id:
-        if "/api/" not in request.url.path:
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url="/auth/login")
-        raise HTTPException(status_code=401, detail="Невалидный токен")
+        raise HTTPException(status_code=401, detail="Не авторизован")
 
     async with get_db() as conn:
         repo = AuthUserRepository(conn)
         ctx = await repo.get_user_context(user_id)
     if ctx is None:
-        if "/api/" not in request.url.path:
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url="/auth/login")
         raise HTTPException(status_code=401, detail="Пользователь не найден")
 
-    user_context = UserContext(
+    return UserContext(
         sub=ctx["id"],
         email=ctx["email"],
         login=ctx["login"],
@@ -79,4 +81,18 @@ async def get_current_user(request: Request) -> UserContext:
         teams=ctx["teams"],
         roles=ctx["roles"],
     )
-    return user_context
+
+
+def get_optional_user_id(request: Request) -> str | None:
+    """Username текущего пользователя без 401 и без похода в БД.
+
+    Для HTML-роутов, которые рендерятся и без авторизации (лендинг):
+    sub из scope (положил AuthMiddleware) либо, в тест-режиме, из окружения.
+    """
+    from app.auth.context import resolve_env_username
+    from app.core.config import get_settings
+
+    if not get_settings().auth.enabled:
+        return resolve_env_username()
+    user_data = request.scope.get("state", {}).get("user") or {}
+    return user_data.get("sub") or None

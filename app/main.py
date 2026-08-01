@@ -16,8 +16,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.auth.middleware import AuthMiddleware
 from app.api.v1.routes import api_router as api_v1_router
-# portal_auth_router больше не нужен - регистрируется через домен auth
-from app.api.v1.endpoints.auth import get_current_user_from_env  # Сохраняем для обратной совместимости JupyterHub
 from app.core.config import get_settings, setup_logging
 from app.core.domain_registry import (
     discover_domains,
@@ -52,21 +50,12 @@ from app.routes.portal import router as portal_router
 settings = get_settings()
 logger = setup_logging(settings.server.log_level)
 
-root_path = ''
-# if settings.database.type == 'greenplum':
-#     root_path = f"/user/{get_current_user_from_env(truncate=False)}/proxy/{settings.server.port}"
-
 # Директория доменов
 _domains_dir = Path(__file__).resolve().parent / "domains"
 
 
 def _is_html_request(request: Request) -> bool:
-    """Проверяет, является ли запрос HTML (не API).
-
-    Используется scope["path"] вместо request.url.path, т.к. url.path
-    включает root_path (например, /user/.../proxy/8005/api/v1/...),
-    а scope["path"] содержит путь относительно приложения (/api/v1/...).
-    """
+    """Проверяет, является ли запрос HTML (не API)."""
     path = request.scope.get("path", request.url.path)
     return not path.startswith("/api/")
 
@@ -129,30 +118,6 @@ async def lifespan(app: FastAPI):
     try:
         await init_db(settings)
         logger.debug("База данных инициализирована")
-
-        # ИНИЦИАЛИЗАЦИЯ EMAIL-СЕРВИСА (SMTP) — по настройкам домена notifications.
-        # Пароль только из env; интерактивных запросов нет — сервер стартует headless.
-        from app.core.settings_registry import get as get_domain_settings
-        from app.domains.notifications.settings import NotificationsSettings
-
-        email_cfg = get_domain_settings("notifications", NotificationsSettings).email
-        if email_cfg.enabled:
-            if email_cfg.smtp_password:
-                from app.domains.notifications.services.email_service import init_email_service
-
-                init_email_service(
-                    smtp_host=email_cfg.smtp_host,
-                    smtp_port=email_cfg.smtp_port,
-                    smtp_user=email_cfg.smtp_user,
-                    smtp_password=email_cfg.smtp_password,
-                    default_from=email_cfg.default_from,
-                )
-                logger.debug("Email-сервис инициализирован")
-            else:
-                logger.warning(
-                    "NOTIFICATIONS__EMAIL__ENABLED=true, но SMTP-пароль не задан — "
-                    "email-отправка выключена (ОТП-коды будут только в логе)"
-                )
 
         # ПРОГРЕВ ПУЛА — устраняет TCP-handshake-задержку первых запросов
         if settings.database.pool_warmup_enabled:
@@ -312,7 +277,6 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description="Рабочая станция аудитора — акты, AI-ассистент, аналитика, интеграции",
         lifespan=lifespan,
-        root_path=root_path
     )
 
     # Обнаружение доменов выполняем до настройки middleware: discover_domains()
@@ -321,14 +285,10 @@ def create_app() -> FastAPI:
     # повторный вызов в register_domains ниже отдаёт тот же список.
     domains = discover_domains(_domains_dir)
 
-    # Добавляем домен auth вручную, так как он находится вне app/domains/
-    # Проверяем, не добавлен ли он уже (в случае повторного вызова create_app)
-    auth_domain_names = {d.name for d in domains}
-    if "auth" not in auth_domain_names:
-        from app.auth import _build_domain
-        auth_domain = _build_domain()
-        domains.append(auth_domain)
-        logger.debug(f"Домен {auth_domain.name} добавлен вручную")
+    # Модуль auth — не домен: hooks регистрируются напрямую (идемпотентно),
+    # API-роутер живёт в api_v1_router, HTML-страницы входа подключаются ниже.
+    from app.auth.lifecycle import register_lifespan_hooks
+    register_lifespan_hooks()
 
     # Добавляем middleware в правильном порядке (первый add_middleware = outermost,
     # т.е. видит request первым и response последним).
@@ -491,11 +451,10 @@ def create_app() -> FastAPI:
     # Подключение роута ошибок (до portal_router)
     app.include_router(error_router)
 
-    # Подключение shared HTML-роутов (лендинг, CK-заглушки)
+    # Подключение shared HTML-роутов (лендинг, CK-заглушки, страницы входа)
     app.include_router(portal_router)
-
-    # Подключение API-роутов аутентификации
-    # (API роутеры регистрируются через домен auth)
+    from app.auth.portal_router import router as auth_portal_router
+    app.include_router(auth_portal_router)
 
     # Подключение shared API роутеров (auth, chat, system)
     app.include_router(
@@ -506,13 +465,6 @@ def create_app() -> FastAPI:
     # domains обнаружены выше до middleware-секции. Повторный вызов в lifespan()
     # (для БД и lifecycle) использует кэш _domains.
     register_domains(app, domains, settings.server.api_v1_prefix)
-
-    # Регистрируем API роутеры auth домена отдельно без api_prefix
-    # (для путей вида /auth/request-otp вместо /api/v1/auth/request-otp)
-    auth_domain = next((d for d in domains if d.name == "auth"), None)
-    if auth_domain:
-        for router, prefix, tags in auth_domain.api_routers:
-            app.include_router(router, prefix=prefix, tags=tags)
 
     return app
 
@@ -537,6 +489,4 @@ if __name__ == "__main__":
         reload=True,
         # Уровень uvicorn синхронизирован с SERVER__LOG_LEVEL
         log_level=settings.server.log_level.lower(),
-        # Если работаем с greenplum через прокси, то указываем корень
-        root_path=root_path
     )

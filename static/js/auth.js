@@ -21,7 +21,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         try {
-            const response = await fetch('/auth/request-otp', {
+            const response = await fetch('/api/v1/auth/request-otp', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         try {
-            const response = await fetch('/auth/verify-otp', {
+            const response = await fetch('/api/v1/auth/verify-otp', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -90,7 +90,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         try {
-            const response = await fetch('/auth/request-otp', {
+            const response = await fetch('/api/v1/auth/request-otp', {
                method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.auth.context import set_request_username
+from app.auth.context import resolve_env_username, set_request_username
 from app.auth.jwt_handler import JWTTokenHandler
 from app.core.config import get_settings
 
@@ -38,59 +39,47 @@ def set_auth_cookies(
     response.set_cookie(REFRESH_TOKEN_COOKIE, refresh_token, **cookie_kwargs)
 
 
-from fastapi.responses import RedirectResponse
-from starlette.datastructures import URL
+# Открытые пути: страницы/эндпоинты входа, статика, favicon.
+# «/» закрыт: аноним на любом HTML-пути уходит редиректом на /auth/login.
+_PUBLIC_PREFIXES = ("/auth", "/static")
+_PUBLIC_PATHS = ("/favicon.ico",)
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Декодирует access_token из cookie и кладёт payload в scope/state.
-    Перенаправляет на страницу входа при отсутствии токена.
+
+    Аноним: HTML-пути — редирект на /auth/login, API (/api/*) — 401 JSON.
+    В тест-режиме (AUTH__ENABLED=false) пропускает всё, заполняя contextvar
+    username из окружения — метрики и аудит работают одинаково в обоих режимах.
     """
 
     async def dispatch(self, request: Request, call_next):
-        set_request_username(None)
         settings = get_settings()
 
         if not settings.auth.enabled:
+            # Тест-режим: авторизация выключена, username из окружения.
+            set_request_username(resolve_env_username())
             return await call_next(request)
 
-        # Используем scope["path"] вместо request.url.path для корректной работы с root_path
-        # (например, /user/{user}/proxy/{port}/auth/login)
+        set_request_username(None)
         path = request.scope.get("path", request.url.path)
 
-        # Исключения для эндпоинтов аутентификации, статики, favicon и страниц входа
-        # Включаем все /auth/* маршруты (для порталов аутентификации)
-        if (path.startswith("/auth") or 
-            path.startswith("/static") or
-            path == "/" or
-            path == "/favicon.ico"):
-            # Проверяем токен и устанавливаем user_data в scope, если он валиден
-            access_token = request.cookies.get(ACCESS_TOKEN_COOKIE)
-
-            # Проверяем access_token и устанавливаем user_data в scope для API-роутов
-            if access_token:
-                payload = JWTTokenHandler.decode_token(access_token)
-                if payload and payload.token_type == "access":
-                    user_data = {"sub": payload.sub}
-                    request.scope.setdefault("state", {})["user"] = user_data
-                    set_request_username(payload.sub)
-
-            return await call_next(request)
-
-        # Для остальных путей (не /auth/*, /static/*, /, /favicon.ico) проверяем токен
+        payload = None
         access_token = request.cookies.get(ACCESS_TOKEN_COOKIE)
         if access_token:
-            payload = JWTTokenHandler.decode_token(access_token)
-            if payload and payload.token_type == "access":
-                user_data = {"sub": payload.sub}
-                request.scope.setdefault("state", {})["user"] = user_data
-                set_request_username(payload.sub)
-                return await call_next(request)
+            decoded = JWTTokenHandler.decode_token(access_token)
+            if decoded and decoded.token_type == "access":
+                payload = decoded
 
-        # Редирект на страницу входа для HTML-запросов
-        if "text/html" in request.headers.get("accept", ""):
-            return RedirectResponse(url="/auth/login")
+        if payload is not None:
+            request.scope.setdefault("state", {})["user"] = {"sub": payload.sub}
+            set_request_username(payload.sub)
+            return await call_next(request)
 
-        # Для API запросов возвращаем 401
-        response = RedirectResponse(url="/auth/login")
-        response.status_code = 401
-        return response
+        if path.startswith(_PUBLIC_PREFIXES) or path in _PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Не авторизован: API — 401 JSON, HTML — редирект на вход.
+        if "/api/" in path:
+            return JSONResponse(status_code=401, content={"detail": "Не авторизован"})
+        return RedirectResponse(url="/auth/login")
