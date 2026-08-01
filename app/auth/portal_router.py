@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.auth.middleware import clear_auth_cookies
 from app.core.templating import get_templates
 import logging
 
@@ -18,7 +19,9 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "auth/login.html")
 
 
-@router.get("/auth/logout", response_class=HTMLResponse)
-async def logout_page(request: Request):
-    """Возвращает страницу выхода."""
-    return templates.TemplateResponse(request, "auth/logout.html")
+@router.get("/auth/logout")
+async def logout(request: Request):
+    """Выход: очищает JWT-cookie и уводит на страницу входа."""
+    response = RedirectResponse(url="/auth/login")
+    clear_auth_cookies(response)
+    return response

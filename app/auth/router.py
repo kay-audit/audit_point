@@ -277,6 +277,16 @@ async def refresh_tokens(request: Request):
     return response
 
 
+@router.post("/logout")
+async def logout():
+    """Программный выход: очищает JWT-cookie."""
+    from app.auth.middleware import clear_auth_cookies
+
+    response = JSONResponse(status_code=200, content={"success": True})
+    clear_auth_cookies(response)
+    return response
+
+
 @router.get("/profile", response_model=UserProfile)
 async def get_current_user_profile(
     user: UserContext = Depends(get_current_user),

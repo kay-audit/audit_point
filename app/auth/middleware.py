@@ -39,6 +39,16 @@ def set_auth_cookies(
     response.set_cookie(REFRESH_TOKEN_COOKIE, refresh_token, **cookie_kwargs)
 
 
+def clear_auth_cookies(response: Response) -> None:
+    """Удаляет JWT-cookie (выход из системы)."""
+    settings = get_settings().auth
+    cookie_kwargs = {"path": "/"}
+    if settings.cookie_domain:
+        cookie_kwargs["domain"] = settings.cookie_domain
+    response.delete_cookie(ACCESS_TOKEN_COOKIE, **cookie_kwargs)
+    response.delete_cookie(REFRESH_TOKEN_COOKIE, **cookie_kwargs)
+
+
 # Открытые пути: страницы/эндпоинты входа, статика, favicon.
 # «/» закрыт: аноним на любом HTML-пути уходит редиректом на /auth/login.
 _PUBLIC_PREFIXES = ("/auth", "/static")
@@ -46,9 +56,13 @@ _PUBLIC_PATHS = ("/favicon.ico",)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Декодирует access_token из cookie и кладёт payload в scope/state.
+    """Аутентификация запроса по JWT-cookie с прозрачным refresh.
 
-    Аноним: HTML-пути — редирект на /auth/login, API (/api/*) — 401 JSON.
+    Валидный access — запрос проходит. Access истёк, refresh валиден —
+    middleware сам выпускает новую пару токенов, ставит cookie в ответ
+    и пропускает запрос («сессия» живёт, пока живёт refresh; фронт о TTL
+    не знает). Аноним: HTML-пути — редирект на /auth/login, API — 401 JSON.
+
     В тест-режиме (AUTH__ENABLED=false) пропускает всё, заполняя contextvar
     username из окружения — метрики и аудит работают одинаково в обоих режимах.
     """
@@ -64,22 +78,39 @@ class AuthMiddleware(BaseHTTPMiddleware):
         set_request_username(None)
         path = request.scope.get("path", request.url.path)
 
-        payload = None
+        user_sub: str | None = None
         access_token = request.cookies.get(ACCESS_TOKEN_COOKIE)
         if access_token:
             decoded = JWTTokenHandler.decode_token(access_token)
             if decoded and decoded.token_type == "access":
-                payload = decoded
+                user_sub = decoded.sub
 
-        if payload is not None:
-            request.scope.setdefault("state", {})["user"] = {"sub": payload.sub}
-            set_request_username(payload.sub)
-            return await call_next(request)
+        # Прозрачный refresh: access истёк/отсутствует, но refresh валиден —
+        # ротация пары без участия пользователя (лечение «повторного ОТП»).
+        new_tokens = None
+        refresh_token = request.cookies.get(REFRESH_TOKEN_COOKIE)
+        if user_sub is None and refresh_token:
+            refresh_payload = JWTTokenHandler.decode_token(refresh_token)
+            if refresh_payload and refresh_payload.token_type == "refresh":
+                user_sub = refresh_payload.sub
+                new_tokens = JWTTokenHandler.create_token_pair(user_sub)
+
+        if user_sub is not None:
+            request.scope.setdefault("state", {})["user"] = {"sub": user_sub}
+            set_request_username(user_sub)
+            response = await call_next(request)
+            if new_tokens is not None:
+                set_auth_cookies(
+                    response, new_tokens.access_token, new_tokens.refresh_token
+                )
+            return response
 
         if path.startswith(_PUBLIC_PREFIXES) or path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        # Не авторизован: API — 401 JSON, HTML — редирект на вход.
+        # Не авторизован: API — 401 JSON, HTML — редирект на вход
+        # (с пометкой «сессия истекла», если протухшие cookie ещё были).
         if "/api/" in path:
             return JSONResponse(status_code=401, content={"detail": "Не авторизован"})
-        return RedirectResponse(url="/auth/login")
+        login_url = "/auth/login?expired=1" if (access_token or refresh_token) else "/auth/login"
+        return RedirectResponse(url=login_url)

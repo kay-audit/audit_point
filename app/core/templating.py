@@ -65,5 +65,7 @@ def get_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(get_settings().templates_dir))
     version = _resolve_app_version()
     templates.env.globals["app_version"] = version
+    # Для условных элементов шаблонов (кнопка «Выйти» видна только в ОТП-режиме).
+    templates.env.globals["auth_enabled"] = get_settings().auth.enabled
     templates.env.filters["versioned"] = lambda u: _versioned(str(u), version)
     return templates

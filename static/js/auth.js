@@ -9,6 +9,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const resendOtpBtn = document.getElementById('resendOtp');
     const messageDiv = document.getElementById('message');
 
+    // Пометка «сессия истекла» (редирект middleware/фронта с ?expired=1)
+    if (new URLSearchParams(window.location.search).has('expired')) {
+        showMessage('Сессия истекла — войдите заново', 'warning');
+    }
+
     // Отправка email для получения OTP
     loginForm.addEventListener('submit', async function(e) {
         e.preventDefault();
