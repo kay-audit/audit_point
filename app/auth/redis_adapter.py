@@ -11,7 +11,9 @@ from pydantic import BaseModel
 class RedisConfig(BaseModel):
     """Конфигурация подключения к Redis."""
 
-    host: str = "localhost"
+    # IPv4 явно: на Windows "localhost" резолвится в IPv6 ::1 первым,
+    # redis-py не фолбэкает на IPv4 — connection refused/timeout.
+    host: str = "127.0.0.1"
     port: int = 6379
     db: int = 0
     password: str = ""

@@ -2852,7 +2852,11 @@ server {
 
 **DEV-запуск с реальным ОТП-входом** (`AUTH__ENABLED=true` локально):
 
-1. Redis в WSL Ubuntu: `sudo apt install redis-server`, затем `redis-server --daemonize yes` — слушает `localhost:6379` (совпадает с дефолтами `REDIS__*`).
+1. Redis в WSL Ubuntu-24.04 (systemd в дистро включён, юнит `redis-server` автостартует):
+   - Установка: `wsl -d Ubuntu-24.04 -u root -- apt-get install -y redis-server` (root в WSL — без пароля).
+   - Windows→WSL по `localhost` в NAT-режиме нестабилен (особенно с системным localhost-прокси) — в `%USERPROFILE%\.wslconfig` включить `[wsl2] networkingMode=mirrored`, `dnsTunneling=true`, `autoProxy=true`, затем `wsl --shutdown`; в mirrored-режиме сервис должен слушать `0.0.0.0` (`/etc/redis/redis.conf`: `bind 0.0.0.0 -::1`, `protected-mode yes` не трогать — иначе отвергает не-loopback клиентов).
+   - WSL глушит VM через ~минуту после последней `wsl.exe`-команды — держать якорь фоном: `wsl -d Ubuntu-24.04 --exec sleep infinity` (например, автостартом при входе в Windows).
+   - Приложение подключается по `REDIS__HOST=127.0.0.1` (дефолт), не `localhost` — IPv6-ловушка на Windows (§9.5 «Redis»).
 2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
 3. `AUTH__JWT_SECRET` — задать любую непустую строку, отличную от дефолта.
 
@@ -3103,7 +3107,7 @@ def test_chat_settings_defaults():
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
-| `REDIS__HOST` | str | `localhost` | Хост Redis |
+| `REDIS__HOST` | str | `127.0.0.1` | Хост Redis. Именно IPv4-адрес, не `localhost` — на Windows `localhost` резолвится в IPv6 `::1` первым, redis-py не фолбэкает на IPv4 (connection refused/timeout) |
 | `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе может быть нестандартным (пример: `7474`) |
 | `REDIS__DB` | int | `0` | Индекс БД Redis (0-15) |
 | `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |

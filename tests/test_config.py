@@ -25,7 +25,7 @@ class TestRedisSettingsDefaults:
 
     def test_defaults(self):
         redis = RedisSettings()
-        assert redis.host == "localhost"
+        assert redis.host == "127.0.0.1"
         assert redis.port == 6379
         assert redis.db == 0
         assert isinstance(redis.password, SecretStr)

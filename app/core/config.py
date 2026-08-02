@@ -187,7 +187,14 @@ class RedisSettings(BaseModel):
     Общая инфраструктура приложения: сейчас — OTP-коды и лимиты модуля
     ``app.auth``, далее — шина внешнего ИИ-агента, локи актов, кэши.
     """
-    host: str = Field(default="localhost")
+    host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "IPv4 явно, не 'localhost': на Windows 'localhost' резолвится в "
+            "IPv6 ::1 первым, redis-py не фолбэкает на IPv4 — connection "
+            "refused/timeout, даже если сервер слушает IPv4"
+        ),
+    )
     port: int = Field(default=6379, ge=1, le=65535)
     db: int = Field(default=0, ge=0, le=15)
     password: SecretStr = SecretStr("")
