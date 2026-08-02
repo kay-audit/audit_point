@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const verifyOtpBtn = document.getElementById('verifyOtp');
     const resendOtpBtn = document.getElementById('resendOtp');
     const messageDiv = document.getElementById('message');
+    let messageTimeoutId = null;
 
     // Пометка «сессия истекла» (редирект middleware/фронта с ?expired=1)
     if (new URLSearchParams(window.location.search).has('expired')) {
@@ -26,6 +27,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         try {
+            // Прямой относительный /api/... путь: страница входа — standalone-скрипт
+            // до ESM-обвязки (загружается classic <script>, не type="module"),
+            // AppConfig недоступен. Деплой SDP не добавляет proxy-префикс к путям,
+            // так что относительный URL резолвится корректно и без него.
             const response = await fetch('/api/v1/auth/request-otp', {
                 method: 'POST',
                 headers: {
@@ -121,10 +126,17 @@ document.addEventListener('DOMContentLoaded', function() {
         messageDiv.textContent = text;
         messageDiv.className = 'message';
         messageDiv.classList.add(type);
+        messageDiv.style.display = '';
+
+        // Предыдущий таймер скрытия отменяем, иначе он скроет ЭТО сообщение раньше времени
+        if (messageTimeoutId) {
+            clearTimeout(messageTimeoutId);
+        }
 
         // Автоматическое скрытие сообщения через 5 секунд
-        setTimeout(() => {
+        messageTimeoutId = setTimeout(() => {
             messageDiv.style.display = 'none';
+            messageTimeoutId = null;
         }, 5000);
     }
 });

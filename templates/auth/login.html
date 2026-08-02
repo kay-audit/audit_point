@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Вход в систему</title>
-    <link rel="stylesheet" href="/static/css/auth.css">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') | versioned }}">
 </head>
 <body>
     <div class="auth-container">
@@ -26,7 +26,7 @@
             <div id="otpSection" class="form-group" style="display: none;">
                 <div class="input-group">
                     <label for="otp">Код из email</label>
-                    <input type="text" id="otp" name="otp" maxlength="6" required>
+                    <input type="text" id="otp" name="otp" maxlength="{{ otp_length }}" required>
                 </div>
 
                 <button type="button" id="verifyOtp" class="btn btn-success">Войти</button>
@@ -37,6 +37,6 @@
         </div>
     </div>
 
-    <script src="/static/js/auth.js"></script>
+    <script src="{{ url_for('static', path='js/auth.js') | versioned }}"></script>
 </body>
 </html>
