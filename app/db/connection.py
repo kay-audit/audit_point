@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import subprocess as _subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -70,38 +71,30 @@ def _is_kerberos_ticket_valid() -> bool:
     """
     Проверяет наличие действующего (не истёкшего) Kerberos билета.
 
-    Использует klist на всех платформах, с платформенно-зависимой логикой проверки.
+    Kerberos нужен только для Greenplum, а прод Greenplum — Linux, поэтому
+    на Windows проверку не делаем вовсе: системный klist (LSA) не поддерживает
+    флаг -s и локализован (например, `ticket` в выводе может быть заменено на
+    «билет»), парсинг его вывода ненадёжен.
+
+    На POSIX используется тихий контракт `klist -s` (без вывода): returncode 0 —
+    билет валиден, любой другой — нет. Любое исключение при запуске (klist не
+    найден, таймаут, нет прав и т.д.) — fail-open: проверка невозможна, не
+    блокируем запуск, реальная ошибка всплывёт позже при подключении к БД.
 
     Returns:
-        True если билет валиден, или если проверка невозможна
+        True если билет валиден, проверка неприменима (Windows) или невозможна
     """
-    try:
-        # На всех платформах используем klist (в Windows это klist.exe)
-        result = _subprocess.run(
-            ["klist"],
-            capture_output=True,
-            timeout=5,
-            text=True,
-            shell=True  # Для Windows, чтобы найти klist в PATH
-        )
-
-        # Если команда выполнилась успешно, проверяем вывод
-        if result.returncode == 0:
-            output = result.stdout.lower()
-            # Проверяем наличие признаков действительного билета
-            return 'ticket' in output and 'expired' not in output
-
-        # Для некоторых систем klist возвращает код 1 если билетов нет
-        # Это нормально, значит аутентификации нет
-        if result.returncode == 1:
-            return False
-
-    except (FileNotFoundError, _subprocess.TimeoutExpired, PermissionError):
-        # klist недоступен, зависает или нет прав — не блокируем запуск
-        # Позволяем продолжить, ошибка будет позже при подключении к БД
+    if sys.platform == "win32":
         return True
 
-    return False
+    try:
+        result = _subprocess.run(["klist", "-s"], timeout=5)
+    except Exception:
+        # klist недоступен, зависает, нет прав или другая ошибка запуска —
+        # не блокируем запуск, ошибка будет позже при подключении к БД
+        return True
+
+    return result.returncode == 0
 
 
 def _log_kerberos_instructions() -> None:
@@ -260,12 +253,6 @@ async def open_pool(
                 "Kerberos токен протух. Выполните 'kinit' для обновления."
             ) from e
         logger.error(f"Ошибка PostgreSQL при создании пула: {e}")
-        logger.info(
-            "Database pool ready: %s (min=%d, max=%d)",
-            settings.database.type,
-            settings.database.pool_min_size,
-            settings.database.pool_max_size,
-        )
         raise RuntimeError(f"Не удалось подключиться к БД: {e}") from e
     except Exception as e:
         # Для Greenplum: OSError / ConnectionRefused часто означает протухший билет

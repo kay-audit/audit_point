@@ -1,5 +1,7 @@
 """Тесты для модуля подключения к БД (app/db/connection.py)."""
 
+import subprocess
+
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +11,7 @@ import asyncpg
 from app.db import connection
 from app.db.connection import (
     KerberosTokenExpiredError,
+    _is_kerberos_ticket_valid,
     _is_kerberos_token_expired,
     close_db,
     create_tables_if_not_exist,
@@ -55,7 +58,7 @@ def _make_settings(db_type="postgresql", jupyterhub_user="12345_user"):
 
 
 # ===========================================================================
-# 1. _is_kerberos_token_expired
+# 1. _is_kerberos_token_expired / _is_kerberos_ticket_valid
 # ===========================================================================
 
 
@@ -104,6 +107,60 @@ class TestKerberosDetection:
     def test_частичное_совпадение_в_длинном_тексте(self):
         long_msg = "Connection failed: minor: ticket expired (blah blah)"
         assert _is_kerberos_token_expired(long_msg) is True
+
+
+class TestIsKerberosTicketValid:
+    """Контракт `klist -s`: rc 0 → валиден, иначе — нет; Windows не проверяется,
+    любая ошибка запуска — fail-open (True)."""
+
+    def test_windows_true_без_вызова_subprocess(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "win32")
+        with patch("app.db.connection._subprocess.run") as mock_run:
+            assert _is_kerberos_ticket_valid() is True
+        mock_run.assert_not_called()
+
+    def test_posix_rc0_валиден(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        mock_result = MagicMock(returncode=0)
+        with patch(
+            "app.db.connection._subprocess.run", return_value=mock_result
+        ) as mock_run:
+            assert _is_kerberos_ticket_valid() is True
+        mock_run.assert_called_once_with(["klist", "-s"], timeout=5)
+
+    def test_posix_rc1_невалиден(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        mock_result = MagicMock(returncode=1)
+        with patch("app.db.connection._subprocess.run", return_value=mock_result):
+            assert _is_kerberos_ticket_valid() is False
+
+    def test_posix_klist_не_найден_fail_open(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        with patch(
+            "app.db.connection._subprocess.run", side_effect=FileNotFoundError()
+        ):
+            assert _is_kerberos_ticket_valid() is True
+
+    def test_posix_таймаут_fail_open(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        with patch(
+            "app.db.connection._subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="klist -s", timeout=5),
+        ):
+            assert _is_kerberos_ticket_valid() is True
+
+    def test_posix_нет_прав_fail_open(self, monkeypatch):
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        with patch("app.db.connection._subprocess.run", side_effect=PermissionError()):
+            assert _is_kerberos_ticket_valid() is True
+
+    def test_posix_прочая_ошибка_fail_open(self, monkeypatch):
+        """Любое исключение — не только 3 именованных — тоже fail-open."""
+        monkeypatch.setattr(connection.sys, "platform", "linux")
+        with patch(
+            "app.db.connection._subprocess.run", side_effect=OSError("недоступно")
+        ):
+            assert _is_kerberos_ticket_valid() is True
 
 
 # ===========================================================================
