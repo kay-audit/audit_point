@@ -226,7 +226,11 @@ class AuthSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_jwt_secret(self):
-        """При включённой авторизации секрет обязателен и не должен оставаться дефолтным.
+        """При включённой авторизации секрет обязателен, не-дефолтен и не короче 32 символов.
+
+        Минимум 32 — требование RFC 7518 §3.2 к длине HMAC-ключа для HS256:
+        с более коротким ключом PyJWT пишет InsecureKeyLengthWarning в лог
+        на каждую операцию с токеном.
 
         Pydantic не приводит нетронутое дефолтное значение поля к его типу
         (validate_default выключен), поэтому jwt_secret в этом случае — обычная
@@ -241,6 +245,12 @@ class AuthSettings(BaseModel):
             raise ValueError(
                 "AUTH__JWT_SECRET обязателен при AUTH__ENABLED=true и не может "
                 "оставаться значением по умолчанию ('your-secret-key')"
+            )
+        if self.enabled and len(secret_value) < 32:
+            raise ValueError(
+                "AUTH__JWT_SECRET короче 32 символов — недостаточно для HS256 "
+                "(RFC 7518). Сгенерировать: "
+                "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
             )
         return self
 

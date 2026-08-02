@@ -237,7 +237,7 @@ class TestRequestOtpRateLimit:
 
 
 class TestJwtSecretValidator:
-    """AuthSettings.validate_jwt_secret: секрет обязателен и не может быть дефолтным."""
+    """AuthSettings.validate_jwt_secret: секрет обязателен, не-дефолтен и не короче 32 символов."""
 
     def test_enabled_with_default_secret_raises(self, monkeypatch):
         monkeypatch.setenv("AUTH__ENABLED", "true")
@@ -245,8 +245,15 @@ class TestJwtSecretValidator:
         with pytest.raises(ValidationError):
             Settings()
 
+    def test_enabled_with_short_secret_raises(self, monkeypatch):
+        """Короче 32 символов — недостаточно для HS256 (RFC 7518), старт падает."""
+        monkeypatch.setenv("AUTH__ENABLED", "true")
+        monkeypatch.setenv("AUTH__JWT_SECRET", "short-but-not-default")
+        with pytest.raises(ValidationError, match="32"):
+            Settings()
+
     def test_enabled_with_real_secret_ok(self, monkeypatch):
         monkeypatch.setenv("AUTH__ENABLED", "true")
-        monkeypatch.setenv("AUTH__JWT_SECRET", "a-real-secret-value")
+        monkeypatch.setenv("AUTH__JWT_SECRET", "a-real-secret-value-of-proper-length-48chars-ok")
         settings = Settings()
         assert settings.auth.enabled is True

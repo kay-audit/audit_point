@@ -2834,14 +2834,14 @@ server {
 3. `POST /auth/verify-otp {email, otp}` — сверяет код, при успехе удаляет его из Redis (одноразовый), выпускает пару JWT и ставит HttpOnly-cookie (`access_token`, `refresh_token`).
 4. Дальше на каждый запрос — `AuthMiddleware`: валиден access → пропускает; access истёк, но refresh жив → тихо перевыпускает пару и подставляет новые cookie в ответ (сессия живёт, пока жив refresh, дефолт 7 дней, фронт про TTL не знает). Ни access, ни refresh не валидны → HTML уходит редиректом на `/auth/login` (с `?expired=1`, если cookie вообще были), API получает 401 JSON.
 
-**Лимиты безопасности (Redis):** `otp_att:{user}` — счётчик неверных попыток ввода кода; по достижении `AUTH__OTP_MAX_ATTEMPTS` код инвалидируется досрочно (нужен новый запрос). `otp_req:{email}` — счётчик запросов кода на email за минуту; при превышении `AUTH__OTP_REQUEST_MAX_PER_MINUTE` — 429 ещё до похода в БД (защита и от перебора email, и от флуда SMTP). При `AUTH__ENABLED=true` пустой либо дефолтный `AUTH__JWT_SECRET` (`your-secret-key`) — фатальная ошибка валидации настроек при старте (см. `AuthSettings.validate_jwt_secret`).
+**Лимиты безопасности (Redis):** `otp_att:{user}` — счётчик неверных попыток ввода кода; по достижении `AUTH__OTP_MAX_ATTEMPTS` код инвалидируется досрочно (нужен новый запрос). `otp_req:{email}` — счётчик запросов кода на email за минуту; при превышении `AUTH__OTP_REQUEST_MAX_PER_MINUTE` — 429 ещё до похода в БД (защита и от перебора email, и от флуда SMTP). При `AUTH__ENABLED=true` пустой, дефолтный (`your-secret-key`) либо короче 32 символов `AUTH__JWT_SECRET` — фатальная ошибка валидации настроек при старте (см. `AuthSettings.validate_jwt_secret`; 32 — минимум HMAC-ключа HS256 по RFC 7518).
 
 **Env-переменные** (`AUTH__*`; полный список с дефолтами — `.env.example`, машиночитаемая таблица — §9.5 «Auth»):
 
 | Переменная | Дефолт | Назначение |
 |---|---|---|
 | `AUTH__ENABLED` | `false` | Режим (см. выше) |
-| `AUTH__JWT_SECRET` | `your-secret-key` | Обязателен и не-дефолтен при `enabled=true` |
+| `AUTH__JWT_SECRET` | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
 | `AUTH__JWT_ACCESS_TTL` / `AUTH__JWT_REFRESH_TTL` | `900` / `604800` | TTL токенов, сек |
 | `AUTH__COOKIE_SECURE` / `AUTH__COOKIE_DOMAIN` | `false` / (пусто) | `Secure`-флаг и домен cookie |
 | `AUTH__OTP_LENGTH` / `AUTH__OTP_TTL` | `6` / `300` | Длина кода (цифр) / время жизни, сек |
@@ -2854,11 +2854,11 @@ server {
 
 1. Redis в WSL Ubuntu-24.04 (systemd в дистро включён, юнит `redis-server` автостартует):
    - Установка: `wsl -d Ubuntu-24.04 -u root -- apt-get install -y redis-server` (root в WSL — без пароля).
-   - Windows→WSL по `localhost` в NAT-режиме нестабилен (особенно с системным localhost-прокси) — в `%USERPROFILE%\.wslconfig` включить `[wsl2] networkingMode=mirrored`, `dnsTunneling=true`, `autoProxy=true`, затем `wsl --shutdown`; в mirrored-режиме сервис должен слушать `0.0.0.0` (`/etc/redis/redis.conf`: `bind 0.0.0.0 -::1`, `protected-mode yes` не трогать — иначе отвергает не-loopback клиентов).
+   - Windows→WSL по `localhost` в NAT-режиме нестабилен (особенно с системным localhost-прокси) — в `%USERPROFILE%\.wslconfig` включить `[wsl2] networkingMode=mirrored`, `dnsTunneling=true`, `autoProxy=true`, затем `wsl --shutdown`; в mirrored-режиме сервис должен слушать `0.0.0.0` (`/etc/redis/redis.conf`: `bind 0.0.0.0 -::1`, `protected-mode yes` оставить — Redis без пароля отвергает клиентов с не-loopback адресов, это защита от внешней сети).
    - WSL глушит VM через ~минуту после последней `wsl.exe`-команды — держать якорь фоном: `wsl -d Ubuntu-24.04 --exec sleep infinity` (например, автостартом при входе в Windows).
    - Приложение подключается по `REDIS__HOST=127.0.0.1` (дефолт), не `localhost` — IPv6-ловушка на Windows (§9.5 «Redis»).
 2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
-3. `AUTH__JWT_SECRET` — задать любую непустую строку, отличную от дефолта.
+3. `AUTH__JWT_SECRET` — строка не короче 32 символов: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
 **Деплой SDP:** приложение переехало с JupyterHub DataLab на SDP-кластер — доступ по IP:порту напрямую, `root_path`/proxy-путей больше нет (`app/main.py` их не вычисляет, в отличие от §9.2 ниже). Cookie-based авторизация от этого не зависит: домен/порт задаются `AUTH__COOKIE_DOMAIN`/`AUTH__COOKIE_SECURE` при необходимости.
 
@@ -3130,7 +3130,7 @@ def test_chat_settings_defaults():
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `AUTH__ENABLED` | bool | `False` | `true` — ОТП-авторизация, `false` — тест-режим (username из `JUPYTERHUB_USER`) |
-| `AUTH__JWT_SECRET` | SecretStr | `your-secret-key` | Обязателен и не-дефолтен при `enabled=true` |
+| `AUTH__JWT_SECRET` | SecretStr | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
 | `AUTH__JWT_ALGORITHM` | str | `HS256` | Алгоритм подписи JWT |
 | `AUTH__JWT_ACCESS_TTL` | int | `900` | TTL access-токена (сек) |
 | `AUTH__JWT_REFRESH_TTL` | int | `604800` | TTL refresh-токена (сек) — фактическая длина сессии |
