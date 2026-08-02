@@ -523,13 +523,18 @@ NOT `execute(action, params)`, иначе обойдётся `block_id`-пров
 
 ## JupyterHub proxy: `AppConfig.api.getUrl`
 
-В деплое на Greenplum приложение работает через JupyterHub proxy:
+> Историческое: актуальный деплой — SDP (доступ по IP:порту, без proxy-путей);
+> `app/main.py` больше не вычисляет `root_path` ни для одного типа БД.
+> `AppConfig.api.getUrl()` на SDP всегда возвращает endpoint как есть — раздел
+> ниже описывает прежнюю JupyterHub-модель, конвенция сохранена как страховка
+> на случай будущего proxied-деплоя.
+
+В прежнем деплое на Greenplum приложение работало через JupyterHub proxy:
 `/user/{user}/proxy/{port}/...`. Это значит, что относительный URL
-`/api/v1/chat/...` браузер резолвит против origin'а — то есть на
+`/api/v1/chat/...` браузер резолвил против origin'а — то есть на
 `/api/v1/chat/...`, минуя `/user/{user}/proxy/{port}/`. Результат — 404.
 
-`AppConfig.api.getUrl(endpoint)` подставляет правильный префикс.
-В standalone-PG-деплое (`root_path = ''`) он возвращает endpoint как есть.
+`AppConfig.api.getUrl(endpoint)` подставляет правильный префикс, если он есть.
 
 ### Обязательные точки
 
