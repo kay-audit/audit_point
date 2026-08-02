@@ -290,29 +290,20 @@ def create_app() -> FastAPI:
     from app.auth.lifecycle import register_lifespan_hooks
     register_lifespan_hooks()
 
-    # Добавляем middleware в правильном порядке (первый add_middleware = outermost,
-    # т.е. видит request первым и response последним).
-    # 1. HTTPS redirect — outermost, нужен для корректного scope.scheme до SecurityHeaders.
-    app.add_middleware(HTTPSRedirectMiddleware)
+    # Порядок middleware: add_middleware вставляет запись в начало списка,
+    # а стек собирается обходом этого списка в обратном порядке — поэтому
+    # ПОСЛЕДНИЙ add_middleware оказывается самым внешним (видит request первым
+    # и response последним). Добавляем от внутреннего к внешнему; итоговая
+    # «луковица» снаружи внутрь:
+    #   HTTPSRedirect → RequestId → SecurityHeaders → RequestSizeLimit
+    #   → RateLimit → HttpMetrics → Auth → роутер.
 
-    # 2. Security headers — оборачивает все остальные, чтобы CSP/HSTS/X-Frame
-    #    выставлялись и на 413/429-ответы от RequestSize/RateLimit middlewares.
-    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
+    # 1. Auth — самый внутренний: его 401 и редиректы поднимаются через весь
+    #    стек, получая и security-заголовки, и request_id, и запись в метрики.
+    app.add_middleware(AuthMiddleware)
 
-    # 3. Request size limit
-    app.add_middleware(
-        RequestSizeLimitMiddleware,
-        max_size=settings.security.max_request_size
-    )
-
-    # 4. Rate limiting
-    app.add_middleware(
-        RateLimitMiddleware,
-        rate_limit=settings.security.rate_limit_per_minute,
-        settings=settings
-    )
-
-    # 5. HTTP-метрики — внутри RequestIdMiddleware, чтобы видеть выставленный request_id.
+    # 2. HTTP-метрики — снаружи Auth (видят 401 анонимов) и внутри лимитов:
+    #    отбитые 429/413 в БД не пишутся, чтобы флуд не разгонял журнал.
     # Сервис разрешается через реестр фабрик admin-домена (admin сам инкапсулирует
     # проверку http_metrics_enabled и возвращает None, если метрики выключены) —
     # core не импортирует admin напрямую. Фабрика зарегистрирована при discover_domains
@@ -328,11 +319,30 @@ def create_app() -> FastAPI:
         )
     app.add_middleware(HttpMetricsMiddleware, service=_http_metrics_service)
 
-    # 6. Request ID — innermost: добавляется последним, оборачивается всеми остальными.
+    # 3. Rate limiting
+    app.add_middleware(
+        RateLimitMiddleware,
+        rate_limit=settings.security.rate_limit_per_minute,
+        settings=settings
+    )
+
+    # 4. Request size limit
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_size=settings.security.max_request_size
+    )
+
+    # 5. Security headers — снаружи лимитов и Auth, чтобы CSP/HSTS/X-Frame
+    #    выставлялись и на коротких 429/413/401-ответах.
+    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
+
+    # 6. Request ID — почти самый внешний: X-Request-ID получают все ответы,
+    #    включая отбитые лимитами и неавторизованные.
     app.add_middleware(RequestIdMiddleware)
 
-    # 7. Auth middleware — для аутентификации пользователей
-    app.add_middleware(AuthMiddleware)
+    # 7. HTTPS redirect — самый внешний: правит scope.scheme до SecurityHeaders,
+    #    иначе за прокси HSTS не выставится (схема осталась бы http).
+    app.add_middleware(HTTPSRedirectMiddleware)
 
     # Подключение статических файлов (доступны по URL /static/*)
     app.mount(
