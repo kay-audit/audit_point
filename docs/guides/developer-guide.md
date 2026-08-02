@@ -2844,14 +2844,15 @@ server {
 | `AUTH__JWT_SECRET` | `your-secret-key` | Обязателен и не-дефолтен при `enabled=true` |
 | `AUTH__JWT_ACCESS_TTL` / `AUTH__JWT_REFRESH_TTL` | `900` / `604800` | TTL токенов, сек |
 | `AUTH__COOKIE_SECURE` / `AUTH__COOKIE_DOMAIN` | `false` / (пусто) | `Secure`-флаг и домен cookie |
-| `AUTH__REDIS__HOST/PORT/DB/PASSWORD` | `localhost`/`6379`/`0`/(пусто) | Подключение к Redis |
 | `AUTH__OTP_LENGTH` / `AUTH__OTP_TTL` | `6` / `300` | Длина кода (цифр) / время жизни, сек |
 | `AUTH__OTP_MAX_ATTEMPTS` | `5` | Неверных попыток до инвалидации кода |
 | `AUTH__OTP_REQUEST_MAX_PER_MINUTE` | `3` | Запросов кода на email в минуту |
 
+Подключение к Redis (используется для OTP-кодов и лимитов) — общий корневой блок `REDIS__*` (§9.5 «Redis»), не часть `AUTH__*`.
+
 **DEV-запуск с реальным ОТП-входом** (`AUTH__ENABLED=true` локально):
 
-1. Redis в WSL Ubuntu: `sudo apt install redis-server`, затем `redis-server --daemonize yes` — слушает `localhost:6379` (совпадает с дефолтами `AUTH__REDIS__*`).
+1. Redis в WSL Ubuntu: `sudo apt install redis-server`, затем `redis-server --daemonize yes` — слушает `localhost:6379` (совпадает с дефолтами `REDIS__*`).
 2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
 3. `AUTH__JWT_SECRET` — задать любую непустую строку, отличную от дефолта.
 
@@ -3096,6 +3097,19 @@ def test_chat_settings_defaults():
 | `DATABASE__GP__DATABASE` | str | `capgp3` | Имя БД GP |
 | `DATABASE__GP__SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема GP (alias для поля `schema_name`) |
 
+#### Redis
+
+Общая инфраструктура приложения (сейчас — Redis для OTP-кодов/лимитов модуля `app.auth`, см. §9.3a; далее — шина внешнего агента, локи актов, кэши).
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `REDIS__HOST` | str | `localhost` | Хост Redis |
+| `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе может быть нестандартным (пример: `7474`) |
+| `REDIS__DB` | int | `0` | Индекс БД Redis (0-15) |
+| `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |
+| `REDIS__MAX_CONNECTIONS` | int | `10` | Максимум соединений в пуле клиента Redis |
+| `REDIS__SOCKET_TIMEOUT` | float | `5.0` | Таймаут операций сокета Redis, сек |
+
 #### Security
 
 | Переменная | Тип | По умолчанию | Описание |
@@ -3118,10 +3132,6 @@ def test_chat_settings_defaults():
 | `AUTH__JWT_REFRESH_TTL` | int | `604800` | TTL refresh-токена (сек) — фактическая длина сессии |
 | `AUTH__COOKIE_SECURE` | bool | `False` | `Secure`-флаг cookie (`true` под HTTPS) |
 | `AUTH__COOKIE_DOMAIN` | str | (пусто) | Домен cookie, пусто — текущий host |
-| `AUTH__REDIS__HOST` | str | `localhost` | Redis для OTP-кодов и лимитов |
-| `AUTH__REDIS__PORT` | int | `6379` | Порт Redis |
-| `AUTH__REDIS__DB` | int | `0` | Индекс БД Redis |
-| `AUTH__REDIS__PASSWORD` | str | (пусто) | Пароль Redis |
 | `AUTH__OTP_LENGTH` | int | `6` | Длина ОТП-кода (цифр) |
 | `AUTH__OTP_TTL` | int | `300` | Время жизни ОТП-кода (сек) |
 | `AUTH__OTP_MAX_ATTEMPTS` | int | `5` | Неверных попыток ввода кода до инвалидации |

@@ -38,10 +38,12 @@ def register_lifespan_hooks() -> None:
             return
 
         redis_cfg = RedisConfig(
-            host=settings.auth.redis.host,
-            port=settings.auth.redis.port,
-            db=settings.auth.redis.db,
-            password=settings.auth.redis.password or "",
+            host=settings.redis.host,
+            port=settings.redis.port,
+            db=settings.redis.db,
+            password=settings.redis.password.get_secret_value(),
+            max_connections=settings.redis.max_connections,
+            socket_timeout=settings.redis.socket_timeout,
         )
         adapter = RedisAdapter(redis_cfg)
         try:

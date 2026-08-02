@@ -182,11 +182,21 @@ class ObservabilitySettings(BaseModel):
 
 
 class RedisSettings(BaseModel):
-    """Настройки подключения к Redis для OTP."""
+    """Настройки подключения к Redis.
+
+    Общая инфраструктура приложения: сейчас — OTP-коды и лимиты модуля
+    ``app.auth``, далее — шина внешнего ИИ-агента, локи актов, кэши.
+    """
     host: str = Field(default="localhost")
     port: int = Field(default=6379, ge=1, le=65535)
     db: int = Field(default=0, ge=0, le=15)
-    password: str = Field(default="")
+    password: SecretStr = SecretStr("")
+    max_connections: int = Field(
+        default=10, gt=0, description="Максимум соединений в пуле клиента Redis"
+    )
+    socket_timeout: float = Field(
+        default=5.0, gt=0, description="Таймаут операций сокета Redis, сек"
+    )
 
 class AuthSettings(BaseModel):
     """Настройки аутентификации."""
@@ -197,7 +207,6 @@ class AuthSettings(BaseModel):
     jwt_refresh_ttl: int = Field(default=604800, gt=0)
     cookie_secure: bool = Field(default=False)
     cookie_domain: str = Field(default="")
-    redis: RedisSettings = Field(default_factory=RedisSettings)
     # OTP settings
     otp_length: int = Field(default=6, gt=0, le=10, description="Длина OTP-кода в цифрах")
     otp_ttl: int = Field(default=300, gt=0, description="Время жизни OTP-кода в секундах (5 минут по умолчанию)")
@@ -253,6 +262,7 @@ class Settings(BaseSettings):
     # Вложенные настройки (shared)
     server: ServerSettings = ServerSettings()
     database: DatabaseSettings = DatabaseSettings()
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     security: SecuritySettings = SecuritySettings()
     observability: ObservabilitySettings = ObservabilitySettings()
     auth: AuthSettings = AuthSettings()
