@@ -66,6 +66,15 @@ class RedisAdapter:
         client = await self._get_client()
         return await client.delete(*keys)
 
+    async def incr(self, key: str) -> int:
+        client = await self._get_client()
+        return await client.incr(key)
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        client = await self._get_client()
+        result = await client.expire(key, seconds)
+        return bool(result)
+
     async def ping(self) -> bool:
         try:
             if self._client is not None:

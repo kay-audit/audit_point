@@ -44,11 +44,13 @@ class TestGetUsernameOtpMode:
 
     async def test_returns_sub_from_scope(self, monkeypatch):
         monkeypatch.setenv("AUTH__ENABLED", "true")
+        monkeypatch.setenv("AUTH__JWT_SECRET", "test-secret-key-for-auth-deps")
         request = _make_request(state={"user": {"sub": "87654321"}})
         assert await get_username(request) == "87654321"
 
     async def test_raises_401_without_scope_user(self, monkeypatch):
         monkeypatch.setenv("AUTH__ENABLED", "true")
+        monkeypatch.setenv("AUTH__JWT_SECRET", "test-secret-key-for-auth-deps")
         with pytest.raises(HTTPException) as exc_info:
             await get_username(_make_request())
         assert exc_info.value.status_code == 401
@@ -56,6 +58,7 @@ class TestGetUsernameOtpMode:
     async def test_env_user_ignored_in_otp_mode(self, monkeypatch):
         """Окружение не подменяет авторизацию, когда включён ОТП-режим."""
         monkeypatch.setenv("AUTH__ENABLED", "true")
+        monkeypatch.setenv("AUTH__JWT_SECRET", "test-secret-key-for-auth-deps")
         monkeypatch.setenv("JUPYTERHUB_USER", "12345678")
         with pytest.raises(HTTPException):
             await get_username(_make_request())

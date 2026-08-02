@@ -183,8 +183,8 @@ class ObservabilitySettings(BaseModel):
 
 class RedisSettings(BaseModel):
     """Настройки подключения к Redis для OTP."""
-    host: str = Field(default="localhost", alias="HOST")
-    port: int = Field(default=6379, ge=1, le=65535, alias="PORT")
+    host: str = Field(default="localhost")
+    port: int = Field(default=6379, ge=1, le=65535)
     db: int = Field(default=0, ge=0, le=15)
     password: str = Field(default="")
 
@@ -201,8 +201,32 @@ class AuthSettings(BaseModel):
     # OTP settings
     otp_length: int = Field(default=6, gt=0, le=10, description="Длина OTP-кода в цифрах")
     otp_ttl: int = Field(default=300, gt=0, description="Время жизни OTP-кода в секундах (5 минут по умолчанию)")
+    otp_max_attempts: int = Field(
+        default=5, gt=0, description="Максимум неверных попыток ввода OTP перед инвалидацией кода"
+    )
+    otp_request_max_per_minute: int = Field(
+        default=3, gt=0, description="Максимум запросов OTP-кода на один email в минуту"
+    )
 
-    model_config = {"populate_by_name": True}
+    @model_validator(mode="after")
+    def validate_jwt_secret(self):
+        """При включённой авторизации секрет обязателен и не должен оставаться дефолтным.
+
+        Pydantic не приводит нетронутое дефолтное значение поля к его типу
+        (validate_default выключен), поэтому jwt_secret в этом случае — обычная
+        str, а не SecretStr; учитываем оба варианта.
+        """
+        secret_value = (
+            self.jwt_secret.get_secret_value()
+            if isinstance(self.jwt_secret, SecretStr)
+            else self.jwt_secret
+        )
+        if self.enabled and (not secret_value or secret_value == "your-secret-key"):
+            raise ValueError(
+                "AUTH__JWT_SECRET обязателен при AUTH__ENABLED=true и не может "
+                "оставаться значением по умолчанию ('your-secret-key')"
+            )
+        return self
 
 
 class Settings(BaseSettings):

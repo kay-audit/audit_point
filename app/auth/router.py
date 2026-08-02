@@ -20,7 +20,7 @@ from app.auth.middleware import set_auth_cookies
 from app.auth.user_repository import AuthUserRepository
 from app.auth.value_objects import UserContext
 from app.core.config import get_settings
-from app.core.domain_registry import get_factory, has_factory
+from app.core.domain_registry import has_factory
 
 logger = logging.getLogger("audit_workstation.auth.router")
 
@@ -72,6 +72,14 @@ def _otp_key(user_id: str) -> str:
     return f"otp:{user_id}"
 
 
+def _otp_attempts_key(user_id: str) -> str:
+    return f"otp_att:{user_id}"
+
+
+def _otp_request_rate_key(email: str) -> str:
+    return f"otp_req:{email.lower()}"
+
+
 @router.post("/request-otp")
 async def request_otp(
     body: RequestOTPRequest,
@@ -81,9 +89,27 @@ async def request_otp(
     """Генерирует OTP-код для входа по email.
 
     Генерируется 6-значный код, сохраняется в Redis с TTL = 5 минут.
-    В режиме отладки OTP логируется (SMTP будет добавлен позже).
+    Частота запросов на один email ограничена (AUTH__OTP_REQUEST_MAX_PER_MINUTE);
+    лимит проверяется до похода в БД — это защищает и от перебора email,
+    и от флуда SMTP. В dev-режиме (email выключен или отправка не удалась)
+    код пишется в лог.
     """
     settings = get_settings().auth
+    redis = get_redis_adapter(request)
+
+    rate_key = _otp_request_rate_key(body.email)
+    request_count = await redis.incr(rate_key)
+    if request_count == 1:
+        await redis.expire(rate_key, 60)
+    if request_count > settings.otp_request_max_per_minute:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "error": "Слишком много запросов кода, попробуйте через минуту",
+            },
+        )
+
     user = await repo.find_by_email(body.email)
     logger.info("request_otp: email=%s, found user=%s", body.email, user and user["id"])
     if user is None:
@@ -97,11 +123,10 @@ async def request_otp(
         )
 
     otp = str(secrets.randbelow(10 ** settings.otp_length)).zfill(settings.otp_length)
-    redis = get_redis_adapter(request)
     try:
         await redis.set(_otp_key(user["id"]), otp, ex=settings.otp_ttl)
-        logger.info("OTP код сохранен в Redis для пользователя %s (%s): %s (TTL=%s)", 
-                    user["email"], user["id"], otp, settings.otp_ttl)
+        logger.info("OTP сохранён в Redis для пользователя %s (%s), TTL=%s",
+                    user["email"], user["id"], settings.otp_ttl)
     except Exception as exc:
         logger.error("Ошибка сохранения OTP в Redis: %s", exc)
         return JSONResponse(
@@ -109,16 +134,15 @@ async def request_otp(
             content={"success": False, "error": "Внутренняя ошибка сервера"},
         )
 
-    logger.info("OTP для %s (%s) = %s", user["email"], user["id"], otp)
-
     # Отправка OTP на email через email сервис
     from app.core.settings_registry import get as get_domain_settings
     from app.domains.notifications.settings import NotificationsSettings
 
     email_enabled = get_domain_settings("notifications", NotificationsSettings).email.enabled
+    email_sent = False
     if email_enabled and has_factory("notifications.email"):
         try:
-            from app.domains.notifications.services.email_service import get_mail_client, EmailService
+            from app.domains.notifications.services.email_service import EmailService
 
             # Используем EmailService напрямую без async for (не блокирует пул соединений)
             email_svc = EmailService()
@@ -139,19 +163,23 @@ async def request_otp(
             </div>
             """
 
-            success = await email_svc.send_email(
+            email_sent = await email_svc.send_email(
                 to=user["email"],
                 subject=subject,
                 body=body_html,
             )
 
-            if success:
+            if email_sent:
                 logger.info("OTP отправлен на email %s", user["email"])
             else:
                 logger.warning("Не удалось отправить OTP на email %s", user["email"])
         except Exception as exc:
             logger.error("Ошибка отправки OTP на email: %s", exc)
             # Не прерываем процесс из-за ошибки email
+
+    if not email_sent:
+        # Email выключен либо отправка не удалась — код забирают из лога (dev-режим).
+        logger.info("DEV-режим: ОТП-код для %s = %s", user["email"], otp)
 
     return JSONResponse(
         status_code=200,
@@ -175,7 +203,11 @@ async def verify_otp(
         - создаёт access + refresh токены
         - устанавливает HttpOnly cookie
         - возвращает профиль пользователя
+
+    Число неверных попыток ограничено (AUTH__OTP_MAX_ATTEMPTS): по достижении
+    лимита код инвалидируется досрочно (нужно запросить новый).
     """
+    settings = get_settings().auth
     user = await repo.find_by_email(body.email)
     logger.info("verify_otp: email=%s, found user=%s", body.email, user and user["id"])
     if user is None:
@@ -185,20 +217,31 @@ async def verify_otp(
         )
 
     redis = get_redis_adapter(request)
+    otp_key = _otp_key(user["id"])
+    attempts_key = _otp_attempts_key(user["id"])
     try:
-        stored_otp = await redis.get(_otp_key(user["id"]))
-        logger.info("Получен OTP из Redis для пользователя %s: stored=%s, input=%s", 
-                    user["email"], stored_otp, body.otp)
-        logger.info("Сверка OTP в Redis: %s", stored_otp)
-        logger.info("Body OTP в Redis: %s", body.otp)
-        if not stored_otp or stored_otp != body.otp:
-            logger.warning("Неверный OTP для пользователя %s: stored=%s, input=%s", 
-                           user["email"], stored_otp, body.otp)
+        stored_otp = await redis.get(otp_key)
+        if stored_otp is None:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "error": "Код недействителен, запросите новый"},
+            )
+        if stored_otp != body.otp:
+            logger.warning("Неверный OTP для пользователя %s", user["id"])
+            attempts = await redis.incr(attempts_key)
+            if attempts == 1:
+                await redis.expire(attempts_key, settings.otp_ttl)
+            if attempts >= settings.otp_max_attempts:
+                await redis.delete(otp_key, attempts_key)
+                return JSONResponse(
+                    status_code=401,
+                    content={"success": False, "error": "Код недействителен, запросите новый"},
+                )
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "Неверный email или код"},
             )
-        await redis.delete(_otp_key(user["id"]))
+        await redis.delete(otp_key, attempts_key)
         logger.info("OTP для пользователя %s (%s) успешно проверен и удален из Redis", user["email"], user["id"])
     except Exception as exc:
         logger.error("Ошибка проверки OTP в Redis: %s", exc)
@@ -226,7 +269,6 @@ async def verify_otp(
         "roles": ctx["roles"],
     }
     logger.info("Успешная проверка OTP для пользователя: %s (%s)", user["email"], user["id"])
-    logger.info("Данные пользователя для response: %s", user_payload)
     response = JSONResponse(
         status_code=200,
         content={"success": True, "user": user_payload},
