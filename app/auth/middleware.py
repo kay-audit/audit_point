@@ -49,10 +49,21 @@ def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(REFRESH_TOKEN_COOKIE, **cookie_kwargs)
 
 
-# Открытые пути: страницы/эндпоинты входа, статика, favicon.
+# Открытые пути: HTML-страницы входа, статика, favicon; плюс API авторизации
+# ({api_prefix}/auth/*) — иначе аноним не смог бы запросить и ввести ОТП-код.
+# Профильные эндпоинты (/auth/me, /auth/profile) защищены своей зависимостью.
 # «/» закрыт: аноним на любом HTML-пути уходит редиректом на /auth/login.
 _PUBLIC_PREFIXES = ("/auth", "/static")
 _PUBLIC_PATHS = ("/favicon.ico",)
+
+
+def _is_public_path(path: str, api_v1_prefix: str) -> bool:
+    """Доступен ли путь без авторизации."""
+    return (
+        path.startswith(_PUBLIC_PREFIXES)
+        or path.startswith(f"{api_v1_prefix}/auth")
+        or path in _PUBLIC_PATHS
+    )
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -105,7 +116,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             return response
 
-        if path.startswith(_PUBLIC_PREFIXES) or path in _PUBLIC_PATHS:
+        if _is_public_path(path, settings.server.api_v1_prefix):
             return await call_next(request)
 
         # Не авторизован: API — 401 JSON, HTML — редирект на вход

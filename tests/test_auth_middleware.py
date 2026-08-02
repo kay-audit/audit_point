@@ -46,6 +46,14 @@ def _make_client() -> TestClient:
     async def login_page():
         return {"login": True}
 
+    @app.post("/api/v1/auth/request-otp")
+    async def request_otp():
+        return {"success": True}
+
+    @app.post("/api/v1/auth/verify-otp")
+    async def verify_otp():
+        return {"success": True}
+
     return TestClient(app, follow_redirects=False)
 
 
@@ -118,6 +126,13 @@ class TestOtpMode:
         client = _make_client()
         resp = client.get("/auth/login")
         assert resp.status_code == 200
+
+    def test_login_api_open_for_anonymous(self):
+        """Регрессия: API входа под {api_prefix}/auth не должен блокироваться
+        самим middleware — иначе запросить и ввести ОТП-код невозможно."""
+        client = _make_client()
+        assert client.post("/api/v1/auth/request-otp").status_code == 200
+        assert client.post("/api/v1/auth/verify-otp").status_code == 200
 
 
 class TestDisabledMode:

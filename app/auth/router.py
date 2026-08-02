@@ -134,11 +134,16 @@ async def request_otp(
             content={"success": False, "error": "Внутренняя ошибка сервера"},
         )
 
-    # Отправка OTP на email через email сервис
+    # Отправка OTP на email через email сервис. Домен уведомлений может быть
+    # не зарегистрирован (отключён) — вход от этого падать не должен: код
+    # уйдёт в лог, как в dev-режиме.
     from app.core.settings_registry import get as get_domain_settings
     from app.domains.notifications.settings import NotificationsSettings
 
-    email_enabled = get_domain_settings("notifications", NotificationsSettings).email.enabled
+    try:
+        email_enabled = get_domain_settings("notifications", NotificationsSettings).email.enabled
+    except KeyError:
+        email_enabled = False
     email_sent = False
     if email_enabled and has_factory("notifications.email"):
         try:
