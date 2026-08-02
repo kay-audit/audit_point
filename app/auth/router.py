@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
 from app.auth.dependencies import (
+    AuthUserDirectory,
     get_current_user,
     get_jwt_handler,
     get_redis_adapter,
@@ -17,14 +18,22 @@ from app.auth.dependencies import (
 )
 from app.auth.jwt_handler import JWTTokenHandler
 from app.auth.middleware import set_auth_cookies
-from app.auth.user_repository import AuthUserRepository
+from app.auth.otp_email import build_otp_email
 from app.auth.value_objects import UserContext
 from app.core.config import get_settings
-from app.core.domain_registry import has_factory
+from app.core.domain_registry import get_factory, has_factory
 
 logger = logging.getLogger("audit_workstation.auth.router")
 
 router = APIRouter()
+
+# Единый текст отказа для ВСЕХ веток verify-otp. Различающиеся формулировки
+# («email не найден» / «код истёк» / «неверный код») были оракулом: по тексту
+# ответа перебором можно было выяснить, зарегистрирован ли email.
+OTP_INVALID_ERROR = "Неверный email или код. Если код истёк — запросите новый."
+
+# Ответ, когда Redis недоступен: без него ни лимиты, ни коды не работают.
+REDIS_UNAVAILABLE_ERROR = "Сервис авторизации временно недоступен, попробуйте позже"
 
 
 class RequestOTPRequest(BaseModel):
@@ -47,14 +56,6 @@ class AuthOTPResponse(BaseModel):
     user: dict | None = None
     error: str | None = None
     message: str | None = None
-
-
-class RefreshResponse(BaseModel):
-    """Ответ на обновление токенов."""
-
-    access_token: str
-    refresh_token: str
-    user: dict
 
 
 class UserProfile(BaseModel):
@@ -84,23 +85,37 @@ def _otp_request_rate_key(email: str) -> str:
 async def request_otp(
     body: RequestOTPRequest,
     request: Request,
-    repo: AuthUserRepository = Depends(get_user_repository),
+    repo: AuthUserDirectory = Depends(get_user_repository),
 ):
     """Генерирует OTP-код для входа по email.
 
     Генерируется 6-значный код, сохраняется в Redis с TTL = 5 минут.
     Частота запросов на один email ограничена (AUTH__OTP_REQUEST_MAX_PER_MINUTE);
     лимит проверяется до похода в БД — это защищает и от перебора email,
-    и от флуда SMTP. В dev-режиме (email выключен или отправка не удалась)
-    код пишется в лог.
+    и от флуда SMTP. Код пишется в лог только в dev-режиме, то есть когда
+    почта выключена или домен уведомлений не зарегистрирован; при включённой
+    почте несостоявшаяся отправка попадает только в error-лог.
     """
     settings = get_settings().auth
     redis = get_redis_adapter(request)
 
     rate_key = _otp_request_rate_key(body.email)
-    request_count = await redis.incr(rate_key)
-    if request_count == 1:
-        await redis.expire(rate_key, 60)
+    try:
+        request_count = await redis.incr(rate_key)
+        if request_count == 1:
+            await redis.expire(rate_key, 60)
+        elif await redis.ttl(rate_key) == -1:
+            # INCR и EXPIRE неатомарны: падение между ними оставляет ключ без
+            # TTL, и счётчик залипает навсегда. Дотягиваем TTL при первой же
+            # встрече такого ключа.
+            await redis.expire(rate_key, 60)
+    except Exception as exc:
+        logger.error("Ошибка проверки лимита запросов OTP в Redis: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"success": False, "error": REDIS_UNAVAILABLE_ERROR},
+        )
+
     if request_count > settings.otp_request_max_per_minute:
         return JSONResponse(
             status_code=429,
@@ -134,7 +149,7 @@ async def request_otp(
             content={"success": False, "error": "Внутренняя ошибка сервера"},
         )
 
-    # Отправка OTP на email через email сервис. Домен уведомлений может быть
+    # Отправка OTP на email через фабрику домена уведомлений. Домен может быть
     # не зарегистрирован (отключён) — вход от этого падать не должен: код
     # уйдёт в лог, как в dev-режиме.
     from app.core.settings_registry import get as get_domain_settings
@@ -144,46 +159,34 @@ async def request_otp(
         email_enabled = get_domain_settings("notifications", NotificationsSettings).email.enabled
     except KeyError:
         email_enabled = False
-    email_sent = False
-    if email_enabled and has_factory("notifications.email"):
+
+    email_configured = email_enabled and has_factory("notifications.email")
+    if email_configured:
+        email_sent = False
+        subject, body_html = build_otp_email(otp, settings.otp_ttl // 60)
         try:
-            from app.domains.notifications.services.email_service import EmailService
-
-            # Используем EmailService напрямую без async for (не блокирует пул соединений)
-            email_svc = EmailService()
-            subject = f"Ваш OTP-код для входа в Audit Workstation"
-            body_html = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #2c3e50;">Audit Workstation</h2>
-                <p style="font-size: 16px; color: #333;">Ваш код подтверждения:</p>
-                <div style="background-color: #f8f9fa; padding: 20px; text-align: center; margin: 20px 0;">
-                    <span style="font-size: 32px; font-weight: bold; color: #3498db; letter-spacing: 5px;">
-                        {otp}
-                    </span>
-                </div>
-                <p style="font-size: 14px; color: #666; margin-top: 20px;">
-                    Этот код действителен в течение {settings.otp_ttl // 60} минут.<br>
-                    Если вы не запрашивали этот код, проигнорируйте это письмо.
-                </p>
-            </div>
-            """
-
-            email_sent = await email_svc.send_email(
-                to=user["email"],
-                subject=subject,
-                body=body_html,
-            )
-
-            if email_sent:
-                logger.info("OTP отправлен на email %s", user["email"])
-            else:
-                logger.warning("Не удалось отправить OTP на email %s", user["email"])
+            async for email_svc in get_factory("notifications.email")():
+                email_sent = await email_svc.send_email(
+                    to=user["email"],
+                    subject=subject,
+                    body=body_html,
+                )
         except Exception as exc:
-            logger.error("Ошибка отправки OTP на email: %s", exc)
-            # Не прерываем процесс из-за ошибки email
+            logger.error("Ошибка отправки ОТП-письма для %s: %s", user["email"], exc)
 
-    if not email_sent:
-        # Email выключен либо отправка не удалась — код забирают из лога (dev-режим).
+        if email_sent:
+            logger.info("OTP отправлен на email %s", user["email"])
+        else:
+            # Клиенту сбой не раскрываем: ответ «письмо не ушло» только для
+            # существующих email снова стал бы оракулом. Живой код в прод-лог
+            # не пишем — забрать его должен только владелец почты.
+            logger.error(
+                "Не удалось отправить ОТП-письмо для %s — код пользователю не доставлен",
+                user["email"],
+            )
+    else:
+        # Почта выключена или домен уведомлений не зарегистрирован —
+        # код забирают из лога (dev-режим).
         logger.info("DEV-режим: ОТП-код для %s = %s", user["email"], otp)
 
     return JSONResponse(
@@ -199,7 +202,7 @@ async def request_otp(
 async def verify_otp(
     body: VerifyOTPRequest,
     request: Request,
-    repo: AuthUserRepository = Depends(get_user_repository),
+    repo: AuthUserDirectory = Depends(get_user_repository),
 ):
     """Проверяет OTP-код и выдаёт JWT-токены для входа.
 
@@ -210,7 +213,9 @@ async def verify_otp(
         - возвращает профиль пользователя
 
     Число неверных попыток ограничено (AUTH__OTP_MAX_ATTEMPTS): по достижении
-    лимита код инвалидируется досрочно (нужно запросить новый).
+    лимита код инвалидируется досрочно (нужно запросить новый). Все отказы
+    отвечают одним текстом (OTP_INVALID_ERROR) — по ответу нельзя отличить
+    незарегистрированный email от неверного или истёкшего кода.
     """
     settings = get_settings().auth
     user = await repo.find_by_email(body.email)
@@ -218,7 +223,7 @@ async def verify_otp(
     if user is None:
         return JSONResponse(
             status_code=401,
-            content={"success": False, "error": "Неверный email или код"},
+            content={"success": False, "error": OTP_INVALID_ERROR},
         )
 
     redis = get_redis_adapter(request)
@@ -229,22 +234,25 @@ async def verify_otp(
         if stored_otp is None:
             return JSONResponse(
                 status_code=401,
-                content={"success": False, "error": "Код недействителен, запросите новый"},
+                content={"success": False, "error": OTP_INVALID_ERROR},
             )
-        if stored_otp != body.otp:
+        # Сравнение за постоянное время: обычное != завершается на первом
+        # несовпавшем символе и по времени ответа подсказывает верный префикс.
+        # encode обязателен — compare_digest на str падает при не-ASCII вводе.
+        if not secrets.compare_digest(stored_otp.encode(), body.otp.encode()):
             logger.warning("Неверный OTP для пользователя %s", user["id"])
             attempts = await redis.incr(attempts_key)
             if attempts == 1:
                 await redis.expire(attempts_key, settings.otp_ttl)
+            elif await redis.ttl(attempts_key) == -1:
+                # Счётчик без TTL (падение между INCR и EXPIRE) залипнет
+                # навсегда и заблокирует все следующие коды — лечим на месте.
+                await redis.expire(attempts_key, settings.otp_ttl)
             if attempts >= settings.otp_max_attempts:
                 await redis.delete(otp_key, attempts_key)
-                return JSONResponse(
-                    status_code=401,
-                    content={"success": False, "error": "Код недействителен, запросите новый"},
-                )
             return JSONResponse(
                 status_code=401,
-                content={"success": False, "error": "Неверный email или код"},
+                content={"success": False, "error": OTP_INVALID_ERROR},
             )
         await redis.delete(otp_key, attempts_key)
         logger.info("OTP для пользователя %s (%s) успешно проверен и удален из Redis", user["email"], user["id"])
@@ -262,7 +270,7 @@ async def verify_otp(
     if ctx is None:
         return JSONResponse(
             status_code=401,
-            content={"success": False, "error": "Пользователь не найден"},
+            content={"success": False, "error": OTP_INVALID_ERROR},
         )
 
     user_payload = {
@@ -283,8 +291,15 @@ async def verify_otp(
 
 
 @router.post("/refresh")
-async def refresh_tokens(request: Request):
-    """Обновляет пару токенов по refresh_token из cookie."""
+async def refresh_tokens(
+    request: Request,
+    repo: AuthUserDirectory = Depends(get_user_repository),
+):
+    """Обновляет пару токенов по refresh_token из cookie.
+
+    Новые токены уходят только в HttpOnly-cookie: в теле ответа их нет, иначе
+    любой скрипт на странице смог бы их прочитать и HttpOnly обесценился бы.
+    """
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh-токен отсутствует в cookie")
@@ -296,11 +311,7 @@ async def refresh_tokens(request: Request):
 
     tokens = jwt_handler.create_token_pair(payload.sub)
 
-    from app.db.connection import get_db
-
-    async with get_db() as conn:
-        repo = AuthUserRepository(conn)
-        ctx = await repo.get_user_context(payload.sub)
+    ctx = await repo.get_user_context(payload.sub)
     if ctx is None:
         raise HTTPException(status_code=401, detail="Пользователь не найден")
 
@@ -314,11 +325,7 @@ async def refresh_tokens(request: Request):
     }
     response = JSONResponse(
         status_code=200,
-        content={
-            "access_token": tokens.access_token,
-            "refresh_token": tokens.refresh_token,
-            "user": user_data,
-        },
+        content={"success": True, "user": user_data},
     )
     set_auth_cookies(response, tokens.access_token, tokens.refresh_token)
     return response

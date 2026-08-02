@@ -33,10 +33,34 @@ def get_redis_adapter(request: Request) -> RedisAdapter:
     return adapter
 
 
-async def get_user_repository():
-    """Создаёт AuthUserRepository с подключением из пула (request-scoped)."""
-    async with get_db() as conn:
-        yield AuthUserRepository(conn)
+class AuthUserDirectory:
+    """Провайдер справочника пользователей поверх AuthUserRepository.
+
+    Соединение из пула берётся на время одного запроса к БД, а не на всё время
+    HTTP-запроса. Это важно для эндпоинтов авторизации: между обращениями к
+    справочнику они делают долгие внешние вызовы (отправка письма по SMTP —
+    до 30 секунд), и удержание соединения всё это время выедало пул.
+    """
+
+    async def find_by_email(self, email: str) -> dict | None:
+        """Ищет пользователя по email."""
+        async with get_db() as conn:
+            return await AuthUserRepository(conn).find_by_email(email)
+
+    async def find_by_id(self, user_id: str) -> dict | None:
+        """Ищет пользователя по username (sub в JWT)."""
+        async with get_db() as conn:
+            return await AuthUserRepository(conn).find_by_id(user_id)
+
+    async def get_user_context(self, user_id: str) -> dict | None:
+        """Загружает пользователя вместе с его ролями."""
+        async with get_db() as conn:
+            return await AuthUserRepository(conn).get_user_context(user_id)
+
+
+def get_user_repository() -> AuthUserDirectory:
+    """Возвращает провайдер справочника пользователей."""
+    return AuthUserDirectory()
 
 
 async def get_current_user(request: Request) -> UserContext:

@@ -77,6 +77,11 @@ class RedisAdapter:
         result = await client.expire(key, seconds)
         return bool(result)
 
+    async def ttl(self, key: str) -> int:
+        """Остаток жизни ключа в секундах: -1 — ключ без TTL, -2 — ключа нет."""
+        client = await self._get_client()
+        return await client.ttl(key)
+
     async def ping(self) -> bool:
         try:
             if self._client is not None:

@@ -66,11 +66,13 @@ class Mail:
         return self.__smtp(msg)
 
     def __smtp(self, msg):
+        # Без предварительного NOOP: он ничего не гарантирует для следующей
+        # команды, а его проверка молча съедала письмо при любом ответе ≠ 250.
+        # Ошибки SMTP поднимаются исключениями и доходят до вызывающего кода.
         with smtplib.SMTP(self._server, self._smtp_port, timeout=30) as smtp:
             conf = self._config.get_auth_omega()
             smtp.login(
                 conf[0],
                 conf[1],
             )
-            if smtp.noop()[0] == 250:
-                smtp.send_message(msg)
+            smtp.send_message(msg)

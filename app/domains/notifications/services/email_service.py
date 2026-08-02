@@ -4,8 +4,6 @@ import logging
 import asyncio
 from typing import Optional
 
-import asyncpg
-
 from app.services.mail import Mail as MailClient
 from app.domains.notifications.schemas.email import (
     EmailSendRequest,
@@ -21,17 +19,9 @@ _mail_client: Optional[MailClient] = None
 class EmailService:
     """Сервис email-уведомлений с интеграцией класса Mail.
 
-    Принимает соединение из пула, но email-отправка использует глобальный
-    _mail_client (инициализируется при старте приложения).
+    БД не использует: отправка идёт через глобальный _mail_client
+    (инициализируется при старте приложения).
     """
-
-    def __init__(self, conn: asyncpg.Connection | None = None):
-        """
-        Args:
-            conn: Соединение с БД (не используется в первой версии, оставлено
-                  для совместимости с паттерном domain service)
-        """
-        self.conn = conn
 
     async def send_email(
         self,
@@ -139,23 +129,6 @@ def _create_auth_config(
     return AuthConfig()
 
 
-def get_mail_client() -> MailClient:
-    """
-    Возвращает инициализированный клиент Mail.
-
-    Returns:
-        Экземпляр Mail
-
-    Raises:
-        RuntimeError: Если email-сервис не инициализирован
-    """
-    if _mail_client is None:
-        raise RuntimeError(
-            "Email service not initialized. Call init_email_service() first."
-        )
-    return _mail_client
-
-
 async def send_email(
     request: EmailSendRequest,
     timeout: float = 30.0,
@@ -210,33 +183,3 @@ async def send_email(
             success=False,
             error=str(e),
         )
-
-
-async def send_email_to_user(
-    user_email: str,
-    subject: str,
-    body: str,
-    cc: Optional[list[str]] = None,
-    attachments: Optional[list[dict]] = None,
-) -> EmailSendResponse:
-    """
-    Упрощённый метод для отправки email пользователю.
-
-    Args:
-        user_email: Email получателя
-        subject: Тема письма
-        body: Тело письма в HTML
-        cc: Копии (CC)
-        attachments: Список вложений
-
-    Returns:
-        EmailSendResponse с результатом
-    """
-    request = EmailSendRequest(
-        to=user_email,
-        subject=subject,
-        body=body,
-        cc=cc,
-        attachments=attachments,
-    )
-    return await send_email(request)
