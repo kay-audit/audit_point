@@ -20,6 +20,8 @@ def resolve_env_username() -> str | None:
 
     Имя переменной JUPYTERHUB_USER — историческое; в тест-режиме она задаёт
     локального пользователя для pytest/Playwright-харнесса и отладки.
+    Формат — табельный номер от 5 до 20 цифр; вне диапазона окружение
+    считается некорректным.
     """
     import os
 
@@ -29,4 +31,6 @@ def resolve_env_username() -> str | None:
     if not raw or raw == "unknown_user":
         return None
     digits = "".join(ch for ch in raw.split("_")[0] if ch.isdigit())
-    return digits or None
+    if not digits or not (5 <= len(digits) <= 20):
+        return None
+    return digits

@@ -27,14 +27,6 @@ class JWTPayload(BaseModel):
     exp: int
     iat: int
 
-    def to_dict(self) -> dict:
-        return {
-            "sub": self.sub,
-            "type": self.token_type,
-            "exp": self.exp,
-            "iat": self.iat,
-        }
-
 
 class TokenPair(BaseModel):
     """Пара access + refresh токенов."""

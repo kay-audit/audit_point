@@ -349,6 +349,17 @@ def get_shutdown_hooks() -> list[tuple[str, Callable[[FastAPI], Awaitable[None]]
     return list(_shutdown_hooks)
 
 
+def has_startup_hook(name: str) -> bool:
+    """
+    Проверяет, зарегистрирован ли startup-hook с данным именем.
+
+    Используется вызывающей стороной для идемпотентной регистрации:
+    вместо собственного модульного флага (переживающего reset_registry())
+    проверяется актуальное состояние самого реестра.
+    """
+    return any(hook_name == name for hook_name, _ in _startup_hooks)
+
+
 # --- Слушатели изменений состава доменов --------------------------------
 
 def add_domain_change_listener(listener: Callable[[], None]) -> None:

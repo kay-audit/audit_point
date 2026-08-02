@@ -10,23 +10,25 @@ from app.auth.redis_adapter import RedisAdapter, RedisConfig
 
 logger = logging.getLogger("audit_workstation.auth.lifecycle")
 
-# Защита от повторной регистрации hooks при повторном create_app (тесты).
-_hooks_registered = False
-
 
 def register_lifespan_hooks() -> None:
     """
     Регистрирует startup/shutdown hooks модуля auth в общем реестре.
 
-    Вызывается из create_app. Идемпотентна: повторный вызов — no-op
-    (реестр hooks — append-only, дубликаты исполнялись бы дважды).
+    Вызывается из create_app. Идемпотентна относительно самого реестра
+    hooks (реестр — append-only, дубликаты исполнялись бы дважды): если
+    "auth.redis" уже зарегистрирован — no-op. После
+    domain_registry.reset_registry() (между сборками app в тестах) реестр
+    пуст, и повторный вызов регистрирует hook заново — это ожидаемо.
     """
-    global _hooks_registered
-    if _hooks_registered:
-        return
-    _hooks_registered = True
+    from app.core.domain_registry import (
+        has_startup_hook,
+        register_shutdown_hook,
+        register_startup_hook,
+    )
 
-    from app.core.domain_registry import register_shutdown_hook, register_startup_hook
+    if has_startup_hook("auth.redis"):
+        return
 
     async def _startup_auth(app: FastAPI) -> None:
         """Подключает Redis для OTP, если JWT-авторизация включена."""
