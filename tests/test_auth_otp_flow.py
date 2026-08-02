@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from app.auth.dependencies import get_user_repository
 from app.auth.redis_adapter import RedisAdapter, RedisConfig
 from app.auth.router import router as auth_router
-from app.core.config import Settings, get_settings
+from app.core.config import AuthSettings, Settings, get_settings
 from app.core.domain_registry import reset_registry
 from app.core.settings_registry import reset as reset_settings
 from app.domains.notifications.settings import NotificationsSettings
@@ -239,11 +239,12 @@ class TestRequestOtpRateLimit:
 class TestJwtSecretValidator:
     """AuthSettings.validate_jwt_secret: секрет обязателен, не-дефолтен и не короче 32 символов."""
 
-    def test_enabled_with_default_secret_raises(self, monkeypatch):
-        monkeypatch.setenv("AUTH__ENABLED", "true")
-        monkeypatch.delenv("AUTH__JWT_SECRET", raising=False)
+    def test_enabled_with_default_secret_raises(self):
+        """Инстанцируем модель напрямую: Settings() подсосал бы валидный секрет
+        из реального .env (delenv на файл не действует), и тест зависел бы
+        от его содержимого."""
         with pytest.raises(ValidationError):
-            Settings()
+            AuthSettings(enabled=True)
 
     def test_enabled_with_short_secret_raises(self, monkeypatch):
         """Короче 32 символов — недостаточно для HS256 (RFC 7518), старт падает."""
