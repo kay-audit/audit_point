@@ -417,24 +417,25 @@ DatabaseAdapter (абстрактный)
 
 ### 2.5 Middleware stack
 
-В `create_app()` подключаются шесть middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
+В `create_app()` подключаются семь middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
 
-**Порядок выполнения при запросе:**
+**Порядок выполнения при запросе (снаружи внутрь):**
 
 ```
-Запрос → RequestId → HttpMetrics → RateLimit → RequestSizeLimit → SecurityHeaders → HTTPSRedirect → FastAPI → Ответ
+Запрос → HTTPSRedirect → RequestId → SecurityHeaders → RequestSizeLimit → RateLimit → HttpMetrics → Auth → FastAPI → Ответ
 ```
 
 | Middleware | Назначение |
 |-----------|-----------|
-| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. Стоит внутри всех остальных, чтобы request_id виделся в логах любого слоя. |
-| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. |
-| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
-| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
-| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize, чтобы заголовки попадали и в их 413/429-ответы. |
 | `HTTPSRedirectMiddleware` | Переписывает `scheme` на `https` по заголовкам `x-forwarded-proto` / `x-scheme`. Outermost — должен отработать до SecurityHeaders, который опирается на scheme. |
+| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. |
+| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize/Auth, чтобы заголовки попадали и в их 413/429/401-ответы. |
+| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
+| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
+| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. Стоит снаружи Auth (видит 401 анонимов), но внутри лимитов — отбитые 429/413 в метрики не попадают, чтобы флуд не разгонял журнал. |
+| `AuthMiddleware` | Проверка JWT-cookie на каждый запрос, тихий refresh истёкшего access. Самый внутренний слой — raw ASGI, как и остальные middleware проекта. Его 401 и редиректы поднимаются через весь стек: получают security-заголовки, request_id и попадают в метрики. |
 
-Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (он лежит в `app/core/middlewares/http_metrics.py`).
+Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (`app/core/middlewares/http_metrics.py`) и `AuthMiddleware` (`app/auth/middleware.py`).
 
 ---
 
@@ -2830,7 +2831,7 @@ server {
 **Поток входа:**
 
 1. `POST /auth/request-otp {email}` — ищет пользователя по email в `admin.user_directory`, генерирует `AUTH__OTP_LENGTH`-значный код, кладёт в Redis (`otp:{user}`, TTL `AUTH__OTP_TTL`). Ответ всегда `success=true`, даже если email не найден — не палим факт существования адреса.
-2. Отправка кода — через фабрику `notifications.email` (см. `NOTIFICATIONS__EMAIL__*`). Если почта выключена или отправка не удалась, код уходит только в серверный лог строкой `DEV-режим: ОТП-код для <email> = <code>`.
+2. Отправка кода — через фабрику `notifications.email` (см. `NOTIFICATIONS__EMAIL__*`). Строка `DEV-режим: ОТП-код для <email> = <code>` пишется в лог только когда почта выключена или домен уведомлений не зарегистрирован. При включённой почте несостоявшаяся отправка идёт в error-лог без кода, а клиент получает тот же success=true (иначе ответ стал бы оракулом существования email).
 3. `POST /auth/verify-otp {email, otp}` — сверяет код, при успехе удаляет его из Redis (одноразовый), выпускает пару JWT и ставит HttpOnly-cookie (`access_token`, `refresh_token`).
 4. Дальше на каждый запрос — `AuthMiddleware`: валиден access → пропускает; access истёк, но refresh жив → тихо перевыпускает пару и подставляет новые cookie в ответ (сессия живёт, пока жив refresh, дефолт 7 дней, фронт про TTL не знает). Ни access, ни refresh не валидны → HTML уходит редиректом на `/auth/login` (с `?expired=1`, если cookie вообще были), API получает 401 JSON.
 
