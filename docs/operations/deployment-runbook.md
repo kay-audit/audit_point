@@ -12,6 +12,7 @@
 Перед запуском (или рестартом) уверенно прогнать:
 
 - [ ] **Kerberos** (только GP-окружение). `kinit <user>` для получения тикета. `klist` показывает валидный TGT, срок жизни > планируемого аптайма (обычно 8-24 часа). Без тикета `_is_kerberos_ticket_valid()` (`app/db/connection.py:65`) залогирует инструкции и init БД упадёт.
+- [ ] **Redis доступен** (обязателен при `AUTH__ENABLED=true`). `PING` на хост/порт из блока `REDIS__*` в `.env`. Auth поднимается fail-fast: без Redis старт с включённой ОТП-авторизацией падает. При недоступности Redis уже после старта — кэши (уведомления, роли, контекст) прозрачно уходят в БД, а мутации блокировок актов (захват/продление/снятие) отдают 5xx.
 - [ ] **`JUPYTERHUB_USER`** в окружении процесса (имя — историческое). Нужна для Kerberos/Greenplum-логина и, при `AUTH__ENABLED=false` (тест-режим), для username RBAC — без неё он `unknown_user`, RBAC сломается. На SDP автоматической подстановки (как раньше делал JupyterHub Datalab) нет — выставлять явно (`export JUPYTERHUB_USER=<digits>_<...>`) в окружении процесса/деплой-скрипте. При `AUTH__ENABLED=true` (ОТП) на веб-авторизацию не влияет — только на Kerberos-логин GP.
 - [ ] **`.env` сверен с `.env.example`**. После предыдущего деплоя в `.env.example` мог появиться обязательный ключ или поменяться дефолт. Команда быстрой сверки на Windows PowerShell:
   ```powershell
@@ -48,7 +49,6 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8005
      | Hook | Что |
      |---|---|
      | `acts.audit_log_batcher` | `MetricsBatcher` для аудита актов |
-     | `acts.expired_locks_cleanup` | Фоновая cleanup-задача lock'ов |
      | `admin.http_metrics_batcher` | `MetricsBatcher` HTTP-метрик |
      | `admin.access_denied_audit_batcher` | `MetricsBatcher` отказов доступа |
      | `admin.db_pool_monitor` | Мониторинг asyncpg-пула |

@@ -290,8 +290,6 @@ erDiagram
         INTEGER part_number
         VARCHAR service_note "СЗ: Text/YYYY"
         BOOLEAN is_process_based
-        VARCHAR locked_by
-        TIMESTAMP lock_expires_at
     }
     act_tree {
         INTEGER act_id FK
@@ -347,13 +345,12 @@ erDiagram
 **Финальный порядок инфраструктурных startup-hooks** (регистрируются в `_build_domain`, выполняются в порядке регистрации):
 
 1. `acts.audit_log_batcher`
-2. `acts.expired_locks_cleanup`
-3. `admin.http_metrics_batcher`
-4. `admin.access_denied_audit_batcher`
-5. `admin.db_pool_monitor`
-6. `chat.tool_metrics_batcher`
-7. `chat.audit_log_batcher`
-8. `chat.agent_channel_poller`
+2. `admin.http_metrics_batcher`
+3. `admin.access_denied_audit_batcher`
+4. `admin.db_pool_monitor`
+5. `chat.tool_metrics_batcher`
+6. `chat.audit_log_batcher`
+7. `chat.agent_channel_poller`
 
 Что делает каждый hook — в §9.5b (один раздел, без дублирования).
 
@@ -1377,9 +1374,7 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 - `close_db()` — закрытие при shutdown
 - `create_tables_if_not_exist(domains)` — автосоздание таблиц
 
-**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `5` / `20`). Обоснование: одновременных коннектов нужно достаточно, чтобы покрыть параллельные запросы чата + фоновые задачи (`AgentChannelPoller`, `ActAuditLogBatcher`, `ExpiredLocksCleanupTask`, HTTP-метрика батчер) + горячий путь CRUD-эндпоинтов. Старые дефолты `2/10` стабильно упирались в `TooManyConnectionsError` при нагрузке от нескольких одновременных пользователей чата (см. troubleshooting №17). Под GP при необходимости поднимать до `30+` (см. `DatabaseSettings` docstring).
-
-**Partial-индекс `idx_{PREFIX}acts_lock_expires`** на `acts(lock_expires_at)` с `WHERE lock_expires_at IS NOT NULL` — отдельный индекс, который дешёво находит блокировки, которые можно снять. Используется фоновой задачей `ExpiredLocksCleanupTask` (см. §7.4a). Индекс уже присутствует в обеих схемах (PG и GP), регрессий миграции не требуется.
+**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `5` / `20`). Обоснование: одновременных коннектов нужно достаточно, чтобы покрыть параллельные запросы чата + фоновые задачи (`AgentChannelPoller`, `ActAuditLogBatcher`, HTTP-метрика батчер) + горячий путь CRUD-эндпоинтов. Старые дефолты `2/10` стабильно упирались в `TooManyConnectionsError` при нагрузке от нескольких одновременных пользователей чата (см. troubleshooting №17). Под GP при необходимости поднимать до `30+` (см. `DatabaseSettings` docstring).
 
 Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул: коннект берётся только на время `_tick`, в `sleep` не удерживается. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
 
@@ -2017,19 +2012,9 @@ LLM call
 
 Управляется hook'ом `acts.audit_log_batcher` (startup/shutdown). **Ленивый fallback в `ActAuditLogRepository.log()`**: если активный батчер из `deps.get_audit_log_batcher()` есть — пишет через него; если нет — одиночный INSERT прямо в БД. Это нужно тестам (нет lifespan'а) и раннему startup (до того, как hook отработал). При падении самого батчера `.add()` репозиторий тоже падает в fallback.
 
-**2. `ExpiredLocksCleanupTask`** (`app/domains/acts/services/expired_locks_cleanup.py`). Фоновый asyncio-таск, раз в 60 сек делает один UPDATE:
+> Блокировки актов больше не нуждаются в отдельном cleanup-таске: с переездом на Redis (см. §10.4) лок — ключ с TTL, истекает сам, снимать нечего.
 
-```sql
-UPDATE {acts}
-SET locked_by = NULL, locked_at = NULL, lock_expires_at = NULL
-WHERE lock_expires_at <= CURRENT_TIMESTAMP AND locked_by IS NOT NULL
-```
-
-Опирается на partial-индекс `idx_{PREFIX}acts_lock_expires` с `WHERE lock_expires_at IS NOT NULL` (см. §6.3) — поиск кандидатов дешёвый. Раз в час (60 циклов × 60 сек) пишет суммарную статистику в INFO-лог («за последние N циклов снято M блокировок»). Управляется hook'ом `acts.expired_locks_cleanup`.
-
-> Это **подстраховка** — основной путь снятия блокировок остаётся через `ActLockService.unlock()` и автопродление через `inactivity_check`. Cleanup-таск ловит сценарии: kill -9 во время редактирования, обрыв сети с lock'ом на сервере, баг в логике inactivity-watcher'а.
-
-**3. `AgentChannelPoller`** (`app/domains/chat/services/agent_channel_poller.py`). Один asyncio-task на процесс, поллит bus-таблицу `chat_agent_messages_bus` по подписанным `question_uid` (см. §6.3 sequence-diagram, §11.6). Adaptive backoff:
+**2. `AgentChannelPoller`** (`app/domains/chat/services/agent_channel_poller.py`). Один asyncio-task на процесс, поллит bus-таблицу `chat_agent_messages_bus` по подписанным `question_uid` (см. §6.3 sequence-diagram, §11.6). Adaptive backoff:
 
 ```
 interval = poll_min_interval_sec  # при наличии ответов или без подписок
@@ -2739,8 +2724,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8005 --workers 1
 lifespan захватывает singleton-блокировку в таблице
 `{PREFIX}app_singleton_lock` (см. `app/core/singleton_lock.py`):
 второй воркер этого же сервиса упадёт с понятным сообщением. Это
-сознательное ограничение — в закрытой сети нет Redis/etcd, а
-process-level состояние (`AgentChannelPoller` реестр подписок,
+сознательное ограничение — process-level состояние
+(`AgentChannelPoller` реестр подписок,
 in-process locks сервисов) безопасно только при одном
 процессе. Stale-lock (после kill -9) автоматически перезахватывается
 через TTL=60с.
@@ -2814,19 +2799,18 @@ server {
 
 | Файл | Роль |
 |---|---|
-| `router.py` | API `/api/v1/auth/*`: `POST request-otp`, `POST verify-otp`, `POST refresh`, `POST logout`, `GET me`, `GET profile` |
+| `router.py` | API `/api/v1/auth/*`: `POST request-otp`, `POST verify-otp`, `POST refresh`, `POST logout`, `GET me` |
 | `middleware.py` | `AuthMiddleware` — проверка JWT-cookie на каждый запрос, прозрачный refresh |
 | `jwt_handler.py` | `JWTTokenHandler` — выпуск/валидация access+refresh токенов (PyJWT) |
-| `redis_adapter.py` | Асинхронный клиент Redis — хранит OTP-коды и счётчики лимитов |
 | `user_repository.py` | `AuthUserRepository` — поиск пользователя по email в справочнике `admin.user_directory`, подгрузка ролей для профиля |
 | `context.py` | `ContextVar` с username текущего запроса; читают батчеры метрик/аудита (`app/core/middlewares/http_metrics.py`) без похода в JWT/scope |
-| `portal_router.py` | HTML: `GET /auth/login`, `GET /auth/logout` |
-| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение при старте/остановке (только если `AUTH__ENABLED=true`) |
+| `portal_router.py` | HTML: `GET /auth/login`, `GET /auth/logout`, `GET /profile` |
+| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение (`app/core/redis.py`, общий слой — §9.5 «Redis») при старте/остановке (только если `AUTH__ENABLED=true`) |
 
 **Два режима (`AUTH__ENABLED`):**
 
 - **`false` (тест-режим, дефолт).** Авторизации нет: username берётся из окружения (`JUPYTERHUB_USER`, имя переменной историческое) через `resolve_env_username()` — только цифры до первого `_`. Используется в pytest/Playwright и локальной отладке без Redis/почты.
-- **`true` (ОТП, прод и DEV с реальным входом).** Username = `sub` из JWT в `request.scope["state"]["user"]`, которое кладёт `AuthMiddleware` — похода в БД на каждый обычный запрос нет (только `/auth/me`, `/auth/profile` тянут полный профиль).
+- **`true` (ОТП, прод и DEV с реальным входом).** Username = `sub` из JWT в `request.scope["state"]["user"]`, которое кладёт `AuthMiddleware` — похода в БД на каждый обычный запрос нет (только `/auth/me` и HTML-страница `/profile` тянут полный профиль).
 
 **Поток входа:**
 
@@ -3091,7 +3075,7 @@ def test_chat_settings_defaults():
 | `DATABASE__NAME` | str | `audit_workstation` | Имя БД |
 | `DATABASE__USER` | str | `postgres` | Пользователь |
 | `DATABASE__PASSWORD` | str | (пусто) | Пароль |
-| `DATABASE__POOL_MIN_SIZE` | int | `5` | Мин. соединений. Подобран под параллельные запросы чата + фоновые задачи (AgentChannelPoller, audit-log batcher, expired-locks cleanup, HTTP-metrics batcher) + горячий путь CRUD |
+| `DATABASE__POOL_MIN_SIZE` | int | `5` | Мин. соединений. Подобран под параллельные запросы чата + фоновые задачи (AgentChannelPoller, audit-log batcher, HTTP-metrics batcher) + горячий путь CRUD |
 | `DATABASE__POOL_MAX_SIZE` | int | `20` | Макс. соединений. Старые дефолты `2/10` упирались в `TooManyConnectionsError` при нагрузке (см. troubleshooting №17) |
 | `DATABASE__COMMAND_TIMEOUT` | int | `60` | Timeout команд (сек) |
 | `DATABASE__ACQUIRE_TIMEOUT` | float | `10` | Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула `get_db` отдаёт 503 (`ServiceUnavailableError`) вместо бессрочного зависания запроса |
@@ -3104,7 +3088,7 @@ def test_chat_settings_defaults():
 
 #### Redis
 
-Общая инфраструктура приложения (сейчас — Redis для OTP-кодов/лимитов модуля `app.auth`, см. §9.3a; далее — шина внешнего агента, локи актов, кэши).
+Общий слой `app/core/redis.py` (`RedisAdapter` + модульные `init_redis`/`close_redis`/`get_redis() -> RedisAdapter | None`), поднимается только при `AUTH__ENABLED=true`. Текущие потребители: OTP-коды/лимиты модуля `app.auth` (см. §9.3a), кэш unread-счётчика уведомлений, кэш ролей и пользовательского контекста (L2 поверх in-process TTLCache), блокировки актов (TTL-ключ, см. §10.4) — далее в очереди шина внешнего ИИ-агента. Деградация — по потребителю: кэши при недоступном Redis молча идут мимо него прямо в БД; блокировки актов в тест-режиме (`AUTH__ENABLED=false`, Redis не поднят) работают на in-memory backend, а при живом приложении с недоступным в моменте Redis мутации лока (захват/продление/снятие) отдают 5xx (fail-closed), чтение состояния лока — fail-open.
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
@@ -3325,7 +3309,6 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
 
 **Дополнительные фоновые сервисы (без отдельных метрик, только логи):**
 
-- `ExpiredLocksCleanupTask` (`acts.expired_locks_cleanup`) — раз в час INFO-лог «за последние N циклов снято M блокировок». Не пишет в БД, но даёт видимость в проде, что cleanup работает (см. §7.4b).
 - `AgentChannelPoller` (`chat.agent_channel_poller`) — INFO на start/stop, exception-логи при сбоях тика. Полезно для отладки «почему ответ агента не появляется».
 
 **Параметры `ActAuditLogBatcher`** (`acts.audit_log_batcher`) отличаются от общих `OBSERVABILITY__*`:
@@ -3352,8 +3335,7 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
   },
   "background_tasks": {
     "admin.db_pool_monitor": {"name": "...", "running": true, ...},
-    "chat.agent_channel_poller": {...},
-    "acts.expired_locks_cleanup": {...}
+    "chat.agent_channel_poller": {...}
   }
 }
 ```
@@ -3375,7 +3357,6 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
 | Имя в реестре | Что | Где регистрируется |
 |---|---|---|
 | `acts.audit_log_batcher` | `MetricsBatcher` | `app/domains/acts/_lifecycle.py:47` |
-| `acts.expired_locks_cleanup` | background-task | `app/domains/acts/_lifecycle.py:71` |
 | `admin.http_metrics_batcher` | `MetricsBatcher` | `app/domains/admin/_lifecycle.py:80` |
 | `admin.access_denied_audit_batcher` | `MetricsBatcher` | `app/domains/admin/_lifecycle.py:127` |
 | `admin.db_pool_monitor` | background-task | `app/domains/admin/_lifecycle.py:168` |
@@ -3502,22 +3483,17 @@ LIMIT 20;
 
 ### 10.4 Lock-механизм и inactivity dialog
 
-Источник истины — поля **прямо в таблице `acts`** (`migrations/postgresql/schema.sql:39-41`):
+Источник истины — не колонки таблицы `acts` (их убрали), а ключ Redis `lock:act:{act_id}` с нативным TTL `DURATION_MINUTES`: пока ключ жив — акт занят, истёк TTL — акт свободен автоматически, отдельного снятия не требуется.
 
-| Поле | Назначение |
-|---|---|
-| `locked_by VARCHAR(50)` | Username держателя блокировки. `NULL` = акт свободен |
-| `locked_at TIMESTAMP` | Когда блокировка взята |
-| `lock_expires_at TIMESTAMP` | До какого момента валидна |
-
-Сервис — `app/domains/acts/services/act_lock_service.py`. Репозиторий — `app/domains/acts/repositories/act_lock.py`. На GP таблица имеет partial-индекс `idx_{PREFIX}acts_locked_by WHERE locked_by IS NOT NULL` для быстрого поиска чужих блокировок (`migrations/greenplum/schema.sql:494-496`).
+Репозиторий-фасад — `app/domains/acts/repositories/act_lock.py` (`ActLockRepository`; имена методов и формы возвратов сохранены с эпохи SQL-колонок). Бэкенд (`app/domains/acts/repositories/act_lock_backends.py`) выбирается один раз при первом обращении: `RedisLockBackend` — прод, все мутации атомарны через Lua-скрипты (захват-или-продление, снятие только своей блокировки); `InMemoryLockBackend` — тест-режим (`AUTH__ENABLED=false`, Redis не поднят). Сервис — `app/domains/acts/services/act_lock_service.py`.
 
 **Поведение:**
 
-- При попытке открыть акт сервис проверяет `lock_expires_at > now()`. Если занят другим — возврат `ActLockError` (HTTP 409, `app/domains/acts/exceptions.py:23`) с именем держателя в `locked_by`.
-- При своём существующем lock — продление до `now() + DURATION_MINUTES`. Не чаще, чем раз в `MIN_EXTENSION_INTERVAL_MINUTES` (антифлуд).
-- При истечении lock — следующий запрос на любое изменение возвращает 403 / 423. Пользователь должен заново «взять» акт.
+- Захват/продление — атомарная Lua-операция: чужую блокировку не тронет, свою продлит. Если акт занят другим — `ActLockError` (HTTP 409, `app/domains/acts/exceptions.py:23`) с именем держателя.
+- Продление — не чаще, чем раз в `MIN_EXTENSION_INTERVAL_MINUTES` (антифлуд), до `now() + DURATION_MINUTES`.
+- При истечении TTL ключ исчезает сам — следующий запрос на изменение возвращает 403 / 423, пользователь должен заново «взять» акт.
 - **Inactivity dialog**: фронт по таймеру `INACTIVITY_TIMEOUT_MINUTES` без активности (нет клика/keypress) показывает диалог «Продолжить?». Если пользователь не ответил за `INACTIVITY_DIALOG_TIMEOUT_SECONDS` — lock отпускается, фронт уходит в read-only.
+- **Деградация Redis**: мутации (захват/продление/снятие) при недоступном Redis — 5xx (fail-closed, разъехавшиеся блокировки хуже отказа); чтение состояния лока в списке актов — fail-open (пусто + warning в лог).
 
 > **Фронт-часть LockManager** (`static/js/constructor/lock-manager.js`, 762 строки) описана в [`docs/architecture/frontend-architecture.md`](../architecture/frontend-architecture.md) §6: heartbeat + retry, countdown по `Date.now()` (устойчив к Chrome background throttling), `visibilitychange`-handler с autoExit, `_initiateExit` идемпотентен, capture `actId` в `_handleInactivity`, beacon-unlock через `navigator.sendBeacon`, жёсткий редирект на 409.
 

@@ -314,7 +314,7 @@
 
 **Симптом:** Под нагрузкой или при большом числе одновременных пользователей — `asyncpg.exceptions.TooManyConnectionsError` или таймауты получения connection из пула.
 
-**Причина:** Пул `asyncpg` исчерпан — все connection'ы заняты долгими транзакциями или зависшими запросами. Дефолты подобраны под параллельные запросы чата + фоновые задачи (AgentChannelPoller, ActAuditLogBatcher, ExpiredLocksCleanupTask, HTTP-metrics batcher) + горячий путь CRUD: `DATABASE__POOL_MIN_SIZE=5`, `POOL_MAX_SIZE=20`.
+**Причина:** Пул `asyncpg` исчерпан — все connection'ы заняты долгими транзакциями или зависшими запросами. Дефолты подобраны под параллельные запросы чата + фоновые задачи (AgentChannelPoller, ActAuditLogBatcher, HTTP-metrics batcher) + горячий путь CRUD: `DATABASE__POOL_MIN_SIZE=5`, `POOL_MAX_SIZE=20`.
 
 **Решение:**
 1. Увеличить `DATABASE__POOL_MAX_SIZE` в `.env` (например с 20 до 40).

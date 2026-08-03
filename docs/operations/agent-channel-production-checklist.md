@@ -190,17 +190,16 @@ audit_workstation.domains.chat.agent_loop          # exception в петле о�
 При старте `uvicorn` поднимаются (в порядке регистрации). Канонический список — dev-guide §11.
 
 1. `acts.audit_log_batcher` — батч-INSERT в `audit_log` (50 шт / 30 сек)
-2. `acts.expired_locks_cleanup` — UPDATE expired locks раз в 60 сек
-3. `admin.http_metrics_batcher` — батч-INSERT в `admin_http_metrics`
-4. `admin.access_denied_audit_batcher` — батч-INSERT в `access_denied_audit`
-5. `admin.db_pool_monitor` — мониторинг asyncpg-пула (каждые 30 сек, WARNING при ≥0.9 утилизации)
-6. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
-7. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
-8. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
+2. `admin.http_metrics_batcher` — батч-INSERT в `admin_http_metrics`
+3. `admin.access_denied_audit_batcher` — батч-INSERT в `access_denied_audit`
+4. `admin.db_pool_monitor` — мониторинг asyncpg-пула (каждые 30 сек, WARNING при ≥0.9 утилизации)
+5. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
+6. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
+7. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
    `chat_agent_messages_bus` по активным запросам с adaptive backoff (без удержания
    conn в sleep), при старте reconcile подхватывает зависшие
    streaming-черновики `chat_messages`
-9. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
+8. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
 
 **Shutdown** — в обратном порядке. Если что-то не остановилось за 5с —
 warning в лог.
