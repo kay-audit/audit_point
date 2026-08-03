@@ -15,6 +15,7 @@ class UserContext:
     email: str
     login: str
     fullname: str
+    job: str = ""
     teams: list[str] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
 

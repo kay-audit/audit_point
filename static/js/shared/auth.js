@@ -27,6 +27,14 @@ export class AuthManager {
     static _currentUser = null;
 
     /**
+     * Полный профиль текущего пользователя (весь ответ /api/v1/auth/me).
+     * В localStorage НЕ персистится (в отличие от username) — доступен только
+     * после успешного checkAuth() в этой загрузке страницы.
+     * @private
+     */
+    static _profile = null;
+
+    /**
      * Флаг авторизации
      * @private
      */
@@ -158,6 +166,7 @@ export class AuthManager {
 
             this._isAuthenticated = data.authenticated;
             this._currentUser = data.username;
+            this._profile = data.authenticated ? data : null;
 
             // Сохраняем в localStorage для последующих операций
             if (data.authenticated && data.username) {
@@ -176,6 +185,7 @@ export class AuthManager {
             console.error('Ошибка проверки авторизации:', error);
             this._isAuthenticated = false;
             this._currentUser = null;
+            this._profile = null;
             this._clearStorage();
             return {authenticated: false, username: null};
         }
@@ -234,6 +244,17 @@ export class AuthManager {
     }
 
     /**
+     * Возвращает полный профиль текущего пользователя (ФИО, должность, email,
+     * роли и т.п. — весь ответ /api/v1/auth/me).
+     * null, пока checkAuth() не отработал успешно в этой загрузке страницы
+     * (профиль в localStorage не кешируется, в отличие от username).
+     * @returns {Object|null}
+     */
+    static getCurrentUserProfile() {
+        return this._profile;
+    }
+
+    /**
      * Проверяет, авторизован ли пользователь (в памяти или localStorage)
      * @returns {boolean}
      */
@@ -272,6 +293,7 @@ export class AuthManager {
     static logout() {
         this._currentUser = null;
         this._isAuthenticated = false;
+        this._profile = null;
         this._clearStorage();
 
         if (window.env) {

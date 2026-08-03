@@ -46,6 +46,7 @@ class AuthUserRepository:
             "email": row["email"],
             "login": row["username"],
             "fullname": row["fullname"],
+            "job": row["job"],
         }
 
     async def find_by_email(self, email: str) -> dict | None:
@@ -71,6 +72,7 @@ class AuthUserRepository:
             "email": user["email"],
             "login": user["login"],
             "fullname": user["fullname"],
+            "job": user["job"],
             "teams": [],
             "roles": sorted(role["name"] for role in roles),
         }

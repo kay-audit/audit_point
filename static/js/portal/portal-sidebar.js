@@ -8,6 +8,8 @@ import { LandingPage } from './landing/landing-page.js';
 import { AppConfig } from '../shared/app-config.js';
 import { AuthManager } from '../shared/auth.js';
 import { ChatModalManager } from '../shared/chat/chat-modal.js';
+import { UserCard } from './user-card.js';
+import { resolveUserCardFields } from './user-card-core.js';
 
 export class PortalSidebar {
     static _storageKey = 'sidebar_collapsed';
@@ -21,6 +23,7 @@ export class PortalSidebar {
         this._setupNavigation();
         this._setupChatButton();
         this._loadUserInfo();
+        UserCard.init();
 
         console.log('PortalSidebar: инициализация завершена');
     }
@@ -107,16 +110,20 @@ export class PortalSidebar {
     }
 
     /**
-     * Загружает информацию о текущем пользователе в topbar
+     * Загружает информацию о текущем пользователе в topbar (ФИО из профиля,
+     * с фолбэком на username, если профиль недоступен)
      * @private
      */
     static _loadUserInfo() {
         try {
-            const username = AuthManager.getCurrentUser();
+            const { name } = resolveUserCardFields(
+                AuthManager.getCurrentUserProfile(),
+                AuthManager.getCurrentUser(),
+            );
             const userNameElement = document.getElementById('currentUserName');
 
-            if (userNameElement && username) {
-                userNameElement.textContent = username;
+            if (userNameElement && name) {
+                userNameElement.textContent = name;
             }
         } catch (error) {
             console.error('PortalSidebar: ошибка загрузки информации о пользователе:', error);

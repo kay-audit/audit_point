@@ -58,17 +58,6 @@ class AuthOTPResponse(BaseModel):
     message: str | None = None
 
 
-class UserProfile(BaseModel):
-    """Профиль аутентифицированного пользователя."""
-
-    sub: str
-    email: str
-    login: str
-    fullname: str
-    teams: list[str]
-    roles: list[str]
-
-
 def _otp_key(user_id: str) -> str:
     return f"otp:{user_id}"
 
@@ -341,21 +330,6 @@ async def logout():
     return response
 
 
-@router.get("/profile", response_model=UserProfile)
-async def get_current_user_profile(
-    user: UserContext = Depends(get_current_user),
-) -> UserProfile:
-    """Возвращает профиль аутентифицированного пользователя."""
-    return UserProfile(
-        sub=user.sub,
-        email=user.email,
-        login=user.login,
-        fullname=user.fullname,
-        teams=user.teams,
-        roles=user.roles,
-    )
-
-
 @router.get("/me")
 async def get_current_user_me(
     user: UserContext = Depends(get_current_user),
@@ -368,6 +342,7 @@ async def get_current_user_me(
         "email": user.email,
         "login": user.login,
         "fullname": user.fullname,
+        "job": user.job,
         "teams": user.teams,
         "roles": user.roles,
     }

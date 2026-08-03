@@ -42,3 +42,6 @@
 
 /* SQL-агент (встроенный iframe + баннер «недоступен») */
 @import '../portal/sqlagent/sqlagent.css';
+
+/* Профиль пользователя */
+@import '../portal/profile/profile-page.css';

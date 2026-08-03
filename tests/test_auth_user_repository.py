@@ -42,6 +42,7 @@ _DIRECTORY_ROW = {
     "username": "12345",
     "email": "user@example.com",
     "fullname": "Иванов И.И.",
+    "job": "Аудитор",
 }
 
 _AUTH_USER = {
@@ -49,6 +50,7 @@ _AUTH_USER = {
     "email": "user@example.com",
     "login": "12345",
     "fullname": "Иванов И.И.",
+    "job": "Аудитор",
 }
 
 
@@ -119,6 +121,7 @@ class TestGetUserContext:
             "email": "user@example.com",
             "login": "12345",
             "fullname": "Иванов И.И.",
+            "job": "Аудитор",
             "teams": [],
             "roles": ["Админ", "Чат-ассистент"],
         }

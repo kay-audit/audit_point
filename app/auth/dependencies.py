@@ -72,7 +72,7 @@ def get_user_repository() -> AuthUserDirectory:
 async def get_current_user(request: Request) -> UserContext:
     """Полный контекст пользователя (профиль и роли из БД).
 
-    Использовать только там, где нужен профиль (/auth/me, /auth/profile).
+    Использовать только там, где нужен профиль (/auth/me, HTML-страница /profile).
     Для username в обычных эндпоинтах — get_username (без похода в БД).
     Незавершённая авторизация — всегда 401; редиректами занимается AuthMiddleware.
 
@@ -90,6 +90,7 @@ async def get_current_user(request: Request) -> UserContext:
             email="",
             login=username,
             fullname=f"Пользователь {username}",
+            job="",
         )
 
     user_data = request.scope.get("state", {}).get("user") or {}
@@ -108,6 +109,7 @@ async def get_current_user(request: Request) -> UserContext:
         email=ctx["email"],
         login=ctx["login"],
         fullname=ctx["fullname"],
+        job=ctx["job"],
         teams=ctx["teams"],
         roles=ctx["roles"],
     )
