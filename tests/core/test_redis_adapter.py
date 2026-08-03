@@ -30,7 +30,9 @@ def _reset_global_adapter():
     """Сбрасывает модульный синглтон адаптера до и после каждого теста.
 
     Глобал переживает тест-функцию, поэтому без сброса ``init_redis`` из
-    одного теста вернул бы готовый адаптер в другом.
+    одного теста вернул бы готовый адаптер в другом. Заодно снимает fakeredis,
+    который кладёт в глобал общая фикстура ``fake_redis`` (tests/conftest.py):
+    здесь тестируется сам lifecycle, и стартовать он должен с пустого места.
     """
     redis_module._adapter = None
     yield
@@ -183,9 +185,11 @@ class TestEval:
 
 class TestLifecycle:
 
-    async def test_get_redis_is_none_before_init(self):
-        # Тест-режим (AUTH__ENABLED=false): Redis не поднимается вовсе
-        assert get_redis() is None
+    async def test_get_redis_raises_before_init(self):
+        # Redis обязателен: отсутствие адаптера — сломанное окружение, а не
+        # режим работы, поэтому вместо None — громкая ошибка.
+        with pytest.raises(RuntimeError, match="Redis не инициализирован"):
+            get_redis()
 
     async def test_init_publishes_adapter_to_global(self, fake_connect):
         adapter = await init_redis(RedisSettings())
@@ -204,7 +208,7 @@ class TestLifecycle:
 
         await close_redis()
 
-        assert get_redis() is None
+        assert redis_module._adapter is None
 
     async def test_close_is_idempotent(self, fake_connect):
         await init_redis(RedisSettings())
@@ -212,12 +216,12 @@ class TestLifecycle:
         await close_redis()
         await close_redis()
 
-        assert get_redis() is None
+        assert redis_module._adapter is None
 
     async def test_close_without_init_is_noop(self):
         await close_redis()
 
-        assert get_redis() is None
+        assert redis_module._adapter is None
 
     async def test_failed_connect_leaves_global_empty(self, monkeypatch):
         """Fail-fast: ошибка подключения наверх, глобал не заполнен."""
@@ -230,7 +234,7 @@ class TestLifecycle:
         with pytest.raises(ConnectionError):
             await init_redis(RedisSettings())
 
-        assert get_redis() is None
+        assert redis_module._adapter is None
 
     async def test_settings_password_unwrapped_for_client(self, monkeypatch):
         """SecretStr разворачивается адаптером; пустой пароль → None."""

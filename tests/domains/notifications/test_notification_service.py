@@ -135,15 +135,6 @@ def redis():
     return _redis_mock()
 
 
-async def test_unread_summary_redis_none_uses_sql(service):
-    """get_redis() is None (тест-режим) — путь без кэша, репозиторий вызван как раньше."""
-    with patch(_GET_REDIS, return_value=None):
-        result = await service.unread_summary("user1")
-
-    assert result == {"count": 5, "severity": "warning"}
-    service._repo_mock.unread_summary.assert_awaited_once_with("user1")
-
-
 async def test_unread_summary_cache_hit_skips_sql(service, redis):
     """Хит кэша — результат из Redis, repo.unread_summary НЕ вызывается."""
     redis.get_json = AsyncMock(return_value={"count": 2, "severity": "info"})

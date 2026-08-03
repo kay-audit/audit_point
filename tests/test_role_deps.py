@@ -283,19 +283,6 @@ class TestGetUserRolesCache:
         yield
         _roles_cache.clear()
 
-    async def test_redis_none_behaves_as_before(self):
-        """get_redis() is None (тест-режим) — L1 → SQL, Redis не трогается вовсе."""
-        fake_get_db, mock_conn = _fake_get_db(self.ROWS)
-
-        with patch("app.api.v1.deps.role_deps.get_redis", return_value=None), \
-             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
-             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
-            result = await get_user_roles(username=self.USERNAME)
-
-        assert result == self.ROWS
-        mock_conn.fetch.assert_awaited_once()
-        assert _roles_cache[self.USERNAME] == self.ROWS
-
     async def test_l1_hit_skips_redis(self):
         """L1 уже заполнен — до Redis дело не доходит."""
         _roles_cache[self.USERNAME] = self.ROWS
@@ -396,15 +383,6 @@ class TestInvalidateUserRolesCache:
         redis.delete.assert_awaited_once_with(
             f"cache:roles:{self.USERNAME}", f"cache:userctx:{self.USERNAME}",
         )
-
-    async def test_redis_none_only_clears_l1(self):
-        """get_redis() is None — L1 всё равно чистится, без похода в Redis."""
-        _roles_cache[self.USERNAME] = [{"id": 1, "name": "Аудитор", "domain_name": "acts"}]
-
-        with patch("app.api.v1.deps.role_deps.get_redis", return_value=None):
-            await invalidate_user_roles_cache(self.USERNAME)  # не должно бросить
-
-        assert self.USERNAME not in _roles_cache
 
     async def test_redis_exception_does_not_raise(self):
         """Сбой Redis при инвалидации не должен ронять admin-операцию."""

@@ -29,14 +29,11 @@ def get_redis_adapter(request: Request) -> RedisAdapter:
     """Возвращает RedisAdapter: сначала из app.state, затем из глобала core.
 
     Приоритет app.state сохранён ради тестов — они кладут туда fakeredis,
-    не поднимая модульный синглтон.
+    не поднимая модульный синглтон. Ни один из источников не отдаёт None:
+    Redis обязателен, и его отсутствие ловится ещё на старте приложения.
     """
     adapter = getattr(request.app.state, "redis_adapter", None)
-    if adapter is None:
-        adapter = get_redis()
-    if adapter is None:
-        raise HTTPException(status_code=503, detail="Сервис авторизации недоступен")
-    return adapter
+    return adapter if adapter is not None else get_redis()
 
 
 class AuthUserDirectory:

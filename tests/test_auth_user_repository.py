@@ -181,18 +181,6 @@ class TestGetUserContextRedisCache:
         "roles": ["Админ"],
     }
 
-    async def test_redis_none_behaves_as_before(self, repo, mock_conn):
-        """get_redis() is None (тест-режим) — путь без кэша, 2 SQL как раньше."""
-        mock_conn.fetchrow.return_value = dict(_DIRECTORY_ROW)
-        mock_conn.fetch.return_value = [{"name": "Админ"}]
-
-        with patch("app.auth.user_repository.get_redis", return_value=None):
-            result = await repo.get_user_context("12345")
-
-        assert result == self._EXPECTED
-        mock_conn.fetchrow.assert_awaited_once()
-        mock_conn.fetch.assert_awaited_once()
-
     async def test_cache_hit_skips_repositories(self, repo, mock_conn):
         """Хит кэша — репозитории (fetchrow/fetch) не вызываются вовсе."""
         redis = _redis_mock()

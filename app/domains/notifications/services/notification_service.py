@@ -20,9 +20,8 @@ class NotificationService:
     id при создании уведомления (``push``). Принимает соединение из пула.
 
     ``unread_summary`` дополнительно кэшируется в Redis (частый поллинг бейджа
-    с фронта). ``get_redis() is None`` (тест-режим/AUTH__ENABLED=false) — работа
-    идёт мимо кэша, как раньше. Любой сбой Redis — предупреждение в лог и честный
-    SQL-путь, наружу не пробрасывается: деградация кэша не должна ронять бейдж.
+    с фронта). Рантайм-сбой Redis — предупреждение в лог и честный SQL-путь,
+    наружу не пробрасывается: деградация кэша не должна ронять бейдж.
     """
 
     # broadcast-push не знает адресатов поштучно, поэтому вместо перебора ключей
@@ -48,9 +47,6 @@ class NotificationService:
         по БД (и, при доступном Redis, сохраняет результат на следующий раз).
         """
         redis = get_redis()
-        if redis is None:
-            return await self.repo.unread_summary(user_id)
-
         try:
             key = await self._unread_cache_key(redis, user_id)
             cached = await redis.get_json(key)
@@ -128,8 +124,6 @@ class NotificationService:
     async def _invalidate_unread_cache(self, user_id: str) -> None:
         """DEL кэш-ключа пользователя — адресная инвалидация после его мутации."""
         redis = get_redis()
-        if redis is None:
-            return
         try:
             key = await self._unread_cache_key(redis, user_id)
             await redis.delete(key)
@@ -139,8 +133,6 @@ class NotificationService:
     async def _invalidate_after_push(self, recipient_user_id: str | None) -> None:
         """Адресный push — DEL ключа получателя; broadcast — INCR эпохи целиком."""
         redis = get_redis()
-        if redis is None:
-            return
         try:
             if recipient_user_id is not None:
                 key = await self._unread_cache_key(redis, recipient_user_id)

@@ -1,31 +1,24 @@
-"""Бэкенды блокировок актов: Redis с TTL и in-memory.
+"""Бэкенд блокировок актов: ключ Redis с TTL.
 
 Источник истины о блокировке — не колонки таблицы актов, а ключ
 ``lock:act:{act_id}`` со сроком жизни ``duration_minutes``. Ключ исчезает
 сам, поэтому существование ключа И ЕСТЬ признак живой блокировки: сравнений
 дат при чтении не осталось, отдельный сборщик просроченных локов не нужен.
 
-Бэкендов два, интерфейс общий (:class:`LockBackend`):
-
-* :class:`RedisLockBackend` — прод. Все мутации идут Lua-скриптами: «прочитать
-  владельца и решить» обязано быть одной операцией, иначе между чтением и
-  записью успевает влезть конкурент.
-* :class:`InMemoryLockBackend` — окружения без Redis (``AUTH__ENABLED=false``:
-  pytest, Playwright, локальный запуск).
+Все мутации идут Lua-скриптами: «прочитать владельца и решить» обязано быть
+одной операцией, иначе между чтением и записью успевает влезть конкурент.
 
 ``locked_at``/``lock_expires_at`` считают часы приложения и кладут в значение
-ключа (фронту нужна ISO-строка), а фактическое истечение определяет TTL Redis
-либо monotonic-дедлайн in-memory. Небольшой дрейф двух часов допустим: до
-переезда время тоже было чужим — серверным временем БД.
+ключа (фронту нужна ISO-строка), а фактическое истечение определяет TTL Redis.
+Небольшой дрейф двух часов допустим: до переезда время тоже было чужим —
+серверным временем БД.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime, timedelta
-from typing import Protocol
 
 from app.core.redis import RedisAdapter
 
@@ -71,36 +64,6 @@ def _payload_to_info(payload: dict) -> dict:
         "lock_expired": False,
     }
 
-
-class LockBackend(Protocol):
-    """Хранилище блокировок: захват, продление, снятие, чтение."""
-
-    async def acquire(
-        self, act_id: int, username: str, duration_minutes: float,
-    ) -> dict | None:
-        """Захватывает блокировку или продлевает свою; ``None`` — держит другой."""
-        ...
-
-    async def extend(
-        self, act_id: int, username: str, duration_minutes: float,
-    ) -> dict:
-        """Продлевает свою блокировку, возвращая ``{extended, locked_by, lock_expires_at}``."""
-        ...
-
-    async def release(self, act_id: int, username: str) -> bool:
-        """Снимает свою блокировку; чужую снять нельзя."""
-        ...
-
-    async def info(self, act_id: int) -> dict | None:
-        """Состояние живой блокировки или ``None``, если её нет."""
-        ...
-
-    async def bulk_info(self, act_ids: list[int]) -> dict[int, dict]:
-        """Состояния живых блокировок пачкой; незаблокированных актов в ответе нет."""
-        ...
-
-
-# ─── Redis ───────────────────────────────────────────────────────────────────
 
 # Захват свободного ключа ИЛИ продление своего: чужой лок не трогаем.
 # ARGV: 1 — username, 2 — значение ключа (JSON), 3 — TTL в мс.
@@ -149,6 +112,7 @@ class RedisLockBackend:
     async def acquire(
         self, act_id: int, username: str, duration_minutes: float,
     ) -> dict | None:
+        """Захватывает блокировку или продлевает свою; ``None`` — держит другой."""
         payload, info, ttl_ms = _make_payload(username, duration_minutes)
         written = await self._redis.eval(
             _LUA_ACQUIRE,
@@ -160,6 +124,7 @@ class RedisLockBackend:
     async def extend(
         self, act_id: int, username: str, duration_minutes: float,
     ) -> dict:
+        """Продлевает свою блокировку: ``{extended, locked_by, lock_expires_at}``."""
         payload, info, ttl_ms = _make_payload(username, duration_minutes)
         extended, *rest = await self._redis.eval(
             _LUA_EXTEND,
@@ -182,18 +147,21 @@ class RedisLockBackend:
         }
 
     async def release(self, act_id: int, username: str) -> bool:
+        """Снимает свою блокировку; чужую снять нельзя."""
         deleted = await self._redis.eval(
             _LUA_RELEASE, [_key(act_id)], [username],
         )
         return bool(deleted)
 
     async def info(self, act_id: int) -> dict | None:
+        """Состояние живой блокировки или ``None``, если её нет."""
         raw = await self._redis.get(_key(act_id))
         if raw is None:
             return None
         return _payload_to_info(json.loads(raw))
 
     async def bulk_info(self, act_ids: list[int]) -> dict[int, dict]:
+        """Состояния живых блокировок пачкой; незаблокированных актов в ответе нет."""
         if not act_ids:
             return {}
         values = await self._redis.mget([_key(act_id) for act_id in act_ids])
@@ -202,85 +170,3 @@ class RedisLockBackend:
             for act_id, raw in zip(act_ids, values)
             if raw is not None
         }
-
-
-# ─── In-memory ───────────────────────────────────────────────────────────────
-
-
-class InMemoryLockBackend:
-    """Блокировки в памяти процесса — для окружений без Redis.
-
-    Срок хранится монотонным дедлайном (``time.monotonic``), просроченная
-    запись выбрасывается лениво при первом же обращении к акту — своего
-    «уборщика» нет, как и у Redis.
-
-    Отдельного ``asyncio.Lock`` нет сознательно: процесс приложения один
-    (singleton-lock), а внутри операций нет ни одного ``await``, поэтому
-    корутину не прервать между проверкой владельца и записью — атомарность
-    по построению.
-    """
-
-    def __init__(self) -> None:
-        # act_id → (монотонный дедлайн, значение блокировки)
-        self._locks: dict[int, tuple[float, dict]] = {}
-
-    async def acquire(
-        self, act_id: int, username: str, duration_minutes: float,
-    ) -> dict | None:
-        current = self._alive(act_id)
-        if current is not None and current["locked_by"] != username:
-            return None
-        payload, info, ttl_ms = _make_payload(username, duration_minutes)
-        self._locks[act_id] = (time.monotonic() + ttl_ms / 1000, payload)
-        return info
-
-    async def extend(
-        self, act_id: int, username: str, duration_minutes: float,
-    ) -> dict:
-        current = self._alive(act_id)
-        if current is None:
-            return {"extended": False, "locked_by": None, "lock_expires_at": None}
-        if current["locked_by"] != username:
-            info = _payload_to_info(current)
-            return {
-                "extended": False,
-                "locked_by": info["locked_by"],
-                "lock_expires_at": info["lock_expires_at"],
-            }
-        payload, info, ttl_ms = _make_payload(username, duration_minutes)
-        self._locks[act_id] = (time.monotonic() + ttl_ms / 1000, payload)
-        return {
-            "extended": True,
-            "locked_by": username,
-            "lock_expires_at": info["lock_expires_at"],
-        }
-
-    async def release(self, act_id: int, username: str) -> bool:
-        current = self._alive(act_id)
-        if current is None or current["locked_by"] != username:
-            return False
-        del self._locks[act_id]
-        return True
-
-    async def info(self, act_id: int) -> dict | None:
-        current = self._alive(act_id)
-        return _payload_to_info(current) if current is not None else None
-
-    async def bulk_info(self, act_ids: list[int]) -> dict[int, dict]:
-        result = {}
-        for act_id in act_ids:
-            current = self._alive(act_id)
-            if current is not None:
-                result[act_id] = _payload_to_info(current)
-        return result
-
-    def _alive(self, act_id: int) -> dict | None:
-        """Значение живой блокировки; просроченную запись удаляет по пути."""
-        entry = self._locks.get(act_id)
-        if entry is None:
-            return None
-        deadline, payload = entry
-        if deadline <= time.monotonic():
-            del self._locks[act_id]
-            return None
-        return payload

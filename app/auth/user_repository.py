@@ -71,22 +71,20 @@ class AuthUserRepository:
         """Загружает пользователя и его роли из существующей системы RBAC.
 
         Кэшируется в Redis (TTL 300с) — фронт дёргает этот путь на каждой
-        загрузке страницы (``/auth/me``) плюс login/refresh. ``get_redis()
-        is None`` (тест-режим) или любой сбой Redis — путь без кэша, как
-        раньше; исключение наружу не пробрасывается. Инвалидация — явная,
-        см. ``invalidate_user_roles_cache``.
+        загрузке страницы (``/auth/me``) плюс login/refresh. Рантайм-сбой
+        Redis — путь без кэша, как до его появления; исключение наружу не
+        пробрасывается. Инвалидация — явная, см. ``invalidate_user_roles_cache``.
         """
         redis = get_redis()
         cache_key = f"{USERCTX_CACHE_KEY_PREFIX}{user_id}"
 
-        if redis is not None:
-            try:
-                cached = await redis.get_json(cache_key)
-            except Exception as e:
-                logger.warning("Redis недоступен при чтении кеша user-контекста: %s", e)
-                cached = None
-            if cached is not None:
-                return cached
+        try:
+            cached = await redis.get_json(cache_key)
+        except Exception as e:
+            logger.warning("Redis недоступен при чтении кеша user-контекста: %s", e)
+            cached = None
+        if cached is not None:
+            return cached
 
         user = await self.find_by_id(user_id)
         if user is None:
@@ -104,10 +102,9 @@ class AuthUserRepository:
             "roles": sorted(role["name"] for role in roles),
         }
 
-        if redis is not None:
-            try:
-                await redis.set_json(cache_key, result, ex=_USERCTX_CACHE_TTL_SEC)
-            except Exception as e:
-                logger.warning("Redis недоступен при записи кеша user-контекста: %s", e)
+        try:
+            await redis.set_json(cache_key, result, ex=_USERCTX_CACHE_TTL_SEC)
+        except Exception as e:
+            logger.warning("Redis недоступен при записи кеша user-контекста: %s", e)
 
         return result

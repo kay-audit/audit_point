@@ -1374,7 +1374,7 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 - `close_db()` — закрытие при shutdown
 - `create_tables_if_not_exist(domains)` — автосоздание таблиц
 
-**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `5` / `20`). Обоснование: одновременных коннектов нужно достаточно, чтобы покрыть параллельные запросы чата + фоновые задачи (`AgentChannelPoller`, `ActAuditLogBatcher`, HTTP-метрика батчер) + горячий путь CRUD-эндпоинтов. Старые дефолты `2/10` стабильно упирались в `TooManyConnectionsError` при нагрузке от нескольких одновременных пользователей чата (см. troubleshooting №17). Под GP при необходимости поднимать до `30+` (см. `DatabaseSettings` docstring).
+**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `1` / `2`, одинаковые во всех окружениях). Обоснование: у ПРОМ-учётки Greenplum жёсткий лимит порядка 5 соединений, и «поднять пул» там невозможно в принципе. Уложиться в такой потолок позволил переезд горячих путей на Redis — счётчик непрочитанных, роли, user-контекст и блокировки актов больше не ходят в БД на каждый запрос, а батчеры и `AgentChannelPoller` берут коннект короткими порциями. DEV держим идентичным ПРОМу: вилка дефолтов прятала бы нехватку коннектов до самого прода. Диагностика исчерпания — troubleshooting №17.
 
 Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул: коннект берётся только на время `_tick`, в `sleep` не удерживается. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
 
@@ -2425,7 +2425,7 @@ async def open_act_page_handler(
 
 ```
 tests/
-├── conftest.py                       — общие фикстуры (mock_conn, mock_adapter)
+├── conftest.py                       — общие фикстуры (fake_redis autouse, mock_conn, mock_adapter)
 ├── core/                             — тесты ядра (DomainDescriptor, chat blocks)
 ├── db/                               — адаптеры PG/GP и init_db
 ├── domains/
@@ -2477,11 +2477,25 @@ def clean():
 - `_user_locks.clear()` — для тестов сервисов с in-process `asyncio.Lock` (см. `conversation_service`, `message_service`); сбрасывается через autouse-фикстуру в `test_singleton_lock.py`
 - `get_settings.cache_clear()` — обязательно, если тест меняет env: `get_settings()` помечен `@lru_cache` (см. `app/core/config.py`), без сброса soak'нется значение от предыдущего теста
 
-Общие фикстуры в `tests/conftest.py`:
+Общие фикстуры в `tests/conftest.py`. Первая — **autouse**: Redis обязателен во всех окружениях, включая pytest (§9.5), поэтому `get_redis()` не отдаёт None, а бросает `RuntimeError`. Фикстура играет роль startup-хука, подставляя fakeredis в модульный синглтон; свежий инстанс на каждый тест изолирует ключи (иначе блокировка акта из одного теста жила бы 15 минут и ломала соседний). Lua-скрипты исполняются по-настоящему — за это отвечает `lupa`.
 
 ```python
+import fakeredis.aioredis
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+from app.core import redis as redis_module
+from app.core.config import RedisSettings
+from app.core.redis import RedisAdapter
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """Подставляет fakeredis в app.core.redis._adapter на каждый тест."""
+    adapter = RedisAdapter(RedisSettings())
+    adapter._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    redis_module._adapter = adapter
+    yield adapter
+    redis_module._adapter = None
 
 @pytest.fixture
 def mock_conn():
@@ -2805,11 +2819,11 @@ server {
 | `user_repository.py` | `AuthUserRepository` — поиск пользователя по email в справочнике `admin.user_directory`, подгрузка ролей для профиля |
 | `context.py` | `ContextVar` с username текущего запроса; читают батчеры метрик/аудита (`app/core/middlewares/http_metrics.py`) без похода в JWT/scope |
 | `portal_router.py` | HTML: `GET /auth/login`, `GET /auth/logout`, `GET /profile` |
-| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение (`app/core/redis.py`, общий слой — §9.5 «Redis») при старте/остановке (только если `AUTH__ENABLED=true`) |
+| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение (`app/core/redis.py`, общий слой — §9.5 «Redis») при старте/остановке. Безусловно, независимо от `AUTH__ENABLED`: Redis — общая инфраструктура, модуль auth лишь исторический владелец хука |
 
 **Два режима (`AUTH__ENABLED`):**
 
-- **`false` (тест-режим, дефолт).** Авторизации нет: username берётся из окружения (`JUPYTERHUB_USER`, имя переменной историческое) через `resolve_env_username()` — только цифры до первого `_`. Используется в pytest/Playwright и локальной отладке без Redis/почты.
+- **`false` (тест-режим, дефолт).** Авторизации нет: username берётся из окружения (`JUPYTERHUB_USER`, имя переменной историческое) через `resolve_env_username()` — только цифры до первого `_`. Используется в pytest/Playwright и локальной отладке без почты. Redis при этом всё равно обязателен — он не auth-специфичен (см. §9.5).
 - **`true` (ОТП, прод и DEV с реальным входом).** Username = `sub` из JWT в `request.scope["state"]["user"]`, которое кладёт `AuthMiddleware` — похода в БД на каждый обычный запрос нет (только `/auth/me` и HTML-страница `/profile` тянут полный профиль).
 
 **Поток входа:**
@@ -3075,8 +3089,8 @@ def test_chat_settings_defaults():
 | `DATABASE__NAME` | str | `audit_workstation` | Имя БД |
 | `DATABASE__USER` | str | `postgres` | Пользователь |
 | `DATABASE__PASSWORD` | str | (пусто) | Пароль |
-| `DATABASE__POOL_MIN_SIZE` | int | `5` | Мин. соединений. Подобран под параллельные запросы чата + фоновые задачи (AgentChannelPoller, audit-log batcher, HTTP-metrics batcher) + горячий путь CRUD |
-| `DATABASE__POOL_MAX_SIZE` | int | `20` | Макс. соединений. Старые дефолты `2/10` упирались в `TooManyConnectionsError` при нагрузке (см. troubleshooting №17) |
+| `DATABASE__POOL_MIN_SIZE` | int | `1` | Мин. соединений. Единый дефолт для DEV и ПРОМа |
+| `DATABASE__POOL_MAX_SIZE` | int | `2` | Макс. соединений. У ПРОМ-учётки GP лимит ~5 соединений; горячие пути унесены на Redis, поэтому пул минимальный (см. troubleshooting №17) |
 | `DATABASE__COMMAND_TIMEOUT` | int | `60` | Timeout команд (сек) |
 | `DATABASE__ACQUIRE_TIMEOUT` | float | `10` | Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула `get_db` отдаёт 503 (`ServiceUnavailableError`) вместо бессрочного зависания запроса |
 | `DATABASE__POOL_WARMUP_ENABLED` | bool | `True` | Прогрев пула при старте |
@@ -3088,13 +3102,15 @@ def test_chat_settings_defaults():
 
 #### Redis
 
-Общий слой `app/core/redis.py` (`RedisAdapter` + модульные `init_redis`/`close_redis`/`get_redis() -> RedisAdapter | None`), поднимается только при `AUTH__ENABLED=true`. Текущие потребители: OTP-коды/лимиты модуля `app.auth` (см. §9.3a), кэш unread-счётчика уведомлений, кэш ролей и пользовательского контекста (L2 поверх in-process TTLCache), блокировки актов (TTL-ключ, см. §10.4) — далее в очереди шина внешнего ИИ-агента. Деградация — по потребителю: кэши при недоступном Redis молча идут мимо него прямо в БД; блокировки актов в тест-режиме (`AUTH__ENABLED=false`, Redis не поднят) работают на in-memory backend, а при живом приложении с недоступным в моменте Redis мутации лока (захват/продление/снятие) отдают 5xx (fail-closed), чтение состояния лока — fail-open.
+Общий слой `app/core/redis.py` (`RedisAdapter` + модульные `init_redis`/`close_redis`/`get_redis() -> RedisAdapter`). **Redis обязателен во всех окружениях** — ПРОМ, DEV, pytest, Playwright — и поднимается на старте безусловно, независимо от `AUTH__ENABLED`; без него приложение не стартует (fail-fast в хуке, см. §9.3a `lifecycle.py`). `get_redis()` не возвращает None, а бросает `RuntimeError`, если `init_redis` не вызывали: конфигурационных развилок «а если Redis нет» в потребителях не осталось. В pytest адаптер подставляет autouse-фикстура `fake_redis` (`tests/conftest.py`, свежий fakeredis на тест); e2e ходят в живой Redis на отдельную БД 15 (`tests/playwright/global-setup.ts` перед прогоном делает PING + FLUSHDB).
+
+Текущие потребители: OTP-коды/лимиты модуля `app.auth` (см. §9.3a), кэш unread-счётчика уведомлений, кэш ролей и пользовательского контекста (L2 поверх in-process TTLCache), блокировки актов (TTL-ключ, см. §10.4) — далее в очереди шина внешнего ИИ-агента. Обрабатывается только **рантайм-сбой** уже работающего Redis, и это авария, а не режим: кэши молча идут мимо него прямо в БД (warning в лог), мутации лока (захват/продление/снятие) отдают 5xx (fail-closed), чтение состояния лока при обогащении списка актов — fail-open (акт считается свободным).
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `REDIS__HOST` | str | `127.0.0.1` | Хост Redis. Именно IPv4-адрес, не `localhost` — на Windows `localhost` резолвится в IPv6 `::1` первым, redis-py не фолбэкает на IPv4 (connection refused/timeout) |
 | `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе может быть нестандартным (пример: `7474`) |
-| `REDIS__DB` | int | `0` | Индекс БД Redis (0-15) |
+| `REDIS__DB` | int | `0` | Индекс БД Redis (0-15). БД `15` занята e2e-прогоном: `global-setup.ts` делает на ней FLUSHDB перед стартом сервера |
 | `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |
 | `REDIS__MAX_CONNECTIONS` | int | `10` | Максимум соединений в пуле клиента Redis |
 | `REDIS__SOCKET_TIMEOUT` | float | `5.0` | Таймаут операций сокета Redis, сек |
@@ -3485,7 +3501,7 @@ LIMIT 20;
 
 Источник истины — не колонки таблицы `acts` (их убрали), а ключ Redis `lock:act:{act_id}` с нативным TTL `DURATION_MINUTES`: пока ключ жив — акт занят, истёк TTL — акт свободен автоматически, отдельного снятия не требуется.
 
-Репозиторий-фасад — `app/domains/acts/repositories/act_lock.py` (`ActLockRepository`; имена методов и формы возвратов сохранены с эпохи SQL-колонок). Бэкенд (`app/domains/acts/repositories/act_lock_backends.py`) выбирается один раз при первом обращении: `RedisLockBackend` — прод, все мутации атомарны через Lua-скрипты (захват-или-продление, снятие только своей блокировки); `InMemoryLockBackend` — тест-режим (`AUTH__ENABLED=false`, Redis не поднят). Сервис — `app/domains/acts/services/act_lock_service.py`.
+Репозиторий-фасад — `app/domains/acts/repositories/act_lock.py` (`ActLockRepository`; имена методов и формы возвратов сохранены с эпохи SQL-колонок). Бэкенд один — `RedisLockBackend` (`app/domains/acts/repositories/act_lock_backends.py`), все мутации атомарны через Lua-скрипты (захват-или-продление, снятие только своей блокировки). Redis обязателен во всех окружениях, включая тесты (в pytest — fakeredis из autouse-фикстуры `fake_redis`), поэтому альтернативного in-memory бэкенда больше нет. Сервис — `app/domains/acts/services/act_lock_service.py`.
 
 **Поведение:**
 

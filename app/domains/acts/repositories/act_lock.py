@@ -6,40 +6,28 @@
 ``AccessGuard`` не нужно знать, что она переехала на ключ с TTL. Сроки больше
 не сравниваются в запросах: истёкшей блокировки просто нет в хранилище.
 
-Бэкенд выбирается ОДИН раз при первом обращении (``get_redis() is None``,
-т.е. тест-режим ``AUTH__ENABLED=false`` → in-memory) и в рантайме не меняется:
-переключение на лету означало бы потерю всех живых блокировок при флапе Redis.
-Сбой Redis на мутации пробрасывается наружу — 5xx честнее, чем разъехавшиеся
-блокировки и параллельная запись двух редакторов.
+Хранилище одно — Redis, он обязателен во всех окружениях. Сбой Redis на
+мутации пробрасывается наружу (fail-closed): 5xx честнее, чем разъехавшиеся
+блокировки и параллельная запись двух редакторов. Fail-open остаётся только
+на чтении при обогащении списка актов — см. ``ActCrudService._locks_for``.
 """
 
 import logging
 
 from app.core.redis import get_redis
-from app.domains.acts.repositories.act_lock_backends import (
-    InMemoryLockBackend,
-    LockBackend,
-    RedisLockBackend,
-)
+from app.domains.acts.repositories.act_lock_backends import RedisLockBackend
 
 logger = logging.getLogger("audit_workstation.db.repository.lock")
 
-_backend: LockBackend | None = None
 
+def get_lock_backend() -> RedisLockBackend:
+    """Бэкенд блокировок поверх текущего Redis-адаптера.
 
-def get_lock_backend() -> LockBackend:
-    """Возвращает бэкенд блокировок, выбирая его при первом вызове."""
-    global _backend
-
-    if _backend is None:
-        redis = get_redis()
-        if redis is not None:
-            _backend = RedisLockBackend(redis)
-            logger.info("Блокировки актов работают через Redis (TTL ключа)")
-        else:
-            _backend = InMemoryLockBackend()
-            logger.info("Redis недоступен — блокировки актов работают в памяти процесса")
-    return _backend
+    Состояния не держит: объект — тонкая обёртка над адаптером, а сами
+    блокировки живут в Redis. Поэтому создаётся на каждый вызов, и подмена
+    адаптера (fakeredis в тестах) видна сразу.
+    """
+    return RedisLockBackend(get_redis())
 
 
 class ActLockRepository:

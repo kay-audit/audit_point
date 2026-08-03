@@ -1,17 +1,14 @@
-"""Тесты бэкендов блокировок актов: Redis (TTL ключа) и in-memory.
+"""Тесты бэкенда блокировок актов: ключ Redis с TTL.
 
-Оба бэкенда проходят ОДИН набор проверок — в этом смысл общего интерфейса:
-захват свободного акта и повторный захват своим держателем, отказ на чужом
-локе, продление, снятие и пачечное чтение. Разъехавшееся поведение сразу
-видно по параметру ``backend``.
+Набор проверок: захват свободного акта и повторный захват своим держателем,
+отказ на чужом локе, продление, снятие и пачечное чтение.
 
-Redis-бэкенд работает на fakeredis, который исполняет Lua через ``lupa``:
-скрипты проверяются настоящим интерпретатором (включая ``cjson``), а не
-сравнением их текста с ожидаемым.
+Бэкенд работает на fakeredis, который исполняет Lua через ``lupa``: скрипты
+проверяются настоящим интерпретатором (включая ``cjson``), а не сравнением их
+текста с ожидаемым.
 
 Истечение проверяется коротким TTL и реальным ожиданием, без подмены часов:
-у Redis срок считает сервер, у in-memory — ``time.monotonic()``, общей точки
-для monkeypatch у них нет.
+срок считает сам Redis, точки для monkeypatch у него нет.
 """
 
 from __future__ import annotations
@@ -27,10 +24,7 @@ import pytest
 from app.core.config import RedisSettings
 from app.core.redis import RedisAdapter
 from app.domains.acts.repositories import act_lock
-from app.domains.acts.repositories.act_lock_backends import (
-    InMemoryLockBackend,
-    RedisLockBackend,
-)
+from app.domains.acts.repositories.act_lock_backends import RedisLockBackend
 
 USERNAME = "22494524"
 OTHER_USER = "11111111"
@@ -50,11 +44,8 @@ def _make_redis_backend() -> RedisLockBackend:
     return RedisLockBackend(adapter)
 
 
-@pytest.fixture(params=["memory", "redis"])
-def backend(request):
-    """Оба бэкенда под одним именем — набор тестов у них общий."""
-    if request.param == "memory":
-        return InMemoryLockBackend()
+@pytest.fixture
+def backend() -> RedisLockBackend:
     return _make_redis_backend()
 
 
@@ -246,31 +237,24 @@ class TestRedisKeyFormat:
         assert await client.exists(f"lock:act:{ACT_ID}") == 0
 
 
-# ── выбор бэкенда ────────────────────────────────────────────────────────────
+# ── бэкенд ───────────────────────────────────────────────────────────────────
 
 
 class TestBackendSelection:
-    """Бэкенд выбирается один раз: с Redis — Redis, без него — память."""
+    """Бэкенд всегда Redis-овый и всегда поверх текущего адаптера."""
 
-    @pytest.fixture(autouse=True)
-    def _reset_backend(self):
-        act_lock._backend = None
-        yield
-        act_lock._backend = None
+    def test_backend_is_redis(self, fake_redis):
+        backend = act_lock.get_lock_backend()
 
-    def test_redis_available_selects_redis(self):
-        adapter = RedisAdapter(RedisSettings())
-        with patch.object(act_lock, "get_redis", return_value=adapter):
-            assert isinstance(act_lock.get_lock_backend(), RedisLockBackend)
+        assert isinstance(backend, RedisLockBackend)
+        assert backend._redis is fake_redis
 
-    def test_no_redis_selects_memory(self):
-        with patch.object(act_lock, "get_redis", return_value=None):
-            assert isinstance(act_lock.get_lock_backend(), InMemoryLockBackend)
+    def test_backend_follows_current_adapter(self, fake_redis):
+        """Кэша бэкенда нет: подменённый адаптер виден следующему же вызову."""
+        replacement = RedisAdapter(RedisSettings())
+        replacement._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
-    def test_backend_is_not_reselected(self):
-        """Появившийся позже Redis не подменяет бэкенд: живые локи потерялись бы."""
-        with patch.object(act_lock, "get_redis", return_value=None):
-            first = act_lock.get_lock_backend()
+        with patch.object(act_lock, "get_redis", return_value=replacement):
+            assert act_lock.get_lock_backend()._redis is replacement
 
-        with patch.object(act_lock, "get_redis", return_value=RedisAdapter(RedisSettings())):
-            assert act_lock.get_lock_backend() is first
+        assert act_lock.get_lock_backend()._redis is fake_redis

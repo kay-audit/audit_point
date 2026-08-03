@@ -63,11 +63,12 @@ class DatabaseSettings(BaseModel):
     * Поллер канала к внешнему агенту (``chat.agent_channel_poller``)
       — держит коннект короткими порциями (poll каждые N секунд).
 
-    Дефолты ``pool_min_size=5`` / ``pool_max_size=20`` подобраны эмпирически:
-    минимум держит несколько прогретых коннектов под типичный фон,
-    максимум — потолок для всплесков (несколько одновременных HTTP +
-    параллельные batcher-flush + polling-runners). Под Greenplum брать
-    больше 20 нецелесообразно — GP плохо масштабируется на число коннектов.
+    Дефолты ``pool_min_size=1`` / ``pool_max_size=2`` продиктованы ПРОМом: у
+    GP-учётки жёсткий лимит порядка 5 соединений, и «просто поднять пул»
+    (troubleshooting №17) там невозможно. Уложиться в такой потолок позволил
+    переезд горячих путей на Redis: счётчик непрочитанных, роли, user-контекст
+    и блокировки актов больше не ходят в БД на каждый запрос. DEV держим
+    идентичным ПРОМу — иначе нехватка коннектов вскрывается только на проде.
     """
     type: Literal["postgresql", "greenplum"] = Field(default="postgresql")
     host: str = Field(default="localhost")
@@ -75,8 +76,8 @@ class DatabaseSettings(BaseModel):
     name: str = Field(default="audit_workstation")
     user: str = Field(default="postgres")
     password: SecretStr = SecretStr("")
-    pool_min_size: int = Field(default=5, ge=1)
-    pool_max_size: int = Field(default=20, ge=2)
+    pool_min_size: int = Field(default=1, ge=1)
+    pool_max_size: int = Field(default=2, ge=2)
     command_timeout: int = Field(default=60, gt=0)
     # Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула
     # acquire() ждёт не бесконечно, а отдаёт 503 — иначе запрос виснет до

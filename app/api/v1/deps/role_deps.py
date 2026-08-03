@@ -37,26 +37,24 @@ async def get_user_roles(username: str = Depends(get_username)) -> list[dict]:
     Возвращает список ролей текущего пользователя.
 
     Двухуровневый кеш: L1 — in-process TTLCache 5с, L2 — Redis 300с.
-    Промах обоих — SQL, результат заполняет оба уровня. ``get_redis() is
-    None`` (тест-режим) или сбой Redis — L2 молча пропускается, путь как до
-    введения кеша. Если у пользователя нет ролей, автоматически назначает
-    дефолтные роли (см. DEFAULT_ROLE_NAMES).
+    Промах обоих — SQL, результат заполняет оба уровня. Рантайм-сбой Redis —
+    L2 молча пропускается, путь как до введения кеша. Если у пользователя нет
+    ролей, автоматически назначает дефолтные роли (см. DEFAULT_ROLE_NAMES).
     """
     logger.debug("get_user_roles: username=%s", username)
     if username in _roles_cache:
         return _roles_cache[username]
 
     redis = get_redis()
-    if redis is not None:
-        cache_key = f"{_ROLES_CACHE_KEY_PREFIX}{username}"
-        try:
-            cached = await redis.get_json(cache_key)
-        except Exception as e:
-            logger.warning("Redis недоступен при чтении кеша ролей: %s", e)
-            cached = None
-        if cached is not None:
-            _roles_cache[username] = cached
-            return cached
+    cache_key = f"{_ROLES_CACHE_KEY_PREFIX}{username}"
+    try:
+        cached = await redis.get_json(cache_key)
+    except Exception as e:
+        logger.warning("Redis недоступен при чтении кеша ролей: %s", e)
+        cached = None
+    if cached is not None:
+        _roles_cache[username] = cached
+        return cached
 
     adapter = get_adapter()
     roles_table = adapter.get_table_name("roles")
@@ -78,13 +76,10 @@ async def get_user_roles(username: str = Depends(get_username)) -> list[dict]:
 
     result = [dict(r) for r in rows]
     _roles_cache[username] = result
-    if redis is not None:
-        try:
-            await redis.set_json(
-                f"{_ROLES_CACHE_KEY_PREFIX}{username}", result, ex=_ROLES_CACHE_TTL_SEC
-            )
-        except Exception as e:
-            logger.warning("Redis недоступен при записи кеша ролей: %s", e)
+    try:
+        await redis.set_json(cache_key, result, ex=_ROLES_CACHE_TTL_SEC)
+    except Exception as e:
+        logger.warning("Redis недоступен при записи кеша ролей: %s", e)
     return result
 
 
@@ -247,11 +242,8 @@ async def invalidate_user_roles_cache(username: str) -> None:
     """
     _roles_cache.pop(username, None)
 
-    redis = get_redis()
-    if redis is None:
-        return
     try:
-        await redis.delete(
+        await get_redis().delete(
             f"{_ROLES_CACHE_KEY_PREFIX}{username}",
             f"{USERCTX_CACHE_KEY_PREFIX}{username}",
         )
