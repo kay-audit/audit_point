@@ -28,7 +28,11 @@ import {
 import {
     parseClipboardText,
     shouldInterceptImagesFromEditable,
+    classifyClipboardPayload,
+    clipboardHasText,
 } from '../../static/js/constructor/violation/violation-paste.js';
+import { DialogManager } from '../../static/js/shared/dialog/dialog-confirm.js';
+import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
 Notifications.success = () => {};
 
@@ -52,11 +56,11 @@ test('isEditableTarget: textarea/input/contenteditable → true, прочее �
 // --- §5.8: shouldInterceptImagesFromEditable — узкое исключение из guard'а ---
 
 /** Каретка в rich-поле: contenteditable + (опционально) внутри зоны. */
-function editableTarget({ inZone, zone = { id: 'zone' } } = { inZone: false }) {
+function editableTarget({ inZone, zone = { id: 'zone' }, field = {} } = { inZone: false }) {
     return {
         tagName: 'SPAN',
         closest: (s) => {
-            if (s === '[contenteditable="true"]') return {};
+            if (s === '[contenteditable="true"]') return field;
             if (s === '.additional-content-wrapper') return inZone ? zone : null;
             return null;
         },
@@ -186,14 +190,20 @@ test('#19: без сфокусированной зоны вставка не п
 
 // --- §5.8: интеграция ветки картинок при каретке в rich-поле зоны ---
 
-/** Событие вставки с произвольным набором items. */
-function pasteEvent(items, target, text = '') {
+/**
+ * Событие вставки с произвольным набором items. html по умолчанию совпадает с
+ * text — комбинированный буфер (разные text/html и text/plain) задаётся явно.
+ */
+function pasteEvent(items, target, text = '', html = text) {
     let prevented = false;
+    let stopped = false;
     return {
         target,
-        clipboardData: { items, getData: () => text },
+        clipboardData: { items, getData: (type) => (type === 'text/html' ? html : text) },
         preventDefault() { prevented = true; },
+        stopPropagation() { stopped = true; },
         _prevented: () => prevented,
+        _stopped: () => stopped,
     };
 }
 
@@ -282,4 +292,175 @@ test('§5.8: rich-поле нарушения ВНЕ зоны (нарушено/
 // фиксируем экспорт как публичный контракт модуля.
 test('parseClipboardText экспортируется из модуля вставки', () => {
     assert.equal(typeof parseClipboardText, 'function');
+});
+
+// --- №5: классификация буфера (чисто картинка / комбо / чисто текст) ---
+
+test('№5: картинка без текста → images (прежний конвейер зоны)', () => {
+    assert.equal(classifyClipboardPayload({ hasImages: true, html: '', plain: '' }), 'images');
+});
+
+test('№5: картинка + текст → combo (спрашиваем пользователя)', () => {
+    assert.equal(
+        classifyClipboardPayload({ hasImages: true, html: '<table><tr><td>42</td></tr></table>', plain: '42' }),
+        'combo',
+    );
+});
+
+test('№5: пустые строки — это НЕ текст (image + пустая text/plain → images)', () => {
+    assert.equal(classifyClipboardPayload({ hasImages: true, html: '', plain: '' }), 'images');
+    assert.equal(classifyClipboardPayload({ hasImages: true, html: '', plain: '   \n\t' }), 'images');
+});
+
+test('№5: «Копировать изображение» браузера (html из одного <img>) → images, не combo', () => {
+    const html = '<meta charset=\'utf-8\'><img src="https://example.com/a.png">';
+    assert.equal(classifyClipboardPayload({ hasImages: true, html, plain: '' }), 'images');
+});
+
+test('№5: служебная обвязка Excel/Word текстом не считается', () => {
+    // <style> и условные комментарии Word есть даже у пустого диапазона.
+    const junk = '<!--[if gte mso 9]><xml><o:p/></xml><![endif]-->'
+        + '<style>td { mso-number-format:General; }</style><table><tr><td></td></tr></table>';
+    assert.equal(clipboardHasText(junk, ''), false);
+    assert.equal(classifyClipboardPayload({ hasImages: true, html: junk, plain: '' }), 'images');
+
+    // Тот же диапазон, но с содержимым ячейки — уже текст.
+    const withCell = junk.replace('<td></td>', '<td>Итого</td>');
+    assert.equal(clipboardHasText(withCell, ''), true);
+    assert.equal(classifyClipboardPayload({ hasImages: true, html: withCell, plain: '' }), 'combo');
+});
+
+test('№5: без картинок → text / none', () => {
+    assert.equal(classifyClipboardPayload({ hasImages: false, html: '', plain: 'привет' }), 'text');
+    assert.equal(classifyClipboardPayload({ hasImages: false, html: '<p>привет</p>', plain: '' }), 'text');
+    assert.equal(classifyClipboardPayload({ hasImages: false, html: '', plain: '' }), 'none');
+    assert.equal(classifyClipboardPayload({ hasImages: false, html: '<br>', plain: '  ' }), 'none');
+});
+
+test('№5: &nbsp; без букв текстом не считается', () => {
+    assert.equal(clipboardHasText('<p>&nbsp;&nbsp;</p>', ''), false);
+    assert.equal(clipboardHasText('<p>&nbsp;текст</p>', ''), true);
+});
+
+// --- №5: интеграция комбинированного буфера через захваченный обработчик ---
+
+const COMBO_HTML = '<table><tr><td>Выручка</td><td>42</td></tr></table>';
+const COMBO_PLAIN = 'Выручка\t42';
+
+/** Окружение комбо-вставки: зона, нарушение, rich-поле-хост и событие. */
+function comboFixture({ imageFile = { name: 'a.png', type: 'image/png', size: 100 } } = {}) {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation(2);
+    vm.activeViolations.set('v1', violation);
+
+    const zone = makeZone('v1');
+    document.activeElement = null;
+
+    const field = { __focused: false, focus() { this.__focused = true; }, contains: () => false };
+    const target = editableTarget({ inZone: true, zone, field });
+    const e = pasteEvent(
+        [{ type: 'image/png', getAsFile: () => imageFile }, { type: 'text/plain', getAsFile: () => null }],
+        target, COMBO_PLAIN, COMBO_HTML,
+    );
+
+    return { vm, violation, zone, field, e, imageFile };
+}
+
+/** Подменяет диалог выбора и конвейеры, куда он разводит буфер. */
+function stubPasteRoutes(vm, choice) {
+    const calls = [];
+    DialogManager.show = async () => choice;
+    textBlockManager.pasteClipboardPayload = (editor, html, plain) => {
+        calls.push({ route: 'text', editor, html, plain });
+    };
+    vm.promptQualityThenInsertImages = (v, container, insertIndex, files) => {
+        calls.push({ route: 'image', container, insertIndex, files });
+    };
+    return calls;
+}
+
+test('№5: комбинированный буфер в rich-поле гасит событие и спрашивает пользователя', async () => {
+    const { vm, e } = comboFixture();
+    let asked = false;
+    DialogManager.show = async () => { asked = true; return false; };
+    vm.promptQualityThenInsertImages = () => assert.fail('картинки не должны вставляться без выбора');
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.equal(asked, true, 'показан диалог выбора');
+    assert.equal(e._prevented(), true, 'нативная вставка отменена');
+    assert.equal(e._stopped(), true, 'событие не доходит до обработчика поля (иначе дубль текста)');
+});
+
+test('№5: «Только текст» — конвейер редактора со снятым буфером, картинки не вставляются', async () => {
+    const { vm, e, field } = comboFixture();
+    const calls = stubPasteRoutes(vm, 'text');
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.deepEqual(calls.map(c => c.route), ['text']);
+    assert.equal(calls[0].editor, field, 'вставка в поле, породившее событие');
+    assert.equal(calls[0].html, COMBO_HTML, 'html снят синхронно и дожил до вставки');
+    assert.equal(calls[0].plain, COMBO_PLAIN);
+    assert.equal(field.__focused, true, 'фокус возвращён в поле после диалога');
+});
+
+test('№5: «Только изображение» — конвейер зоны, текст в поле не вставляется', async () => {
+    const { vm, e, zone, imageFile } = comboFixture();
+    const calls = stubPasteRoutes(vm, 'image');
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.deepEqual(calls.map(c => c.route), ['image']);
+    assert.equal(calls[0].container, zone);
+    assert.equal(calls[0].insertIndex, 2, 'вставка в конец зоны');
+    assert.deepEqual(calls[0].files, [imageFile]);
+});
+
+test('№5: «Текст и изображение» — сначала текст в поле, затем картинки в зону', async () => {
+    const { vm, e } = comboFixture();
+    const calls = stubPasteRoutes(vm, 'both');
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.deepEqual(calls.map(c => c.route), ['text', 'image'],
+        'порядок важен: вставка картинок перерисовывает зону');
+});
+
+test('№5: отмена диалога (Escape/крестик) не вставляет ничего', async () => {
+    const { vm, e } = comboFixture();
+    // Закрытие без кнопки резолвит служебным true (hideCancel) — это не выбор.
+    const calls = stubPasteRoutes(vm, true);
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.deepEqual(calls, []);
+});
+
+test('№5: чисто картиночный буфер в rich-поле идёт прежним путём, без нового диалога', async () => {
+    const { vm, e, zone, imageFile } = comboFixture();
+    // Тот же фикстур, но буфер без текста: html/plain пустые.
+    const clean = pasteEvent(
+        [{ type: 'image/png', getAsFile: () => imageFile }],
+        e.target, '', '',
+    );
+    DialogManager.show = async () => assert.fail('диалог выбора не нужен: текста в буфере нет');
+    let inserted = null;
+    vm.promptQualityThenInsertImages = (v, container, insertIndex, files) => {
+        inserted = { container, insertIndex, files };
+    };
+
+    const handler = capturePasteHandler(vm);
+    await handler(clean);
+
+    assert.ok(inserted, 'диалог качества картинок как раньше');
+    assert.equal(inserted.container, zone);
+    assert.deepEqual(inserted.files, [imageFile]);
+    assert.equal(clean._stopped(), false, 'событие не гасим — гасить нечего');
 });

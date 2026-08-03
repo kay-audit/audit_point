@@ -6,10 +6,12 @@
 import { ViolationManager, isEditableTarget } from './violation-core.js';
 import { Notifications } from '../../shared/notifications.js';
 import { AppConfig } from '../../shared/app-config.js';
+import { textBlockManager } from '../textblock/textblock-core.js';
 import {
     CONTENT_TYPE_CASE,
     CONTENT_TYPE_FREE_TEXT,
 } from './violation-content-item.js';
+import { promptPasteChoice } from './violation-paste-choice.js';
 
 /**
  * Строгий маркер кейса: «Кейс» + номер + разделитель в начале строки.
@@ -64,10 +66,121 @@ export function shouldInterceptImagesFromEditable(target, items) {
     return false;
 }
 
+/**
+ * Есть ли в буфере ТЕКСТ (а не только картинка).
+ *
+ * text/plain — основной сигнал: Excel и Word кладут его всегда. text/html
+ * учитываем только по ВИДИМОМУ тексту, потому что чисто картиночный буфер тоже
+ * несёт html: «Копировать изображение» браузера кладёт один <img> при пустом
+ * plain (тот же кейс описан в _insertSanitizedHtml, textblock-editor.js). До
+ * сравнения вырезаем служебную обвязку — комментарии Word (`<!--[if …]-->`) и
+ * `<style>`/`<script>` Excel, иначе пустой скопированный диапазон выглядел бы
+ * как текст.
+ *
+ * @param {string} html - Содержимое text/html буфера
+ * @param {string} plain - Содержимое text/plain буфера
+ * @returns {boolean}
+ */
+export function clipboardHasText(html, plain) {
+    if (plain && plain.trim()) return true;
+    if (!html) return false;
+    const visible = html
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<(style|script)\b[\s\S]*?<\/\1>/gi, '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/gi, ' ');
+    return visible.trim().length > 0;
+}
+
+/**
+ * Маршрут буфера при вставке в зону дополнительных материалов:
+ *  - `'images'` — только картинки → прежний конвейер зоны (диалог качества);
+ *  - `'combo'`  — картинки И текст → выбор пользователя (№5), иначе один Ctrl+V
+ *                 давал бы два результата: текст вставил бы редактор поля, а
+ *                 картинку — обработчик зоны;
+ *  - `'text'`   — только текст;
+ *  - `'none'`   — вставлять нечего.
+ *
+ * hasImages — по РЕАЛЬНО извлечённым файлам, а не по типам items: буфер с
+ * image-элементом, из которого не достаётся File, вставить картинкой нельзя.
+ *
+ * @param {{hasImages: boolean, html: string, plain: string}} payload
+ * @returns {'images'|'combo'|'text'|'none'}
+ */
+export function classifyClipboardPayload({ hasImages, html, plain }) {
+    const hasText = clipboardHasText(html, plain);
+    if (hasImages) return hasText ? 'combo' : 'images';
+    return hasText ? 'text' : 'none';
+}
+
+/**
+ * Снимок текущей каретки: диалог уводит фокус, и к моменту ответа живого
+ * выделения в поле уже нет. cloneRange — чтобы последующие правки выделения
+ * (в т.ч. внутри диалога) не мутировали снимок.
+ * @returns {Range|null}
+ */
+function captureCaretRange() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount === 0) return null;
+    return selection.getRangeAt(0).cloneRange();
+}
+
+/**
+ * Вставляет СНЯТЫЙ буфер в rich-поле после диалога: возвращает фокус (без него
+ * поверхность не смонтирована и finalizeEdit не закоммитит правку в модель),
+ * восстанавливает каретку и отдаёт данные конвейеру редактора — санитизация
+ * Word-HTML, реконструкция капсул, нативный undo и сток в модель там же, где у
+ * обычного Ctrl+V. Не пережившая диалог каретка (поле перерисовали) заменяется
+ * позицией в конце поля.
+ *
+ * @param {HTMLElement} field - contenteditable-хост rich-поля
+ * @param {Range|null} range - Снимок каретки до диалога
+ * @param {string} html - Содержимое text/html буфера
+ * @param {string} plain - Содержимое text/plain буфера
+ */
+function insertTextIntoRichField(field, range, html, plain) {
+    if (!field || typeof textBlockManager.pasteClipboardPayload !== 'function') return;
+
+    field.focus?.();
+
+    const selection = window.getSelection?.();
+    if (selection) {
+        const alive = range && range.startContainer
+            && (range.startContainer === field || field.contains?.(range.startContainer));
+        const target = alive ? range : _caretAtFieldEnd(field);
+        if (target) {
+            selection.removeAllRanges();
+            selection.addRange(target);
+        }
+    }
+
+    textBlockManager.pasteClipboardPayload(field, html, plain);
+}
+
+/**
+ * Каретка в конце поля — запасная позиция, если снимок не пережил диалог.
+ * @param {HTMLElement} field
+ * @returns {Range|null}
+ */
+function _caretAtFieldEnd(field) {
+    if (typeof document.createRange !== 'function') return null;
+    const range = document.createRange();
+    range.selectNodeContents(field);
+    range.collapse(false);
+    return range;
+}
+
 // Расширение ViolationManager
 Object.assign(ViolationManager.prototype, {
     /**
-     * Настраивает глобальный обработчик вставки изображений и текста из буфера обмена
+     * Настраивает глобальный обработчик вставки изображений и текста из буфера обмена.
+     *
+     * Слушатель в фазе ПЕРЕХВАТА (третий аргумент true): обработчик rich-поля
+     * (EditorController вешает paste на сам элемент поверхности) на всплытии
+     * отработал бы РАНЬШЕ и успел вставить текст комбинированного буфера ещё до
+     * того, как мы спросим пользователя (№5). Из capture мы первые и можем
+     * погасить событие через stopPropagation. Для остальных веток фаза ничего
+     * не меняет: они либо возвращаются рано, либо только preventDefault'ят.
      */
     setupPasteHandler() {
         document.addEventListener('paste', async (e) => {
@@ -140,6 +253,34 @@ Object.assign(ViolationManager.prototype, {
                 }
             }
 
+            // Строки буфера снимаем ЗДЕСЬ, синхронно: clipboardData живёт только
+            // внутри обработчика, а решение по комбинированному буферу приходит
+            // из диалога — уже после await.
+            const html = e.clipboardData.getData('text/html') || '';
+            const plain = e.clipboardData.getData('text/plain') || '';
+
+            // Комбинированный буфер (Excel/Word: текст + растр) при каретке в
+            // rich-поле зоны — спрашиваем пользователя (№5). Гасим событие
+            // ПОЛНОСТЬЮ: без stopPropagation обработчик поля вставил бы текст
+            // сам, в обход выбора. Каретку снимаем до диалога — он уводит фокус.
+            const richField = targetIsEditable && e.target.closest
+                ? e.target.closest('[contenteditable="true"]')
+                : null;
+            if (imageFiles.length > 0 && richField
+                    && classifyClipboardPayload({ hasImages: true, html, plain }) === 'combo') {
+                e.preventDefault();
+                e.stopPropagation();
+
+                await this.pasteCombinedClipboard(violation, targetContainer, insertIndex, {
+                    imageFiles,
+                    html,
+                    plain,
+                    field: richField,
+                    range: captureCaretRange(),
+                });
+                return;
+            }
+
             // Картинки идут ТЕМ ЖЕ конвейером, что drop/upload (#28):
             // filterAcceptedImageFiles → диалог качества (Q3) → ресайз → bulk (#29).
             // Собственного FileReader и логики «только последняя картинка» больше нет.
@@ -155,11 +296,11 @@ Object.assign(ViolationManager.prototype, {
                 this.promptQualityThenInsertImages(violation, targetContainer, insertIndex, accepted);
             }
             // Текст обрабатываем только если картинок в буфере нет И каретка не
-            // в редактируемом поле: в §5.8-ветке текст уже вставил редактор
-            // поверхности (его handler отрабатывает раньше по bubbling), наша
-            // текстовая ветка добавила бы дубль отдельным элементом зоны.
+            // в редактируемом поле: в §5.8-ветке текст вставляет редактор
+            // поверхности (его handler отрабатывает следом за нашим capture),
+            // наша текстовая ветка добавила бы дубль отдельным элементом зоны.
             else if (textItem && !targetIsEditable) {
-                const textContent = e.clipboardData.getData('text/plain').trim();
+                const textContent = plain.trim();
 
                 if (textContent) {
                     e.preventDefault();
@@ -183,6 +324,38 @@ Object.assign(ViolationManager.prototype, {
                     Notifications.success(message);
                 }
             }
-        });
+        }, true);
+    },
+
+    /**
+     * Разводит комбинированный буфер по СУЩЕСТВУЮЩИМ конвейерам после выбора
+     * пользователя (№5): текст — конвейером редактора в поле с кареткой,
+     * картинки — конвейером зоны (тип-валидация → диалог качества → ресайз →
+     * bulk), тем же, что у drag&drop и выбора файлов.
+     *
+     * Порядок «текст → картинки» обязателен: вставка картинок перерисовывает
+     * элементы зоны, а текст к этому моменту уже сложен в модель
+     * (insertTextIntoRichField → finalizeEdit → commit поверхности).
+     *
+     * @param {Object} violation - Объект нарушения
+     * @param {HTMLElement} container - Контейнер зоны (.additional-content-wrapper)
+     * @param {number} insertIndex - Позиция вставки картинок (конец зоны)
+     * @param {{imageFiles: File[], html: string, plain: string,
+     *          field: HTMLElement, range: Range|null}} payload - Снимок буфера и каретки
+     */
+    async pasteCombinedClipboard(violation, container, insertIndex, payload) {
+        const choice = await promptPasteChoice();
+        if (!choice) return; // отмена — не вставляем ничего
+
+        if (choice === 'text' || choice === 'both') {
+            insertTextIntoRichField(payload.field, payload.range, payload.html, payload.plain);
+        }
+
+        if (choice === 'image' || choice === 'both') {
+            // Тип-валидация ДО чтения (H6/#26) — warning с причиной отказа.
+            const accepted = this.filterAcceptedImageFiles(payload.imageFiles, violation);
+            if (accepted.length === 0) return;
+            await this.promptQualityThenInsertImages(violation, container, insertIndex, accepted);
+        }
     }
 });

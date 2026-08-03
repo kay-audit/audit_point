@@ -611,9 +611,25 @@ Object.assign(TextBlockManager.prototype, {
     handleEditorPaste(e, editor, textBlock) {
         e.preventDefault();
 
-        const html = e.clipboardData.getData('text/html');
-        const plain = e.clipboardData.getData('text/plain');
+        this.pasteClipboardPayload(
+            editor,
+            e.clipboardData.getData('text/html'),
+            e.clipboardData.getData('text/plain'),
+        );
+    },
 
+    /**
+     * Тот же конвейер вставки, но от СНЯТЫХ строк буфера, а не от события.
+     * Нужен отложенному сценарию: зона нарушений на комбинированном буфере
+     * (текст + картинка) сначала спрашивает пользователя, что вставлять, а к
+     * моменту ответа clipboardData уже недействителен — данные снимаются
+     * синхронно в обработчике и приходят сюда строками (violation-paste.js).
+     * Каретку/выделение выставляет вызывающий, как и в drop-пути.
+     * @param {HTMLElement} editor
+     * @param {string} html - Содержимое text/html буфера
+     * @param {string} plain - Содержимое text/plain буфера
+     */
+    pasteClipboardPayload(editor, html, plain) {
         // CARET-1: вставка во время inline-правки капсулы (двойной клик) идёт
         // ПЛЕЙН-текстом в её тело — HTML/капсулам внутри капсулы места нет. Наши
         // слои её не клоббят (editing-mode), нативный insertText остаётся в undo;
