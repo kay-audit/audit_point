@@ -31,9 +31,18 @@ def get_redis_adapter(request: Request) -> RedisAdapter:
     Приоритет app.state сохранён ради тестов — они кладут туда fakeredis,
     не поднимая модульный синглтон. Ни один из источников не отдаёт None:
     Redis обязателен, и его отсутствие ловится ещё на старте приложения.
+    Исключение — окно graceful shutdown: адаптер уже закрыт, get_redis()
+    кидает RuntimeError, и это осмысленный 503, а не общий 500.
     """
     adapter = getattr(request.app.state, "redis_adapter", None)
-    return adapter if adapter is not None else get_redis()
+    if adapter is not None:
+        return adapter
+    try:
+        return get_redis()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503, detail="Сервис авторизации временно недоступен"
+        ) from exc
 
 
 class AuthUserDirectory:

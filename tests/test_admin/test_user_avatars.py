@@ -3,6 +3,7 @@
 import datetime as dt
 from unittest.mock import MagicMock, patch
 
+import asyncpg
 import pytest
 
 from app.domains.admin.repositories.user_avatars import UserAvatarRepository
@@ -85,6 +86,20 @@ class TestUpsert:
 
         for call in mock_conn.execute.call_args_list:
             assert "ON CONFLICT" not in call[0][0].upper()
+
+    async def test_retries_update_after_concurrent_first_insert(self, repo, mock_conn):
+        """Гонка двух первых загрузок одного пользователя: проигравший ловит
+        UniqueViolationError на своём INSERT и повторяет UPDATE — строка,
+        которую вставил победитель, уже есть."""
+        mock_conn.execute.side_effect = [
+            "UPDATE 0",
+            asyncpg.UniqueViolationError("duplicate key"),
+            "UPDATE 1",
+        ]
+
+        await repo.upsert("12345", b"jpeg", "image/jpeg")
+
+        assert mock_conn.execute.call_count == 3
 
 
 class TestDelete:

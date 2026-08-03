@@ -44,30 +44,40 @@ class UserAvatarRepository(BaseRepository):
         """Сохраняет фото пользователя, заменяя прежнее.
 
         UPDATE, и только при отсутствии строки — INSERT: ``ON CONFLICT``
-        недоступен на Greenplum (PG 9.5+). Гонку двух параллельных загрузок
-        одного пользователя закрывает PRIMARY KEY (user_id входит и в
-        distribution key, поэтому GP констрейнт тоже соблюдает).
+        недоступен на Greenplum (PG 9.5+). PRIMARY KEY (user_id входит и в
+        distribution key, поэтому GP констрейнт тоже соблюдает) закрывает
+        гонку двух параллельных ПЕРВЫХ загрузок на уровне данных — дублей
+        не будет. Но между нашим UPDATE 0 и INSERT может вклиниться
+        конкурент: тогда INSERT ловит UniqueViolationError, и мы повторяем
+        UPDATE — строка к этому моменту уже есть.
         ``updated_at`` выставляется явно — триггеров в проекте нет.
         """
-        result = await self.conn.execute(
-            f"""
-            UPDATE {self.table}
-            SET image = $2, mime = $3, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = $1
-            """,
-            user_id,
-            image,
-            mime,
-        )
-        if result != "UPDATE 0":
-            return
+        for attempt in range(2):
+            result = await self.conn.execute(
+                f"""
+                UPDATE {self.table}
+                SET image = $2, mime = $3, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1
+                """,
+                user_id,
+                image,
+                mime,
+            )
+            if result != "UPDATE 0":
+                return
 
-        await self.conn.execute(
-            f"INSERT INTO {self.table} (user_id, image, mime) VALUES ($1, $2, $3)",
-            user_id,
-            image,
-            mime,
-        )
+            try:
+                await self.conn.execute(
+                    f"INSERT INTO {self.table} (user_id, image, mime) VALUES ($1, $2, $3)",
+                    user_id,
+                    image,
+                    mime,
+                )
+                return
+            except asyncpg.UniqueViolationError:
+                if attempt == 0:
+                    continue
+                raise
 
     async def delete(self, user_id: str) -> bool:
         """Удаляет фото. True — строка была, False — удалять было нечего."""

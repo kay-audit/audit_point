@@ -386,10 +386,16 @@ async def get_avatar_repository():
     Таблица принадлежит admin-домену, а обращается к ней слой авторизации,
     поэтому связь идёт через реестр фабрик (как acts → admin.user_directory),
     а не прямым импортом.
+
+    Обёрнуто в ``aclosing``: без него при исключении в эндпоинте (413/422)
+    ``async for`` не закрывает генератор фабрики, и внутренний
+    ``async with get_db()`` не отпускает соединение — при пуле 1/2 оно
+    виснет до сборщика мусора.
     """
     factory = get_factory("admin.user_avatars")
-    async for repo in factory():
-        yield repo
+    async with aclosing(factory()) as agen:
+        async for repo in agen:
+            yield repo
 
 
 async def get_request_username(request: Request) -> str:
@@ -405,10 +411,12 @@ async def get_request_username(request: Request) -> str:
 
 
 async def _invalidate_user_cache(username: str) -> None:
-    """Сбрасывает кеш ролей и user-контекста, из которого /me берёт версию фото.
+    """Сбрасывает кеш userctx пользователя (роли, ФИО, должность).
 
-    Без сброса пользователь видел бы прежнюю аватарку до истечения TTL.
-    Импорт отложен по той же причине, что и в ``get_request_username``.
+    Версия фото тут ни при чём: /me всегда читает её из БД
+    (``_read_avatar_version``), в кешируемом userctx поля avatar_version нет.
+    Сброс нужен для согласованности остальных полей userctx после его
+    изменения. Импорт отложен по той же причине, что и в ``get_request_username``.
     """
     from app.api.v1.deps.role_deps import invalidate_user_roles_cache
 

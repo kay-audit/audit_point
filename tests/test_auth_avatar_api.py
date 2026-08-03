@@ -12,7 +12,7 @@ import io
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -69,6 +69,34 @@ def _make_client(repo: AsyncMock, username: str = USERNAME) -> TestClient:
     return TestClient(app)
 
 
+class TestGetAvatarRepositoryCleanup:
+    """get_avatar_repository не должен ронять cleanup фабрики при ошибке."""
+
+    async def test_factory_generator_closed_on_exception(self):
+        """При исключении в эндпоинте (413/422) внутренний ``async with
+        get_db()`` обязан отпустить соединение. Без ``aclosing`` ``async for``
+        бросает генератор фабрики недозакрытым, и при пуле 1/2 соединение
+        виснет до сборщика мусора.
+        """
+        cleanup_done = False
+
+        async def _factory_gen():
+            nonlocal cleanup_done
+            try:
+                yield AsyncMock()
+            finally:
+                cleanup_done = True
+
+        register_factory("admin.user_avatars", lambda: _factory_gen())
+
+        agen = get_avatar_repository()
+        await agen.__anext__()
+        with pytest.raises(HTTPException):
+            await agen.athrow(HTTPException(status_code=413, detail="test"))
+
+        assert cleanup_done is True
+
+
 class TestUploadAvatar:
     """POST /auth/avatar — загрузка своего фото."""
 
@@ -95,7 +123,10 @@ class TestUploadAvatar:
         assert stored.size == (AVATAR_SIZE_PX, AVATAR_SIZE_PX)
 
     def test_invalidates_user_cache(self):
-        """Без сброса кеша /me отдавал бы прежнюю версию фото до истечения TTL."""
+        """Загрузка фото сбрасывает кеш userctx (роли/ФИО/должность).
+
+        Версия фото при этом не кэшируется и всегда свежая — сброс не про неё.
+        """
         repo = _make_repo({"image": b"x", "mime": "image/jpeg", "updated_at": UPLOADED_AT})
         client = _make_client(repo)
         invalidate = AsyncMock()
