@@ -83,6 +83,7 @@
   - [9.1 Standalone (uvicorn)](#91-standalone-uvicorn)
   - [9.2 За JupyterHub proxy](#92-за-jupyterhub-proxy)
   - [9.3 За reverse proxy (HTTPS)](#93-за-reverse-proxy-https)
+  - [9.3a Авторизация (ОТП/JWT)](#93a-авторизация-отпjwt)
   - [9.4 Конфигурация: .env и Pydantic Settings](#94-конфигурация-env-и-pydantic-settings)
     - [9.4.1 Примеры .env для LLM-профилей](#941-примеры-env-для-llm-профилей)
     - [9.4.2 MIME-типы файлов чата (дефолт)](#942-mime-типы-файлов-чата-дефолт)
@@ -289,8 +290,6 @@ erDiagram
         INTEGER part_number
         VARCHAR service_note "СЗ: Text/YYYY"
         BOOLEAN is_process_based
-        VARCHAR locked_by
-        TIMESTAMP lock_expires_at
     }
     act_tree {
         INTEGER act_id FK
@@ -346,13 +345,12 @@ erDiagram
 **Финальный порядок инфраструктурных startup-hooks** (регистрируются в `_build_domain`, выполняются в порядке регистрации):
 
 1. `acts.audit_log_batcher`
-2. `acts.expired_locks_cleanup`
-3. `admin.http_metrics_batcher`
-4. `admin.access_denied_audit_batcher`
-5. `admin.db_pool_monitor`
-6. `chat.tool_metrics_batcher`
-7. `chat.audit_log_batcher`
-8. `chat.agent_channel_poller`
+2. `admin.http_metrics_batcher`
+3. `admin.access_denied_audit_batcher`
+4. `admin.db_pool_monitor`
+5. `chat.tool_metrics_batcher`
+6. `chat.audit_log_batcher`
+7. `chat.agent_channel_poller`
 
 Что делает каждый hook — в §9.5b (один раздел, без дублирования).
 
@@ -416,24 +414,25 @@ DatabaseAdapter (абстрактный)
 
 ### 2.5 Middleware stack
 
-В `create_app()` подключаются шесть middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
+В `create_app()` подключаются семь middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
 
-**Порядок выполнения при запросе:**
+**Порядок выполнения при запросе (снаружи внутрь):**
 
 ```
-Запрос → RequestId → HttpMetrics → RateLimit → RequestSizeLimit → SecurityHeaders → HTTPSRedirect → FastAPI → Ответ
+Запрос → HTTPSRedirect → RequestId → SecurityHeaders → RequestSizeLimit → RateLimit → HttpMetrics → Auth → FastAPI → Ответ
 ```
 
 | Middleware | Назначение |
 |-----------|-----------|
-| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. Стоит внутри всех остальных, чтобы request_id виделся в логах любого слоя. |
-| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. |
-| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
-| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
-| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize, чтобы заголовки попадали и в их 413/429-ответы. |
 | `HTTPSRedirectMiddleware` | Переписывает `scheme` на `https` по заголовкам `x-forwarded-proto` / `x-scheme`. Outermost — должен отработать до SecurityHeaders, который опирается на scheme. |
+| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. |
+| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize/Auth, чтобы заголовки попадали и в их 413/429/401-ответы. |
+| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
+| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
+| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. Стоит снаружи Auth (видит 401 анонимов), но внутри лимитов — отбитые 429/413 в метрики не попадают, чтобы флуд не разгонял журнал. |
+| `AuthMiddleware` | Проверка JWT-cookie на каждый запрос, тихий refresh истёкшего access. Самый внутренний слой — raw ASGI, как и остальные middleware проекта. Его 401 и редиректы поднимаются через весь стек: получают security-заголовки, request_id и попадают в метрики. |
 
-Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (он лежит в `app/core/middlewares/http_metrics.py`).
+Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (`app/core/middlewares/http_metrics.py`) и `AuthMiddleware` (`app/auth/middleware.py`).
 
 ---
 
@@ -553,13 +552,16 @@ async def get_crud_service(
 
 Connection автоматически возвращается в пул после завершения запроса.
 
-**Auth dependency** (`app/api/v1/deps/auth_deps.py`):
+**Auth dependency** (`app/api/v1/deps/auth_deps.py`, упрощённо — оба режима `AUTH__ENABLED`, детали §9.3a):
 
 ```python
-def get_username() -> str:
-    username = get_current_user_from_env()
+async def get_username(request: Request) -> str:
+    if not get_settings().auth.enabled:
+        username = resolve_env_username()   # тест-режим: JUPYTERHUB_USER
+    else:
+        username = request.scope.get("state", {}).get("user", {}).get("sub")  # ОТП: sub из JWT
     if not username:
-        raise HTTPException(status_code=401, detail="Требуется авторизация")
+        raise HTTPException(status_code=401, detail="Не авторизован")
     return username
 ```
 
@@ -568,27 +570,29 @@ def get_username() -> str:
 **Шаг 1.** Добавить функцию в существующий файл `app/api/v1/endpoints/*.py` или создать новый:
 
 ```python
-# app/api/v1/endpoints/auth.py
-@router.post("/logout", status_code=200)
-async def logout(username: str = Depends(get_username)):
-    logger.info(f"Пользователь {username} вышел из системы")
-    return {"message": "Успешно вышли из системы"}
+# app/api/v1/endpoints/system.py
+@router.get("/ping", status_code=200)
+async def ping(username: str = Depends(get_username)):
+    logger.info(f"Пинг от пользователя {username}")
+    return {"message": "pong"}
 ```
 
 **Шаг 2.** Если создан новый файл — зарегистрировать в `app/api/v1/routes.py`:
 
 ```python
-from app.api.v1.endpoints import auth, system, roles, new_module
+from app.api.v1.endpoints import admin_diagnostics, roles, system, new_module
+from app.auth.router import router as auth_router   # особый случай: живёт в app/auth/, не в endpoints/
 
 ROUTERS = [
-    (auth, "/auth", ["Авторизация"]),
+    (auth_router, "/auth", ["Авторизация"]),
     (system, "/system", ["Системные операции"]),
     (roles, "/roles", ["Роли пользователей"]),
+    (admin_diagnostics, "/admin/diagnostics", ["Администрирование"]),
     (new_module, "/new", ["Новый модуль"]),  # добавить
 ]
 ```
 
-Результат: эндпоинт доступен по `POST /api/v1/auth/logout`.
+Результат: эндпоинт доступен по `GET /api/v1/system/ping`.
 
 ### 3.4 Domain API — как добавить эндпоинт в домен
 
@@ -1370,9 +1374,7 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 - `close_db()` — закрытие при shutdown
 - `create_tables_if_not_exist(domains)` — автосоздание таблиц
 
-**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `5` / `20`). Обоснование: одновременных коннектов нужно достаточно, чтобы покрыть параллельные запросы чата + фоновые задачи (`AgentChannelPoller`, `ActAuditLogBatcher`, `ExpiredLocksCleanupTask`, HTTP-метрика батчер) + горячий путь CRUD-эндпоинтов. Старые дефолты `2/10` стабильно упирались в `TooManyConnectionsError` при нагрузке от нескольких одновременных пользователей чата (см. troubleshooting №17). Под GP при необходимости поднимать до `30+` (см. `DatabaseSettings` docstring).
-
-**Partial-индекс `idx_{PREFIX}acts_lock_expires`** на `acts(lock_expires_at)` с `WHERE lock_expires_at IS NOT NULL` — отдельный индекс, который дешёво находит блокировки, которые можно снять. Используется фоновой задачей `ExpiredLocksCleanupTask` (см. §7.4a). Индекс уже присутствует в обеих схемах (PG и GP), регрессий миграции не требуется.
+**Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `1` / `2`, одинаковые во всех окружениях). Обоснование: у ПРОМ-учётки Greenplum жёсткий лимит порядка 5 соединений, и «поднять пул» там невозможно в принципе. Уложиться в такой потолок позволил переезд горячих путей на Redis — счётчик непрочитанных, роли, user-контекст и блокировки актов больше не ходят в БД на каждый запрос, а батчеры и `AgentChannelPoller` берут коннект короткими порциями. DEV держим идентичным ПРОМу: вилка дефолтов прятала бы нехватку коннектов до самого прода. Диагностика исчерпания — troubleshooting №17.
 
 Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул: коннект берётся только на время `_tick`, в `sleep` не удерживается. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
 
@@ -2010,19 +2012,9 @@ LLM call
 
 Управляется hook'ом `acts.audit_log_batcher` (startup/shutdown). **Ленивый fallback в `ActAuditLogRepository.log()`**: если активный батчер из `deps.get_audit_log_batcher()` есть — пишет через него; если нет — одиночный INSERT прямо в БД. Это нужно тестам (нет lifespan'а) и раннему startup (до того, как hook отработал). При падении самого батчера `.add()` репозиторий тоже падает в fallback.
 
-**2. `ExpiredLocksCleanupTask`** (`app/domains/acts/services/expired_locks_cleanup.py`). Фоновый asyncio-таск, раз в 60 сек делает один UPDATE:
+> Блокировки актов больше не нуждаются в отдельном cleanup-таске: с переездом на Redis (см. §10.4) лок — ключ с TTL, истекает сам, снимать нечего.
 
-```sql
-UPDATE {acts}
-SET locked_by = NULL, locked_at = NULL, lock_expires_at = NULL
-WHERE lock_expires_at <= CURRENT_TIMESTAMP AND locked_by IS NOT NULL
-```
-
-Опирается на partial-индекс `idx_{PREFIX}acts_lock_expires` с `WHERE lock_expires_at IS NOT NULL` (см. §6.3) — поиск кандидатов дешёвый. Раз в час (60 циклов × 60 сек) пишет суммарную статистику в INFO-лог («за последние N циклов снято M блокировок»). Управляется hook'ом `acts.expired_locks_cleanup`.
-
-> Это **подстраховка** — основной путь снятия блокировок остаётся через `ActLockService.unlock()` и автопродление через `inactivity_check`. Cleanup-таск ловит сценарии: kill -9 во время редактирования, обрыв сети с lock'ом на сервере, баг в логике inactivity-watcher'а.
-
-**3. `AgentChannelPoller`** (`app/domains/chat/services/agent_channel_poller.py`). Один asyncio-task на процесс, поллит bus-таблицу `chat_agent_messages_bus` по подписанным `question_uid` (см. §6.3 sequence-diagram, §11.6). Adaptive backoff:
+**2. `AgentChannelPoller`** (`app/domains/chat/services/agent_channel_poller.py`). Один asyncio-task на процесс, поллит bus-таблицу `chat_agent_messages_bus` по подписанным `question_uid` (см. §6.3 sequence-diagram, §11.6). Adaptive backoff:
 
 ```
 interval = poll_min_interval_sec  # при наличии ответов или без подписок
@@ -2433,7 +2425,7 @@ async def open_act_page_handler(
 
 ```
 tests/
-├── conftest.py                       — общие фикстуры (mock_conn, mock_adapter)
+├── conftest.py                       — общие фикстуры (fake_redis autouse, mock_conn, mock_adapter)
 ├── core/                             — тесты ядра (DomainDescriptor, chat blocks)
 ├── db/                               — адаптеры PG/GP и init_db
 ├── domains/
@@ -2485,11 +2477,25 @@ def clean():
 - `_user_locks.clear()` — для тестов сервисов с in-process `asyncio.Lock` (см. `conversation_service`, `message_service`); сбрасывается через autouse-фикстуру в `test_singleton_lock.py`
 - `get_settings.cache_clear()` — обязательно, если тест меняет env: `get_settings()` помечен `@lru_cache` (см. `app/core/config.py`), без сброса soak'нется значение от предыдущего теста
 
-Общие фикстуры в `tests/conftest.py`:
+Общие фикстуры в `tests/conftest.py`. Первая — **autouse**: Redis обязателен во всех окружениях, включая pytest (§9.5), поэтому `get_redis()` не отдаёт None, а бросает `RuntimeError`. Фикстура играет роль startup-хука, подставляя fakeredis в модульный синглтон; свежий инстанс на каждый тест изолирует ключи (иначе блокировка акта из одного теста жила бы 15 минут и ломала соседний). Lua-скрипты исполняются по-настоящему — за это отвечает `lupa`.
 
 ```python
+import fakeredis.aioredis
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+from app.core import redis as redis_module
+from app.core.config import RedisSettings
+from app.core.redis import RedisAdapter
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """Подставляет fakeredis в app.core.redis._adapter на каждый тест."""
+    adapter = RedisAdapter(RedisSettings())
+    adapter._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    redis_module._adapter = adapter
+    yield adapter
+    redis_module._adapter = None
 
 @pytest.fixture
 def mock_conn():
@@ -2732,15 +2738,17 @@ uvicorn app.main:app --host 127.0.0.1 --port 8005 --workers 1
 lifespan захватывает singleton-блокировку в таблице
 `{PREFIX}app_singleton_lock` (см. `app/core/singleton_lock.py`):
 второй воркер этого же сервиса упадёт с понятным сообщением. Это
-сознательное ограничение — в закрытой сети нет Redis/etcd, а
-process-level состояние (`AgentChannelPoller` реестр подписок,
+сознательное ограничение — process-level состояние
+(`AgentChannelPoller` реестр подписок,
 in-process locks сервисов) безопасно только при одном
 процессе. Stale-lock (после kill -9) автоматически перезахватывается
 через TTL=60с.
 
 ### 9.2 За JupyterHub proxy
 
-При работе в DataLab приложение находится за JupyterHub proxy. Конфигурация автоматическая:
+> Историческое: относится к упразднённому JupyterHub-деплою; актуальный деплой — SDP, доступ по IP:порту напрямую, без proxy-путей (см. §9.3a «Авторизация (ОТП/JWT)», подраздел «Деплой SDP»). `root_path` в `app/main.py` больше не вычисляется — раздел ниже сохранён как архивная справка.
+
+При работе в DataLab приложение находилось за JupyterHub proxy. Конфигурация была автоматической:
 
 ```python
 # main.py
@@ -2798,6 +2806,60 @@ server {
     }
 }
 ```
+
+### 9.3a Авторизация (ОТП/JWT)
+
+Модуль `app/auth/` — shared-инфраструктура, не домен (см. docstring `app/auth/__init__.py`): API-роутер подключается в `app/api/v1/routes.py` отдельным импортом (`from app.auth.router import router as auth_router`, а не через `app/api/v1/endpoints/`), HTML-страницы входа — через `app.auth.portal_router` в `create_app`, lifespan-hooks — через `register_lifespan_hooks()`.
+
+| Файл | Роль |
+|---|---|
+| `router.py` | API `/api/v1/auth/*`: `POST request-otp`, `POST verify-otp`, `POST refresh`, `POST logout`, `GET me` |
+| `middleware.py` | `AuthMiddleware` — проверка JWT-cookie на каждый запрос, прозрачный refresh |
+| `jwt_handler.py` | `JWTTokenHandler` — выпуск/валидация access+refresh токенов (PyJWT) |
+| `user_repository.py` | `AuthUserRepository` — поиск пользователя по email в справочнике `admin.user_directory`, подгрузка ролей для профиля |
+| `context.py` | `ContextVar` с username текущего запроса; читают батчеры метрик/аудита (`app/core/middlewares/http_metrics.py`) без похода в JWT/scope |
+| `portal_router.py` | HTML: `GET /auth/login`, `GET /auth/logout`, `GET /profile` |
+| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение (`app/core/redis.py`, общий слой — §9.5 «Redis») при старте/остановке. Безусловно, независимо от `AUTH__ENABLED`: Redis — общая инфраструктура, модуль auth лишь исторический владелец хука |
+
+**Два режима (`AUTH__ENABLED`):**
+
+- **`false` (тест-режим, дефолт).** Авторизации нет: username берётся из окружения (`JUPYTERHUB_USER`, имя переменной историческое) через `resolve_env_username()` — только цифры до первого `_`. Используется в pytest/Playwright и локальной отладке без почты. Redis при этом всё равно обязателен — он не auth-специфичен (см. §9.5).
+- **`true` (ОТП, прод и DEV с реальным входом).** Username = `sub` из JWT в `request.scope["state"]["user"]`, которое кладёт `AuthMiddleware` — похода в БД на каждый обычный запрос нет (только `/auth/me` и HTML-страница `/profile` тянут полный профиль).
+
+**Поток входа:**
+
+1. `POST /auth/request-otp {email}` — ищет пользователя по email в `admin.user_directory`, генерирует `AUTH__OTP_LENGTH`-значный код, кладёт в Redis (`otp:{user}`, TTL `AUTH__OTP_TTL`). Ответ всегда `success=true`, даже если email не найден — не палим факт существования адреса.
+2. Отправка кода — через фабрику `notifications.email` (см. `NOTIFICATIONS__EMAIL__*`). Строка `DEV-режим: ОТП-код для <email> = <code>` пишется в лог только когда почта выключена или домен уведомлений не зарегистрирован. При включённой почте несостоявшаяся отправка идёт в error-лог без кода, а клиент получает тот же success=true (иначе ответ стал бы оракулом существования email).
+3. `POST /auth/verify-otp {email, otp}` — сверяет код, при успехе удаляет его из Redis (одноразовый), выпускает пару JWT и ставит HttpOnly-cookie (`access_token`, `refresh_token`).
+4. Дальше на каждый запрос — `AuthMiddleware`: валиден access → пропускает; access истёк, но refresh жив → тихо перевыпускает пару и подставляет новые cookie в ответ (сессия живёт, пока жив refresh, дефолт 7 дней, фронт про TTL не знает). Ни access, ни refresh не валидны → HTML уходит редиректом на `/auth/login` (с `?expired=1`, если cookie вообще были), API получает 401 JSON.
+
+**Лимиты безопасности (Redis):** `otp_att:{user}` — счётчик неверных попыток ввода кода; по достижении `AUTH__OTP_MAX_ATTEMPTS` код инвалидируется досрочно (нужен новый запрос). `otp_req:{email}` — счётчик запросов кода на email за минуту; при превышении `AUTH__OTP_REQUEST_MAX_PER_MINUTE` — 429 ещё до похода в БД (защита и от перебора email, и от флуда SMTP). При `AUTH__ENABLED=true` пустой, дефолтный (`your-secret-key`) либо короче 32 символов `AUTH__JWT_SECRET` — фатальная ошибка валидации настроек при старте (см. `AuthSettings.validate_jwt_secret`; 32 — минимум HMAC-ключа HS256 по RFC 7518).
+
+**Env-переменные** (`AUTH__*`; полный список с дефолтами — `.env.example`, машиночитаемая таблица — §9.5 «Auth»):
+
+| Переменная | Дефолт | Назначение |
+|---|---|---|
+| `AUTH__ENABLED` | `false` | Режим (см. выше) |
+| `AUTH__JWT_SECRET` | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
+| `AUTH__JWT_ACCESS_TTL` / `AUTH__JWT_REFRESH_TTL` | `900` / `604800` | TTL токенов, сек |
+| `AUTH__COOKIE_SECURE` / `AUTH__COOKIE_DOMAIN` | `false` / (пусто) | `Secure`-флаг и домен cookie |
+| `AUTH__OTP_LENGTH` / `AUTH__OTP_TTL` | `6` / `300` | Длина кода (цифр) / время жизни, сек |
+| `AUTH__OTP_MAX_ATTEMPTS` | `5` | Неверных попыток до инвалидации кода |
+| `AUTH__OTP_REQUEST_MAX_PER_MINUTE` | `3` | Запросов кода на email в минуту |
+
+Подключение к Redis (используется для OTP-кодов и лимитов) — общий корневой блок `REDIS__*` (§9.5 «Redis»), не часть `AUTH__*`.
+
+**DEV-запуск с реальным ОТП-входом** (`AUTH__ENABLED=true` локально):
+
+1. Redis в WSL Ubuntu-24.04 (systemd в дистро включён, юнит `redis-server` автостартует):
+   - Установка: `wsl -d Ubuntu-24.04 -u root -- apt-get install -y redis-server` (root в WSL — без пароля).
+   - Windows→WSL по `localhost` в NAT-режиме нестабилен (особенно с системным localhost-прокси) — в `%USERPROFILE%\.wslconfig` включить `[wsl2] networkingMode=mirrored`, `dnsTunneling=true`, `autoProxy=true`, затем `wsl --shutdown`; в mirrored-режиме сервис должен слушать `0.0.0.0` (`/etc/redis/redis.conf`: `bind 0.0.0.0 -::1`, `protected-mode yes` оставить — Redis без пароля отвергает клиентов с не-loopback адресов, это защита от внешней сети).
+   - WSL глушит VM через ~минуту после последней `wsl.exe`-команды — держать якорь фоном: `wsl -d Ubuntu-24.04 --exec sleep infinity` (например, автостартом при входе в Windows).
+   - Приложение подключается по `REDIS__HOST=127.0.0.1` (дефолт), не `localhost` — IPv6-ловушка на Windows (§9.5 «Redis»).
+2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
+3. `AUTH__JWT_SECRET` — строка не короче 32 символов: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+
+**Деплой SDP:** приложение переехало с JupyterHub DataLab на SDP-кластер — доступ по IP:порту напрямую, `root_path`/proxy-путей больше нет (`app/main.py` их не вычисляет, в отличие от §9.2 ниже). Cookie-based авторизация от этого не зависит: домен/порт задаются `AUTH__COOKIE_DOMAIN`/`AUTH__COOKIE_SECURE` при необходимости.
 
 ### 9.4 Конфигурация: .env и Pydantic Settings
 
@@ -3005,7 +3067,7 @@ def test_chat_settings_defaults():
 |-----------|-----|-------------|----------|
 | `APP_TITLE` | str | `Audit Workstation` | Название приложения |
 | `APP_VERSION` | str | `1.0.0` | Версия |
-| `JUPYTERHUB_USER` | str | `unknown_user` | Пользователь DataLab |
+| `JUPYTERHUB_USER` | str | `unknown_user` | Username (цифры): тест-режим авторизации (`AUTH__ENABLED=false`, §9.3a) и/или Kerberos-логин для Greenplum (`app/db/connection.py`). Имя — историческое, к JupyterHub/DataLab деплою больше не привязано |
 
 #### Server
 
@@ -3027,8 +3089,8 @@ def test_chat_settings_defaults():
 | `DATABASE__NAME` | str | `audit_workstation` | Имя БД |
 | `DATABASE__USER` | str | `postgres` | Пользователь |
 | `DATABASE__PASSWORD` | str | (пусто) | Пароль |
-| `DATABASE__POOL_MIN_SIZE` | int | `5` | Мин. соединений. Подобран под параллельные запросы чата + фоновые задачи (AgentChannelPoller, audit-log batcher, expired-locks cleanup, HTTP-metrics batcher) + горячий путь CRUD |
-| `DATABASE__POOL_MAX_SIZE` | int | `20` | Макс. соединений. Старые дефолты `2/10` упирались в `TooManyConnectionsError` при нагрузке (см. troubleshooting №17) |
+| `DATABASE__POOL_MIN_SIZE` | int | `1` | Мин. соединений. Единый дефолт для DEV и ПРОМа |
+| `DATABASE__POOL_MAX_SIZE` | int | `2` | Макс. соединений. У ПРОМ-учётки GP лимит ~5 соединений; горячие пути унесены на Redis, поэтому пул минимальный (см. troubleshooting №17) |
 | `DATABASE__COMMAND_TIMEOUT` | int | `60` | Timeout команд (сек) |
 | `DATABASE__ACQUIRE_TIMEOUT` | float | `10` | Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула `get_db` отдаёт 503 (`ServiceUnavailableError`) вместо бессрочного зависания запроса |
 | `DATABASE__POOL_WARMUP_ENABLED` | bool | `True` | Прогрев пула при старте |
@@ -3038,6 +3100,21 @@ def test_chat_settings_defaults():
 | `DATABASE__GP__DATABASE` | str | `capgp3` | Имя БД GP |
 | `DATABASE__GP__SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема GP (alias для поля `schema_name`) |
 
+#### Redis
+
+Общий слой `app/core/redis.py` (`RedisAdapter` + модульные `init_redis`/`close_redis`/`get_redis() -> RedisAdapter`). **Redis обязателен во всех окружениях** — ПРОМ, DEV, pytest, Playwright — и поднимается на старте безусловно, независимо от `AUTH__ENABLED`; без него приложение не стартует (fail-fast в хуке, см. §9.3a `lifecycle.py`). `get_redis()` не возвращает None, а бросает `RuntimeError`, если `init_redis` не вызывали: конфигурационных развилок «а если Redis нет» в потребителях не осталось. В pytest адаптер подставляет autouse-фикстура `fake_redis` (`tests/conftest.py`, свежий fakeredis на тест); e2e ходят в живой Redis на отдельную БД 15 (`tests/playwright/global-setup.ts` перед прогоном делает PING + FLUSHDB).
+
+Текущие потребители: OTP-коды/лимиты модуля `app.auth` (см. §9.3a), кэш unread-счётчика уведомлений, кэш ролей и пользовательского контекста (L2 поверх in-process TTLCache), блокировки актов (TTL-ключ, см. §10.4) — далее в очереди шина внешнего ИИ-агента. Обрабатывается только **рантайм-сбой** уже работающего Redis, и это авария, а не режим: кэши молча идут мимо него прямо в БД (warning в лог), мутации лока (захват/продление/снятие) отдают 5xx (fail-closed), чтение состояния лока при обогащении списка актов — fail-open (акт считается свободным).
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `REDIS__HOST` | str | `127.0.0.1` | Хост Redis. Именно IPv4-адрес, не `localhost` — на Windows `localhost` резолвится в IPv6 `::1` первым, redis-py не фолбэкает на IPv4 (connection refused/timeout) |
+| `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе может быть нестандартным (пример: `7474`) |
+| `REDIS__DB` | int | `0` | Индекс БД Redis (0-15). БД `15` занята e2e-прогоном: `global-setup.ts` делает на ней FLUSHDB перед стартом сервера |
+| `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |
+| `REDIS__MAX_CONNECTIONS` | int | `10` | Максимум соединений в пуле клиента Redis |
+| `REDIS__SOCKET_TIMEOUT` | float | `5.0` | Таймаут операций сокета Redis, сек |
+
 #### Security
 
 | Переменная | Тип | По умолчанию | Описание |
@@ -3046,6 +3123,24 @@ def test_chat_settings_defaults():
 | `SECURITY__RATE_LIMIT_PER_MINUTE` | int | `1024` | Лимит запросов/мин на IP |
 | `SECURITY__MAX_TRACKED_IPS` | int | `100` | Макс. отслеживаемых IP |
 | `SECURITY__RATE_LIMIT_TTL` | int | `120` | TTL метрик (сек) |
+
+#### Auth (ОТП/JWT)
+
+Модуль `app/auth/`, не домен. Архитектура и поток входа — §9.3a.
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `AUTH__ENABLED` | bool | `False` | `true` — ОТП-авторизация, `false` — тест-режим (username из `JUPYTERHUB_USER`) |
+| `AUTH__JWT_SECRET` | SecretStr | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
+| `AUTH__JWT_ALGORITHM` | str | `HS256` | Алгоритм подписи JWT |
+| `AUTH__JWT_ACCESS_TTL` | int | `900` | TTL access-токена (сек) |
+| `AUTH__JWT_REFRESH_TTL` | int | `604800` | TTL refresh-токена (сек) — фактическая длина сессии |
+| `AUTH__COOKIE_SECURE` | bool | `False` | `Secure`-флаг cookie (`true` под HTTPS) |
+| `AUTH__COOKIE_DOMAIN` | str | (пусто) | Домен cookie, пусто — текущий host |
+| `AUTH__OTP_LENGTH` | int | `6` | Длина ОТП-кода (цифр) |
+| `AUTH__OTP_TTL` | int | `300` | Время жизни ОТП-кода (сек) |
+| `AUTH__OTP_MAX_ATTEMPTS` | int | `5` | Неверных попыток ввода кода до инвалидации |
+| `AUTH__OTP_REQUEST_MAX_PER_MINUTE` | int | `3` | Запросов кода на email в минуту |
 
 #### Chat: LLM
 
@@ -3230,7 +3325,6 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
 
 **Дополнительные фоновые сервисы (без отдельных метрик, только логи):**
 
-- `ExpiredLocksCleanupTask` (`acts.expired_locks_cleanup`) — раз в час INFO-лог «за последние N циклов снято M блокировок». Не пишет в БД, но даёт видимость в проде, что cleanup работает (см. §7.4b).
 - `AgentChannelPoller` (`chat.agent_channel_poller`) — INFO на start/stop, exception-логи при сбоях тика. Полезно для отладки «почему ответ агента не появляется».
 
 **Параметры `ActAuditLogBatcher`** (`acts.audit_log_batcher`) отличаются от общих `OBSERVABILITY__*`:
@@ -3257,8 +3351,7 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
   },
   "background_tasks": {
     "admin.db_pool_monitor": {"name": "...", "running": true, ...},
-    "chat.agent_channel_poller": {...},
-    "acts.expired_locks_cleanup": {...}
+    "chat.agent_channel_poller": {...}
   }
 }
 ```
@@ -3280,7 +3373,6 @@ HTTP metrics middleware **выключен по умолчанию** — вкл�
 | Имя в реестре | Что | Где регистрируется |
 |---|---|---|
 | `acts.audit_log_batcher` | `MetricsBatcher` | `app/domains/acts/_lifecycle.py:47` |
-| `acts.expired_locks_cleanup` | background-task | `app/domains/acts/_lifecycle.py:71` |
 | `admin.http_metrics_batcher` | `MetricsBatcher` | `app/domains/admin/_lifecycle.py:80` |
 | `admin.access_denied_audit_batcher` | `MetricsBatcher` | `app/domains/admin/_lifecycle.py:127` |
 | `admin.db_pool_monitor` | background-task | `app/domains/admin/_lifecycle.py:168` |
@@ -3407,22 +3499,17 @@ LIMIT 20;
 
 ### 10.4 Lock-механизм и inactivity dialog
 
-Источник истины — поля **прямо в таблице `acts`** (`migrations/postgresql/schema.sql:39-41`):
+Источник истины — не колонки таблицы `acts` (их убрали), а ключ Redis `lock:act:{act_id}` с нативным TTL `DURATION_MINUTES`: пока ключ жив — акт занят, истёк TTL — акт свободен автоматически, отдельного снятия не требуется.
 
-| Поле | Назначение |
-|---|---|
-| `locked_by VARCHAR(50)` | Username держателя блокировки. `NULL` = акт свободен |
-| `locked_at TIMESTAMP` | Когда блокировка взята |
-| `lock_expires_at TIMESTAMP` | До какого момента валидна |
-
-Сервис — `app/domains/acts/services/act_lock_service.py`. Репозиторий — `app/domains/acts/repositories/act_lock.py`. На GP таблица имеет partial-индекс `idx_{PREFIX}acts_locked_by WHERE locked_by IS NOT NULL` для быстрого поиска чужих блокировок (`migrations/greenplum/schema.sql:494-496`).
+Репозиторий-фасад — `app/domains/acts/repositories/act_lock.py` (`ActLockRepository`; имена методов и формы возвратов сохранены с эпохи SQL-колонок). Бэкенд один — `RedisLockBackend` (`app/domains/acts/repositories/act_lock_backends.py`), все мутации атомарны через Lua-скрипты (захват-или-продление, снятие только своей блокировки). Redis обязателен во всех окружениях, включая тесты (в pytest — fakeredis из autouse-фикстуры `fake_redis`), поэтому альтернативного in-memory бэкенда больше нет. Сервис — `app/domains/acts/services/act_lock_service.py`.
 
 **Поведение:**
 
-- При попытке открыть акт сервис проверяет `lock_expires_at > now()`. Если занят другим — возврат `ActLockError` (HTTP 409, `app/domains/acts/exceptions.py:23`) с именем держателя в `locked_by`.
-- При своём существующем lock — продление до `now() + DURATION_MINUTES`. Не чаще, чем раз в `MIN_EXTENSION_INTERVAL_MINUTES` (антифлуд).
-- При истечении lock — следующий запрос на любое изменение возвращает 403 / 423. Пользователь должен заново «взять» акт.
+- Захват/продление — атомарная Lua-операция: чужую блокировку не тронет, свою продлит. Если акт занят другим — `ActLockError` (HTTP 409, `app/domains/acts/exceptions.py:23`) с именем держателя.
+- Продление — не чаще, чем раз в `MIN_EXTENSION_INTERVAL_MINUTES` (антифлуд), до `now() + DURATION_MINUTES`.
+- При истечении TTL ключ исчезает сам — следующий запрос на изменение возвращает 403 / 423, пользователь должен заново «взять» акт.
 - **Inactivity dialog**: фронт по таймеру `INACTIVITY_TIMEOUT_MINUTES` без активности (нет клика/keypress) показывает диалог «Продолжить?». Если пользователь не ответил за `INACTIVITY_DIALOG_TIMEOUT_SECONDS` — lock отпускается, фронт уходит в read-only.
+- **Деградация Redis**: мутации (захват/продление/снятие) при недоступном Redis — 5xx (fail-closed, разъехавшиеся блокировки хуже отказа); чтение состояния лока в списке актов — fail-open (пусто + warning в лог).
 
 > **Фронт-часть LockManager** (`static/js/constructor/lock-manager.js`, 762 строки) описана в [`docs/architecture/frontend-architecture.md`](../architecture/frontend-architecture.md) §6: heartbeat + retry, countdown по `Date.now()` (устойчив к Chrome background throttling), `visibilitychange`-handler с autoExit, `_initiateExit` идемпотентен, capture `actId` в `_handleInactivity`, beacon-unlock через `navigator.sendBeacon`, жёсткий редирект на 409.
 

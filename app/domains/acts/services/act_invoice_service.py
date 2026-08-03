@@ -41,7 +41,7 @@ class ActInvoiceService:
         self.acts_settings = acts_settings
         self.ua_tables = ua_tables
         self._access = access or ActAccessRepository(conn)
-        self._lock = lock or ActLockRepository(conn)
+        self._lock = lock or ActLockRepository()
         self._invoice = invoice or ActInvoiceRepository(conn)
         self.guard = AccessGuard(self._access, self._lock)
         self._audit = ActAuditLogRepository(conn)

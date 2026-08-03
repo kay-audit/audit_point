@@ -6,6 +6,7 @@
 
 /* Portal layout */
 @import '../portal/layout/sidebar.css';
+@import '../portal/layout/user-avatar.css';
 @import '../shared/layout/settings-menu.css';
 @import '../shared/notifications-center/notifications-center.css';
 
@@ -42,3 +43,6 @@
 
 /* SQL-агент (встроенный iframe + баннер «недоступен») */
 @import '../portal/sqlagent/sqlagent.css';
+
+/* Профиль пользователя */
+@import '../portal/profile/profile-page.css';

@@ -74,3 +74,56 @@ class UserDirectoryRepository(BaseRepository):
             pattern,
             pattern,
         )
+
+    # -------------------------------------------------------------------------
+    # ТОЧЕЧНЫЙ ПОИСК ОДНОГО ПОЛЬЗОВАТЕЛЯ
+    #
+    # Используется слоем авторизации (app/auth) при входе по ОТП и при сборке
+    # контекста пользователя. Живёт здесь, а не в app/auth, чтобы форма
+    # справочника описывалась в одном месте: строк на username в справочнике
+    # может быть несколько (запись на каждую должность), поэтому обе выборки
+    # схлопывают дубли через DISTINCT ON и возвращают ровно одну строку.
+    # -------------------------------------------------------------------------
+
+    async def find_by_username(self, username: str) -> dict | None:
+        """Возвращает пользователя справочника по логину (точное совпадение)."""
+        row = await self.conn.fetchrow(
+            f"""
+            SELECT DISTINCT ON (username)
+                   username,
+                   COALESCE(email, '') AS email,
+                   COALESCE(fullname, '') AS fullname,
+                   COALESCE(job, '') AS job
+            FROM {self.user_table}
+            WHERE username = $1
+            ORDER BY username
+            LIMIT 1
+            """,
+            username,
+        )
+        return dict(row) if row else None
+
+    async def find_by_email(self, email: str) -> dict | None:
+        """Возвращает пользователя справочника по email.
+
+        Сравнение без учёта регистра и окружающих пробелов — в справочнике
+        почта заполняется людьми и приходит в произвольном виде.
+        """
+        row = await self.conn.fetchrow(
+            f"""
+            SELECT username, email, fullname, job
+            FROM (
+                SELECT DISTINCT ON (username)
+                       username,
+                       COALESCE(email, '') AS email,
+                       COALESCE(fullname, '') AS fullname,
+                       COALESCE(job, '') AS job
+                FROM {self.user_table}
+                WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))
+                ORDER BY username
+            ) sub
+            LIMIT 1
+            """,
+            email,
+        )
+        return dict(row) if row else None

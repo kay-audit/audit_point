@@ -93,12 +93,13 @@ payload-JSON в `media`/`metadata`). Чистка раз в месяц — ко�
 
 | Параметр | Дефолт | Объяснение |
 |---|---|---|
-| `POOL_MIN_SIZE` | 5 | Минимум коннектов в простое. При повышении не упирается в холодный старт |
-| `POOL_MAX_SIZE` | 20 | Потолок. Расчёт: батчеры + `AgentChannelPoller` + синхронные POST-обработчики + запас |
+| `POOL_MIN_SIZE` | 1 | Минимум коннектов в простое |
+| `POOL_MAX_SIZE` | 2 | Потолок. У ПРОМ-учётки GP лимит порядка 5 соединений, поэтому пул минимальный: горячие пути (счётчик непрочитанных, роли, user-контекст, локи актов) обслуживает Redis, а батчеры и `AgentChannelPoller` берут коннект короткими порциями |
 
-**Не увеличивай `POOL_MAX_SIZE` без необходимости.** Сейчас 20 — с запасом
-для 6 параллельных пользователей. Сначала retention для `chat_agent_messages_bus`
-(п. 1), потом профилирование под нагрузкой, и только потом — увеличение.
+**Не увеличивай `POOL_MAX_SIZE` без необходимости** — на ПРОМ-GP это всё равно
+упрётся в лимит соединений учётки. Сначала retention для `chat_agent_messages_bus`
+(п. 1), потом профилирование под нагрузкой (см. troubleshooting №17: симптом
+обычно означает удерживаемое соединение, а не тесный пул).
 
 `AgentChannelPoller` **не держит коннект** во время `sleep`/backoff — conn
 берётся только на время SELECT'а шины и финализирующей транзакции.
@@ -190,17 +191,16 @@ audit_workstation.domains.chat.agent_loop          # exception в петле о�
 При старте `uvicorn` поднимаются (в порядке регистрации). Канонический список — dev-guide §11.
 
 1. `acts.audit_log_batcher` — батч-INSERT в `audit_log` (50 шт / 30 сек)
-2. `acts.expired_locks_cleanup` — UPDATE expired locks раз в 60 сек
-3. `admin.http_metrics_batcher` — батч-INSERT в `admin_http_metrics`
-4. `admin.access_denied_audit_batcher` — батч-INSERT в `access_denied_audit`
-5. `admin.db_pool_monitor` — мониторинг asyncpg-пула (каждые 30 сек, WARNING при ≥0.9 утилизации)
-6. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
-7. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
-8. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
+2. `admin.http_metrics_batcher` — батч-INSERT в `admin_http_metrics`
+3. `admin.access_denied_audit_batcher` — батч-INSERT в `access_denied_audit`
+4. `admin.db_pool_monitor` — мониторинг asyncpg-пула (каждые 30 сек, WARNING при ≥0.9 утилизации)
+5. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
+6. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
+7. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
    `chat_agent_messages_bus` по активным запросам с adaptive backoff (без удержания
    conn в sleep), при старте reconcile подхватывает зависшие
    streaming-черновики `chat_messages`
-9. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
+8. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
 
 **Shutdown** — в обратном порядке. Если что-то не остановилось за 5с —
 warning в лог.

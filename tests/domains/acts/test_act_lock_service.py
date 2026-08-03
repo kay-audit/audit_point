@@ -122,7 +122,7 @@ class TestLockAct:
         service._audit.log.assert_awaited_once_with("lock", USERNAME, ACT_ID)
 
     async def test_acquire_lock_when_locked_by_same_user_extends(self):
-        """Повторный lock тем же пользователем — SQL UPDATE проходит (locked_by = $1)."""
+        """Повторный lock тем же пользователем проходит — это продление своей блокировки."""
         expires = dt.datetime(2026, 5, 18, 12, 30)
         service = _make_service(
             atomic_lock_row={
@@ -183,7 +183,7 @@ class TestLockAct:
         assert exc_info.value.locked_by is None
 
     async def test_lock_act_uses_configured_duration(self):
-        """duration_minutes из ActsSettings.lock пробрасывается в SQL."""
+        """duration_minutes из ActsSettings.lock пробрасывается в репозиторий."""
         expires = dt.datetime(2026, 5, 18, 12, 45)
         service = _make_service(
             atomic_lock_row={
@@ -218,7 +218,7 @@ class TestUnlockAct:
         service._audit.log.assert_awaited_once_with("unlock", USERNAME, ACT_ID)
 
     async def test_release_lock_by_non_owner_raises(self):
-        """Не-владелец: SQL WHERE locked_by=$2 не находит строку → False → ActLockError."""
+        """Не-владелец: репозиторий чужую блокировку не снимает → False → ActLockError."""
         service = _make_service(has_access=True, unlock_result=False)
 
         with pytest.raises(ActLockError) as exc_info:
@@ -264,7 +264,7 @@ class TestExtendLock:
         service._lock.atomic_extend_lock.assert_awaited_once_with(ACT_ID, USERNAME, 15)
 
     async def test_extend_when_not_locked_raises(self):
-        """Если в БД нет блокировки — диагностика 'Акт не заблокирован'."""
+        """Если блокировки нет — диагностика 'Акт не заблокирован'."""
         service = _make_service(
             extend_result={
                 "extended": False,
@@ -329,34 +329,3 @@ class TestExtendLock:
             await service.extend_lock(ACT_ID, USERNAME)
 
         service._lock.atomic_extend_lock.assert_not_awaited()
-
-
-# -------------------------------------------------------------------------
-# ActLockRepository.get_lock_info
-# -------------------------------------------------------------------------
-
-
-class TestGetLockInfoSql:
-    """get_lock_info вычисляет признак истечения на стороне БД (H9).
-
-    Конвенция репозитория: все временные сравнения — через CURRENT_TIMESTAMP
-    (серверное время), а не часы приложения. Поэтому lock_expired считается
-    в SELECT, а не в Python.
-    """
-
-    async def test_get_lock_info_computes_lock_expired_server_side(self, mock_conn):
-        from app.domains.acts.repositories.act_lock import ActLockRepository
-
-        mock_conn.fetchrow.return_value = {
-            "locked_by": USERNAME,
-            "lock_expires_at": dt.datetime(2026, 5, 18, 12, 0),
-            "lock_expired": False,
-        }
-        repo = ActLockRepository(mock_conn)
-
-        info = await repo.get_lock_info(ACT_ID)
-
-        sql = mock_conn.fetchrow.await_args.args[0]
-        assert "lock_expired" in sql
-        assert "CURRENT_TIMESTAMP" in sql
-        assert info["lock_expired"] is False

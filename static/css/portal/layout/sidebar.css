@@ -330,7 +330,11 @@
     color: var(--primary);
 }
 
-/* Профиль пользователя в topbar */
+/* Профиль пользователя в topbar: контейнер позиционирует hover-карточку */
+.topbar-user-menu-container {
+    position: relative;
+}
+
 .topbar-user-profile {
     display: flex;
     align-items: center;
@@ -338,6 +342,15 @@
     margin-left: var(--spacing-lg);
     padding-left: var(--spacing-lg);
     border-left: var(--border-width-thin) solid var(--border-light);
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    transition: background var(--duration-fast);
+}
+
+.topbar-user-profile:hover {
+    background: var(--gray-50);
 }
 
 .topbar-user-avatar {
@@ -375,6 +388,83 @@
     font-size: 11px;
     color: var(--text-secondary);
     line-height: 1.2;
+}
+
+/* Логин уже показан первой строкой (ФИО не подтянулось) — вторую прячем */
+.topbar-user-role.hidden {
+    display: none;
+}
+
+/* Карточка-превью пользователя: показывается по наведению на topbar-user-profile */
+.user-card-popover {
+    position: absolute;
+    top: calc(100% + var(--spacing-sm));
+    right: 0;
+    width: 260px;
+    max-width: calc(100vw - 32px);
+    background: var(--modal-bg, var(--bg-primary));
+    border: var(--border-width-thin) solid var(--modal-border, var(--border));
+    border-radius: var(--radius-xl);
+    box-shadow: var(--modal-shadow, var(--shadow));
+    z-index: var(--z-dropdown);
+    padding: var(--spacing-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.user-card-popover.hidden {
+    display: none;
+}
+
+/* Аватарка в hover-карточке пользователя */
+.user-card-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-full);
+    background: var(--primary-subtle);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: var(--spacing-sm);
+}
+
+.user-card-name {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-semibold);
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.user-card-job,
+.user-card-email {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    word-break: break-word;
+}
+
+.user-card-job.hidden,
+.user-card-email.hidden {
+    display: none;
+}
+
+.user-card-logout {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+    padding-top: var(--spacing-sm);
+    border-top: var(--border-width-thin) solid var(--border-light);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: var(--font-size-sm);
+    transition: color var(--duration-fast);
+}
+
+.user-card-logout:hover {
+    color: var(--primary);
 }
 
 

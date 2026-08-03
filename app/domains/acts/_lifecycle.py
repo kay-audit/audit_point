@@ -19,21 +19,11 @@ def register_lifespan_hooks() -> None:
     * ``acts.audit_log_batcher`` — батчер пакетной записи аудит-лога
       (Wave 2: снижение нагрузки на GP — десятки операций пользователя
       в минуту → один bulk-INSERT раз в 30 сек или при наборе 50 записей).
-    * ``acts.expired_locks_cleanup`` — фоновый таск, периодически
-      очищающий просроченные блокировки актов.
     """
     from app.core.domain_registry import register_shutdown_hook, register_startup_hook
-    from app.core.observability_registry import (
-        register_background_task,
-        register_batcher,
-        unregister_background_task,
-        unregister_batcher,
-    )
+    from app.core.observability_registry import register_batcher, unregister_batcher
     from app.domains.acts.deps import set_audit_log_batcher
     from app.domains.acts.services.audit_log_batcher import ActAuditLogBatcher
-    from app.domains.acts.services.expired_locks_cleanup import (
-        ExpiredLocksCleanupTask,
-    )
 
     async def _start_audit_log_batcher(app: FastAPI) -> None:
         """Поднимает батчер аудит-лога и кладёт его в deps + app.state."""
@@ -63,34 +53,8 @@ def register_lifespan_hooks() -> None:
             except Exception:
                 logger.exception("Ошибка при остановке батчера аудит-лога актов")
 
-    async def _start_expired_locks_cleanup(app: FastAPI) -> None:
-        """Запускает фоновую задачу очистки просроченных блокировок."""
-        task = ExpiredLocksCleanupTask(interval_sec=60.0)
-        await task.start()
-        app.state.acts_expired_locks_task = task
-        register_background_task(
-            "acts.expired_locks_cleanup", task.get_status,
-        )
-        logger.info("Фоновая очистка просроченных блокировок запущена")
-
-    async def _stop_expired_locks_cleanup(app: FastAPI) -> None:
-        """Останавливает фоновую задачу очистки просроченных блокировок."""
-        task = getattr(app.state, "acts_expired_locks_task", None)
-        unregister_background_task("acts.expired_locks_cleanup")
-        app.state.acts_expired_locks_task = None
-        if task is not None:
-            try:
-                await task.stop()
-            except Exception:
-                logger.exception(
-                    "Ошибка при остановке задачи очистки просроченных блокировок",
-                )
-
     register_startup_hook("acts.audit_log_batcher", _start_audit_log_batcher)
     register_shutdown_hook("acts.audit_log_batcher", _stop_audit_log_batcher)
-
-    register_startup_hook("acts.expired_locks_cleanup", _start_expired_locks_cleanup)
-    register_shutdown_hook("acts.expired_locks_cleanup", _stop_expired_locks_cleanup)
 
 
 def get_executor() -> ThreadPoolExecutor:

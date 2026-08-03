@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import subprocess as _subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -68,21 +69,32 @@ def _is_kerberos_token_expired(error_message: str) -> bool:
 
 def _is_kerberos_ticket_valid() -> bool:
     """
-    Проверяет наличие действующего (не истёкшего) Kerberos билета через klist -s.
+    Проверяет наличие действующего (не истёкшего) Kerberos билета.
+
+    Kerberos нужен только для Greenplum, а прод Greenplum — Linux, поэтому
+    на Windows проверку не делаем вовсе: системный klist (LSA) не поддерживает
+    флаг -s и локализован (например, `ticket` в выводе может быть заменено на
+    «билет»), парсинг его вывода ненадёжен.
+
+    На POSIX используется тихий контракт `klist -s` (без вывода): returncode 0 —
+    билет валиден, любой другой — нет. Любое исключение при запуске (klist не
+    найден, таймаут, нет прав и т.д.) — fail-open: проверка невозможна, не
+    блокируем запуск, реальная ошибка всплывёт позже при подключении к БД.
 
     Returns:
-        True если билет валиден, или если проверка невозможна (klist не найден)
+        True если билет валиден, проверка неприменима (Windows) или невозможна
     """
-    try:
-        result = _subprocess.run(
-            ["klist", "-s"],
-            capture_output=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, _subprocess.TimeoutExpired):
-        # klist недоступен или зависает — не блокируем запуск
+    if sys.platform == "win32":
         return True
+
+    try:
+        result = _subprocess.run(["klist", "-s"], timeout=5)
+    except Exception:
+        # klist недоступен, зависает, нет прав или другая ошибка запуска —
+        # не блокируем запуск, ошибка будет позже при подключении к БД
+        return True
+
+    return result.returncode == 0
 
 
 def _log_kerberos_instructions() -> None:

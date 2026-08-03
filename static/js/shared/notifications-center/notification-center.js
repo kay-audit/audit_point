@@ -162,7 +162,8 @@ export class NotificationCenter {
       });
       // Стартовая загрузка персистентных: иначе бейдж пуст до первого
       // поллинг-тика (~30с). Guard _destroyed — destroy() мог успеть раньше.
-      this._loadPersisted().then(() => {
+      // Только счётчик — список никому не нужен, пока меню не открыли.
+      this._loadPersisted({ listToo: false }).then(() => {
         if (!this._destroyed) this.refresh();
       });
     }
@@ -251,13 +252,13 @@ export class NotificationCenter {
     this.badge.classList.remove('hidden');
     this.badge.textContent = formatBadgeCount(count);
 
-    // Цвет — по непрочитанным персистентным + живым (прочитанные персистентные
-    // в окраску бейджа не входят, они уже не «требуют внимания»). Плюс серверная
-    // severity непрочитанных видимых: критичный элемент в хвосте за снимком
-    // (limit=50) иначе не покрасил бы бейдж.
-    const unreadPersisted = persisted.filter((n) => n && n.is_read !== true);
+    // Цвет — по живым + серверной severity непрочитанных персистентных
+    // (this._persistedUnreadSeverity, GET .../unread-count). Локальный снимок
+    // persisted для цвета не используется: серверный агрегат уже полон (не
+    // ограничен limit=50) и свежий на каждый тик, а снимок при закрытом меню
+    // может не обновляться вовсе (см. _loadPersisted/_pollTick).
     const unreadLive = live.filter((it) => it && it.is_read !== true);
-    const sev = pickBadgeSeverityWithServer(unreadLive, unreadPersisted, this._persistedUnreadSeverity);
+    const sev = pickBadgeSeverityWithServer(unreadLive, this._persistedUnreadSeverity);
     this.badge.classList.toggle('notif-badge--error', sev === 'error');
     this.badge.classList.toggle('notif-badge--warning', sev === 'warning');
     this.badge.classList.toggle('notif-badge--info', sev === 'info');
@@ -355,7 +356,7 @@ export class NotificationCenter {
     this._stopPolling();
     this._pollTimer = setInterval(() => {
       if (document.hidden) return;
-      this._loadPersisted().then(() => this.refresh());
+      this._pollTick();
     }, this._pollIntervalMs);
   }
 
@@ -367,27 +368,46 @@ export class NotificationCenter {
     }
   }
 
-  /** @private При возврате на вкладку — освежаем данные. */
+  /** @private При возврате на вкладку — освежаем данные (как обычный тик). */
   _handleVisibilityChange() {
     if (!document.hidden && this.enablePersisted) {
-      this._loadPersisted().then(() => this.refresh());
+      return this._pollTick();
     }
+  }
+
+  /**
+   * Общий тик обновления персистентных (поллинг-таймер и visibilitychange).
+   *
+   * Список (limit=50) тянется только при открытом меню — закрытому бейджу
+   * достаточно unread-count, лишний SQL/HTTP на каждый тик не нужен.
+   * @private
+   * @returns {Promise<void>}
+   */
+  _pollTick() {
+    return this._loadPersisted({ listToo: this.isOpen }).then(() => this.refresh());
   }
 
   /**
    * Загружает персистентные уведомления с API и сохраняет снимок.
    * Сетевой сбой не должен ломать колокольчик — снимок остаётся прежним.
    * @private
+   * @param {{listToo?: boolean}} [opts]
+   *   listToo — тянуть ли снимок списка (limit=50) вместе со счётчиком.
+   *   По умолчанию true. Список нужен только рендеру меню; при закрытом меню
+   *   false экономит SQL-запрос на каждый поллинг-тик.
    * @returns {Promise<void>}
    */
-  async _loadPersisted() {
+  async _loadPersisted({ listToo = true } = {}) {
     if (!this.enablePersisted) return;
     try {
-      // Два независимых запроса параллельно: снимок списка (limit=50) и точный
-      // счётчик непрочитанных + их максимальная severity. Каждый со своим
-      // .catch(()=>null), чтобы сбой одного не топил другой.
+      // Счётчик непрочитанных + их максимальная severity — всегда (нужен
+      // бейджу). Снимок списка (limit=50) — только когда он реально пойдёт в
+      // рендер. Каждый запрос со своим .catch(()=>null), чтобы сбой одного не
+      // топил другой.
       const [resp, cr] = await Promise.all([
-        fetch(AppConfig.api.getUrl('/api/v1/notifications?limit=50'), { headers: { Accept: 'application/json' } }).catch(() => null),
+        listToo
+          ? fetch(AppConfig.api.getUrl('/api/v1/notifications?limit=50'), { headers: { Accept: 'application/json' } }).catch(() => null)
+          : Promise.resolve(null),
         fetch(AppConfig.api.getUrl('/api/v1/notifications/unread-count'), { headers: { Accept: 'application/json' } }).catch(() => null),
       ]);
       if (resp && resp.ok) {

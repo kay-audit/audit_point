@@ -65,6 +65,15 @@ test.describe('Textblock alignment round-trip (TB-1)', () => {
 
     // Reload: контент пришёл из БД — центр пережил bleach и доехал в редактор.
     await openAct(page, SEED_ACTS.withContent);
+
+    // Снимок в localStorage (StorageManager пишет его при уходе со страницы)
+    // теперь переживает повторное открытие акта: блокировки уехали на TTL-ключи
+    // и больше не трогают acts.updated_at, а H3 считает снимок устаревшим
+    // только после сохранения акта. Отклоняем черновик — проверяем копию из БД.
+    const discardDraft = page.getByRole('button', { name: 'Отклонить' });
+    await discardDraft.waitFor({ state: 'visible', timeout: 5000 });
+    await discardDraft.click();
+
     await page.locator('.step[data-step="2"]').click();
     await editor.waitFor({ state: 'visible', timeout: 5000 });
     await expect(editor).toHaveText(/Исходный текст/);

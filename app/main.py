@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1.endpoints.auth import get_current_user_from_env
+from app.auth.middleware import AuthMiddleware
 from app.api.v1.routes import api_router as api_v1_router
 from app.core.config import get_settings, setup_logging
 from app.core.domain_registry import (
@@ -40,7 +40,7 @@ from app.db.connection import (
     close_db,
     create_tables_if_not_exist,
     warmup_pool,
-    get_pool,
+    get_pool, 
     KerberosTokenExpiredError
 )
 from app.routes.errors import router as error_router
@@ -50,21 +50,12 @@ from app.routes.portal import router as portal_router
 settings = get_settings()
 logger = setup_logging(settings.server.log_level)
 
-root_path = ''
-if settings.database.type == 'greenplum':
-    root_path = f"/user/{get_current_user_from_env(truncate=False)}/proxy/{settings.server.port}"
-
 # Директория доменов
 _domains_dir = Path(__file__).resolve().parent / "domains"
 
 
 def _is_html_request(request: Request) -> bool:
-    """Проверяет, является ли запрос HTML (не API).
-
-    Используется scope["path"] вместо request.url.path, т.к. url.path
-    включает root_path (например, /user/.../proxy/8005/api/v1/...),
-    а scope["path"] содержит путь относительно приложения (/api/v1/...).
-    """
+    """Проверяет, является ли запрос HTML (не API)."""
     path = request.scope.get("path", request.url.path)
     return not path.startswith("/api/")
 
@@ -286,7 +277,6 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description="Рабочая станция аудитора — акты, AI-ассистент, аналитика, интеграции",
         lifespan=lifespan,
-        root_path=root_path
     )
 
     # Обнаружение доменов выполняем до настройки middleware: discover_domains()
@@ -295,29 +285,25 @@ def create_app() -> FastAPI:
     # повторный вызов в register_domains ниже отдаёт тот же список.
     domains = discover_domains(_domains_dir)
 
-    # Добавляем middleware в правильном порядке (первый add_middleware = outermost,
-    # т.е. видит request первым и response последним).
-    # 1. HTTPS redirect — outermost, нужен для корректного scope.scheme до SecurityHeaders.
-    app.add_middleware(HTTPSRedirectMiddleware)
+    # Модуль auth — не домен: hooks регистрируются напрямую (идемпотентно),
+    # API-роутер живёт в api_v1_router, HTML-страницы входа подключаются ниже.
+    from app.auth.lifecycle import register_lifespan_hooks
+    register_lifespan_hooks()
 
-    # 2. Security headers — оборачивает все остальные, чтобы CSP/HSTS/X-Frame
-    #    выставлялись и на 413/429-ответы от RequestSize/RateLimit middlewares.
-    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
+    # Порядок middleware: add_middleware вставляет запись в начало списка,
+    # а стек собирается обходом этого списка в обратном порядке — поэтому
+    # ПОСЛЕДНИЙ add_middleware оказывается самым внешним (видит request первым
+    # и response последним). Добавляем от внутреннего к внешнему; итоговая
+    # «луковица» снаружи внутрь:
+    #   HTTPSRedirect → RequestId → SecurityHeaders → RequestSizeLimit
+    #   → RateLimit → HttpMetrics → Auth → роутер.
 
-    # 3. Request size limit
-    app.add_middleware(
-        RequestSizeLimitMiddleware,
-        max_size=settings.security.max_request_size
-    )
+    # 1. Auth — самый внутренний: его 401 и редиректы поднимаются через весь
+    #    стек, получая и security-заголовки, и request_id, и запись в метрики.
+    app.add_middleware(AuthMiddleware)
 
-    # 4. Rate limiting
-    app.add_middleware(
-        RateLimitMiddleware,
-        rate_limit=settings.security.rate_limit_per_minute,
-        settings=settings
-    )
-
-    # 5. HTTP-метрики — внутри RequestIdMiddleware, чтобы видеть выставленный request_id.
+    # 2. HTTP-метрики — снаружи Auth (видят 401 анонимов) и внутри лимитов:
+    #    отбитые 429/413 в БД не пишутся, чтобы флуд не разгонял журнал.
     # Сервис разрешается через реестр фабрик admin-домена (admin сам инкапсулирует
     # проверку http_metrics_enabled и возвращает None, если метрики выключены) —
     # core не импортирует admin напрямую. Фабрика зарегистрирована при discover_domains
@@ -333,8 +319,30 @@ def create_app() -> FastAPI:
         )
     app.add_middleware(HttpMetricsMiddleware, service=_http_metrics_service)
 
-    # 6. Request ID — innermost: добавляется последним, оборачивается всеми остальными.
+    # 3. Rate limiting
+    app.add_middleware(
+        RateLimitMiddleware,
+        rate_limit=settings.security.rate_limit_per_minute,
+        settings=settings
+    )
+
+    # 4. Request size limit
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_size=settings.security.max_request_size
+    )
+
+    # 5. Security headers — снаружи лимитов и Auth, чтобы CSP/HSTS/X-Frame
+    #    выставлялись и на коротких 429/413/401-ответах.
+    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
+
+    # 6. Request ID — почти самый внешний: X-Request-ID получают все ответы,
+    #    включая отбитые лимитами и неавторизованные.
     app.add_middleware(RequestIdMiddleware)
+
+    # 7. HTTPS redirect — самый внешний: правит scope.scheme до SecurityHeaders,
+    #    иначе за прокси HSTS не выставится (схема осталась бы http).
+    app.add_middleware(HTTPSRedirectMiddleware)
 
     # Подключение статических файлов (доступны по URL /static/*)
     app.mount(
@@ -453,8 +461,10 @@ def create_app() -> FastAPI:
     # Подключение роута ошибок (до portal_router)
     app.include_router(error_router)
 
-    # Подключение shared HTML-роутов (лендинг, CK-заглушки)
+    # Подключение shared HTML-роутов (лендинг, CK-заглушки, страницы входа)
     app.include_router(portal_router)
+    from app.auth.portal_router import router as auth_portal_router
+    app.include_router(auth_portal_router)
 
     # Подключение shared API роутеров (auth, chat, system)
     app.include_router(
@@ -479,6 +489,7 @@ if __name__ == "__main__":
     # Запуск сервера разработки
     import uvicorn
 
+
     uvicorn.run(
         # Настройки сервера
         "app.main:app",
@@ -488,6 +499,4 @@ if __name__ == "__main__":
         reload=True,
         # Уровень uvicorn синхронизирован с SERVER__LOG_LEVEL
         log_level=settings.server.log_level.lower(),
-        # Если работаем с greenplum через прокси, то указываем корень
-        root_path=root_path
     )

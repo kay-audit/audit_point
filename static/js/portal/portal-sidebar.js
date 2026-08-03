@@ -8,6 +8,9 @@ import { LandingPage } from './landing/landing-page.js';
 import { AppConfig } from '../shared/app-config.js';
 import { AuthManager } from '../shared/auth.js';
 import { ChatModalManager } from '../shared/chat/chat-modal.js';
+import { UserCard } from './user-card.js';
+import { renderPortalAvatars } from './user-avatar.js';
+import { resolveTopbarUserLines } from './user-card-core.js';
 
 export class PortalSidebar {
     static _storageKey = 'sidebar_collapsed';
@@ -21,6 +24,7 @@ export class PortalSidebar {
         this._setupNavigation();
         this._setupChatButton();
         this._loadUserInfo();
+        UserCard.init();
 
         console.log('PortalSidebar: инициализация завершена');
     }
@@ -107,17 +111,28 @@ export class PortalSidebar {
     }
 
     /**
-     * Загружает информацию о текущем пользователе в topbar
+     * Загружает информацию о текущем пользователе в topbar: ФИО (с фолбэком
+     * на username), логин второй строкой и фото профиля.
      * @private
      */
     static _loadUserInfo() {
         try {
+            const profile = AuthManager.getCurrentUserProfile();
             const username = AuthManager.getCurrentUser();
-            const userNameElement = document.getElementById('currentUserName');
+            const { name, login } = resolveTopbarUserLines(profile, username);
 
-            if (userNameElement && username) {
-                userNameElement.textContent = username;
+            const userNameElement = document.getElementById('currentUserName');
+            if (userNameElement && name) {
+                userNameElement.textContent = name;
             }
+
+            const userLoginElement = document.getElementById('currentUserLogin');
+            if (userLoginElement) {
+                userLoginElement.textContent = login;
+                userLoginElement.classList.toggle('hidden', !login);
+            }
+
+            renderPortalAvatars(username, profile && profile.avatar_version);
         } catch (error) {
             console.error('PortalSidebar: ошибка загрузки информации о пользователе:', error);
         }

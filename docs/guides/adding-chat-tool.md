@@ -194,8 +194,10 @@ ClientActionsRegistry.register('my_new_action', (params) => {
 - НЕ зови `ClientActionsRegistry.execute(...)` напрямую — потеряешь
   идемпотентность по `block_id`. Используй `executeBlock({action, params, block_id})`.
 - Для action с навигацией (`open_url` и аналоги) пропускай URL через
-  `AppConfig.api.getUrl(url)`, иначе под JupyterHub-proxy получишь 404
-  на `/hub/...` минуя `/user/{user}/proxy/{port}/`.
+  `AppConfig.api.getUrl(url)`. Конвенция сохраняется как страховка на случай
+  proxied-деплоя (исторически — под JupyterHub-proxy без нее ловили 404 на
+  `/hub/...` минуя `/user/{user}/proxy/{port}/`); на актуальном SDP-деплое
+  proxy-путей нет.
 
 ---
 

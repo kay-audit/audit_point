@@ -13,5 +13,12 @@ class SQLAgentSettings(BaseModel):
     enabled: bool = Field(default=True, description="Включён ли домен SQL-агента")
     sidecar_port: int = Field(
         default=8005,
-        description="Порт sidecar-процесса SQLAgent (под JupyterHub-proxy и на localhost-dev)",
+        description="Порт sidecar-процесса SQLAgent (localhost)",
+    )
+    public_url: str = Field(
+        default="",
+        description=(
+            "Публичный URL UI SQLAgent для iframe (SDP: адрес sidecar-порта "
+            "на том же хосте). Пусто — локальный фоллбэк http://localhost:{sidecar_port}/"
+        ),
     )
