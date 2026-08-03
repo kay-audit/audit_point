@@ -7,9 +7,9 @@ import logging
 from fastapi import HTTPException, Request
 
 from app.auth.jwt_handler import JWTTokenHandler
-from app.auth.redis_adapter import RedisAdapter
 from app.auth.user_repository import AuthUserRepository
 from app.auth.value_objects import UserContext
+from app.core.redis import RedisAdapter, get_redis
 from app.db.connection import get_db
 
 logger = logging.getLogger("audit_workstation.auth.dependencies")
@@ -26,8 +26,14 @@ def get_jwt_handler() -> JWTTokenHandler:
 
 
 def get_redis_adapter(request: Request) -> RedisAdapter:
-    """Возвращает RedisAdapter из app.state."""
+    """Возвращает RedisAdapter: сначала из app.state, затем из глобала core.
+
+    Приоритет app.state сохранён ради тестов — они кладут туда fakeredis,
+    не поднимая модульный синглтон.
+    """
     adapter = getattr(request.app.state, "redis_adapter", None)
+    if adapter is None:
+        adapter = get_redis()
     if adapter is None:
         raise HTTPException(status_code=503, detail="Сервис авторизации недоступен")
     return adapter

@@ -6,7 +6,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.auth.redis_adapter import RedisAdapter, RedisConfig
+from app.core.redis import close_redis, init_redis
 
 logger = logging.getLogger("audit_workstation.auth.lifecycle")
 
@@ -39,31 +39,21 @@ def register_lifespan_hooks() -> None:
             app.state.redis_adapter = None
             return
 
-        redis_cfg = RedisConfig(
-            host=settings.redis.host,
-            port=settings.redis.port,
-            db=settings.redis.db,
-            password=settings.redis.password.get_secret_value(),
-            max_connections=settings.redis.max_connections,
-            socket_timeout=settings.redis.socket_timeout,
-        )
-        adapter = RedisAdapter(redis_cfg)
+        # Адаптер живёт в модульном глобале app.core.redis (доступен фоновым
+        # задачам без Request); в app.state дублируем ссылку — её читает
+        # зависимость get_redis_adapter и подменяют тесты.
         try:
-            await adapter.connect()
-            app.state.redis_adapter = adapter
-            logger.info("Redis для auth подключён: %s:%s", redis_cfg.host, redis_cfg.port)
+            app.state.redis_adapter = await init_redis(settings.redis)
         except Exception as exc:
             logger.error("Не удалось подключиться к Redis для auth: %s", exc)
             raise RuntimeError(f"Redis недоступен для auth: {exc}") from exc
 
     async def _shutdown_auth(app: FastAPI) -> None:
         """Закрывает соединение с Redis."""
-        adapter = getattr(app.state, "redis_adapter", None)
-        if adapter is not None:
-            try:
-                await adapter.close()
-            except Exception:
-                logger.exception("Ошибка при закрытии Redis auth")
+        try:
+            await close_redis()
+        except Exception:
+            logger.exception("Ошибка при закрытии Redis auth")
         app.state.redis_adapter = None
 
     register_startup_hook("auth.redis", _startup_auth)
