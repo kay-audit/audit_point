@@ -38,19 +38,28 @@
         <!-- Профиль пользователя: клик → /profile, наведение → карточка-превью -->
         <div class="topbar-user-menu-container">
             <a href="/profile" class="topbar-user-profile" id="topbarUserProfile" aria-label="Профиль пользователя">
-                <div class="topbar-user-avatar">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <!-- js-user-avatar: круг, который renderPortalAvatars заполняет фото -->
+                <div class="topbar-user-avatar js-user-avatar">
+                    <svg class="user-avatar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
                         <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
                               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
+                    <img class="user-avatar-img hidden" alt="">
                 </div>
                 <div class="topbar-user-info">
                     <div class="topbar-user-name" id="currentUserName">Загрузка...</div>
-                    <div class="topbar-user-role">Сотрудник</div>
+                    <div class="topbar-user-role hidden" id="currentUserLogin"></div>
                 </div>
             </a>
 
             <div class="user-card-popover hidden" id="userCardPopover" role="menu" aria-label="Профиль пользователя">
+                <div class="user-card-avatar js-user-avatar">
+                    <svg class="user-avatar-icon" width="22" height="22" viewBox="0 0 24 24" fill="none">
+                        <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                              stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <img class="user-avatar-img hidden" alt="">
+                </div>
                 <div class="user-card-name" id="userCardName"></div>
                 <div class="user-card-job hidden" id="userCardJob"></div>
                 <div class="user-card-email hidden" id="userCardEmail"></div>

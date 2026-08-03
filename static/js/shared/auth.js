@@ -255,6 +255,19 @@ export class AuthManager {
     }
 
     /**
+     * Обновляет версию фото в закешированном профиле.
+     *
+     * Вызывается со страницы профиля после загрузки/удаления фото: сервер уже
+     * вернул новую версию, повторный /me ради одного поля не нужен.
+     * @param {number|null} version
+     */
+    static updateAvatarVersion(version) {
+        if (this._profile) {
+            this._profile.avatar_version = version;
+        }
+    }
+
+    /**
      * Проверяет, авторизован ли пользователь (в памяти или localStorage)
      * @returns {boolean}
      */

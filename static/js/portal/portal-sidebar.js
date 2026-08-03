@@ -9,7 +9,8 @@ import { AppConfig } from '../shared/app-config.js';
 import { AuthManager } from '../shared/auth.js';
 import { ChatModalManager } from '../shared/chat/chat-modal.js';
 import { UserCard } from './user-card.js';
-import { resolveUserCardFields } from './user-card-core.js';
+import { renderPortalAvatars } from './user-avatar.js';
+import { resolveTopbarUserLines } from './user-card-core.js';
 
 export class PortalSidebar {
     static _storageKey = 'sidebar_collapsed';
@@ -110,21 +111,28 @@ export class PortalSidebar {
     }
 
     /**
-     * Загружает информацию о текущем пользователе в topbar (ФИО из профиля,
-     * с фолбэком на username, если профиль недоступен)
+     * Загружает информацию о текущем пользователе в topbar: ФИО (с фолбэком
+     * на username), логин второй строкой и фото профиля.
      * @private
      */
     static _loadUserInfo() {
         try {
-            const { name } = resolveUserCardFields(
-                AuthManager.getCurrentUserProfile(),
-                AuthManager.getCurrentUser(),
-            );
-            const userNameElement = document.getElementById('currentUserName');
+            const profile = AuthManager.getCurrentUserProfile();
+            const username = AuthManager.getCurrentUser();
+            const { name, login } = resolveTopbarUserLines(profile, username);
 
+            const userNameElement = document.getElementById('currentUserName');
             if (userNameElement && name) {
                 userNameElement.textContent = name;
             }
+
+            const userLoginElement = document.getElementById('currentUserLogin');
+            if (userLoginElement) {
+                userLoginElement.textContent = login;
+                userLoginElement.classList.toggle('hidden', !login);
+            }
+
+            renderPortalAvatars(username, profile && profile.avatar_version);
         } catch (error) {
             console.error('PortalSidebar: ошибка загрузки информации о пользователе:', error);
         }

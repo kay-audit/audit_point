@@ -5,11 +5,19 @@
 {% block content %}
 <div class="profile-content">
     <div class="profile-card">
-        <div class="profile-avatar">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+        <!-- js-user-avatar: круг, который renderPortalAvatars заполняет фото -->
+        <div class="profile-avatar js-user-avatar">
+            <svg class="user-avatar-icon" width="40" height="40" viewBox="0 0 24 24" fill="none">
                 <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
                       stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
+            <img class="user-avatar-img hidden" alt="">
+        </div>
+
+        <div class="profile-photo-actions">
+            <input type="file" id="avatarFileInput" accept="image/*" class="profile-photo-input" aria-label="Выбрать фото профиля">
+            <button type="button" class="profile-photo-btn" id="avatarPickBtn">Выбрать фото</button>
+            <button type="button" class="profile-photo-btn profile-photo-btn-remove hidden" id="avatarRemoveBtn">Убрать фото</button>
         </div>
 
         <h1 class="profile-fullname">{{ profile.fullname }}</h1>
@@ -60,12 +68,14 @@
     import { AuthManager } from '{{ url_for('static', path='js/shared/auth.js') | versioned }}';
     import { PortalSidebar } from '{{ url_for('static', path='js/portal/portal-sidebar.js') | versioned }}';
     import { LandingSettingsManager } from '{{ url_for('static', path='js/portal/portal-settings.js') | versioned }}';
+    import { ProfilePage } from '{{ url_for('static', path='js/portal/profile-page.js') | versioned }}';
 
     document.addEventListener('DOMContentLoaded', async () => {
         const isAuthorized = await AuthManager.requireAuth();
         if (isAuthorized) {
             PortalSidebar.init();
             LandingSettingsManager.init();
+            ProfilePage.init();
         }
     });
 </script>

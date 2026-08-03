@@ -390,6 +390,11 @@
     line-height: 1.2;
 }
 
+/* Логин уже показан первой строкой (ФИО не подтянулось) — вторую прячем */
+.topbar-user-role.hidden {
+    display: none;
+}
+
 /* Карточка-превью пользователя: показывается по наведению на topbar-user-profile */
 .user-card-popover {
     position: absolute;

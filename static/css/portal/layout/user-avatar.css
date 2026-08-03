@@ -1,0 +1,34 @@
+/* Фото профиля в круглых аватарках портала (топбар, hover-карточка, /profile).
+   Размер круга задаёт каждое место само — здесь только содержимое. */
+
+.js-user-avatar {
+    overflow: hidden;
+    position: relative;
+}
+
+.user-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: var(--radius-full);
+    display: block;
+}
+
+.user-avatar-img.hidden,
+.user-avatar-icon.hidden {
+    display: none;
+}
+
+/* Аватарка в hover-карточке пользователя */
+.user-card-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-full);
+    background: var(--primary-subtle);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: var(--spacing-sm);
+}

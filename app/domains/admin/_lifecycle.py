@@ -17,6 +17,7 @@ def register_factories() -> None:
     """
     from app.core.domain_registry import register_factory
     from app.db.connection import get_db
+    from app.domains.admin.repositories.user_avatars import UserAvatarRepository
     from app.domains.admin.services.user_directory import UserDirectoryRepository
 
     def _user_directory_factory():
@@ -31,6 +32,20 @@ def register_factories() -> None:
         return _gen()
 
     register_factory("admin.user_directory", _user_directory_factory)
+
+    def _user_avatars_factory():
+        """Создаёт UserAvatarRepository, оборачивая get_db() в async-генератор.
+
+        Потребитель — слой авторизации (эндпоинты фото профиля): таблица
+        живёт в admin-домене, а обращаются к ней снаружи, поэтому связь
+        идёт через реестр фабрик, как и справочник пользователей.
+        """
+        async def _gen():
+            async with get_db() as conn:
+                yield UserAvatarRepository(conn)
+        return _gen()
+
+    register_factory("admin.user_avatars", _user_avatars_factory)
 
     def _http_metrics_service_factory():
         """Возвращает HttpMetricsService, если HTTP-метрики включены, иначе None.
