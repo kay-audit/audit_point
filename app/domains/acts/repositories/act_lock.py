@@ -80,7 +80,7 @@ class ActLockRepository:
         return result
 
     async def get_lock_info(self, act_id: int) -> dict | None:
-        """Состояние живой блокировки: locked_by, lock_expires_at, lock_expired.
+        """Состояние живой блокировки: locked_by, lock_expires_at.
 
         ``None`` — блокировки нет: либо её не ставили, либо она истекла и ключ
         исчез. Прежняя SQL-версия различала «акта нет» (None) и «акт есть, но

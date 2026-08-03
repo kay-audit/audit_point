@@ -173,8 +173,6 @@ class TestInfo:
 
         assert info["locked_by"] == USERNAME
         assert isinstance(info["lock_expires_at"], datetime)
-        # Живой лок по определению не истёк — признак сохранён для AccessGuard
-        assert info["lock_expired"] is False
 
     async def test_expired_lock_is_gone(self, backend):
         await backend.acquire(ACT_ID, USERNAME, SHORT_MINUTES)

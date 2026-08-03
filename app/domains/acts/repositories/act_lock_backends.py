@@ -51,17 +51,11 @@ def _make_payload(username: str, duration_minutes: float) -> tuple[dict, dict, i
 
 
 def _payload_to_info(payload: dict) -> dict:
-    """Разворачивает значение ключа в прежнюю форму ответа репозитория.
-
-    ``lock_expired`` всегда ``False``: до истёкшей блокировки чтение не
-    доходит — ключа с ней уже нет. Поле сохранено, потому что на него
-    смотрит ``AccessGuard.require_lock_owner`` (проверка H9).
-    """
+    """Разворачивает значение ключа в прежнюю форму ответа репозитория."""
     return {
         "locked_by": payload["locked_by"],
         "locked_at": datetime.fromisoformat(payload["locked_at"]),
         "lock_expires_at": datetime.fromisoformat(payload["locked_until"]),
-        "lock_expired": False,
     }
 
 
