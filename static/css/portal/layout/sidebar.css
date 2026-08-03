@@ -417,6 +417,20 @@
     display: none;
 }
 
+/* Аватарка в hover-карточке пользователя */
+.user-card-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-full);
+    background: var(--primary-subtle);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: var(--spacing-sm);
+}
+
 .user-card-name {
     font-size: var(--font-size-base);
     font-weight: var(--font-weight-semibold);

@@ -28,7 +28,7 @@ const POLL_INTERVAL_MS = 200;
 // а FLUSHDB перед прогоном не рискует снести чью-то рабочую сессию.
 const E2E_REDIS_DB = '15';
 const REDIS_TIMEOUT_MS = 3000;
-const REDIS_HELP = 'Поднимите Redis (WSL): docs/reports/2026-08-02-redis-dev-wsl-guide.md';
+const REDIS_HELP = 'Поднимите Redis (WSL): docs/guides/redis-dev-wsl-guide.md';
 
 function loadDotEnv(): Record<string, string> {
   const envPath = path.join(ROOT, '.env');

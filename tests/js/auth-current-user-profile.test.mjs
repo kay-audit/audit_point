@@ -3,8 +3,9 @@
  * GET /api/v1/auth/me, сохраняемый рядом с существующим getCurrentUser()
  * (username-строка, контракт которой не менялся).
  *
- * Профиль в localStorage НЕ персистится (в отличие от username) — доступен
- * только в памяти после успешного checkAuth() в этой загрузке страницы.
+ * Профиль кэшируется в sessionStorage (ключ `auth_profile`, см.
+ * auth-profile-session-cache.test.mjs) — в localStorage, как и раньше,
+ * персистится только username.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
