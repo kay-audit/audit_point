@@ -18,6 +18,7 @@
   Compare-Object (Get-Content .env.example) (Get-Content .env)
   ```
   Особо проверить: `CHAT__*`, `ACTS__*`, `OBSERVABILITY__*`, `SECURITY__*`. Канал к внешнему ИИ-агенту настраивается префиксом `CHAT__AGENT_CHANNEL__*` (`TABLE_NAME=chat_agent_messages_bus`, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`); лимит одновременных запросов — `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3).
+- [ ] **Пул соединений под окружение.** DEV-PG — дефолты `DATABASE__POOL_MIN_SIZE=5` / `POOL_MAX_SIZE=20`. **ПРОМ (GP)** — `1` / `2`: у GP-учётки жёсткий лимит ~5 соединений, «поднять пул» (troubleshooting №17) там не вариант; горячие пути (unread-счётчик, роли, локи) обслуживает Redis, GP-пул держим минимальным.
 - [ ] **`DATABASE__TABLE_PREFIX`** соответствует БД. Дефолт `t_db_oarb_audit_act_`. При смене окружения проверить, что таблицы существуют под тем же префиксом — иначе `create_tables_if_not_exist` поднимет новый набор пустых таблиц и фактические данные «исчезнут».
 - [ ] **Свободен ли singleton-lock**. См. `troubleshooting.md` №20: если предыдущий процесс упал по kill -9, строка в `app_singleton_lock` живёт до `SECURITY__SINGLETON_LOCK_STALE_TTL_SEC` сек (default 60). В пределах окна старт упадёт.
 - [ ] **Версия миграций**. Все одноразовые SQL из `docs/migrations/` для апгрейда с предыдущей версии применены (см. §3).
