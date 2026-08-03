@@ -12,14 +12,21 @@ from cachetools import TTLCache
 from fastapi import Depends, HTTPException, Request
 
 from app.api.v1.deps.auth_deps import get_username
+from app.auth.user_repository import USERCTX_CACHE_KEY_PREFIX
+from app.core.redis import get_redis
 from app.db.connection import get_db, get_adapter
 
 logger = logging.getLogger("audit_workstation.api.deps.roles")
 
 # Кеш ролей: maxsize=256, ttl=5 секунд.
 # TTL короткий — это последняя линия защиты от устаревших прав при отсутствии
-# межпроцессной инвалидации (см. invalidate_user_roles_cache).
+# межпроцессной инвалидации (см. invalidate_user_roles_cache). L2 — Redis,
+# см. _ROLES_CACHE_KEY_PREFIX ниже: переживает рестарт процесса и разделяется
+# между процессами (в отличие от L1).
 _roles_cache: TTLCache = TTLCache(maxsize=256, ttl=5)
+
+_ROLES_CACHE_KEY_PREFIX = "cache:roles:"
+_ROLES_CACHE_TTL_SEC = 300
 
 # Роли, автоматически назначаемые пользователю при первом обращении.
 DEFAULT_ROLE_NAMES: tuple[str, ...] = ("Цифровой акт", "Чат-ассистент", "SQL-агент")
@@ -29,12 +36,27 @@ async def get_user_roles(username: str = Depends(get_username)) -> list[dict]:
     """
     Возвращает список ролей текущего пользователя.
 
-    Кешируется на 5 секунд. Если у пользователя нет ролей,
-    автоматически назначает дефолтные роли (см. DEFAULT_ROLE_NAMES).
+    Двухуровневый кеш: L1 — in-process TTLCache 5с, L2 — Redis 300с.
+    Промах обоих — SQL, результат заполняет оба уровня. ``get_redis() is
+    None`` (тест-режим) или сбой Redis — L2 молча пропускается, путь как до
+    введения кеша. Если у пользователя нет ролей, автоматически назначает
+    дефолтные роли (см. DEFAULT_ROLE_NAMES).
     """
     logger.debug("get_user_roles: username=%s", username)
     if username in _roles_cache:
         return _roles_cache[username]
+
+    redis = get_redis()
+    if redis is not None:
+        cache_key = f"{_ROLES_CACHE_KEY_PREFIX}{username}"
+        try:
+            cached = await redis.get_json(cache_key)
+        except Exception as e:
+            logger.warning("Redis недоступен при чтении кеша ролей: %s", e)
+            cached = None
+        if cached is not None:
+            _roles_cache[username] = cached
+            return cached
 
     adapter = get_adapter()
     roles_table = adapter.get_table_name("roles")
@@ -56,6 +78,13 @@ async def get_user_roles(username: str = Depends(get_username)) -> list[dict]:
 
     result = [dict(r) for r in rows]
     _roles_cache[username] = result
+    if redis is not None:
+        try:
+            await redis.set_json(
+                f"{_ROLES_CACHE_KEY_PREFIX}{username}", result, ex=_ROLES_CACHE_TTL_SEC
+            )
+        except Exception as e:
+            logger.warning("Redis недоступен при записи кеша ролей: %s", e)
     return result
 
 
@@ -197,14 +226,34 @@ def require_admin() -> Callable:
     return _check
 
 
-def invalidate_user_roles_cache(username: str) -> None:
-    """Явная инвалидация кеша ролей при назначении/снятии роли.
+async def invalidate_user_roles_cache(username: str) -> None:
+    """Явная инвалидация кеша ролей и user-контекста при назначении/снятии роли.
 
-    ВАЖНО: инвалидация работает только в пределах текущего процесса.
+    Чистит L1 (in-process) и оба Redis-ключа — роли (см. get_user_roles) и
+    user-контекст (``AuthUserRepository.get_user_context``): у обоих кешей
+    один и тот же идентификатор, username == sub из JWT == user_id
+    справочника (см. докстринг ``AuthUserRepository.find_by_id``).
+
+    ВАЖНО: инвалидация L1 работает только в пределах текущего процесса.
     В multi-process / multi-instance деплое (в первую очередь JupyterHub,
     где каждый пользователь запускает собственный процесс приложения)
     очистка кеша в одном процессе НЕ затронет кеш в других процессах.
     Для таких случаев единственной защитой остаётся короткий TTL (5 сек)
     — это сознательный компромисс между свежестью прав и нагрузкой на БД.
+    Redis-ключи разделяются между процессами, поэтому DEL закрывает и этот
+    пробел — но сбой Redis здесь не должен ронять admin-операцию (assign/
+    remove роли), поэтому только предупреждение в лог; самоисцеление — TTL
+    L2 (300с).
     """
     _roles_cache.pop(username, None)
+
+    redis = get_redis()
+    if redis is None:
+        return
+    try:
+        await redis.delete(
+            f"{_ROLES_CACHE_KEY_PREFIX}{username}",
+            f"{USERCTX_CACHE_KEY_PREFIX}{username}",
+        )
+    except Exception as e:
+        logger.warning("Redis недоступен при инвалидации кеша ролей: %s", e)

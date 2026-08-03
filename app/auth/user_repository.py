@@ -15,10 +15,18 @@ import logging
 
 import asyncpg
 
+from app.core.redis import get_redis
 from app.core.settings_registry import get as get_domain_settings
 from app.domains.admin.settings import AdminSettings
 
 logger = logging.getLogger("audit_workstation.auth.user_repository")
+
+# Префикс публичный — им же строит ключ инвалидация в
+# app.api.v1.deps.role_deps.invalidate_user_roles_cache (username == user_id,
+# см. докстринг find_by_id). TTL держит контекст свежим без явной инвалидации
+# на случай изменений в справочнике (ФИО/должность из ETL) мимо смены ролей.
+USERCTX_CACHE_KEY_PREFIX = "cache:userctx:"
+_USERCTX_CACHE_TTL_SEC = 300
 
 
 class AuthUserRepository:
@@ -60,14 +68,33 @@ class AuthUserRepository:
         return self._to_auth_user(row) if row else None
 
     async def get_user_context(self, user_id: str) -> dict | None:
-        """Загружает пользователя и его роли из существующей системы RBAC."""
+        """Загружает пользователя и его роли из существующей системы RBAC.
+
+        Кэшируется в Redis (TTL 300с) — фронт дёргает этот путь на каждой
+        загрузке страницы (``/auth/me``) плюс login/refresh. ``get_redis()
+        is None`` (тест-режим) или любой сбой Redis — путь без кэша, как
+        раньше; исключение наружу не пробрасывается. Инвалидация — явная,
+        см. ``invalidate_user_roles_cache``.
+        """
+        redis = get_redis()
+        cache_key = f"{USERCTX_CACHE_KEY_PREFIX}{user_id}"
+
+        if redis is not None:
+            try:
+                cached = await redis.get_json(cache_key)
+            except Exception as e:
+                logger.warning("Redis недоступен при чтении кеша user-контекста: %s", e)
+                cached = None
+            if cached is not None:
+                return cached
+
         user = await self.find_by_id(user_id)
         if user is None:
             return None
 
         roles = await self._admin.get_user_roles(user_id)
 
-        return {
+        result = {
             "id": user["id"],
             "email": user["email"],
             "login": user["login"],
@@ -76,3 +103,11 @@ class AuthUserRepository:
             "teams": [],
             "roles": sorted(role["name"] for role in roles),
         }
+
+        if redis is not None:
+            try:
+                await redis.set_json(cache_key, result, ex=_USERCTX_CACHE_TTL_SEC)
+            except Exception as e:
+                logger.warning("Redis недоступен при записи кеша user-контекста: %s", e)
+
+        return result

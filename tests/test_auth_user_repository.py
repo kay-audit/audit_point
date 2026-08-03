@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pathlib
 import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -155,6 +155,106 @@ class TestGetUserContext:
 
         assert await repo.get_user_context("99999") is None
         mock_conn.fetch.assert_not_called()
+
+
+# -------------------------------------------------------------------------
+# get_user_context — кеш в Redis (TTL 300с)
+# -------------------------------------------------------------------------
+
+
+def _redis_mock() -> MagicMock:
+    m = MagicMock()
+    m.get_json = AsyncMock(return_value=None)
+    m.set_json = AsyncMock(return_value=True)
+    return m
+
+
+class TestGetUserContextRedisCache:
+
+    _EXPECTED = {
+        "id": "12345",
+        "email": "user@example.com",
+        "login": "12345",
+        "fullname": "Иванов И.И.",
+        "job": "Аудитор",
+        "teams": [],
+        "roles": ["Админ"],
+    }
+
+    async def test_redis_none_behaves_as_before(self, repo, mock_conn):
+        """get_redis() is None (тест-режим) — путь без кэша, 2 SQL как раньше."""
+        mock_conn.fetchrow.return_value = dict(_DIRECTORY_ROW)
+        mock_conn.fetch.return_value = [{"name": "Админ"}]
+
+        with patch("app.auth.user_repository.get_redis", return_value=None):
+            result = await repo.get_user_context("12345")
+
+        assert result == self._EXPECTED
+        mock_conn.fetchrow.assert_awaited_once()
+        mock_conn.fetch.assert_awaited_once()
+
+    async def test_cache_hit_skips_repositories(self, repo, mock_conn):
+        """Хит кэша — репозитории (fetchrow/fetch) не вызываются вовсе."""
+        redis = _redis_mock()
+        redis.get_json = AsyncMock(return_value=self._EXPECTED)
+
+        with patch("app.auth.user_repository.get_redis", return_value=redis):
+            result = await repo.get_user_context("12345")
+
+        assert result == self._EXPECTED
+        mock_conn.fetchrow.assert_not_awaited()
+        mock_conn.fetch.assert_not_awaited()
+        redis.get_json.assert_awaited_once_with("cache:userctx:12345")
+
+    async def test_cache_miss_queries_and_writes_through(self, repo, mock_conn):
+        """Промах — обычный путь (2 SQL) + запись результата в Redis с TTL=300с."""
+        mock_conn.fetchrow.return_value = dict(_DIRECTORY_ROW)
+        mock_conn.fetch.return_value = [{"name": "Админ"}]
+        redis = _redis_mock()
+
+        with patch("app.auth.user_repository.get_redis", return_value=redis):
+            result = await repo.get_user_context("12345")
+
+        assert result == self._EXPECTED
+        redis.set_json.assert_awaited_once_with(
+            "cache:userctx:12345", self._EXPECTED, ex=300,
+        )
+
+    async def test_redis_read_exception_falls_back_to_sql(self, repo, mock_conn):
+        """Сбой Redis на чтении — честный SQL-путь, исключение не пробрасывается."""
+        mock_conn.fetchrow.return_value = dict(_DIRECTORY_ROW)
+        mock_conn.fetch.return_value = [{"name": "Админ"}]
+        redis = _redis_mock()
+        redis.get_json = AsyncMock(side_effect=ConnectionError("boom"))
+
+        with patch("app.auth.user_repository.get_redis", return_value=redis):
+            result = await repo.get_user_context("12345")  # не должно бросить
+
+        assert result == self._EXPECTED
+        mock_conn.fetchrow.assert_awaited_once()
+
+    async def test_redis_write_exception_still_returns_result(self, repo, mock_conn):
+        """Сбой Redis на записи — результат из БД всё равно возвращается."""
+        mock_conn.fetchrow.return_value = dict(_DIRECTORY_ROW)
+        mock_conn.fetch.return_value = [{"name": "Админ"}]
+        redis = _redis_mock()
+        redis.set_json = AsyncMock(side_effect=ConnectionError("boom"))
+
+        with patch("app.auth.user_repository.get_redis", return_value=redis):
+            result = await repo.get_user_context("12345")  # не должно бросить
+
+        assert result == self._EXPECTED
+
+    async def test_unknown_user_not_cached(self, repo, mock_conn):
+        """Пользователь не найден в справочнике — записи в Redis не происходит."""
+        mock_conn.fetchrow.return_value = None
+        redis = _redis_mock()
+
+        with patch("app.auth.user_repository.get_redis", return_value=redis):
+            result = await repo.get_user_context("99999")
+
+        assert result is None
+        redis.set_json.assert_not_awaited()
 
 
 # -------------------------------------------------------------------------
