@@ -24,10 +24,16 @@ class NotificationService:
     наружу не пробрасывается: деградация кэша не должна ронять бейдж.
     """
 
-    # broadcast-push не знает адресатов поштучно, поэтому вместо перебора ключей
-    # инвалидируется целая эпоха: INCR меняет v{epoch} в ключе, старые ключи
-    # перестают читаться и просто умирают по TTL.
+    # Обе инвалидации — INCR эпохи, а не DEL ключа: сброс перебором ключей для
+    # broadcast'а недопустим (сотни адресатов), а DEL адресного ключа проигрывал
+    # бы гонку — запрос, начавший считать агрегат до сброса, дописал бы
+    # устаревшее число уже после него, и оно жило бы весь TTL.
+    # Глобальная эпоха обесценивает ключи всех пользователей (broadcast-push),
+    # персональная — только своего (его собственные мутации). Сами эпохи живут
+    # без TTL: истеки они — счётчик вернулся бы к «0» при ещё живых ключах
+    # старых эпох, и чтения снова увидели бы устаревшее число.
     _EPOCH_KEY = "cache:notif:epoch"
+    _USER_EPOCH_KEY_PREFIX = "cache:notif:uver:"
     _UNREAD_KEY_PREFIX = "cache:notif:unread:"
     _UNREAD_TTL_SEC = 600
 
@@ -117,27 +123,37 @@ class NotificationService:
         return notification_id
 
     async def _unread_cache_key(self, redis: RedisAdapter, user_id: str) -> str:
-        """Ключ unread-агрегата пользователя в текущей эпохе broadcast-инвалидации."""
-        epoch = await redis.get(self._EPOCH_KEY) or "0"
-        return f"{self._UNREAD_KEY_PREFIX}{user_id}:v{epoch}"
+        """Ключ unread-агрегата пользователя в текущих эпохах — общей и своей.
+
+        Обе эпохи забираются одним MGET (имена ключей известны заранее);
+        отсутствующая эпоха — «0». Ключ обязан фиксироваться ДО подсчёта по
+        БД: тогда параллельный INCR уводит запоздавшую запись в ключ прошлой
+        эпохи, который больше никто не читает и который умрёт по TTL.
+        """
+        epoch, user_epoch = await redis.mget(
+            [self._EPOCH_KEY, f"{self._USER_EPOCH_KEY_PREFIX}{user_id}"]
+        )
+        return (
+            f"{self._UNREAD_KEY_PREFIX}{user_id}"
+            f":v{epoch or '0'}:u{user_epoch or '0'}"
+        )
 
     async def _invalidate_unread_cache(self, user_id: str) -> None:
-        """DEL кэш-ключа пользователя — адресная инвалидация после его мутации."""
+        """INCR персональной эпохи — адресная инвалидация после мутации юзера."""
         redis = get_redis()
         try:
-            key = await self._unread_cache_key(redis, user_id)
-            await redis.delete(key)
+            await redis.incr(f"{self._USER_EPOCH_KEY_PREFIX}{user_id}")
         except Exception as e:
             logger.warning("Redis недоступен при инвалидации unread-кэша: %s", e)
 
     async def _invalidate_after_push(self, recipient_user_id: str | None) -> None:
-        """Адресный push — DEL ключа получателя; broadcast — INCR эпохи целиком."""
+        """Адресный push — эпоха получателя; broadcast — общая эпоха целиком."""
+        if recipient_user_id is not None:
+            await self._invalidate_unread_cache(recipient_user_id)
+            return
+
         redis = get_redis()
         try:
-            if recipient_user_id is not None:
-                key = await self._unread_cache_key(redis, recipient_user_id)
-                await redis.delete(key)
-            else:
-                await redis.incr(self._EPOCH_KEY)
+            await redis.incr(self._EPOCH_KEY)
         except Exception as e:
             logger.warning("Redis недоступен при инвалидации после push: %s", e)

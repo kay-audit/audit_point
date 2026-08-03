@@ -15,18 +15,40 @@ import logging
 
 import asyncpg
 
-from app.core.redis import get_redis
+from app.core.redis import RedisAdapter, get_redis
 from app.core.settings_registry import get as get_domain_settings
 from app.domains.admin.settings import AdminSettings
 
 logger = logging.getLogger("audit_workstation.auth.user_repository")
 
-# Префикс публичный — им же строит ключ инвалидация в
-# app.api.v1.deps.role_deps.invalidate_user_roles_cache (username == user_id,
-# см. докстринг find_by_id). TTL держит контекст свежим без явной инвалидации
-# на случай изменений в справочнике (ФИО/должность из ETL) мимо смены ролей.
+# Полный ключ — префикс + user_id + номер эпохи (см. read_user_cache_epoch).
+# TTL держит контекст свежим без явной инвалидации на случай изменений в
+# справочнике (ФИО/должность из ETL) мимо смены ролей.
 USERCTX_CACHE_KEY_PREFIX = "cache:userctx:"
 _USERCTX_CACHE_TTL_SEC = 300
+
+# Общая эпоха пользовательских кэшей — user-контекста (здесь) и ролей
+# (app.api.v1.deps.role_deps): у обоих один идентификатор, username == user_id
+# (см. докстринг find_by_id), и инвалидируются они всегда вместе.
+# Живёт здесь, а не рядом с инвалидацией в role_deps: тот импортирует auth,
+# обратный импорт замкнул бы цикл.
+# Ключ намеренно без TTL: истеки он — эпоха вернулась бы к «0», а ключи старых
+# эпох ещё живы, и чтения снова увидели бы устаревшие данные.
+USER_CACHE_EPOCH_KEY_PREFIX = "cache:userver:"
+
+
+async def read_user_cache_epoch(redis: RedisAdapter, user_id: str) -> str:
+    """Номер эпохи пользовательских кэшей; ключа нет — эпоха «0».
+
+    Эпоха зашита в адрес ключа данных, а инвалидация — это INCR эпохи
+    (``invalidate_user_roles_cache``), не DEL ключей. Читатель обязан взять
+    номер ДО похода в БД и записать результат в ключ ИМЕННО этой эпохи: тогда
+    инвалидация, случившаяся пока он читал базу, уводит его запоздавшую запись
+    в ключ старой эпохи — его больше никто не читает, и он умирает по TTL.
+    С DEL такая запись легла бы в живой ключ уже после сброса и держала бы
+    устаревшие данные весь TTL (для ролей — до 5 минут после снятия роли).
+    """
+    return await redis.get(f"{USER_CACHE_EPOCH_KEY_PREFIX}{user_id}") or "0"
 
 
 class AuthUserRepository:
@@ -76,13 +98,16 @@ class AuthUserRepository:
         пробрасывается. Инвалидация — явная, см. ``invalidate_user_roles_cache``.
         """
         redis = get_redis()
-        cache_key = f"{USERCTX_CACHE_KEY_PREFIX}{user_id}"
+        cached = None
+        # Ключ фиксируется ДО запросов в БД — см. read_user_cache_epoch.
+        cache_key: str | None = None
 
         try:
+            epoch = await read_user_cache_epoch(redis, user_id)
+            cache_key = f"{USERCTX_CACHE_KEY_PREFIX}{user_id}:v{epoch}"
             cached = await redis.get_json(cache_key)
         except Exception as e:
             logger.warning("Redis недоступен при чтении кеша user-контекста: %s", e)
-            cached = None
         if cached is not None:
             return cached
 
@@ -102,9 +127,10 @@ class AuthUserRepository:
             "roles": sorted(role["name"] for role in roles),
         }
 
-        try:
-            await redis.set_json(cache_key, result, ex=_USERCTX_CACHE_TTL_SEC)
-        except Exception as e:
-            logger.warning("Redis недоступен при записи кеша user-контекста: %s", e)
+        if cache_key is not None:
+            try:
+                await redis.set_json(cache_key, result, ex=_USERCTX_CACHE_TTL_SEC)
+            except Exception as e:
+                logger.warning("Redis недоступен при записи кеша user-контекста: %s", e)
 
         return result
