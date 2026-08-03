@@ -41,11 +41,6 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}acts (
         CHECK (validation_status IN ('ok', 'warning', 'error')),
     validation_issues JSONB,
 
-    -- Блокировка для редактирования
-    locked_by VARCHAR(50) DEFAULT NULL,
-    locked_at TIMESTAMP DEFAULT NULL,
-    lock_expires_at TIMESTAMP DEFAULT NULL,
-
     -- Идентификатор аудита из внешнего сервиса
     audit_act_id VARCHAR(36),
 
@@ -101,9 +96,6 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.needs_invoice_check IS 'Флаг вал�
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.needs_service_note IS 'Флаг валидации: требуется ли информация по служебной записке';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.validation_status IS 'Состояние структурной валидации содержимого: ok / warning / error';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.validation_issues IS 'Список конкретных замечаний валидации (JSON), вычисляется при сохранении';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.locked_by IS 'Username пользователя, заблокировавшего акт для редактирования';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.locked_at IS 'Время начала блокировки';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.lock_expires_at IS 'Время истечения блокировки (автоосвобождение)';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.created_at IS 'Дата и время создания записи';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.updated_at IS 'Дата и время последнего обновления метаданных';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}acts.created_by IS 'Числовой логин пользователя-создателя';
@@ -529,14 +521,6 @@ CREATE INDEX idx_{PREFIX}acts_created_by
 
 CREATE INDEX idx_{PREFIX}acts_last_edited_at
     ON {SCHEMA}.{PREFIX}acts(last_edited_at);
-
-CREATE INDEX idx_{PREFIX}acts_locked_by
-    ON {SCHEMA}.{PREFIX}acts(locked_by)
-    WHERE locked_by IS NOT NULL;
-
-CREATE INDEX idx_{PREFIX}acts_lock_expires
-    ON {SCHEMA}.{PREFIX}acts(lock_expires_at)
-    WHERE lock_expires_at IS NOT NULL;
 
 -- Индексы на audit_team_members
 CREATE INDEX idx_{PREFIX}audit_team_username

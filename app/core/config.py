@@ -62,8 +62,6 @@ class DatabaseSettings(BaseModel):
       переполнении пакета).
     * Поллер канала к внешнему агенту (``chat.agent_channel_poller``)
       — держит коннект короткими порциями (poll каждые N секунд).
-    * Фоновый cleanup expired locks (``acts.expired_locks_cleanup``) — один
-      коннект раз в 60 сек.
 
     Дефолты ``pool_min_size=5`` / ``pool_max_size=20`` подобраны эмпирически:
     минимум держит несколько прогретых коннектов под типичный фон,

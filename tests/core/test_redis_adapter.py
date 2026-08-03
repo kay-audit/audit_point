@@ -7,10 +7,10 @@
 
 Реального Redis нет — используется fakeredis (паттерн из
 tests/test_auth_otp_flow.py: клиент подставляется в ``adapter._client``).
-Lua-скрипты fakeredis 2.37 не исполняет (нужен пакет ``lupa``, его в
-окружении нет — команда eval отдаёт «unknown command»), поэтому ``eval``
-проверяется на моке клиента: контракт метода — трансляция
-``(script, keys, args)`` в сигнатуру redis-py.
+``eval`` проверяется на моке клиента: от адаптера здесь нужна только
+трансляция ``(script, keys, args)`` в сигнатуру redis-py, а сами Lua-скрипты
+исполняются в тестах их владельцев (``tests/domains/acts/test_act_lock_backends.py``
+— fakeredis с ``lupa``).
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ class TestJson:
 class TestEval:
     """Контракт трансляции в сигнатуру redis-py: ``eval(script, numkeys, *keys, *args)``.
 
-    На моке, а не на fakeredis: без ``lupa`` fakeredis не исполняет Lua.
+    На моке, а не на fakeredis: проверяется трансляция аргументов, а не Lua.
     """
 
     async def test_passes_keys_count_then_keys_then_args(self, adapter):

@@ -56,7 +56,7 @@ class ActCrudService:
         self.conn = conn
         self.settings = settings
         self._crud = crud or ActCrudRepository(conn)
-        self._lock = lock or ActLockRepository(conn)
+        self._lock = lock or ActLockRepository()
         self._access = access or ActAccessRepository(conn)
         self.guard = AccessGuard(self._access, self._lock)
         self._audit = ActAuditLogRepository(conn)
@@ -238,11 +238,21 @@ class ActCrudService:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ActListItem], int]:
-        """Получает страницу актов пользователя и общее количество."""
+        """Получает страницу актов пользователя и общее количество.
+
+        Признак блокировки БД не знает (блокировки живут в ключах с TTL) —
+        страница дообогащается одним batch-чтением хранилища блокировок.
+        """
         total = await self._crud.count_user_acts(username)
         acts = await self._crud.get_user_acts(
             username, limit=limit, offset=offset,
         )
+        locks = await self._locks_for([act.id for act in acts])
+        for act in acts:
+            lock = locks.get(act.id)
+            if lock is not None:
+                act.is_locked = True
+                act.locked_by = lock["locked_by"]
         logger.info(
             "Получен список актов для %s: %s из %s (limit=%s, offset=%s)",
             username, len(acts), total, limit, offset,
@@ -256,8 +266,27 @@ class ActCrudService:
         странице): акты с незакрытыми требованиями или структурной валидацией
         не 'ok'. Read-only, без пагинации — фронт получает уже отфильтрованный
         список и не сканирует сотни актов на клиенте.
+
+        Заблокированные акты из сводки исключаются: пока акт кто-то правит,
+        напоминать по нему нечего. Фильтр применяется после выборки — раньше
+        он стоял в WHERE, но блокировки уехали из БД в ключи с TTL.
         """
-        return await self._crud.get_user_acts_needing_attention(username)
+        items = await self._crud.get_user_acts_needing_attention(username)
+        locks = await self._locks_for([item.id for item in items])
+        return [item for item in items if item.id not in locks]
+
+    async def _locks_for(self, act_ids: list[int]) -> dict[int, dict]:
+        """Состояния блокировок для списка актов; при сбое хранилища — пусто.
+
+        Fail-open сознателен: это чтение, и потерянный признак «занят» никому
+        ничего не разрешает — арбитром остаётся сервер, а захват и сохранение
+        при недоступном хранилище блокировок упадут сами.
+        """
+        try:
+            return await self._lock.bulk_lock_info(act_ids)
+        except Exception as e:
+            logger.warning("Не удалось прочитать блокировки актов: %s", e)
+            return {}
 
     async def get_act(self, act_id: int, username: str) -> ActResponse:
         """Получает полную информацию об акте."""

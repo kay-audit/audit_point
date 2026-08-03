@@ -1,25 +1,52 @@
 """
 Репозиторий блокировок актов.
 
-Атомарные SQL-операции без бизнес-логики. Вся логика принятия решений —
-в сервисном слое. Все временные сравнения используют CURRENT_TIMESTAMP (серверное время).
+Фасад над бэкендом блокировок: имена методов и формы возвратов сохранены с
+тех пор, когда блокировка жила в трёх колонках таблицы актов, — сервисам и
+``AccessGuard`` не нужно знать, что она переехала на ключ с TTL. Сроки больше
+не сравниваются в запросах: истёкшей блокировки просто нет в хранилище.
+
+Бэкенд выбирается ОДИН раз при первом обращении (``get_redis() is None``,
+т.е. тест-режим ``AUTH__ENABLED=false`` → in-memory) и в рантайме не меняется:
+переключение на лету означало бы потерю всех живых блокировок при флапе Redis.
+Сбой Redis на мутации пробрасывается наружу — 5xx честнее, чем разъехавшиеся
+блокировки и параллельная запись двух редакторов.
 """
 
 import logging
 
-import asyncpg
-
-from app.db.repositories.base import BaseRepository
+from app.core.redis import get_redis
+from app.domains.acts.repositories.act_lock_backends import (
+    InMemoryLockBackend,
+    LockBackend,
+    RedisLockBackend,
+)
 
 logger = logging.getLogger("audit_workstation.db.repository.lock")
 
+_backend: LockBackend | None = None
 
-class ActLockRepository(BaseRepository):
+
+def get_lock_backend() -> LockBackend:
+    """Возвращает бэкенд блокировок, выбирая его при первом вызове."""
+    global _backend
+
+    if _backend is None:
+        redis = get_redis()
+        if redis is not None:
+            _backend = RedisLockBackend(redis)
+            logger.info("Блокировки актов работают через Redis (TTL ключа)")
+        else:
+            _backend = InMemoryLockBackend()
+            logger.info("Redis недоступен — блокировки актов работают в памяти процесса")
+    return _backend
+
+
+class ActLockRepository:
     """Атомарные операции блокировок актов."""
 
-    def __init__(self, conn: asyncpg.Connection):
-        super().__init__(conn)
-        self.acts = self.adapter.get_table_name("acts")
+    def __init__(self) -> None:
+        self._backend = get_lock_backend()
 
     async def atomic_lock_act(
         self,
@@ -30,34 +57,20 @@ class ActLockRepository(BaseRepository):
         """
         Атомарно захватывает блокировку.
 
-        UPDATE ... WHERE (свободна OR моя OR истекла) RETURNING *
-        Использует CURRENT_TIMESTAMP для серверного времени.
+        Повторный захват своим держателем разрешён и означает продление —
+        инвариант с времён ``WHERE locked_by IS NULL OR locked_by = $1``.
 
         Returns:
-            dict с locked_by/locked_at/lock_expires_at или None если не удалось
+            dict с locked_by/locked_at/lock_expires_at или None, если акт
+            держит другой пользователь
         """
-        row = await self.conn.fetchrow(
-            f"""
-            UPDATE {self.acts}
-            SET locked_by = $1::VARCHAR,
-                locked_at = CURRENT_TIMESTAMP,
-                lock_expires_at = CURRENT_TIMESTAMP + $2 * interval '1 minute',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $3
-              AND (locked_by IS NULL OR locked_by = $1::VARCHAR OR lock_expires_at <= CURRENT_TIMESTAMP)
-            RETURNING locked_by, locked_at, lock_expires_at
-            """,
-            username,
-            float(duration_minutes),
-            act_id,
-        )
-        if row:
+        info = await self._backend.acquire(act_id, username, duration_minutes)
+        if info:
             logger.info(
                 f"Акт ID={act_id} заблокирован пользователем {username} "
                 f"на {duration_minutes} мин"
             )
-            return dict(row)
-        return None
+        return info
 
     async def atomic_extend_lock(
         self,
@@ -73,61 +86,31 @@ class ActLockRepository(BaseRepository):
         Returns:
             dict с полями: extended (bool), locked_by, lock_expires_at
         """
-        row = await self.conn.fetchrow(
-            f"""
-            WITH attempt AS (
-                UPDATE {self.acts}
-                SET lock_expires_at = CURRENT_TIMESTAMP + $1 * interval '1 minute',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = $2
-                  AND locked_by = $3
-                  AND lock_expires_at > CURRENT_TIMESTAMP
-                RETURNING locked_by, locked_at, lock_expires_at
-            )
-            SELECT
-                a.locked_by,
-                a.lock_expires_at,
-                EXISTS(SELECT 1 FROM attempt) AS extended,
-                (SELECT lock_expires_at FROM attempt) AS new_lock_expires_at
-            FROM {self.acts} a
-            WHERE a.id = $2
-            """,
-            float(duration_minutes),
-            act_id,
-            username,
-        )
-        if not row:
-            return {"extended": False, "locked_by": None, "lock_expires_at": None}
-
-        result = {
-            "extended": row["extended"],
-            "locked_by": row["locked_by"],
-            "lock_expires_at": row["new_lock_expires_at"] if row["extended"] else row["lock_expires_at"],
-        }
-
-        if row["extended"]:
+        result = await self._backend.extend(act_id, username, duration_minutes)
+        if result["extended"]:
             logger.info(f"Блокировка акта ID={act_id} продлена на {duration_minutes} мин")
-
         return result
 
     async def get_lock_info(self, act_id: int) -> dict | None:
-        """SELECT locked_by, lock_expires_at + признак истечения lock_expired.
+        """Состояние живой блокировки: locked_by, lock_expires_at, lock_expired.
 
-        lock_expired вычисляется в SELECT (серверный CURRENT_TIMESTAMP):
-        сравнение на стороне приложения дало бы рассинхрон часов/таймзон
-        (lock_expires_at — TIMESTAMP без таймзоны, наивный datetime).
+        ``None`` — блокировки нет: либо её не ставили, либо она истекла и ключ
+        исчез. Прежняя SQL-версия различала «акта нет» (None) и «акт есть, но
+        не заблокирован» (dict с locked_by=None) — оба консьюмера
+        (``AccessGuard``, ``ActLockService``) реагировали на них одинаково, а
+        несуществующий акт до блокировок не доходит: ``require_*`` отвергает
+        его раньше, не найдя пользователя в аудиторской группе.
         """
-        row = await self.conn.fetchrow(
-            f"""
-            SELECT locked_by, lock_expires_at,
-                   (lock_expires_at IS NOT NULL
-                    AND lock_expires_at <= CURRENT_TIMESTAMP) AS lock_expired
-            FROM {self.acts}
-            WHERE id = $1
-            """,
-            act_id,
-        )
-        return dict(row) if row else None
+        return await self._backend.info(act_id)
+
+    async def bulk_lock_info(self, act_ids: list[int]) -> dict[int, dict]:
+        """Состояния блокировок пачкой — для списка актов (один MGET).
+
+        Returns:
+            dict act_id → состояние блокировки; незаблокированных актов
+            в ответе нет
+        """
+        return await self._backend.bulk_info(act_ids)
 
     async def unlock_act(self, act_id: int, username: str) -> bool:
         """
@@ -136,20 +119,9 @@ class ActLockRepository(BaseRepository):
         Returns:
             True если блокировка была снята, False если пользователь не владеет блокировкой.
         """
-        result = await self.conn.execute(
-            f"""
-            UPDATE {self.acts}
-            SET locked_by = NULL,
-                locked_at = NULL,
-                lock_expires_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1 AND locked_by = $2
-            """,
-            act_id,
-            username,
-        )
+        released = await self._backend.release(act_id, username)
 
-        if result == "UPDATE 0":
+        if not released:
             logger.warning(
                 f"Попытка снять блокировку с акта ID={act_id} "
                 f"пользователем {username}, который не владеет блокировкой"
