@@ -20,13 +20,13 @@ from pydantic import ValidationError
 
 from app.auth.dependencies import get_user_repository
 from app.auth.jwt_handler import JWTTokenHandler
-from app.auth.redis_adapter import RedisAdapter, RedisConfig
 from app.auth.router import (
     OTP_INVALID_ERROR,
     REDIS_UNAVAILABLE_ERROR,
     router as auth_router,
 )
-from app.core.config import AuthSettings, Settings, get_settings
+from app.core.config import AuthSettings, RedisSettings, Settings, get_settings
+from app.core.redis import RedisAdapter
 from app.core.domain_registry import reset_registry
 from app.core.settings_registry import reset as reset_settings
 from app.domains.notifications.settings import NotificationsSettings
@@ -118,7 +118,7 @@ def _make_client(repo: FakeUserRepository) -> TestClient:
     # Один общий in-memory сервер на два клиента: async уходит в адаптер
     # приложения, sync остаётся тесту для проверки ключей и TTL без await.
     server = fakeredis.FakeServer()
-    redis_adapter = RedisAdapter(RedisConfig())
+    redis_adapter = RedisAdapter(RedisSettings())
     redis_adapter._client = fakeredis.aioredis.FakeRedis(
         server=server, decode_responses=True
     )

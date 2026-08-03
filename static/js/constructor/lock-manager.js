@@ -448,8 +448,8 @@ export class LockManager {
 
         // Случай B: диалога нет, но порог неактивности уже превышен →
         // сразу autoExit без промежуточного диалога «Продолжить?».
-        // Юзер был неактивен дольше threshold; бэк мог уже снять лок через
-        // expired_locks_cleanup (TTL lockDurationMinutes). Спрашивать «остаться?»
+        // Юзер был неактивен дольше threshold; лок на сервере мог уже истечь
+        // сам по TTL (lockDurationMinutes). Спрашивать «остаться?»
         // бессмысленно: extend всё равно упадёт 4xx → fatal → _initiateExit.
         if (this._inactivityDialogDeadline === null) {
             const idleMs = this._watchdog.getIdleMs();

@@ -1,7 +1,33 @@
 """Общие фикстуры для тестов."""
 
+import fakeredis.aioredis
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+from app.core import redis as redis_module
+from app.core.config import RedisSettings
+from app.core.redis import RedisAdapter
+
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """Подставляет fakeredis в модульный синглтон ``app.core.redis._adapter``.
+
+    Redis обязателен во всех окружениях, включая pytest: ``get_redis()`` больше
+    не отдаёт None, а бросает RuntimeError. Фикстура — тест-эквивалент
+    startup-хука: без неё упал бы любой код, трогающий кэши или блокировки.
+
+    Свежий инстанс на каждый тест — изоляция ключей: без неё блокировка акта
+    из одного теста жила бы 15 минут и ломала соседний. Клиент подставляется
+    в ``_client`` напрямую (``connect()`` не зовётся, сети нет) — этот приём
+    уже используют тесты ОТП-флоу и бэкенда блокировок. Lua исполняется
+    по-настоящему благодаря ``lupa``.
+    """
+    adapter = RedisAdapter(RedisSettings())
+    adapter._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    redis_module._adapter = adapter
+    yield adapter
+    redis_module._adapter = None
 
 
 @pytest.fixture

@@ -109,3 +109,153 @@ async def test_push_passes_created_by_and_recipient(service):
     assert kwargs["recipient_user_id"] == "user2"
     assert kwargs["severity"] == "warning"
     assert kwargs["link"] == "/constructor?act_id=7"
+
+
+# ── Redis-кэш unread_summary ────────────────────────────────────────────────
+#
+# get_redis импортирован в notification_service на module-level, поэтому
+# патчится по пути самого модуля сервиса (не app.core.redis).
+
+_GET_REDIS = "app.domains.notifications.services.notification_service.get_redis"
+
+
+def _redis_mock():
+    """MagicMock RedisAdapter с async-методами, которые реально дёргает сервис."""
+    m = MagicMock()
+    m.mget = AsyncMock(return_value=[None, None])  # обе эпохи отсутствуют → "0"
+    m.get_json = AsyncMock(return_value=None)
+    m.set_json = AsyncMock(return_value=True)
+    m.delete = AsyncMock(return_value=1)
+    m.incr = AsyncMock(return_value=1)
+    return m
+
+
+@pytest.fixture
+def redis():
+    return _redis_mock()
+
+
+async def test_unread_summary_cache_hit_skips_sql(service, redis):
+    """Хит кэша — результат из Redis, repo.unread_summary НЕ вызывается."""
+    redis.get_json = AsyncMock(return_value={"count": 2, "severity": "info"})
+
+    with patch(_GET_REDIS, return_value=redis):
+        result = await service.unread_summary("user1")
+
+    assert result == {"count": 2, "severity": "info"}
+    service._repo_mock.unread_summary.assert_not_awaited()
+
+
+async def test_unread_summary_cache_miss_writes_through(service, redis):
+    """Промах кэша — читаем из БД и сохраняем результат в Redis с TTL=600с."""
+    with patch(_GET_REDIS, return_value=redis):
+        result = await service.unread_summary("user1")
+
+    assert result == {"count": 5, "severity": "warning"}
+    service._repo_mock.unread_summary.assert_awaited_once_with("user1")
+    redis.mget.assert_awaited_once_with(["cache:notif:epoch", "cache:notif:uver:user1"])
+    redis.set_json.assert_awaited_once_with(
+        "cache:notif:unread:user1:v0:u0", {"count": 5, "severity": "warning"}, ex=600
+    )
+
+
+async def test_unread_summary_redis_error_falls_back_to_sql(service, redis):
+    """Сбой Redis на чтении — честный SQL-путь, исключение наружу не летит."""
+    redis.get_json = AsyncMock(side_effect=ConnectionError("boom"))
+
+    with patch(_GET_REDIS, return_value=redis):
+        result = await service.unread_summary("user1")  # не должно бросить
+
+    assert result == {"count": 5, "severity": "warning"}
+    service._repo_mock.unread_summary.assert_awaited_once_with("user1")
+
+
+async def test_unread_summary_redis_write_error_still_returns_sql_result(service, redis):
+    """Сбой Redis на записи в кэш — результат из БД всё равно возвращается."""
+    redis.set_json = AsyncMock(side_effect=ConnectionError("boom"))
+
+    with patch(_GET_REDIS, return_value=redis):
+        result = await service.unread_summary("user1")  # не должно бросить
+
+    assert result == {"count": 5, "severity": "warning"}
+
+
+async def test_push_broadcast_increments_epoch(service, redis):
+    """push без recipient_user_id (broadcast) — INCR всей эпохи, без DEL."""
+    with patch(_GET_REDIS, return_value=redis):
+        await service.push(source="acts", title="Готов акт")
+
+    redis.incr.assert_awaited_once_with("cache:notif:epoch")
+    redis.delete.assert_not_awaited()
+
+
+async def test_push_addressed_bumps_recipient_epoch(service, redis):
+    """push с recipient_user_id — INCR персональной эпохи получателя, без DEL."""
+    with patch(_GET_REDIS, return_value=redis):
+        await service.push(source="manual", title="Т", recipient_user_id="user2")
+
+    redis.incr.assert_awaited_once_with("cache:notif:uver:user2")
+    redis.delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "method,args",
+    [
+        ("mark_read", ("n1", "user1")),
+        ("mark_unread", ("n1", "user1")),
+        ("dismiss", ("n1", "user1")),
+        ("mark_all_read", ("user1",)),
+    ],
+)
+async def test_mutation_bumps_caller_epoch(service, redis, method, args):
+    """mark_read/mark_unread/dismiss/mark_all_read — INCR эпохи вызывающего юзера.
+
+    Именно INCR, а не DEL: иначе тик колокольчика, начавший считать агрегат до
+    мутации, дописал бы устаревшее число уже после неё — и бейдж врал бы 10 минут.
+    """
+    with patch(_GET_REDIS, return_value=redis):
+        await getattr(service, method)(*args)
+
+    redis.incr.assert_awaited_once_with("cache:notif:uver:user1")
+    redis.delete.assert_not_awaited()
+
+
+async def test_mutation_redis_error_does_not_propagate(service, redis):
+    """Сбой Redis при инвалидации — предупреждение в лог, исключение не летит наружу."""
+    redis.incr = AsyncMock(side_effect=ConnectionError("boom"))
+
+    with patch(_GET_REDIS, return_value=redis):
+        await service.mark_read("n1", "user1")  # не должно бросить
+
+    service._repo_mock.mark_read.assert_awaited_once_with("n1", "user1")
+
+
+# ── Регрессия: гонка «инвалидация во время подсчёта агрегата» ────────────────
+#
+# Redis здесь настоящий (fakeredis из autouse-фикстуры) — нужна реальная
+# семантика INCR и раздельных ключей эпох.
+
+
+async def test_write_after_invalidation_lands_in_dead_key(service, fake_redis):
+    """Уведомление прочитали, пока шёл подсчёт: запись уходит в мёртвый ключ."""
+    counts = [{"count": 5, "severity": "warning"}, {"count": 0, "severity": None}]
+
+    async def _unread_summary(user_id):
+        if len(counts) == 2:
+            # Агрегат ещё считается, а пользователь уже пометил уведомление прочитанным
+            await service.mark_read("n1", user_id)
+        return counts.pop(0)
+
+    service._repo_mock.unread_summary = AsyncMock(side_effect=_unread_summary)
+
+    first = await service.unread_summary("user1")
+    second = await service.unread_summary("user1")
+
+    assert first == {"count": 5, "severity": "warning"}
+    # Следующий тик колокольчика видит актуальное число, а не кэш прошлой эпохи
+    assert second == {"count": 0, "severity": None}
+
+    stale = await fake_redis.get_json("cache:notif:unread:user1:v0:u0")
+    assert stale == {"count": 5, "severity": "warning"}  # мёртвый ключ
+    fresh = await fake_redis.get_json("cache:notif:unread:user1:v0:u1")
+    assert fresh == {"count": 0, "severity": None}

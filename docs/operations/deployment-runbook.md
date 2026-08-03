@@ -12,12 +12,14 @@
 Перед запуском (или рестартом) уверенно прогнать:
 
 - [ ] **Kerberos** (только GP-окружение). `kinit <user>` для получения тикета. `klist` показывает валидный TGT, срок жизни > планируемого аптайма (обычно 8-24 часа). Без тикета `_is_kerberos_ticket_valid()` (`app/db/connection.py:65`) залогирует инструкции и init БД упадёт.
+- [ ] **Redis доступен** (обязателен всегда — приложение без него не стартует, независимо от `AUTH__ENABLED`). `PING` на хост/порт из блока `REDIS__*` в `.env`. Старт fail-fast: на Redis живут ОТП-коды, кэши (уведомления, роли, user-контекст) и блокировки актов. При недоступности Redis уже после старта — кэши прозрачно уходят в БД, а мутации блокировок актов (захват/продление/снятие) отдают 5xx.
 - [ ] **`JUPYTERHUB_USER`** в окружении процесса (имя — историческое). Нужна для Kerberos/Greenplum-логина и, при `AUTH__ENABLED=false` (тест-режим), для username RBAC — без неё он `unknown_user`, RBAC сломается. На SDP автоматической подстановки (как раньше делал JupyterHub Datalab) нет — выставлять явно (`export JUPYTERHUB_USER=<digits>_<...>`) в окружении процесса/деплой-скрипте. При `AUTH__ENABLED=true` (ОТП) на веб-авторизацию не влияет — только на Kerberos-логин GP.
 - [ ] **`.env` сверен с `.env.example`**. После предыдущего деплоя в `.env.example` мог появиться обязательный ключ или поменяться дефолт. Команда быстрой сверки на Windows PowerShell:
   ```powershell
   Compare-Object (Get-Content .env.example) (Get-Content .env)
   ```
   Особо проверить: `CHAT__*`, `ACTS__*`, `OBSERVABILITY__*`, `SECURITY__*`. Канал к внешнему ИИ-агенту настраивается префиксом `CHAT__AGENT_CHANNEL__*` (`TABLE_NAME=chat_agent_messages_bus`, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`); лимит одновременных запросов — `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3).
+- [ ] **Пул соединений.** Единые дефолты во всех окружениях: `DATABASE__POOL_MIN_SIZE=1` / `POOL_MAX_SIZE=2`. У GP-учётки жёсткий лимит ~5 соединений, «поднять пул» (troubleshooting №17) там не вариант; горячие пути (unread-счётчик, роли, user-контекст, локи) обслуживает Redis. DEV держим идентичным ПРОМу — вилка прятала бы нехватку коннектов до самого прода.
 - [ ] **`DATABASE__TABLE_PREFIX`** соответствует БД. Дефолт `t_db_oarb_audit_act_`. При смене окружения проверить, что таблицы существуют под тем же префиксом — иначе `create_tables_if_not_exist` поднимет новый набор пустых таблиц и фактические данные «исчезнут».
 - [ ] **Свободен ли singleton-lock**. См. `troubleshooting.md` №20: если предыдущий процесс упал по kill -9, строка в `app_singleton_lock` живёт до `SECURITY__SINGLETON_LOCK_STALE_TTL_SEC` сек (default 60). В пределах окна старт упадёт.
 - [ ] **Версия миграций**. Все одноразовые SQL из `docs/migrations/` для апгрейда с предыдущей версии применены (см. §3).
@@ -47,7 +49,6 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8005
      | Hook | Что |
      |---|---|
      | `acts.audit_log_batcher` | `MetricsBatcher` для аудита актов |
-     | `acts.expired_locks_cleanup` | Фоновая cleanup-задача lock'ов |
      | `admin.http_metrics_batcher` | `MetricsBatcher` HTTP-метрик |
      | `admin.access_denied_audit_batcher` | `MetricsBatcher` отказов доступа |
      | `admin.db_pool_monitor` | Мониторинг asyncpg-пула |
@@ -128,6 +129,6 @@ sed 's/{SCHEMA}/<gp_schema>/g; s/{PREFIX}/t_db_oarb_audit_act_/g' \
 - №3 — file upload 413.
 - №7 — 404 на API под JupyterHub-proxy (`AppConfig.api.getUrl(...)`).
 - №9 — `Database pool не инициализирован` (lifespan ещё не отработал).
-- №17 — `TooManyConnectionsError` (поднять `POOL_MAX_SIZE`).
+- №17 — `TooManyConnectionsError` (пул намеренно 1/2 — искать удерживаемое соединение).
 - №20 — Singleton-lock застрял (см. также §1 этого runbook'а).
 - №21 — Записи теряются в батчерах (Wave 1: проверить `/admin/diagnostics`).

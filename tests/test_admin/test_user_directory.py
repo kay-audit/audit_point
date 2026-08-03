@@ -41,6 +41,7 @@ class TestFindByUsername:
             "username": "12345",
             "email": "user@example.com",
             "fullname": "Иванов И.И.",
+            "job": "Аудитор",
         }
         result = await repo.find_by_username("12345")
 
@@ -48,6 +49,7 @@ class TestFindByUsername:
             "username": "12345",
             "email": "user@example.com",
             "fullname": "Иванов И.И.",
+            "job": "Аудитор",
         }
         assert mock_conn.fetchrow.call_args.args[1] == "12345"
 
@@ -64,13 +66,21 @@ class TestFindByUsername:
         каждую должность) — выборка обязана вернуть ровно одну.
         """
         mock_conn.fetchrow.return_value = {
-            "username": "12345", "email": "", "fullname": "",
+            "username": "12345", "email": "", "fullname": "", "job": "",
         }
         await repo.find_by_username("12345")
 
         sql = _sql_of(mock_conn)
         assert "DISTINCT ON (username)" in sql
         assert "LIMIT 1" in sql
+
+    async def test_selects_job(self, repo, mock_conn):
+        """SELECT включает job — карточка/профиль пользователя показывает должность."""
+        mock_conn.fetchrow.return_value = None
+        await repo.find_by_username("12345")
+
+        sql = _sql_of(mock_conn)
+        assert "job" in sql
 
 
 # -------------------------------------------------------------------------
@@ -86,10 +96,12 @@ class TestFindByEmail:
             "username": "12345",
             "email": "user@example.com",
             "fullname": "Иванов И.И.",
+            "job": "Аудитор",
         }
         result = await repo.find_by_email("user@example.com")
 
         assert result["username"] == "12345"
+        assert result["job"] == "Аудитор"
         assert mock_conn.fetchrow.call_args.args[1] == "user@example.com"
 
     async def test_not_found(self, repo, mock_conn):
@@ -120,3 +132,11 @@ class TestFindByEmail:
         sql = _sql_of(mock_conn)
         assert "DISTINCT ON (username)" in sql
         assert "LIMIT 1" in sql
+
+    async def test_selects_job(self, repo, mock_conn):
+        """SELECT включает job — карточка/профиль пользователя показывает должность."""
+        mock_conn.fetchrow.return_value = None
+        await repo.find_by_email("user@example.com")
+
+        sql = _sql_of(mock_conn)
+        assert "job" in sql

@@ -1,14 +1,21 @@
-"""Эндпоинты авторизации: OTP, JWT-токены, профиль пользователя."""
+"""Эндпоинты авторизации: OTP, JWT-токены, профиль пользователя, фото профиля."""
 
 from __future__ import annotations
 
 import logging
 import secrets
+from contextlib import aclosing
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
+from app.auth.avatar_image import (
+    AVATAR_MAX_UPLOAD_BYTES,
+    AVATAR_MIME,
+    AvatarImageError,
+    process_avatar_image,
+)
 from app.auth.dependencies import (
     AuthUserDirectory,
     get_current_user,
@@ -35,6 +42,20 @@ OTP_INVALID_ERROR = "Неверный email или код. Если код ис�
 # Ответ, когда Redis недоступен: без него ни лимиты, ни коды не работают.
 REDIS_UNAVAILABLE_ERROR = "Сервис авторизации временно недоступен, попробуйте позже"
 
+# Отказ при слишком большом файле фото. Размер в тексте — чтобы пользователю
+# не пришлось искать лимит в документации.
+AVATAR_TOO_LARGE_ERROR = (
+    f"Файл больше {AVATAR_MAX_UPLOAD_BYTES // (1024 * 1024)} МБ. "
+    "Выберите фото поменьше."
+)
+
+# Размер куска при чтении загружаемого файла.
+AVATAR_UPLOAD_CHUNK_BYTES = 64 * 1024
+
+# Сколько браузеру держать фото в кеше. Смена фото не ждёт истечения: фронт
+# запрашивает картинку с ?v=<avatar_version>, и версия меняется вместе с фото.
+AVATAR_CACHE_CONTROL = "private, max-age=86400"
+
 
 class RequestOTPRequest(BaseModel):
     """Тело запроса на отправку OTP."""
@@ -56,17 +77,6 @@ class AuthOTPResponse(BaseModel):
     user: dict | None = None
     error: str | None = None
     message: str | None = None
-
-
-class UserProfile(BaseModel):
-    """Профиль аутентифицированного пользователя."""
-
-    sub: str
-    email: str
-    login: str
-    fullname: str
-    teams: list[str]
-    roles: list[str]
 
 
 def _otp_key(user_id: str) -> str:
@@ -341,26 +351,16 @@ async def logout():
     return response
 
 
-@router.get("/profile", response_model=UserProfile)
-async def get_current_user_profile(
-    user: UserContext = Depends(get_current_user),
-) -> UserProfile:
-    """Возвращает профиль аутентифицированного пользователя."""
-    return UserProfile(
-        sub=user.sub,
-        email=user.email,
-        login=user.login,
-        fullname=user.fullname,
-        teams=user.teams,
-        roles=user.roles,
-    )
-
-
 @router.get("/me")
 async def get_current_user_me(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Возвращает текущего пользователя для проверки авторизации."""
+    """Возвращает текущего пользователя для проверки авторизации.
+
+    Работает одинаково в обоих режимах: get_current_user собирает контекст
+    из БД либо, при AUTH__ENABLED=false, из окружения — фото профиля
+    подхватывается в обоих случаях, ключ у него один (логин).
+    """
     return {
         "authenticated": True,
         "username": user.login,
@@ -368,6 +368,158 @@ async def get_current_user_me(
         "email": user.email,
         "login": user.login,
         "fullname": user.fullname,
+        "job": user.job,
         "teams": user.teams,
         "roles": user.roles,
+        "avatar_version": await _read_avatar_version(user.login),
     }
+
+
+# ---------------------------------------------------------------------------
+# ФОТО ПРОФИЛЯ
+# ---------------------------------------------------------------------------
+
+
+async def get_avatar_repository():
+    """Репозиторий фото профиля — фабрика admin-домена.
+
+    Таблица принадлежит admin-домену, а обращается к ней слой авторизации,
+    поэтому связь идёт через реестр фабрик (как acts → admin.user_directory),
+    а не прямым импортом.
+
+    Обёрнуто в ``aclosing``: без него при исключении в эндпоинте (413/422)
+    ``async for`` не закрывает генератор фабрики, и внутренний
+    ``async with get_db()`` не отпускает соединение — при пуле 1/2 оно
+    виснет до сборщика мусора.
+    """
+    factory = get_factory("admin.user_avatars")
+    async with aclosing(factory()) as agen:
+        async for repo in agen:
+            yield repo
+
+
+async def get_request_username(request: Request) -> str:
+    """Username текущего пользователя (401, если не авторизован).
+
+    Импорт отложен внутрь функции сознательно: ``app.api.v1.routes``
+    подключает этот роутер, поэтому импорт ``app.api`` на уровне модуля
+    замкнул бы цикл.
+    """
+    from app.api.v1.deps.auth_deps import get_username
+
+    return await get_username(request)
+
+
+async def _invalidate_user_cache(username: str) -> None:
+    """Сбрасывает кеш userctx пользователя (роли, ФИО, должность).
+
+    Версия фото тут ни при чём: /me всегда читает её из БД
+    (``_read_avatar_version``), в кешируемом userctx поля avatar_version нет.
+    Сброс нужен для согласованности остальных полей userctx после его
+    изменения. Импорт отложен по той же причине, что и в ``get_request_username``.
+    """
+    from app.api.v1.deps.role_deps import invalidate_user_roles_cache
+
+    await invalidate_user_roles_cache(username)
+
+
+async def _read_avatar_version(username: str) -> int | None:
+    """Версия фото пользователя (unix-время загрузки) или None, если фото нет.
+
+    Отдельно от ``get_avatar_repository``: /me вызывается на каждой загрузке
+    страницы и обязан отвечать даже там, где admin-домен не зарегистрирован
+    (минимальное приложение в тестах, отключённый домен) — тогда просто
+    «фото нет».
+    """
+    if not has_factory("admin.user_avatars"):
+        return None
+
+    async with aclosing(get_factory("admin.user_avatars")()) as gen:
+        async for repo in gen:
+            updated_at = await repo.get_updated_at(username)
+            return int(updated_at.timestamp()) if updated_at else None
+    return None
+
+
+async def _read_upload_limited(upload: UploadFile, limit: int) -> bytes:
+    """Читает загружаемый файл кусками, обрываясь на превышении лимита.
+
+    Ограничивает то, что окажется в памяти: ``await upload.read()`` без
+    аргумента поднял бы файл целиком, каким бы он ни был.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(AVATAR_UPLOAD_CHUNK_BYTES):
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail=AVATAR_TOO_LARGE_ERROR)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post("/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    username: str = Depends(get_request_username),
+    repo=Depends(get_avatar_repository),
+) -> dict:
+    """Загружает фото профиля текущего пользователя.
+
+    Только своё: пользователь берётся из авторизации, а не из тела запроса.
+    Изображение нормализуется до квадратного JPEG (см. avatar_image) —
+    в БД не попадает ни исходный формат, ни EXIF.
+    """
+    raw = await _read_upload_limited(file, AVATAR_MAX_UPLOAD_BYTES)
+    if not raw:
+        raise HTTPException(status_code=422, detail="Файл пустой")
+
+    try:
+        image = process_avatar_image(raw)
+    except AvatarImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await repo.upsert(username, image, AVATAR_MIME)
+    await _invalidate_user_cache(username)
+    logger.info("Пользователь %s обновил фото профиля", username)
+
+    version = await repo.get_updated_at(username)
+    return {"avatar_version": int(version.timestamp()) if version else None}
+
+
+@router.delete("/avatar")
+async def delete_avatar(
+    username: str = Depends(get_request_username),
+    repo=Depends(get_avatar_repository),
+) -> dict:
+    """Убирает фото профиля текущего пользователя.
+
+    Идемпотентно: повторный вызов без фото — тот же 200, ``removed=false``.
+    """
+    removed = await repo.delete(username)
+    if removed:
+        await _invalidate_user_cache(username)
+        logger.info("Пользователь %s удалил фото профиля", username)
+    return {"removed": removed}
+
+
+@router.get("/avatar/{username}")
+async def get_avatar(
+    username: str,
+    _viewer: str = Depends(get_request_username),
+    repo=Depends(get_avatar_repository),
+) -> Response:
+    """Отдаёт фото профиля пользователя.
+
+    Чужое фото видно так же, как ФИО в справочнике, — своим отдельным
+    эндпоинт не ограничен. Запрос параметра ``?v=`` не разбирает: версия
+    нужна только браузеру, чтобы обойти собственный кеш после смены фото.
+    """
+    avatar = await repo.get(username)
+    if avatar is None:
+        raise HTTPException(status_code=404, detail="Фото профиля не найдено")
+
+    return Response(
+        content=bytes(avatar["image"]),
+        media_type=avatar["mime"],
+        headers={"Cache-Control": AVATAR_CACHE_CONTROL},
+    )

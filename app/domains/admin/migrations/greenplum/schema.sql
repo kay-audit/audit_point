@@ -178,6 +178,30 @@ CREATE INDEX idx_{PREFIX}admin_http_metrics_username_created
     ON {SCHEMA}.{PREFIX}admin_http_metrics(username, created_at);
 
 -- ============================================================================
+-- ФОТО ПРОФИЛЯ ПОЛЬЗОВАТЕЛЯ
+-- ============================================================================
+
+-- Справочник пользователей t_db_oarb_ua_user наполняется ETL и доступен
+-- приложению только на чтение, поэтому фото хранится отдельной таблицей.
+-- Одна строка на пользователя: изображение уже нормализовано (квадрат JPEG),
+-- версии не храним. updated_at служит и версией для кеша браузера (?v=).
+-- distribution key = user_id: он же PRIMARY KEY, все обращения идут по нему.
+CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}user_avatars (
+    user_id    VARCHAR(64) PRIMARY KEY,
+    image      BYTEA NOT NULL,
+    mime       VARCHAR(32) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+WITH (appendonly=false)
+DISTRIBUTED BY (user_id);
+
+COMMENT ON TABLE {SCHEMA}.{PREFIX}user_avatars IS 'Фото профиля пользователя (загружает сам пользователь)';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}user_avatars.user_id IS 'Логин пользователя — владелец фото';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}user_avatars.image IS 'Изображение после нормализации (квадрат 256x256, JPEG)';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}user_avatars.mime IS 'MIME-тип сохранённого изображения';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}user_avatars.updated_at IS 'Время последней загрузки; она же версия для cache-busting';
+
+-- ============================================================================
 -- АУДИТ-ЛОГ ОТКАЗОВ ДОСТУПА К ДОМЕНАМ
 -- ============================================================================
 

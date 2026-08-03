@@ -92,7 +92,8 @@ class UserDirectoryRepository(BaseRepository):
             SELECT DISTINCT ON (username)
                    username,
                    COALESCE(email, '') AS email,
-                   COALESCE(fullname, '') AS fullname
+                   COALESCE(fullname, '') AS fullname,
+                   COALESCE(job, '') AS job
             FROM {self.user_table}
             WHERE username = $1
             ORDER BY username
@@ -110,12 +111,13 @@ class UserDirectoryRepository(BaseRepository):
         """
         row = await self.conn.fetchrow(
             f"""
-            SELECT username, email, fullname
+            SELECT username, email, fullname, job
             FROM (
                 SELECT DISTINCT ON (username)
                        username,
                        COALESCE(email, '') AS email,
-                       COALESCE(fullname, '') AS fullname
+                       COALESCE(fullname, '') AS fullname,
+                       COALESCE(job, '') AS job
                 FROM {self.user_table}
                 WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))
                 ORDER BY username

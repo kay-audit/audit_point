@@ -53,7 +53,7 @@ class ActContentService:
         self.settings = settings
         self.acts_settings = acts_settings
         self._access = access or ActAccessRepository(conn)
-        self._lock = lock or ActLockRepository(conn)
+        self._lock = lock or ActLockRepository()
         self._crud = crud or ActCrudRepository(conn)
         self._content = content or ActContentRepository(conn)
         self._invoice = invoice or ActInvoiceRepository(conn)

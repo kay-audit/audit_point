@@ -7,9 +7,9 @@ import logging
 from fastapi import HTTPException, Request
 
 from app.auth.jwt_handler import JWTTokenHandler
-from app.auth.redis_adapter import RedisAdapter
 from app.auth.user_repository import AuthUserRepository
 from app.auth.value_objects import UserContext
+from app.core.redis import RedisAdapter, get_redis
 from app.db.connection import get_db
 
 logger = logging.getLogger("audit_workstation.auth.dependencies")
@@ -26,11 +26,23 @@ def get_jwt_handler() -> JWTTokenHandler:
 
 
 def get_redis_adapter(request: Request) -> RedisAdapter:
-    """Возвращает RedisAdapter из app.state."""
+    """Возвращает RedisAdapter: сначала из app.state, затем из глобала core.
+
+    Приоритет app.state сохранён ради тестов — они кладут туда fakeredis,
+    не поднимая модульный синглтон. Ни один из источников не отдаёт None:
+    Redis обязателен, и его отсутствие ловится ещё на старте приложения.
+    Исключение — окно graceful shutdown: адаптер уже закрыт, get_redis()
+    кидает RuntimeError, и это осмысленный 503, а не общий 500.
+    """
     adapter = getattr(request.app.state, "redis_adapter", None)
-    if adapter is None:
-        raise HTTPException(status_code=503, detail="Сервис авторизации недоступен")
-    return adapter
+    if adapter is not None:
+        return adapter
+    try:
+        return get_redis()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503, detail="Сервис авторизации временно недоступен"
+        ) from exc
 
 
 class AuthUserDirectory:
@@ -66,7 +78,7 @@ def get_user_repository() -> AuthUserDirectory:
 async def get_current_user(request: Request) -> UserContext:
     """Полный контекст пользователя (профиль и роли из БД).
 
-    Использовать только там, где нужен профиль (/auth/me, /auth/profile).
+    Использовать только там, где нужен профиль (/auth/me, HTML-страница /profile).
     Для username в обычных эндпоинтах — get_username (без похода в БД).
     Незавершённая авторизация — всегда 401; редиректами занимается AuthMiddleware.
 
@@ -84,6 +96,7 @@ async def get_current_user(request: Request) -> UserContext:
             email="",
             login=username,
             fullname=f"Пользователь {username}",
+            job="",
         )
 
     user_data = request.scope.get("state", {}).get("user") or {}
@@ -102,6 +115,7 @@ async def get_current_user(request: Request) -> UserContext:
         email=ctx["email"],
         login=ctx["login"],
         fullname=ctx["fullname"],
+        job=ctx["job"],
         teams=ctx["teams"],
         roles=ctx["roles"],
     )

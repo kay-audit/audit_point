@@ -66,25 +66,23 @@ export function pickBadgeSeverity(items) {
 }
 
 /**
- * Выбирает цвет бейджа с учётом серверной severity непрочитанных.
+ * Выбирает цвет бейджа по живым элементам и серверной severity непрочитанных.
  *
- * Снимок /notifications ограничен limit=50, поэтому критичный элемент в хвосте
- * (за позицией 50) не попадёт в `liveItems`/`unreadPersisted` и не покрасит
- * бейдж. Бэкенд отдаёт `serverSeverity` = максимальную критичность непрочитанных
- * видимых уведомлений (GET .../unread-count); она сворачивается в общий расчёт
- * наравне с локальными элементами (итог — максимум критичности). `serverSeverity`
- * null/пустое — учитываются только локальные элементы.
+ * Персистентная часть цвета берётся ИСКЛЮЧИТЕЛЬНО из `serverSeverity`
+ * (бэкенд, GET .../unread-count) — это максимальная критичность среди ВСЕХ
+ * непрочитанных видимых уведомлений на сервере, без ограничения снимка
+ * /notifications (limit=50) и без задержки: агрегат свежий на каждый тик,
+ * а локальный список персистентных для цвета — либо то же самое, либо
+ * устаревший снимок (список тянется только при открытом меню, см.
+ * notification-center.js: _loadPersisted/_pollTick), так что подмешивать
+ * его больше не нужно. `serverSeverity` null/пустое — цвет только по живым.
  *
  * @param {Array<{severity?: string}>} liveItems Живые элементы.
- * @param {Array<{severity?: string}>} unreadPersisted Непрочитанные из снимка.
  * @param {string|null} [serverSeverity] Серверная severity ('error'|'warning'|'info'|null).
  * @returns {'error'|'warning'|'info'}
  */
-export function pickBadgeSeverityWithServer(liveItems, unreadPersisted, serverSeverity) {
-  const colorItems = [
-    ...(Array.isArray(liveItems) ? liveItems : []),
-    ...(Array.isArray(unreadPersisted) ? unreadPersisted : []),
-  ];
+export function pickBadgeSeverityWithServer(liveItems, serverSeverity) {
+  const colorItems = Array.isArray(liveItems) ? [...liveItems] : [];
   if (serverSeverity) colorItems.push({ severity: serverSeverity });
   return pickBadgeSeverity(colorItems);
 }

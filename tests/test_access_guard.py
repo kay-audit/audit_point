@@ -119,7 +119,6 @@ class TestRequireLockOwner:
         lock_repo.get_lock_info.return_value = {
             "locked_by": "10029384",
             "lock_expires_at": "2026-03-24T12:00:00",
-            "lock_expired": False,
         }
         await guard.require_lock_owner(1, "10029384")
 
@@ -132,21 +131,6 @@ class TestRequireLockOwner:
         lock_repo.get_lock_info.return_value = {
             "locked_by": "55019283",
             "lock_expires_at": "2026-03-24T12:00:00",
-            "lock_expired": False,
         }
         with pytest.raises(ActLockError, match="55019283"):
-            await guard.require_lock_owner(1, "10029384")
-
-    async def test_expired_own_lock_rejected(self, guard, lock_repo):
-        """H9 (TOCTOU): свой, но истёкший лок не даёт права на запись.
-
-        Срок истёк, cleanup ещё не очистил locked_by — раньше проверка
-        проходила и допускала lost-write при перехвате лока другим юзером.
-        """
-        lock_repo.get_lock_info.return_value = {
-            "locked_by": "10029384",
-            "lock_expires_at": "2026-03-24T12:00:00",
-            "lock_expired": True,
-        }
-        with pytest.raises(ActLockError, match="истёк"):
             await guard.require_lock_owner(1, "10029384")

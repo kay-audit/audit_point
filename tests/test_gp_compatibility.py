@@ -641,6 +641,47 @@ class TestGreenplumSchemaCompatibility:
             f"{{message_id, user_id}}"
         )
 
+    def test_user_avatars_present_in_both_schemas(self):
+        """Фото профиля (admin.user_avatars) есть в обеих схемах, колонки совпадают."""
+        base = Path(__file__).parent.parent / "app" / "domains" / "admin" / "migrations"
+        for db_type in ("postgresql", "greenplum"):
+            content = (base / db_type / "schema.sql").read_text(encoding="utf-8")
+            assert "{PREFIX}user_avatars" in content, (
+                f"{db_type}/schema.sql: таблица user_avatars не найдена"
+            )
+            for column in ("user_id", "image", "mime", "updated_at"):
+                assert column in content, (
+                    f"{db_type}/schema.sql: колонка {column} не найдена"
+                )
+
+    def test_user_avatars_gp_distributed_by_user_id(self):
+        """GP: user_avatars DISTRIBUTED BY (user_id) — он же единственный PK."""
+        schema_path = (
+            Path(__file__).parent.parent
+            / "app" / "domains" / "admin" / "migrations" / "greenplum" / "schema.sql"
+        )
+        content = schema_path.read_text(encoding="utf-8")
+
+        create_stmt = None
+        for raw in DatabaseAdapter._split_sql_statements(content):
+            cleaned = re.sub(r'--[^\n]*', '', raw)
+            if (
+                re.search(r'\bCREATE\s+TABLE\b', cleaned, re.IGNORECASE)
+                and "{PREFIX}user_avatars" in cleaned
+            ):
+                create_stmt = cleaned
+                break
+
+        assert create_stmt is not None, (
+            "GP-схема admin: CREATE TABLE user_avatars не найдено"
+        )
+        assert re.search(
+            r'DISTRIBUTED\s+BY\s*\(\s*user_id\s*\)', create_stmt, re.IGNORECASE
+        ), "DISTRIBUTED BY (user_id) не найден в user_avatars"
+        assert re.search(
+            r'user_id\s+VARCHAR\(\d+\)\s+PRIMARY\s+KEY', create_stmt, re.IGNORECASE
+        ), "user_id должен быть PRIMARY KEY (distribution key ⊆ PK)"
+
 
 # ---------------------------------------------------------------------------
 # 2. SQL Statement Splitter (_split_sql_statements)

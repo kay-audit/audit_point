@@ -1,14 +1,15 @@
-"""Тесты get_username (ОТП-режим и тест-режим) и провайдера справочника
-пользователей AuthUserDirectory."""
+"""Тесты get_username (ОТП-режим и тест-режим), провайдера справочника
+пользователей AuthUserDirectory и get_redis_adapter."""
 
 import contextlib
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api.v1.deps.auth_deps import get_username
-from app.auth.dependencies import AuthUserDirectory, get_user_repository
+from app.auth.dependencies import AuthUserDirectory, get_redis_adapter, get_user_repository
 from app.core.config import get_settings
 
 
@@ -140,3 +141,20 @@ class TestAuthUserDirectory:
             "email": "user@example.com",
         }
         assert await provider.get_user_context("77") == {"id": "77", "roles": []}
+
+
+class TestGetRedisAdapter:
+    """503, а не общий 500, когда Redis недоступен (окно graceful shutdown)."""
+
+    def test_raises_503_when_both_sources_empty(self, monkeypatch):
+        def _raise_not_initialized():
+            raise RuntimeError("Redis не инициализирован")
+
+        monkeypatch.setattr("app.auth.dependencies.get_redis", _raise_not_initialized)
+        app = SimpleNamespace(state=SimpleNamespace())
+        request = Request({"type": "http", "path": "/x", "headers": [], "app": app})
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_redis_adapter(request)
+
+        assert exc_info.value.status_code == 503

@@ -4,8 +4,8 @@
  * Покрывают:
  *   - pickBadgeSeverity — приоритет error > warning > info; пусто → info;
  *     учёт и живых, и персистентных; нормализация неизвестных severity.
- *   - pickBadgeSeverityWithServer — свёртка серверной severity (хвост за снимком
- *     limit=50) в общий расчёт цвета; null/пусто не влияют.
+ *   - pickBadgeSeverityWithServer — цвет = max(живые, серверная severity);
+ *     локальный снимок персистентных в расчёте не участвует, null/пусто не влияют.
  *   - computeBadge — скрытие при сумме 0, суммирование непрочитанных + живых.
  *   - mergeFeed — порядок (живые сверху), нормализация формы и kind.
  *   - countPersistedUnread — подсчёт непрочитанных.
@@ -68,30 +68,33 @@ test('pickBadgeSeverity: неизвестный severity трактуется к
 });
 
 // ── pickBadgeSeverityWithServer ───────────────────────────────────────────────
+//
+// С отказом от подмешивания локального снимка персистентных в цвет (снимок
+// тянется только при открытом меню и может не обновляться при закрытом —
+// см. notification-center.js: _loadPersisted/_pollTick) функция принимает
+// только живые элементы + серверную severity; персистентного массива в
+// сигнатуре больше нет — снимок структурно не может повлиять на цвет.
 
-test('pickBadgeSeverityWithServer: error в хвосте за снимком (только серверная severity) → error', () => {
-  // Снимок (limit=50) не содержит непрочитанного error — он за позицией 50.
-  // Локальные элементы максимум warning, но сервер сообщает error.
-  const live = [{ severity: 'info' }];
-  const unreadPersisted = [{ severity: 'warning' }];
-  assert.equal(pickBadgeSeverityWithServer(live, unreadPersisted, 'error'), 'error');
+test('pickBadgeSeverityWithServer: серверная severity важнее меньшего максимума живых', () => {
+  const live = [{ severity: 'warning' }];
+  assert.equal(pickBadgeSeverityWithServer(live, 'error'), 'error');
 });
 
-test('pickBadgeSeverityWithServer: серверная severity не понижает локальный максимум', () => {
-  // Сервер говорит info, но в снимке есть непрочитанный error — итог error.
-  assert.equal(pickBadgeSeverityWithServer([], [{ severity: 'error' }], 'info'), 'error');
+test('pickBadgeSeverityWithServer: живые важнее, если сервер сообщает меньшую критичность', () => {
+  const live = [{ severity: 'error' }];
+  assert.equal(pickBadgeSeverityWithServer(live, 'info'), 'error');
 });
 
-test('pickBadgeSeverityWithServer: null/пустая серверная severity → учитываются только локальные', () => {
-  assert.equal(pickBadgeSeverityWithServer([{ severity: 'warning' }], [], null), 'warning');
-  assert.equal(pickBadgeSeverityWithServer([{ severity: 'warning' }], [], undefined), 'warning');
+test('pickBadgeSeverityWithServer: null/undefined серверная severity → цвет только по живым', () => {
+  assert.equal(pickBadgeSeverityWithServer([{ severity: 'warning' }], null), 'warning');
+  assert.equal(pickBadgeSeverityWithServer([{ severity: 'warning' }], undefined), 'warning');
   // совсем пусто и нет серверной → info
-  assert.equal(pickBadgeSeverityWithServer([], [], null), 'info');
+  assert.equal(pickBadgeSeverityWithServer([], null), 'info');
 });
 
-test('pickBadgeSeverityWithServer: невалидные массивы не падают', () => {
-  assert.equal(pickBadgeSeverityWithServer(null, null, 'warning'), 'warning');
-  assert.equal(pickBadgeSeverityWithServer(undefined, undefined, null), 'info');
+test('pickBadgeSeverityWithServer: невалидный массив живых не падает', () => {
+  assert.equal(pickBadgeSeverityWithServer(null, 'warning'), 'warning');
+  assert.equal(pickBadgeSeverityWithServer(undefined, null), 'info');
 });
 
 // ── computeBadge ────────────────────────────────────────────────────────────

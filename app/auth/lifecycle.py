@@ -1,4 +1,11 @@
-"""Инициализация и завершение инфраструктуры модуля auth."""
+"""Инициализация и завершение Redis — общей инфраструктуры приложения.
+
+Модуль исторически auth-овый (Redis пришёл в проект ради ОТП-кодов), но сам
+хук давно общий: на Redis живут кэши ролей/уведомлений/user-контекста и локи
+актов. Поэтому он поднимается безусловно, без оглядки на ``auth.enabled``.
+Имя хука ``auth.redis`` сохранено как есть — это ключ реестра, менять его
+ради семантики значило бы трогать тесты без выигрыша.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +13,14 @@ import logging
 
 from fastapi import FastAPI
 
-from app.auth.redis_adapter import RedisAdapter, RedisConfig
+from app.core.redis import close_redis, init_redis
 
 logger = logging.getLogger("audit_workstation.auth.lifecycle")
 
 
 def register_lifespan_hooks() -> None:
     """
-    Регистрирует startup/shutdown hooks модуля auth в общем реестре.
+    Регистрирует startup/shutdown hooks подключения к Redis в общем реестре.
 
     Вызывается из create_app. Идемпотентна относительно самого реестра
     hooks (реестр — append-only, дубликаты исполнялись бы дважды): если
@@ -31,39 +38,32 @@ def register_lifespan_hooks() -> None:
         return
 
     async def _startup_auth(app: FastAPI) -> None:
-        """Подключает Redis для OTP, если JWT-авторизация включена."""
+        """Подключает Redis. Без него приложение не стартует — fail-fast."""
         from app.core.config import get_settings
         settings = get_settings()
-        if not settings.auth.enabled:
-            logger.info("JWT-авторизация отключена (AUTH__ENABLED=false)")
-            app.state.redis_adapter = None
-            return
 
-        redis_cfg = RedisConfig(
-            host=settings.redis.host,
-            port=settings.redis.port,
-            db=settings.redis.db,
-            password=settings.redis.password.get_secret_value(),
-            max_connections=settings.redis.max_connections,
-            socket_timeout=settings.redis.socket_timeout,
-        )
-        adapter = RedisAdapter(redis_cfg)
+        # Адаптер живёт в модульном глобале app.core.redis (доступен фоновым
+        # задачам без Request); в app.state дублируем ссылку — её читает
+        # зависимость get_redis_adapter и подменяют тесты.
         try:
-            await adapter.connect()
-            app.state.redis_adapter = adapter
-            logger.info("Redis для auth подключён: %s:%s", redis_cfg.host, redis_cfg.port)
+            app.state.redis_adapter = await init_redis(settings.redis)
         except Exception as exc:
-            logger.error("Не удалось подключиться к Redis для auth: %s", exc)
-            raise RuntimeError(f"Redis недоступен для auth: {exc}") from exc
+            logger.error(
+                "Не удалось подключиться к Redis (%s:%s/%s): %s",
+                settings.redis.host, settings.redis.port, settings.redis.db, exc,
+            )
+            raise RuntimeError(
+                f"Redis недоступен ({settings.redis.host}:{settings.redis.port}/"
+                f"{settings.redis.db}): {exc}. Redis обязателен во всех окружениях — "
+                f"проверьте настройки REDIS__* в .env и что сервер запущен"
+            ) from exc
 
     async def _shutdown_auth(app: FastAPI) -> None:
         """Закрывает соединение с Redis."""
-        adapter = getattr(app.state, "redis_adapter", None)
-        if adapter is not None:
-            try:
-                await adapter.close()
-            except Exception:
-                logger.exception("Ошибка при закрытии Redis auth")
+        try:
+            await close_redis()
+        except Exception:
+            logger.exception("Ошибка при закрытии Redis auth")
         app.state.redis_adapter = None
 
     register_startup_hook("auth.redis", _startup_auth)

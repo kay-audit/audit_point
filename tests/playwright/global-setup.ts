@@ -1,12 +1,15 @@
 import { spawn, spawnSync, ChildProcess } from 'child_process';
+import * as net from 'net';
 import * as path from 'path';
 import * as fs from 'fs';
 
 /**
  * Global setup для Playwright:
- * 1. Применяет seed-данные через `python tests/playwright/seed.py`.
- * 2. Запускает uvicorn на 127.0.0.1:8005 как detached-процесс.
- * 3. Polling-ом ждёт пока /api/v1/auth/me ответит 200 с authenticated=true (timeout 30s).
+ * 1. Проверяет Redis и чистит его тестовую БД (Redis обязателен — без него
+ *    приложение не стартует).
+ * 2. Применяет seed-данные через `python tests/playwright/seed.py`.
+ * 3. Запускает uvicorn на 127.0.0.1:8005 как detached-процесс.
+ * 4. Polling-ом ждёт пока /api/v1/auth/me ответит 200 с authenticated=true (timeout 30s).
  *
  * PID сохраняется в `tests/playwright/.uvicorn.pid` для teardown.
  *
@@ -20,6 +23,12 @@ const LOG_FILE = path.join(__dirname, '.uvicorn.log');
 const BASE_URL = 'http://127.0.0.1:8005';
 const READY_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 200;
+
+// Отдельная БД Redis под e2e: ключи DEV-запуска (db 0) остаются нетронутыми,
+// а FLUSHDB перед прогоном не рискует снести чью-то рабочую сессию.
+const E2E_REDIS_DB = '15';
+const REDIS_TIMEOUT_MS = 3000;
+const REDIS_HELP = 'Поднимите Redis (WSL): docs/guides/redis-dev-wsl-guide.md';
 
 function loadDotEnv(): Record<string, string> {
   const envPath = path.join(ROOT, '.env');
@@ -36,6 +45,86 @@ function loadDotEnv(): Record<string, string> {
     out[key] = value;
   }
   return out;
+}
+
+/** Кодирует команду в RESP-массив: `*N\r\n$len\r\narg\r\n…`. */
+function encodeCommand(args: string[]): string {
+  const parts = args.map((a) => `$${Buffer.byteLength(a)}\r\n${a}\r\n`);
+  return `*${args.length}\r\n${parts.join('')}`;
+}
+
+/**
+ * Отправляет пачку команд одним соединением и возвращает строки-ответы.
+ *
+ * Свой мини-клиент на `node:net` вместо npm-зависимости или `wsl redis-cli`
+ * (wsl есть в PATH не у всякого шелла). Все используемые команды отвечают
+ * однострочным `+OK` / `+PONG` / `-ERR …`, поэтому ответы режутся по CRLF.
+ */
+function talkToRedis(
+  host: string,
+  port: number,
+  commands: string[][]
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    socket.setTimeout(REDIS_TIMEOUT_MS);
+
+    let buffer = '';
+    const replies: string[] = [];
+    const fail = (message: string) => {
+      socket.destroy();
+      reject(new Error(message));
+    };
+
+    socket.on('connect', () => {
+      socket.write(commands.map(encodeCommand).join(''));
+    });
+    socket.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf-8');
+      let idx: number;
+      while ((idx = buffer.indexOf('\r\n')) !== -1) {
+        replies.push(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 2);
+      }
+      if (replies.length >= commands.length) {
+        socket.end();
+        resolve(replies);
+      }
+    });
+    socket.on('timeout', () =>
+      fail(`Redis ${host}:${port} не ответил за ${REDIS_TIMEOUT_MS} мс. ${REDIS_HELP}`)
+    );
+    socket.on('error', (e: Error) =>
+      fail(`Redis ${host}:${port} недоступен: ${e.message}. ${REDIS_HELP}`)
+    );
+  });
+}
+
+/**
+ * Проверяет доступность Redis и очищает тестовую БД перед прогоном.
+ *
+ * FLUSHDB обязателен: блокировки актов живут ключами `lock:act:*` с TTL 15
+ * минут, и остатки прошлого прогона иначе делают акт «занятым» для нового.
+ */
+async function prepareRedis(env: NodeJS.ProcessEnv): Promise<void> {
+  const host = env.REDIS__HOST || '127.0.0.1';
+  const port = parseInt(env.REDIS__PORT || '6379', 10);
+  const password = env.REDIS__PASSWORD || '';
+
+  const commands: string[][] = [];
+  if (password) commands.push(['AUTH', password]);
+  commands.push(['PING'], ['SELECT', E2E_REDIS_DB], ['FLUSHDB']);
+
+  const replies = await talkToRedis(host, port, commands);
+  const failed = replies.find((r) => r.startsWith('-'));
+  if (failed) {
+    throw new Error(
+      `Redis ${host}:${port} ответил ошибкой на подготовку db ${E2E_REDIS_DB}: ` +
+      `${failed}. ${REDIS_HELP}`
+    );
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[playwright global-setup] Redis ${host}:${port} готов, db ${E2E_REDIS_DB} очищен`);
 }
 
 function runSeed(env: NodeJS.ProcessEnv): void {
@@ -117,12 +206,15 @@ export default async function globalSetup(): Promise<void> {
     // и оставляет цифры. 'test_22494524' даст '' — нужен формат '<digits>_<остаток>'.
     JUPYTERHUB_USER: '22494524_e2e-test',
     AUTH__ENABLED: 'false',
+    // Redis обязателен независимо от AUTH__ENABLED; своя БД под e2e (см. выше).
+    REDIS__DB: E2E_REDIS_DB,
     PYTHONUNBUFFERED: '1',
     // Снимаем rate-limit для тестов: ~90 JS-файлов × N reload'ов уходят за
     // 1024 req/min из дефолтного .env, → 429 на /static/js/* → тесты падают.
     SECURITY__RATE_LIMIT_PER_MINUTE: '100000',
   };
 
+  await prepareRedis(env);
   runSeed(env);
   spawnUvicorn(env);
   await waitForServerReady();

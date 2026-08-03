@@ -468,7 +468,7 @@ API: `registerBeforeUnload(name, handler)`, `unregister(name)`, `list()`. Исп
 
 ## 6. `LockManager` и inactivity
 
-`constructor/lock-manager.js` (646 строк) — клиентская часть оптимистичного блока актов. Слежение за бездействием вынесено в `InactivityWatchdog` (`constructor/inactivity-watchdog.js`), `LockManager` использует его композицией (§6.1). На бэке три поля на `acts`: `locked_by`, `locked_at`, `lock_expires_at`. На фронте:
+`constructor/lock-manager.js` (646 строк) — клиентская часть оптимистичного блока актов. Слежение за бездействием вынесено в `InactivityWatchdog` (`constructor/inactivity-watchdog.js`), `LockManager` использует его композицией (§6.1). На бэке блокировка — ключ Redis `lock:act:{act_id}` с TTL, не поля `acts` (dev-guide §10.4). На фронте:
 
 | Цикл | Что делает |
 |---|---|
@@ -522,7 +522,7 @@ API: `registerBeforeUnload(name, handler)`, `unregister(name)`, `list()`. Исп
 `_handleVisibilityChange()` (`lock-manager.js:487-518`) реагирует на возврат вкладки из фона:
 
 - **Случай A**: диалог открыт и `Date.now() >= _inactivityDialogDeadline` → немедленный `_closeInactivityDialog()` + `_initiateExit('autoExit')`.
-- **Случай B**: диалога нет, но `idleMs >= inactivityTimeoutMinutes*60*1000` → сразу autoExit без промежуточного диалога. Лок мог быть уже снят бэком (`expired_locks_cleanup`, TTL `lockDurationMinutes`); спрашивать «остаться?» бессмысленно — extend упадёт 4xx → fatal → exit.
+- **Случай B**: диалога нет, но `idleMs >= inactivityTimeoutMinutes*60*1000` → сразу autoExit без промежуточного диалога. Лок мог уже истечь сам по TTL (`lockDurationMinutes`, ключ Redis без отдельного снятия); спрашивать «остаться?» бессмысленно — extend упадёт 4xx → fatal → exit.
 
 Никаких HTTP-запросов в visibility-handler'е не делается; решение принимается локально по `Date.now()`.
 
