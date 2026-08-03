@@ -1,7 +1,7 @@
 # Deployment Runbook — Audit Workstation
 
-> Closed-network deploy. JupyterHub Datalab + Greenplum 6.x для прода; PostgreSQL — для dev.
-> Single-tenant per process: один Python-процесс на JupyterHub-юзера, защита через singleton-lock в БД.
+> Closed-network deploy. SDP-кластер (доступ по IP:порту, без proxy-путей) + Greenplum 6.x для прода; PostgreSQL — для dev. Авторизация — ОТП/JWT (`developer-guide.md` §9.3a) либо тест-режим (`AUTH__ENABLED=false`). Исторически деплоилось на JupyterHub Datalab — см. пометки ниже.
+> Single-tenant per process: один Python-процесс, защита через singleton-lock в БД.
 
 Документ — пошаговый чек-лист «как развернуть» / «как обновить» / «как проверить, что взлетело». Глубокая архитектура — [`developer-guide.md`](../guides/developer-guide.md). Симптомы и фиксы — [`troubleshooting.md`](troubleshooting.md). Что делать когда сломалось — [`operations-recovery.md`](operations-recovery.md).
 
@@ -12,7 +12,7 @@
 Перед запуском (или рестартом) уверенно прогнать:
 
 - [ ] **Kerberos** (только GP-окружение). `kinit <user>` для получения тикета. `klist` показывает валидный TGT, срок жизни > планируемого аптайма (обычно 8-24 часа). Без тикета `_is_kerberos_ticket_valid()` (`app/db/connection.py:65`) залогирует инструкции и init БД упадёт.
-- [ ] **`JUPYTERHUB_USER`** в окружении процесса. Без неё username по умолчанию `unknown_user`, RBAC сломается. В JupyterHub Datalab переменная ставится автоматически; при запуске вне JupyterHub — выставить вручную (`export JUPYTERHUB_USER=<digits>_<...>`).
+- [ ] **`JUPYTERHUB_USER`** в окружении процесса (имя — историческое). Нужна для Kerberos/Greenplum-логина и, при `AUTH__ENABLED=false` (тест-режим), для username RBAC — без неё он `unknown_user`, RBAC сломается. На SDP автоматической подстановки (как раньше делал JupyterHub Datalab) нет — выставлять явно (`export JUPYTERHUB_USER=<digits>_<...>`) в окружении процесса/деплой-скрипте. При `AUTH__ENABLED=true` (ОТП) на веб-авторизацию не влияет — только на Kerberos-логин GP.
 - [ ] **`.env` сверен с `.env.example`**. После предыдущего деплоя в `.env.example` мог появиться обязательный ключ или поменяться дефолт. Команда быстрой сверки на Windows PowerShell:
   ```powershell
   Compare-Object (Get-Content .env.example) (Get-Content .env)
@@ -63,7 +63,7 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8005
    curl http://localhost:8005/api/v1/health
    # → {"status": "ok", "service": "Audit Workstation", "version": "1.0.0"}
    ```
-   Под JupyterHub-proxy путь будет `http://<hub>/user/<user>/proxy/8005/api/v1/health`.
+   На SDP — тот же путь по IP-адресу хоста: `http://<sdp-host>:8005/api/v1/health` (proxy-путей больше нет; исторический JupyterHub-вариант — `http://<hub>/user/<user>/proxy/8005/api/v1/health`).
 
 3. **Diagnostics (Wave 1).** Требует роль `Админ` (`ADMIN__USER_DIRECTORY__DEFAULT_ADMIN`):
    ```bash
@@ -104,7 +104,7 @@ sed 's/{SCHEMA}/<gp_schema>/g; s/{PREFIX}/t_db_oarb_audit_act_/g' \
     app/domains/admin/migrations/greenplum/schema.sql | psql ...
 ```
 
-(Linux/JupyterHub окружение. Под Windows эквивалент — ручная замена в редакторе или PowerShell `(Get-Content ...) -replace ...`.)
+(Linux-окружение деплоя (SDP). Под Windows эквивалент — ручная замена в редакторе или PowerShell `(Get-Content ...) -replace ...`.)
 
 ---
 

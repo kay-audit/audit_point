@@ -112,10 +112,11 @@ export default async function globalSetup(): Promise<void> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...dotenv,
-    // Тестовый username: digits → 22494524 (admin в .env)
-    // extract_username_digits берёт split('_')[0] и оттуда re.sub('\\D','').
-    // 'test_22494524' даст '' (тест не пройдёт), нужен формат '<digits>_<остаток>'.
+    // Тестовый username: digits → 22494524 (admin в .env). E2e гоняются в
+    // тест-режиме (AUTH__ENABLED=false): resolve_env_username берёт split('_')[0]
+    // и оставляет цифры. 'test_22494524' даст '' — нужен формат '<digits>_<остаток>'.
     JUPYTERHUB_USER: '22494524_e2e-test',
+    AUTH__ENABLED: 'false',
     PYTHONUNBUFFERED: '1',
     // Снимаем rate-limit для тестов: ~90 JS-файлов × N reload'ов уходят за
     // 1024 req/min из дефолтного .env, → 429 на /static/js/* → тесты падают.

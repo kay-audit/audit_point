@@ -198,12 +198,14 @@ export class AuthManager {
     }
 
     /**
-     * Показывает ошибку авторизации
+     * Уводит на страницу входа (с пометкой «сессия истекла», если пользователь был)
      * @private
      */
     static _showAuthError() {
         const baseUrl = AppConfig.api.getBaseUrl();
-        window.location.href = `${baseUrl}/error/401`;
+        const hadUser = this._loadFromStorage();
+        this._clearStorage();
+        window.location.href = `${baseUrl}/auth/login${hadUser ? '?expired=1' : ''}`;
     }
 
     /**

@@ -152,6 +152,8 @@
 
 ### 7. 404 на `/api/v1/...` под JupyterHub-proxy
 
+> Историческое: относится к упразднённому JupyterHub-деплою; актуальный деплой — SDP, доступ по IP:порту напрямую, без proxy-путей (`developer-guide.md` §9.3a). Конвенция `AppConfig.api.getUrl()` и regression-grep из решения ниже остаются в силе как страховка на случай будущего proxied-деплоя.
+
 **Симптом:** В Greenplum-окружении (через JupyterHub) фронт стабильно ловит 404 на `/api/v1/<что-угодно>`. Локально всё работает.
 
 **Причина:** Фронт делает `fetch('/api/v1/...')` без `AppConfig.api.getUrl(...)`. Браузер резолвит относительный URL против origin (`https://hub.example/`), JupyterHub роутит на `/hub/api/v1/...` минуя `/user/{user}/proxy/{port}/` → 404.

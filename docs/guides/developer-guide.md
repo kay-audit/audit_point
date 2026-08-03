@@ -83,6 +83,7 @@
   - [9.1 Standalone (uvicorn)](#91-standalone-uvicorn)
   - [9.2 За JupyterHub proxy](#92-за-jupyterhub-proxy)
   - [9.3 За reverse proxy (HTTPS)](#93-за-reverse-proxy-https)
+  - [9.3a Авторизация (ОТП/JWT)](#93a-авторизация-отпjwt)
   - [9.4 Конфигурация: .env и Pydantic Settings](#94-конфигурация-env-и-pydantic-settings)
     - [9.4.1 Примеры .env для LLM-профилей](#941-примеры-env-для-llm-профилей)
     - [9.4.2 MIME-типы файлов чата (дефолт)](#942-mime-типы-файлов-чата-дефолт)
@@ -416,24 +417,25 @@ DatabaseAdapter (абстрактный)
 
 ### 2.5 Middleware stack
 
-В `create_app()` подключаются шесть middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
+В `create_app()` подключаются семь middleware. В Starlette порядок выполнения обратный порядку регистрации: последний `add_middleware` обрабатывает запрос первым.
 
-**Порядок выполнения при запросе:**
+**Порядок выполнения при запросе (снаружи внутрь):**
 
 ```
-Запрос → RequestId → HttpMetrics → RateLimit → RequestSizeLimit → SecurityHeaders → HTTPSRedirect → FastAPI → Ответ
+Запрос → HTTPSRedirect → RequestId → SecurityHeaders → RequestSizeLimit → RateLimit → HttpMetrics → Auth → FastAPI → Ответ
 ```
 
 | Middleware | Назначение |
 |-----------|-----------|
-| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. Стоит внутри всех остальных, чтобы request_id виделся в логах любого слоя. |
-| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. |
-| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
-| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
-| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize, чтобы заголовки попадали и в их 413/429-ответы. |
 | `HTTPSRedirectMiddleware` | Переписывает `scheme` на `https` по заголовкам `x-forwarded-proto` / `x-scheme`. Outermost — должен отработать до SecurityHeaders, который опирается на scheme. |
+| `RequestIdMiddleware` | Берёт `X-Request-ID` из заголовка или генерирует свой. Кладёт в `ContextVar`, возвращает в заголовке ответа. |
+| `SecurityHeadersMiddleware` | Ставит CSP / HSTS / X-Frame-Options. Стоит снаружи RateLimit/RequestSize/Auth, чтобы заголовки попадали и в их 413/429/401-ответы. |
+| `RequestSizeLimitMiddleware` | Ограничивает размер тела запроса. Реализован как raw ASGI: `BaseHTTPMiddleware` буферизует тело до `dispatch()`, а здесь нужно резать по байтам в стриме. |
+| `RateLimitMiddleware` | Per-IP лимит запросов через TTLCache. Дефолт — 1024 req/min. |
+| `HttpMetricsMiddleware` | Меряет latency и пишет HTTP-метрики через batched `HttpMetricsService` (см. §9.5a). При выключенном admin.http_metrics_enabled только меряет, в БД не пишет. Стоит снаружи Auth (видит 401 анонимов), но внутри лимитов — отбитые 429/413 в метрики не попадают, чтобы флуд не разгонял журнал. |
+| `AuthMiddleware` | Проверка JWT-cookie на каждый запрос, тихий refresh истёкшего access. Самый внутренний слой — raw ASGI, как и остальные middleware проекта. Его 401 и редиректы поднимаются через весь стек: получают security-заголовки, request_id и попадают в метрики. |
 
-Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (он лежит в `app/core/middlewares/http_metrics.py`).
+Все классы — в `app/core/middleware.py`, кроме `HttpMetricsMiddleware` (`app/core/middlewares/http_metrics.py`) и `AuthMiddleware` (`app/auth/middleware.py`).
 
 ---
 
@@ -553,13 +555,16 @@ async def get_crud_service(
 
 Connection автоматически возвращается в пул после завершения запроса.
 
-**Auth dependency** (`app/api/v1/deps/auth_deps.py`):
+**Auth dependency** (`app/api/v1/deps/auth_deps.py`, упрощённо — оба режима `AUTH__ENABLED`, детали §9.3a):
 
 ```python
-def get_username() -> str:
-    username = get_current_user_from_env()
+async def get_username(request: Request) -> str:
+    if not get_settings().auth.enabled:
+        username = resolve_env_username()   # тест-режим: JUPYTERHUB_USER
+    else:
+        username = request.scope.get("state", {}).get("user", {}).get("sub")  # ОТП: sub из JWT
     if not username:
-        raise HTTPException(status_code=401, detail="Требуется авторизация")
+        raise HTTPException(status_code=401, detail="Не авторизован")
     return username
 ```
 
@@ -568,27 +573,29 @@ def get_username() -> str:
 **Шаг 1.** Добавить функцию в существующий файл `app/api/v1/endpoints/*.py` или создать новый:
 
 ```python
-# app/api/v1/endpoints/auth.py
-@router.post("/logout", status_code=200)
-async def logout(username: str = Depends(get_username)):
-    logger.info(f"Пользователь {username} вышел из системы")
-    return {"message": "Успешно вышли из системы"}
+# app/api/v1/endpoints/system.py
+@router.get("/ping", status_code=200)
+async def ping(username: str = Depends(get_username)):
+    logger.info(f"Пинг от пользователя {username}")
+    return {"message": "pong"}
 ```
 
 **Шаг 2.** Если создан новый файл — зарегистрировать в `app/api/v1/routes.py`:
 
 ```python
-from app.api.v1.endpoints import auth, system, roles, new_module
+from app.api.v1.endpoints import admin_diagnostics, roles, system, new_module
+from app.auth.router import router as auth_router   # особый случай: живёт в app/auth/, не в endpoints/
 
 ROUTERS = [
-    (auth, "/auth", ["Авторизация"]),
+    (auth_router, "/auth", ["Авторизация"]),
     (system, "/system", ["Системные операции"]),
     (roles, "/roles", ["Роли пользователей"]),
+    (admin_diagnostics, "/admin/diagnostics", ["Администрирование"]),
     (new_module, "/new", ["Новый модуль"]),  # добавить
 ]
 ```
 
-Результат: эндпоинт доступен по `POST /api/v1/auth/logout`.
+Результат: эндпоинт доступен по `GET /api/v1/system/ping`.
 
 ### 3.4 Domain API — как добавить эндпоинт в домен
 
@@ -2740,7 +2747,9 @@ in-process locks сервисов) безопасно только при одн
 
 ### 9.2 За JupyterHub proxy
 
-При работе в DataLab приложение находится за JupyterHub proxy. Конфигурация автоматическая:
+> Историческое: относится к упразднённому JupyterHub-деплою; актуальный деплой — SDP, доступ по IP:порту напрямую, без proxy-путей (см. §9.3a «Авторизация (ОТП/JWT)», подраздел «Деплой SDP»). `root_path` в `app/main.py` больше не вычисляется — раздел ниже сохранён как архивная справка.
+
+При работе в DataLab приложение находилось за JupyterHub proxy. Конфигурация была автоматической:
 
 ```python
 # main.py
@@ -2798,6 +2807,61 @@ server {
     }
 }
 ```
+
+### 9.3a Авторизация (ОТП/JWT)
+
+Модуль `app/auth/` — shared-инфраструктура, не домен (см. docstring `app/auth/__init__.py`): API-роутер подключается в `app/api/v1/routes.py` отдельным импортом (`from app.auth.router import router as auth_router`, а не через `app/api/v1/endpoints/`), HTML-страницы входа — через `app.auth.portal_router` в `create_app`, lifespan-hooks — через `register_lifespan_hooks()`.
+
+| Файл | Роль |
+|---|---|
+| `router.py` | API `/api/v1/auth/*`: `POST request-otp`, `POST verify-otp`, `POST refresh`, `POST logout`, `GET me`, `GET profile` |
+| `middleware.py` | `AuthMiddleware` — проверка JWT-cookie на каждый запрос, прозрачный refresh |
+| `jwt_handler.py` | `JWTTokenHandler` — выпуск/валидация access+refresh токенов (PyJWT) |
+| `redis_adapter.py` | Асинхронный клиент Redis — хранит OTP-коды и счётчики лимитов |
+| `user_repository.py` | `AuthUserRepository` — поиск пользователя по email в справочнике `admin.user_directory`, подгрузка ролей для профиля |
+| `context.py` | `ContextVar` с username текущего запроса; читают батчеры метрик/аудита (`app/core/middlewares/http_metrics.py`) без похода в JWT/scope |
+| `portal_router.py` | HTML: `GET /auth/login`, `GET /auth/logout` |
+| `lifecycle.py` | `register_lifespan_hooks()` — поднимает/закрывает Redis-подключение при старте/остановке (только если `AUTH__ENABLED=true`) |
+
+**Два режима (`AUTH__ENABLED`):**
+
+- **`false` (тест-режим, дефолт).** Авторизации нет: username берётся из окружения (`JUPYTERHUB_USER`, имя переменной историческое) через `resolve_env_username()` — только цифры до первого `_`. Используется в pytest/Playwright и локальной отладке без Redis/почты.
+- **`true` (ОТП, прод и DEV с реальным входом).** Username = `sub` из JWT в `request.scope["state"]["user"]`, которое кладёт `AuthMiddleware` — похода в БД на каждый обычный запрос нет (только `/auth/me`, `/auth/profile` тянут полный профиль).
+
+**Поток входа:**
+
+1. `POST /auth/request-otp {email}` — ищет пользователя по email в `admin.user_directory`, генерирует `AUTH__OTP_LENGTH`-значный код, кладёт в Redis (`otp:{user}`, TTL `AUTH__OTP_TTL`). Ответ всегда `success=true`, даже если email не найден — не палим факт существования адреса.
+2. Отправка кода — через фабрику `notifications.email` (см. `NOTIFICATIONS__EMAIL__*`). Строка `DEV-режим: ОТП-код для <email> = <code>` пишется в лог только когда почта выключена или домен уведомлений не зарегистрирован. При включённой почте несостоявшаяся отправка идёт в error-лог без кода, а клиент получает тот же success=true (иначе ответ стал бы оракулом существования email).
+3. `POST /auth/verify-otp {email, otp}` — сверяет код, при успехе удаляет его из Redis (одноразовый), выпускает пару JWT и ставит HttpOnly-cookie (`access_token`, `refresh_token`).
+4. Дальше на каждый запрос — `AuthMiddleware`: валиден access → пропускает; access истёк, но refresh жив → тихо перевыпускает пару и подставляет новые cookie в ответ (сессия живёт, пока жив refresh, дефолт 7 дней, фронт про TTL не знает). Ни access, ни refresh не валидны → HTML уходит редиректом на `/auth/login` (с `?expired=1`, если cookie вообще были), API получает 401 JSON.
+
+**Лимиты безопасности (Redis):** `otp_att:{user}` — счётчик неверных попыток ввода кода; по достижении `AUTH__OTP_MAX_ATTEMPTS` код инвалидируется досрочно (нужен новый запрос). `otp_req:{email}` — счётчик запросов кода на email за минуту; при превышении `AUTH__OTP_REQUEST_MAX_PER_MINUTE` — 429 ещё до похода в БД (защита и от перебора email, и от флуда SMTP). При `AUTH__ENABLED=true` пустой, дефолтный (`your-secret-key`) либо короче 32 символов `AUTH__JWT_SECRET` — фатальная ошибка валидации настроек при старте (см. `AuthSettings.validate_jwt_secret`; 32 — минимум HMAC-ключа HS256 по RFC 7518).
+
+**Env-переменные** (`AUTH__*`; полный список с дефолтами — `.env.example`, машиночитаемая таблица — §9.5 «Auth»):
+
+| Переменная | Дефолт | Назначение |
+|---|---|---|
+| `AUTH__ENABLED` | `false` | Режим (см. выше) |
+| `AUTH__JWT_SECRET` | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
+| `AUTH__JWT_ACCESS_TTL` / `AUTH__JWT_REFRESH_TTL` | `900` / `604800` | TTL токенов, сек |
+| `AUTH__COOKIE_SECURE` / `AUTH__COOKIE_DOMAIN` | `false` / (пусто) | `Secure`-флаг и домен cookie |
+| `AUTH__OTP_LENGTH` / `AUTH__OTP_TTL` | `6` / `300` | Длина кода (цифр) / время жизни, сек |
+| `AUTH__OTP_MAX_ATTEMPTS` | `5` | Неверных попыток до инвалидации кода |
+| `AUTH__OTP_REQUEST_MAX_PER_MINUTE` | `3` | Запросов кода на email в минуту |
+
+Подключение к Redis (используется для OTP-кодов и лимитов) — общий корневой блок `REDIS__*` (§9.5 «Redis»), не часть `AUTH__*`.
+
+**DEV-запуск с реальным ОТП-входом** (`AUTH__ENABLED=true` локально):
+
+1. Redis в WSL Ubuntu-24.04 (systemd в дистро включён, юнит `redis-server` автостартует):
+   - Установка: `wsl -d Ubuntu-24.04 -u root -- apt-get install -y redis-server` (root в WSL — без пароля).
+   - Windows→WSL по `localhost` в NAT-режиме нестабилен (особенно с системным localhost-прокси) — в `%USERPROFILE%\.wslconfig` включить `[wsl2] networkingMode=mirrored`, `dnsTunneling=true`, `autoProxy=true`, затем `wsl --shutdown`; в mirrored-режиме сервис должен слушать `0.0.0.0` (`/etc/redis/redis.conf`: `bind 0.0.0.0 -::1`, `protected-mode yes` оставить — Redis без пароля отвергает клиентов с не-loopback адресов, это защита от внешней сети).
+   - WSL глушит VM через ~минуту после последней `wsl.exe`-команды — держать якорь фоном: `wsl -d Ubuntu-24.04 --exec sleep infinity` (например, автостартом при входе в Windows).
+   - Приложение подключается по `REDIS__HOST=127.0.0.1` (дефолт), не `localhost` — IPv6-ловушка на Windows (§9.5 «Redis»).
+2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
+3. `AUTH__JWT_SECRET` — строка не короче 32 символов: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+
+**Деплой SDP:** приложение переехало с JupyterHub DataLab на SDP-кластер — доступ по IP:порту напрямую, `root_path`/proxy-путей больше нет (`app/main.py` их не вычисляет, в отличие от §9.2 ниже). Cookie-based авторизация от этого не зависит: домен/порт задаются `AUTH__COOKIE_DOMAIN`/`AUTH__COOKIE_SECURE` при необходимости.
 
 ### 9.4 Конфигурация: .env и Pydantic Settings
 
@@ -3005,7 +3069,7 @@ def test_chat_settings_defaults():
 |-----------|-----|-------------|----------|
 | `APP_TITLE` | str | `Audit Workstation` | Название приложения |
 | `APP_VERSION` | str | `1.0.0` | Версия |
-| `JUPYTERHUB_USER` | str | `unknown_user` | Пользователь DataLab |
+| `JUPYTERHUB_USER` | str | `unknown_user` | Username (цифры): тест-режим авторизации (`AUTH__ENABLED=false`, §9.3a) и/или Kerberos-логин для Greenplum (`app/db/connection.py`). Имя — историческое, к JupyterHub/DataLab деплою больше не привязано |
 
 #### Server
 
@@ -3038,6 +3102,19 @@ def test_chat_settings_defaults():
 | `DATABASE__GP__DATABASE` | str | `capgp3` | Имя БД GP |
 | `DATABASE__GP__SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема GP (alias для поля `schema_name`) |
 
+#### Redis
+
+Общая инфраструктура приложения (сейчас — Redis для OTP-кодов/лимитов модуля `app.auth`, см. §9.3a; далее — шина внешнего агента, локи актов, кэши).
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `REDIS__HOST` | str | `127.0.0.1` | Хост Redis. Именно IPv4-адрес, не `localhost` — на Windows `localhost` резолвится в IPv6 `::1` первым, redis-py не фолбэкает на IPv4 (connection refused/timeout) |
+| `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе может быть нестандартным (пример: `7474`) |
+| `REDIS__DB` | int | `0` | Индекс БД Redis (0-15) |
+| `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |
+| `REDIS__MAX_CONNECTIONS` | int | `10` | Максимум соединений в пуле клиента Redis |
+| `REDIS__SOCKET_TIMEOUT` | float | `5.0` | Таймаут операций сокета Redis, сек |
+
 #### Security
 
 | Переменная | Тип | По умолчанию | Описание |
@@ -3046,6 +3123,24 @@ def test_chat_settings_defaults():
 | `SECURITY__RATE_LIMIT_PER_MINUTE` | int | `1024` | Лимит запросов/мин на IP |
 | `SECURITY__MAX_TRACKED_IPS` | int | `100` | Макс. отслеживаемых IP |
 | `SECURITY__RATE_LIMIT_TTL` | int | `120` | TTL метрик (сек) |
+
+#### Auth (ОТП/JWT)
+
+Модуль `app/auth/`, не домен. Архитектура и поток входа — §9.3a.
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `AUTH__ENABLED` | bool | `False` | `true` — ОТП-авторизация, `false` — тест-режим (username из `JUPYTERHUB_USER`) |
+| `AUTH__JWT_SECRET` | SecretStr | `your-secret-key` | Обязателен, не-дефолтен и ≥32 символов при `enabled=true` |
+| `AUTH__JWT_ALGORITHM` | str | `HS256` | Алгоритм подписи JWT |
+| `AUTH__JWT_ACCESS_TTL` | int | `900` | TTL access-токена (сек) |
+| `AUTH__JWT_REFRESH_TTL` | int | `604800` | TTL refresh-токена (сек) — фактическая длина сессии |
+| `AUTH__COOKIE_SECURE` | bool | `False` | `Secure`-флаг cookie (`true` под HTTPS) |
+| `AUTH__COOKIE_DOMAIN` | str | (пусто) | Домен cookie, пусто — текущий host |
+| `AUTH__OTP_LENGTH` | int | `6` | Длина ОТП-кода (цифр) |
+| `AUTH__OTP_TTL` | int | `300` | Время жизни ОТП-кода (сек) |
+| `AUTH__OTP_MAX_ATTEMPTS` | int | `5` | Неверных попыток ввода кода до инвалидации |
+| `AUTH__OTP_REQUEST_MAX_PER_MINUTE` | int | `3` | Запросов кода на email в минуту |
 
 #### Chat: LLM
 
