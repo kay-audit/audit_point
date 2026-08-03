@@ -30,6 +30,7 @@ import { TreeUtils } from '../../static/js/constructor/tree/tree-utils.js';
 import { AppConfig } from '../../static/js/shared/app-config.js';
 import { Notifications } from '../../static/js/shared/notifications.js';
 import {
+    getImageLimits,
     getStructureLimits,
     resetImageLimitsForTests,
 } from '../../static/js/constructor/violation/violation-image-validator.js';
@@ -382,6 +383,73 @@ test('undo item-поддерева с текстблоками сверх ТЕК
     assert.equal(UndoDeleteManager.undoLast(), false, 'откат отклонён — поддерево нарушает текущий лимит');
     assert.equal(AppState.findNodeById(item.id), null, 'узел остался неудалённым (откат не применился)');
     assert.ok(UndoDeleteManager.canUndo(), 'снимок остался в стеке');
+    assertNoIndexMiss();
+});
+
+// ── Ревью #6: лимит ЭЛЕМЕНТОВ доп. контента снимка НЕ блокирует undo ────────
+// (в отличие от лимита блоков-на-узле выше — items считаются по словарю
+// САМОГО СНИМКА, пользователь их снаружи облегчить не может).
+
+test('undo нарушения с items сверх ТЕКУЩЕГО лимита элементов доп. контента — проходит', () => {
+    AppState.initializeTree(true);
+    const item = addItem('4', 'Пункт с нарушением');
+    assert.ok(AppState.addViolationToNode(item.id).valid);
+    const violationNode = item.children.find(c => c.type === 'violation');
+    const violationId = violationNode.violationId;
+    AppState.generateNumbering();
+
+    // Нарушение легитимно накопило 5 элементов (лимит на тот момент был выше).
+    // Админ снижает лимит НИЖЕ фактического количества ДО удаления.
+    AppState.violations[violationId].additionalContent.enabled = true;
+    AppState.violations[violationId].additionalContent.items =
+        Array.from({length: 5}, (_, i) => ({id: `it${i}`, type: 'freeText', text: ''}));
+    getImageLimits().maxItemsPerViolation = 2;
+
+    assert.ok(AppState.deleteNode(violationNode.id));
+    assert.equal(AppState.violations[violationId], undefined);
+
+    assert.ok(UndoDeleteManager.undoLast(), 'лимит items снимка не должен клинить undo');
+    assert.equal(notified.error.length, 0, 'отказа по лимиту items быть не должно');
+
+    const restored = item.children.find(c => c.type === 'violation');
+    assert.ok(restored, 'узел нарушения восстановлен');
+    assert.equal(
+        AppState.violations[violationId].additionalContent.items.length, 5,
+        'все 5 элементов восстановлены целиком, incl. сверх лимита'
+    );
+    assertIndexConsistent('undo нарушения сверх items-лимита');
+    assertNoIndexMiss();
+});
+
+test('лимит items снимка не клинит ВЕСЬ LIFO-стек: undo верхнего (нарушение) не блокирует нижележащий', () => {
+    AppState.initializeTree(true);
+    const older = addItem('4', 'Старый пункт'); // удалён первым → окажется НИЖЕ в стеке
+    const item = addItem('4', 'Пункт с нарушением');
+    assert.ok(AppState.addViolationToNode(item.id).valid);
+    const violationNode = item.children.find(c => c.type === 'violation');
+    const violationId = violationNode.violationId;
+    AppState.generateNumbering();
+
+    AppState.violations[violationId].additionalContent.enabled = true;
+    AppState.violations[violationId].additionalContent.items =
+        Array.from({length: 3}, (_, i) => ({id: `it${i}`, type: 'freeText', text: ''}));
+    getImageLimits().maxItemsPerViolation = 1;
+
+    // Порядок удаления: older → потом нарушение (нарушение — верх стека).
+    assert.ok(AppState.deleteNode(older.id));
+    assert.ok(AppState.deleteNode(violationNode.id));
+
+    // ДО фикса: верхний снимок (нарушение, items сверх лимита) отклонял бы
+    // undoLast НАВСЕГДА — older остался бы недостижим (undoLast всегда берёт
+    // только верхний снимок стека).
+    assert.ok(UndoDeleteManager.undoLast(), 'undo верхнего снимка (нарушение) должен пройти');
+    assert.ok(item.children.some(c => c.type === 'violation'), 'нарушение восстановлено');
+
+    assert.ok(UndoDeleteManager.undoLast(), 'стек не заклинен — нижележащий снимок (older) достижим');
+    assert.ok(AppState.findNodeById(older.id), 'older восстановлен');
+
+    assert.equal(UndoDeleteManager.canUndo(), false, 'стек пуст');
+    assertIndexConsistent('стек разблокирован после items-фикса');
     assertNoIndexMiss();
 });
 

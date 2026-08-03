@@ -394,6 +394,48 @@ test('canInsertSubtree: дефолтный лимит (50) обычный фра
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// Ревью #6: options.skipContentItemsLimit — undo не клинит весь LIFO-стек,
+// когда лимит элементов снижен ниже фактического содержимого снимка.
+// ──────────────────────────────────────────────────────────────────────────
+
+test('canInsertSubtree: skipContentItemsLimit=true — items сверх лимита снимка не блокируют (undo-путь)', () => {
+    getImageLimits().maxItemsPerViolation = 2;
+    emptyParentTree();
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    const result = ValidationTree.canInsertSubtree(
+        'p', node, { v1: violationEntry('v1', 3) }, { skipContentItemsLimit: true }
+    );
+    assert.equal(result.valid, true, 'с флагом отказ по items-лимиту не должен применяться');
+});
+
+test('canInsertSubtree: skipContentItemsLimit=false (по умолчанию) — прежнее поведение отказа', () => {
+    getImageLimits().maxItemsPerViolation = 2;
+    emptyParentTree();
+
+    const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    const result = ValidationTree.canInsertSubtree('p', node, { v1: violationEntry('v1', 3) }, {});
+    assert.equal(result.valid, false, 'без флага (или флаг явно false) отказ по items-лимиту сохраняется');
+});
+
+test('canInsertSubtree: skipContentItemsLimit не отменяет лимит блоков-на-узле (paste/drag остаются под гейтом)', () => {
+    getStructureLimits().violationsPerNode = 1;
+    AppState.treeData = {
+        id: 'root', label: 'Акт', children: [
+            { id: 'p', label: 'Пункт', children: [
+                { id: 'existing', type: 'violation', violationId: 'existing', children: [] },
+            ] },
+        ],
+    };
+    AppState._rebuildNodeIndex();
+
+    const newViolation = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
+    const result = ValidationTree.canInsertSubtree('p', newViolation, null, { skipContentItemsLimit: true });
+    assert.equal(result.valid, false, 'флаг пропускает только items-лимит, а не лимит блоков-на-узле');
+    assert.match(result.message, /нарушений/);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // #8: canAddContent (кнопка «Добавить …») — _validateContentLimits раньше
 // override'ил статичный лимит (block-types.js, по 10) рантайм-значением
 // из /acts/limits только для textBlocks; нарушения и таблицы оставались на

@@ -196,13 +196,29 @@ export const ValidationTree = {
      * поэтому проверить их можно только имея этот словарь. Без параметра —
      * прежнее поведение (drag/move элементов не добавляет, словарь не нужен).
      *
+     * Четвёртый (опциональный) параметр — options.skipContentItemsLimit.
+     * Undo восстанавливает РАНЕЕ СУЩЕСТВОВАВШЕЕ состояние, а не создаёт новое:
+     * словарь нарушений снимка — это содержимое удалённого фрагмента, каким оно
+     * было НА МОМЕНТ удаления, и пользователь снаружи никак не может его
+     * «облегчить» (в отличие от лимитов блоков-на-узел выше, где можно
+     * освободить место в целевом узле и повторить Ctrl+Z). Если админ снизил
+     * maxItemsPerViolation ниже фактического количества элементов уже
+     * существующего нарушения — без этого флага верхний снимок стека НИКОГДА
+     * не пройдёт проверку items, а undo всегда работает с верхним снимком, так
+     * что весь LIFO-стек отмены оказался бы заблокирован навсегда. Paste
+     * (node-clipboard.js) флаг не передаёт: там это вставка НОВОГО контента в
+     * дерево, и лимит элементов должен действовать как обычно.
+     *
      * @param {string} parentId - ID узла, в children которого встанет node
      * @param {Object} node - Вставляемый/перемещаемый узел (возможно, с поддеревом)
      * @param {Object} [violationsDict] - Словарь нарушений фрагмента
      *        (id записи → нарушение) для проверки лимита доп. элементов
+     * @param {Object} [options] - Опции проверки
+     * @param {boolean} [options.skipContentItemsLimit] - Пропустить проверку
+     *        лимита элементов доп. контента (undo — см. выше)
      * @returns {Object} Результат с полями valid, message
      */
-    canInsertSubtree(parentId, node, violationsDict = null) {
+    canInsertSubtree(parentId, node, violationsDict = null, options = {}) {
         const { TEXTBLOCK, VIOLATION, TABLE } = AppConfig.nodeTypes;
         const structure = getStructureLimits();
 
@@ -238,8 +254,10 @@ export const ValidationTree = {
             }
         }
 
-        const itemsCheck = this._validateSubtreeContentItems(node, violationsDict);
-        if (!itemsCheck.valid) return itemsCheck;
+        if (!options.skipContentItemsLimit) {
+            const itemsCheck = this._validateSubtreeContentItems(violationsDict);
+            if (!itemsCheck.valid) return itemsCheck;
+        }
 
         return ValidationCore.success();
     },
@@ -259,33 +277,34 @@ export const ValidationTree = {
      * getImageLimits().maxItemsPerViolation (рантайм /acts/limits с собственным
      * фолбэком DEFAULT_IMAGE_LIMITS внутри модуля).
      *
+     * #11: без обхода дерева — оба вызывающих canInsertSubtree (node-clipboard.js
+     * paste, undo-delete.js) передают violationsDict, собранный
+     * TreeUtils.collectSubtreeDictEntries (undo) либо эквивалентным regenerateIds
+     * (paste) РОВНО по вставляемому поддереву, так что словарь уже содержит
+     * записи только тех нарушений, что реально в нём есть — повторно обходить
+     * дерево, чтобы найти те же id, избыточно. КОНТРАКТ: violationsDict обязан
+     * быть собран по ТОМУ ЖЕ поддереву, что вставляется — при нарушении
+     * контракта проверка либо пропустит чужие записи, либо не найдёт нужные.
+     *
      * @private
-     * @param {Object} node - Корень вставляемого поддерева
-     * @param {Object|null} violationsDict - Словарь нарушений фрагмента
+     * @param {Object|null} violationsDict - Словарь нарушений вставляемого
+     *        поддерева (id записи → нарушение), собранный
+     *        TreeUtils.collectSubtreeDictEntries по этому же поддереву
      * @returns {Object} Результат с полями valid, message
      */
-    _validateSubtreeContentItems(node, violationsDict) {
+    _validateSubtreeContentItems(violationsDict) {
         if (!violationsDict) return ValidationCore.success();
 
         const maxItems = getImageLimits().maxItemsPerViolation;
         if (typeof maxItems !== 'number') return ValidationCore.success();
 
-        // Поле-ссылка нарушения — из реестра block-types, не хардкодом.
-        const refField = getBlockType(AppConfig.nodeTypes.VIOLATION)?.idProp;
-        if (!refField) return ValidationCore.success();
-
-        const stack = [node];
-        while (stack.length) {
-            const current = stack.pop();
-            if (!current || typeof current !== 'object') continue;
-            const entry = current[refField] ? violationsDict[current[refField]] : null;
+        for (const entry of Object.values(violationsDict)) {
             const itemsCount = entry?.additionalContent?.items?.length || 0;
             if (itemsCount > maxItems) {
                 return ValidationCore.failure(
                     AppConfig.content.errors.contentItemsLimitReached(maxItems)
                 );
             }
-            if (Array.isArray(current.children)) stack.push(...current.children);
         }
 
         return ValidationCore.success();
