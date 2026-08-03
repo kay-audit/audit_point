@@ -18,6 +18,7 @@ import {
     computeScaledSize,
     hasTransparentPixels,
     downscaleImage,
+    resolveActualFilename,
 } from '../../static/js/constructor/violation/violation-image-resize.js';
 
 // --- resolveResizeMode ---
@@ -131,4 +132,48 @@ test('downscaleImage: PNG в сжатии в node (без canvas) → ориги
     const file = { type: 'image/png', name: 'a.png', size: 5000 };
     const url = await downscaleImage(file, { mode: 'high', readAsDataUrl: () => Promise.resolve('data:png') });
     assert.equal(url, 'data:png');
+});
+
+// --- resolveActualFilename (#12: имя файла должно отражать факт перекодирования) ---
+
+test('resolveActualFilename: непрозрачный PNG перекодирован в JPEG → расширение .jpg', () => {
+    const file = { type: 'image/png', name: 'screenshot.png' };
+    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
+    assert.equal(name, 'screenshot.jpg');
+});
+
+test('resolveActualFilename: базовое имя с точками сохраняется, меняется только расширение', () => {
+    const file = { type: 'image/png', name: 'screenshot.v2.final.png' };
+    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
+    assert.equal(name, 'screenshot.v2.final.jpg');
+});
+
+test('resolveActualFilename: имя без расширения → просто добавляется .jpg', () => {
+    const file = { type: 'image/png', name: 'screenshot' };
+    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
+    assert.equal(name, 'screenshot.jpg');
+});
+
+test('resolveActualFilename: прозрачный PNG остался PNG → имя не тронуто', () => {
+    const file = { type: 'image/png', name: 'screenshot.png' };
+    const name = resolveActualFilename(file, 'data:image/png;base64,AAAA');
+    assert.equal(name, 'screenshot.png');
+});
+
+test('resolveActualFilename: JPEG-оригинал (пережат, формат не изменился) → имя не тронуто', () => {
+    const file = { type: 'image/jpeg', name: 'photo.jpg' };
+    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
+    assert.equal(name, 'photo.jpg');
+});
+
+test('resolveActualFilename: режим original (PNG не пережат, url = исходный PNG) → имя не тронуто', () => {
+    const file = { type: 'image/png', name: 'screenshot.png' };
+    const name = resolveActualFilename(file, 'data:image/png;base64,AAAA');
+    assert.equal(name, 'screenshot.png');
+});
+
+test('resolveActualFilename: PNG-файл с уже .jpeg-именем (нетипично) → не переименовывается повторно', () => {
+    const file = { type: 'image/png', name: 'mislabeled.jpeg' };
+    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
+    assert.equal(name, 'mislabeled.jpeg');
 });

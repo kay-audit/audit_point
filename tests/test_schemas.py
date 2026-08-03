@@ -776,8 +776,12 @@ class TestDynamicLimitsFromSettings:
             ViolationContentItemSchema(id=str(i), type="freeText", content="x")
             for i in range(3)
         ]
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             ViolationAdditionalContentSchema(enabled=True, items=items)
+        # №14: текст синхронизирован вручную с фронтом (AppConfig.content.errors.
+        # contentItemsLimitReached, static/js/shared/app-config.js) — должен
+        # совпадать дословно.
+        assert "Достигнут лимит элементов дополнительного контента на нарушение (2)." in str(exc_info.value)
         # 2 элемента проходят
         ViolationAdditionalContentSchema(enabled=True, items=items[:2])
 

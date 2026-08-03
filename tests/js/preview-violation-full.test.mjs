@@ -16,6 +16,7 @@ import {
     splitTopLevelBlocks,
     PreviewViolationRenderer,
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
+import { VIOLATION_LABELS } from '../../static/js/constructor/violation/violation-fields.js';
 
 /**
  * Рендерит нарушение с одним image-элементом и возвращает применённый
@@ -233,6 +234,30 @@ test('#11: подпись поля responsible берётся из контра�
     const line = lines.find(l => l.text === 'Иванов И.И.');
     assert.ok(line, 'строка responsible не найдена');
     assert.equal(line.label, 'Ответственные');
+});
+
+test('№10: ВСЕ подписи полей превью берутся из реестра VIOLATION_LABELS, а не захардкожены', () => {
+    const lines = collectViolationLines(makeViolation({
+        violated: 'V', established: 'E',
+        reasons: { enabled: true, content: 'R' },
+        measures: { enabled: true, content: 'M' },
+        consequences: { enabled: true, content: 'C' },
+        responsible: { enabled: true, content: 'O' },
+    }));
+    assert.equal(lines.find(l => l.text === 'V').label, VIOLATION_LABELS.violated);
+    assert.equal(lines.find(l => l.text === 'E').label, VIOLATION_LABELS.established);
+    assert.equal(lines.find(l => l.text === 'R').label, VIOLATION_LABELS.reasons);
+    assert.equal(lines.find(l => l.text === 'M').label, VIOLATION_LABELS.measures);
+    assert.equal(lines.find(l => l.text === 'C').label, VIOLATION_LABELS.consequences);
+    assert.equal(lines.find(l => l.text === 'O').label, VIOLATION_LABELS.responsible);
+});
+
+test('№10: заголовок descriptionList берётся из реестра (VIOLATION_LABELS.descriptionList)', () => {
+    const lines = collectViolationLines(makeViolation({
+        descriptionList: { enabled: true, items: ['x'] },
+    }));
+    const list = lines.find(l => l.type === 'list');
+    assert.equal(list.label, VIOLATION_LABELS.descriptionList);
 });
 
 // --- rich-рендер тела поля (renderActContent, Task 1.1.4) ---

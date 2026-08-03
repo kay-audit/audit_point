@@ -158,6 +158,32 @@ export async function downscaleImage(file, options = {}) {
     return readAsDataUrl(file);
 }
 
+/**
+ * Приводит имя файла к формату, реально записанному в итоговый data-URL (#12).
+ *
+ * downscaleImage молча перекодирует непрозрачный PNG в JPEG (см. заголовок
+ * модуля) — без синхронизации элемент дополнительного контента хранил бы имя
+ * вида «screenshot.png» с телом, которое на самом деле JPEG. Расширение
+ * меняется, только если реально произошёл PNG → JPEG (по факту MIME итогового
+ * data-URL, а не по одному лишь исходному типу): прозрачный PNG, оставшийся
+ * PNG, и JPEG/GIF без перекодирования — имя не трогаем. Уже-JPEG-имена
+ * (.jpg/.jpeg) не переименовываются повторно.
+ *
+ * @param {File|Blob} file - Исходный файл (до пережатия): читает .type/.name
+ * @param {string} resultUrl - data-URL, фактически возвращённый downscaleImage
+ * @returns {string} Имя файла с расширением, соответствующим факту
+ */
+export function resolveActualFilename(file, resultUrl) {
+    const recompressedToJpeg = file.type === 'image/png'
+        && typeof resultUrl === 'string'
+        && resultUrl.startsWith('data:image/jpeg');
+    if (!recompressedToJpeg || /\.jpe?g$/i.test(file.name || '')) {
+        return file.name;
+    }
+    const base = (file.name || '').replace(/\.[^./\\]*$/, '');
+    return `${base || 'image'}.jpg`;
+}
+
 // Window-global для inline-скриптов шаблонов (guarded — модуль тестируется в node).
 if (typeof window !== 'undefined') {
     window.ViolationImageResize = {
@@ -166,5 +192,6 @@ if (typeof window !== 'undefined') {
         shouldDownscale,
         computeScaledSize,
         hasTransparentPixels,
+        resolveActualFilename,
     };
 }
