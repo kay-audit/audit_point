@@ -12,6 +12,7 @@ import { TreeDragDrop } from './tree-drag-drop.js';
 import { TreeRenderer } from './tree-renderer.js';
 import { TreeUtils } from './tree-utils.js';
 import { AppConfig } from '../../shared/app-config.js';
+import { EscapeStack } from '../../shared/escape-stack.js';
 
 export class TreeManager {
     /**
@@ -71,9 +72,14 @@ export class TreeManager {
             }
         });
 
-        // Снимаем выделение при нажатии ESC (но не во время редактирования)
+        // Снимаем выделение при нажатии ESC (но не во время редактирования).
+        // Legacy-listener: написан до централизации ESC в EscapeStack, живёт в
+        // bubbling. Пока в стеке есть слой (диалог, панель поиска, активная зона
+        // нарушений), ESC принадлежит ему; сюда событие доходит только сквозным
+        // отказом всех слоёв (PASS) — снимать по нему выделение нельзя, иначе
+        // Escape, адресованный редактору, незаметно стирает выделение дерева.
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && !this.editingElement) {
+            if (e.key === 'Escape' && !this.editingElement && !EscapeStack.isActive()) {
                 this.clearSelection();
             }
         });

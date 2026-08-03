@@ -10,6 +10,7 @@ import { applyCellInput, cancelCellInput } from './cell-write-through.js';
 import { TableCellsOperations } from './table-cells-operations.js';
 import { TableSizes } from './table-sizes.js';
 import { Notifications } from '../../shared/notifications.js';
+import { EscapeStack } from '../../shared/escape-stack.js';
 
 export class TableManager {
     constructor() {
@@ -45,9 +46,14 @@ export class TableManager {
             }
         });
 
-        // Обработчик нажатия Escape
+        // Обработчик нажатия Escape.
+        // Legacy-listener: написан до централизации ESC в EscapeStack, живёт в
+        // bubbling. Пока в стеке есть слой (диалог, панель поиска, активная зона
+        // нарушений), ESC принадлежит ему; сюда событие доходит только сквозным
+        // отказом всех слоёв (PASS) — снимать по нему выделение нельзя, иначе
+        // Escape, адресованный редактору, незаметно стирает выделение ячеек.
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
+            if (e.key === 'Escape' && !EscapeStack.isActive()) {
                 // Снимаем выделение с ячеек
                 this.clearSelection();
                 // Скрываем контекстное меню

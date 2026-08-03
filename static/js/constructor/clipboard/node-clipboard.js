@@ -32,6 +32,7 @@ import { ValidationTree } from '../validation/validation-tree.js';
 import { getBlockType, isLeafBlockType } from '../block-types.js';
 import { isPinnedTable, isRiskTable, isMetricsTable, getTableKind } from '../table/table-kind.js';
 import { AppConfig } from '../../shared/app-config.js';
+import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
 import { formatMb } from '../../shared/format-units.js';
 import {
@@ -520,8 +521,9 @@ export const NodeClipboard = {
 
     /**
      * Устанавливает шорткаты Ctrl+C / Ctrl+V (capture-фаза). Внутри активных
-     * редакторов (contenteditable/textarea/input/select) живёт браузерный
-     * copy/paste — не перехватываем (по образцу UndoDeleteManager).
+     * редакторов (contenteditable / textarea / select / текстовый input —
+     * общий предикат isEditableTarget) живёт браузерный copy/paste, не
+     * перехватываем (по образцу UndoDeleteManager).
      *
      * Ctrl+C/Ctrl+V работают по выделенному узлу дерева (AppState.selectedNode).
      */
@@ -532,7 +534,7 @@ export const NodeClipboard = {
         document.addEventListener('keydown', (e) => {
             if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
             if (e.code !== 'KeyC' && e.code !== 'KeyV') return;
-            if (this._isEditableTarget(document.activeElement)) return;
+            if (isEditableTarget(document.activeElement)) return;
 
             const selected = AppState.selectedNode;
             if (!selected?.id) return;
@@ -548,18 +550,6 @@ export const NodeClipboard = {
                 this.pasteInto(selected.id);
             }
         }, true);
-    },
-
-    /**
-     * Активный элемент — текстовый редактор (там живёт браузерный copy/paste).
-     * @private
-     * @param {Element|null} el
-     * @returns {boolean}
-     */
-    _isEditableTarget(el) {
-        if (!el) return false;
-        if (el.isContentEditable) return true;
-        return ['TEXTAREA', 'INPUT', 'SELECT'].includes(el.tagName);
     },
 
     /** @type {Element|null} Пункт меню «Копировать» (для refreshMenuState). */
