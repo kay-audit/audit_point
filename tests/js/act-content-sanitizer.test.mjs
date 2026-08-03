@@ -10,6 +10,14 @@
  * Критерий сироты в (а) — ТОЛЬКО отсутствие ссылающегося узла: мёртвый или
  * пустой nodeId при живом владельце чинится правилом (в), а не карается
  * удалением записи и каскадным вырезанием узла.
+ *
+ * Находка №2: запись, не являющаяся plain-объектом (примитив/массив), тоже
+ * сирота по (а) — даже при живом реферере, т.к. entry.nodeId = ... на
+ * примитиве бросает TypeError в strict mode (ESM) и валит всю загрузку акта.
+ * Находка №4: если на запись реально ссылается НЕСКОЛЬКО узлов (битый дубль
+ * ссылки), владелец для (в) — узел, чей id совпадает с entry.nodeId (если
+ * такой есть среди референтов), иначе первый реферер в ДОКУМЕНТНОМ порядке;
+ * не последний по обходу и не произвольный.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -277,6 +285,91 @@ test('§5.10e: лечение не мешает правилу (а) — не с�
   assert.equal(content.tables.t_stale, undefined);
   assert.deepEqual(report.droppedEntries.tables, ['t_stale']);
   assert.deepEqual(report.healedNodeIds.tables, [{ id: 't1', from: 'n2', to: 'n1' }]);
+});
+
+// ── находка №2: форма записи (не object) — дроп, а не крэш ─────────────────
+
+test('находка №2: запись-строка при живом реферере — дропается без TypeError (акт открывается)', () => {
+  const content = makeCleanContent();
+  content.tables.t1 = 'junk'; // испорченная запись: примитив вместо объекта; n1.tableId по-прежнему 't1'
+
+  let report;
+  assert.doesNotThrow(() => { report = sanitizeActContent(content); }, 'entry.nodeId = ... на примитиве не должен бросать TypeError');
+
+  assert.equal(content.tables.t1, undefined, 'запись-примитив дропнута, а не "вылечена"');
+  assert.deepEqual(report.droppedEntries.tables, ['t1']);
+  // Узел-реферер n1 остался без записи в словаре → каскад (б) выносит и его.
+  assert.ok(!nodeIdsOf(content.tree).has('n1'));
+});
+
+test('находка №2: запись-число при живом реферере — дропается без TypeError', () => {
+  const content = makeCleanContent();
+  content.textBlocks.tb1 = 42;
+
+  let report;
+  assert.doesNotThrow(() => { report = sanitizeActContent(content); });
+
+  assert.equal(content.textBlocks.tb1, undefined);
+  assert.deepEqual(report.droppedEntries.textBlocks, ['tb1']);
+});
+
+test('находка №2: запись-массив — дропается (не считается plain-объектом)', () => {
+  const content = makeCleanContent();
+  content.violations.v1 = ['not', 'an', 'entry'];
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.violations.v1, undefined);
+  assert.deepEqual(report.droppedEntries.violations, ['v1']);
+});
+
+// ── находка №4: владелец при нескольких реферерах — документный порядок ────
+
+test('находка №4: битый дубль ссылки, nodeId мёртв → лечится на ПЕРВОГО реферера в документном порядке', () => {
+  const content = {
+    tree: {
+      id: 'root', label: 'Акт',
+      children: [
+        { id: 'c1', type: 'table', tableId: 't_dup', children: [] },
+        { id: 'c2', type: 'item', children: [] },
+        { id: 'c3', type: 'table', tableId: 't_dup', children: [] },
+      ],
+    },
+    tables: { t_dup: { id: 't_dup', nodeId: 'призрак', grid: [] } },
+    textBlocks: {},
+    violations: {},
+  };
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.tables.t_dup.nodeId, 'c1', 'вылечено на c1 (раньше в документе), не на c3');
+  assert.deepEqual(report.healedNodeIds.tables, [{ id: 't_dup', from: 'призрак', to: 'c1' }]);
+  assert.deepEqual(report.droppedEntries.tables, []);
+});
+
+test('находка №4: nodeId уже валиден (совпадает с одним из референтов) — НЕ переписывается при дубле ссылки', () => {
+  // Раньше при обходе через LIFO-стек без разворота детей «первым встреченным»
+  // оказывался ПОСЛЕДНИЙ по документу узел (c3) — здоровый nodeId=c1
+  // перезаписывался на c3. Это и есть регрессионный сценарий находки №4.
+  const content = {
+    tree: {
+      id: 'root', label: 'Акт',
+      children: [
+        { id: 'c1', type: 'table', tableId: 't_dup', children: [] },
+        { id: 'c2', type: 'item', children: [] },
+        { id: 'c3', type: 'table', tableId: 't_dup', children: [] },
+      ],
+    },
+    tables: { t_dup: { id: 't_dup', nodeId: 'c1', grid: [] } },
+    textBlocks: {},
+    violations: {},
+  };
+
+  const report = sanitizeActContent(content);
+
+  assert.equal(content.tables.t_dup.nodeId, 'c1', 'валидный владелец не тронут при дубле ссылки у c3');
+  assert.deepEqual(report.healedNodeIds.tables, []);
+  assert.equal(report.changed, false);
 });
 
 test('пустое/отсутствующее дерево → no-op', () => {

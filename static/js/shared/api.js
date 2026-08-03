@@ -593,6 +593,12 @@ export class APIClient {
                     // помечает акт несохранённым, не в read-only (см. комментарий выше).
                     window.StorageManager.markAsUnsaved();
                 }
+                if (sanitizeReport.changed && !AppConfig.readOnlyMode.isReadOnly) {
+                    // №8: аналогично fontNorm/violationsNorm — без этого вылеченные
+                    // сиротой/бэк-референсом данные не персистятся, и каждое
+                    // открытие акта лечит их заново (тот же серверный отчёт).
+                    window.StorageManager.markAsUnsaved();
+                }
                 if (draftRestored) {
                     // Восстановленный черновик ещё не в БД — помечаем как
                     // несинхронизированный ПОСЛЕ bootstrap-вызовов
