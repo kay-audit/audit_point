@@ -34,8 +34,8 @@
 > **Важно про пересоздание.** Приложение на старте (`create_tables_if_not_exist`)
 > создаёт только **ОТСУТСТВУЮЩИЕ таблицы целиком** и НЕ добавляет новые колонки в
 > уже существующую таблицу (проверяется лишь наличие таблиц). Поэтому при
-> изменении схемы существующей таблицы нужен либо полный дроп этой таблицы (этот
-> скрипт) и пересоздание, либо ручной `ALTER TABLE`. Чтобы такое расхождение не
+> изменении схемы существующей таблицы нужен полный дроп (этот скрипт) и
+> пересоздание. Чтобы такое расхождение не
 > всплывало рантайм-ошибкой (`UndefinedColumnError`), при старте работает
 > диагностика: если таблица существует, но устарела по колонкам, в лог пишется
 > WARNING со списком недостающих колонок (см. `developer-guide.md` §6.5.4).
@@ -84,6 +84,7 @@ DROP TABLE IF EXISTS t_db_oarb_audit_act_acts;
 -- ╔══════════════════════════════════════════════════════════════════════╗
 -- ║  Домен ADMIN (зависимые → родительские)                             ║
 -- ╚══════════════════════════════════════════════════════════════════════╝
+DROP TABLE IF EXISTS t_db_oarb_audit_act_user_avatars;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_admin_http_metrics;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_admin_audit_log;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_access_denied_audit;
@@ -146,6 +147,7 @@ DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_acts;
 -- ╔══════════════════════════════════════════════════════════════════════╗
 -- ║  Домен ADMIN (зависимые → родительские)                             ║
 -- ╚══════════════════════════════════════════════════════════════════════╝
+DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_user_avatars;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_admin_http_metrics;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_admin_audit_log;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_access_denied_audit;

@@ -7,7 +7,7 @@
 - [`docs/operations/operations-recovery.md`](../operations/operations-recovery.md) — operator playbook: что делать при инцидентах в проде (завис forward-запрос к агенту, singleton-lock, batcher overflow, denied access).
 - [`docs/architecture/frontend-architecture.md`](../architecture/frontend-architecture.md) — **единый deep-dive по фронту** (constructor + portal + shared): ES-модули и entry-файлы, AppState/StorageManager/LockManager, per-node render API, диалоги, безопасность, a11y, CSS. Чат — отдельным документом ниже.
 - [`docs/architecture/chat-frontend-architecture.md`](../architecture/chat-frontend-architecture.md) — deep-dive по фронт-архитектуре чата: 13 ядерных модулей, polling сообщений, режимы inline/modal/popup.
-- [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — deep-dive по редактору текстблоков: капсулы ссылок/сносок, caret-guard, целостность капсул (prevent-then-heal), DOCX-экспорт (`inline.py`).
+- [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — deep-dive по движку rich-редактора (текстблоки + rich-поля нарушений через поверхности EditableSurface): капсулы ссылок/сносок, caret-guard, целостность капсул (prevent-then-heal), DOCX-экспорт (`inline.py`), поверхности и SURFACE_POLICY (§15).
 - [`docs/integrations/external-agent-imitation.sql`](../integrations/external-agent-imitation.sql) — SQL-сниппеты для имитации внешнего ИИ-агента (см. §7.8).
 - Retention bus-таблицы `chat_agent_messages_bus` — см. §9.6 (кода ретеншена в приложении нет, очистка — задача DBA).
 - [`docs/testing/manual-qa-agent-channel.md`](../testing/manual-qa-agent-channel.md) — чек-лист ручного QA моста к внешнему агенту.
@@ -779,7 +779,7 @@ async def app_error_handler(request, exc):
 >
 > **Чат-фронт — отдельно**: [`docs/architecture/chat-frontend-architecture.md`](../architecture/chat-frontend-architecture.md), плюс event-driven раздел §7.7 ниже.
 >
-> **Редактор текстблоков — отдельно**: [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — капсулы ссылок/сносок, caret-guard (`U+FEFF`), 3-слойная целостность капсул, DOCX-экспорт.
+> **Движок rich-редактора — отдельно**: [`docs/architecture/textblock-editor-architecture.md`](../architecture/textblock-editor-architecture.md) — капсулы ссылок/сносок, caret-guard (`U+FEFF`), 3-слойная целостность капсул, DOCX-экспорт; с PR #37 движок обобщён до поверхностей (EditableSurface) и обслуживает и rich-поля нарушений (§15 там же).
 
 ### 4.1 Зоны и страницы
 
@@ -1411,7 +1411,7 @@ class ActCrudRepository(BaseRepository):
 
 - SQL-схемы лежат в `app/domains/<name>/migrations/postgresql/schema.sql` и `.../greenplum/schema.sql`.
 - Таблицы создаются на старте через `create_tables_if_not_exist(domains)`. Всё через `CREATE TABLE IF NOT EXISTS` — повторный запуск безопасен.
-- ALTER-миграций (Alembic и т.п.) НЕТ. Новая колонка появится сама на свежей БД; на существующей админ делает `ALTER TABLE` руками. `DEFAULT … NOT NULL` в DDL заполнит старые строки. Рассинхрон «таблица есть, но без новой колонки» ловится startup-предупреждением — см. §6.5.4.
+- ALTER-миграций (Alembic и т.п.) НЕТ. Схема меняется правкой `schema.sql`; на пересозданной БД (`docs/migrations/drop-all-tables.md`) колонка появляется автоматически. Рассинхрон «таблица есть, но без новой колонки» ловится startup-предупреждением — см. §6.5.4.
 - Плейсхолдеры в SQL: `{SCHEMA}.` (префикс схемы), `{PREFIX}` (`DATABASE__TABLE_PREFIX`), `{REF_*}` (ссылки на внешние таблицы из `migration_substitutions`). Bare-имена без `{PREFIX}` — баг: имена разойдутся PG/GP.
 - UUID-id хранятся как `VARCHAR(36)`, не как PG-тип `UUID`. Python шлёт `str(uuid.uuid4())` строкой; одно правило для PG и GP.
 - В Greenplum 6.x (= PG 9.4) НЕЛЬЗЯ: `CREATE INDEX/SEQUENCE IF NOT EXISTS`, `ON CONFLICT DO UPDATE`, `ADD COLUMN IF NOT EXISTS`, `jsonb_set/jsonb_pretty`, `gen_random_uuid()`, `EXECUTE FUNCTION` в триггерах, `BIGSERIAL` вместе с `DISTRIBUTED BY`. GP-адаптер исполняет SQL по одному statement и глотает `DuplicateTableError`/`DuplicateObjectError`. Регрессии — `tests/test_gp_compatibility.py`.
@@ -1535,7 +1535,7 @@ pytest tests/test_check_constraints_complete.py -v
 
 Пример: добавить колонку `priority INT DEFAULT 0 NOT NULL` в таблицу `acts`. Доменную семантику полей таблицы `acts` (КМ-номер, СЗ, lock, audit_id) см. в §10.1 и §10.4.
 
-> **Напоминание**: в приложении нет ALTER-миграций (см. §6.5). На свежей БД новая колонка появится автоматически из обновлённой `schema.sql`. Для существующих БД админ выполняет `ALTER TABLE … ADD COLUMN priority INT DEFAULT 0 NOT NULL;` руками — `DEFAULT 0 NOT NULL` гарантирует backfill существующих строк.
+> **Напоминание**: в приложении нет ALTER-миграций (см. §6.5). Новая колонка появляется автоматически из обновлённой `schema.sql` при пересоздании БД (`docs/migrations/drop-all-tables.md`).
 
 **Шаг 1. Обновить PG-схему** — `app/domains/acts/migrations/postgresql/schema.sql`, в блок `CREATE TABLE … acts`:
 
@@ -3243,16 +3243,23 @@ def test_chat_settings_defaults():
 | `ACTS__AUDIT_LOG__MAX_CONTENT_VERSIONS` | int | `50` | Макс. версий содержимого |
 | `ACTS__AUDIT_LOG__MAX_DIFF_ELEMENTS` | int | `20` | Макс. элементов в diff |
 | `ACTS__AUDIT_LOG__MAX_DIFF_CELLS_PER_TABLE` | int | `50` | Макс. ячеек diff на таблицу |
-| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `10485760` | Макс. размер картинки нарушения (байт) |
-| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `31457280` | Суммарный размер картинок на акт (байт) |
+| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `4194304` | Макс. размер картинки нарушения (сырые байты; согласован с лимитом HTTP-запроса по base64) |
+| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `5242880` | Суммарный размер картинок на акт (сырые байты) |
 | `ACTS__IMAGES__ALLOWED_MIME_TYPES` | list | `jpeg/png/gif` | Whitelist MIME картинок (без SVG; без webp — python-docx не встраивает его в DOCX) |
 | `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` | int | `50` | Макс. элементов additionalContent на нарушение |
 | `ACTS__IMAGES__IMAGE_MAX_HEIGHT_PERCENT` | int | `40` | Макс. высота картинки нарушения (% листа A4) — превью и DOCX |
 | `ACTS__TABLES__MAX_ROWS` | int | `64` | Макс. строк таблицы |
 | `ACTS__TABLES__MAX_COLS` | int | `16` | Макс. колонок таблицы |
 | `ACTS__TABLES__MIN_COL_WIDTH_PX` | int | `80` | Мин. ширина колонки (px) |
+| `ACTS__TABLES__PER_NODE` | int | `10` | Макс. таблиц-детей одного узла (серверный гейт, включая закреплённые metrics/risk) |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока |
 | `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `16` | Базовый экранный размер текстблока (px; 16px → 12pt в DOCX) |
+| `ACTS__TEXTBLOCKS__PER_NODE` | int | `10` | Макс. текстблоков-детей одного узла (серверный гейт) |
+| `ACTS__VIOLATIONS__PER_NODE` | int | `10` | Макс. нарушений-детей одного узла (серверный гейт) |
+| `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (22 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
+| `ACTS__SANITIZER__ALLOWED_CSS_PROPERTIES` | list | `font-size/…/text-align` (8 свойств) | Allowlist CSS-свойств inline-`style` |
+| `ACTS__SANITIZER__ALLOWED_DATA_ATTRS` | list | `data-footnote-*`, `data-link-*` | Data-атрибуты капсул ссылок/сносок |
 
 Лимиты картинок и жёсткие границы таблиц/текстблоков фронт получает через `GET /api/v1/acts/limits` (образец — chat `GET /limits`). Эти настройки — **единый источник истины** end-to-end: и UI-гейты, и `/limits`, и Pydantic-валидаторы схемы (`grid`/`colWidths`/`colSpan`/`rowSpan`/`fontSize`, число элементов нарушения, whitelist MIME картинок) читают их в рантайме. Статические константы в `schemas/act_content.py` (`VIOLATION_CONTENT_ITEMS_MAX`, `IMAGE_DATA_URL_PATTERN`, и т.п.) остаются только как фолбэк на импорт-тайм/тесты; whitelist-регекс MIME выводится из `ACTS__IMAGES__ALLOWED_MIME_TYPES` (с сохранённым алиасом `jpe?g` для `image/jpg`).
 
@@ -3525,7 +3532,7 @@ LIMIT 20;
 
 Две независимые системы:
 
-**1. Снэпшоты контента — `{PREFIX}act_content_versions`** (`migrations/postgresql/schema.sql:354`). Каждое `manual`/`periodic`-сохранение содержимого создаёт запись со снимком `tree_data`/`tables_data`/`textblocks_data`/`violations_data`/`invoices_data` (все JSONB), `version_number` инкрементируется. Исключение — дедуп: `create_version` считает канонический SHA-256 содержимого (колонка `content_hash`) и при совпадении с хэшем последней версии снимок НЕ создаёт — no-op сохранение неизменённого акта не плодит версию-дубль и не вытесняет реальную из кольца `max_content_versions`. Дедуп покрывает и снимки-предохранители `restore_version` (централизован в репозитории), best-effort без блокировок; волатильные поля фактур (`id`/таймстемпы) в хэш не входят. `invoices_data` — привязка `node_id` → реквизиты фактуры на момент версии, см. [`docs/migrations/2026-07-14-add-invoices-data-to-versions.md`](../migrations/2026-07-14-add-invoices-data-to-versions.md). Используется для просмотра истории редактирования акта и восстановления. Сервис — `app/domains/acts/services/act_content_service.py`, репозиторий — `app/domains/acts/repositories/act_content_version.py`. Индекс `idx_{PREFIX}act_content_versions_act(act_id, version_number DESC)` для быстрой выборки последних N версий.
+**1. Снэпшоты контента — `{PREFIX}act_content_versions`** (`migrations/postgresql/schema.sql:354`). Каждое `manual`/`periodic`-сохранение содержимого создаёт запись со снимком `tree_data`/`tables_data`/`textblocks_data`/`violations_data`/`invoices_data` (все JSONB), `version_number` инкрементируется. Исключение — дедуп: `create_version` считает канонический SHA-256 содержимого (колонка `content_hash`) и при совпадении с хэшем последней версии снимок НЕ создаёт — no-op сохранение неизменённого акта не плодит версию-дубль и не вытесняет реальную из кольца `max_content_versions`. Дедуп покрывает и снимки-предохранители `restore_version` (централизован в репозитории), best-effort без блокировок; волатильные поля фактур (`id`/таймстемпы) в хэш не входят. `invoices_data` — привязка `node_id` → реквизиты фактуры на момент версии. Используется для просмотра истории редактирования акта и восстановления. Сервис — `app/domains/acts/services/act_content_service.py`, репозиторий — `app/domains/acts/repositories/act_content_version.py`. Индекс `idx_{PREFIX}act_content_versions_act(act_id, version_number DESC)` для быстрой выборки последних N версий.
 
 **2. Аудит-лог — `{PREFIX}audit_log`** (`migrations/postgresql/schema.sql:338`). Запись о каждом действии (создание, редактирование, lock, отправка СЗ, экспорт). Сервис — `app/domains/acts/services/audit_log_service.py`. Здесь же лежит diff между версиями (по элементам дерева и ячейкам таблиц).
 
@@ -3647,7 +3654,7 @@ Deep-dive — [`docs/architecture/frontend-architecture.md`](../architecture/fro
 5. Метод создания `addChartToNode()` в `state-content.js` + render-метод и запись в `ItemsRenderer._leafRenderers` (`items-renderer.js`).
 6. Preview-рендерер: `preview-chart-renderer.js` + диспетч в `preview.js`.
 7. Три форматтера экспорта: обход у всех общий — `formatters/tree_walker.py` (`walk(tree, visitor, blocks)` сам диспетчит leaf-типы по `LEAF_BLOCK_REFS`, включая «item с прикреплённой таблицей»), поэтому достаточно по **одному визитор-методу `on_chart` на формат**: `_TextTreeVisitor` (`text_formatter.py`), `_MarkdownTreeVisitor` (`markdown_formatter.py`), `_DocxTreeVisitor` (`docx/formatter.py`, + builder).
-8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py`). Пропуск = молчаливая XSS-дыра.
+8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py`). Санитайзера два: `sanitize_html` (bleach — текстблоки/дерево) и `sanitize_rich_html` (nh3 — rich-поля нарушений, состав по флагу `rich` реестра `violation_fields.py`); для нового блока выбери движок сознательно и задокументируй выбор. Пропуск = молчаливая XSS-дыра.
 9. Фикстура типа в `_BLOCK_PAYLOADS` тест-стража (`test_block_types_guard.py`) — параметризация по `LEAF_BLOCK_TYPES` сама потребует её.
 10. Иконка типа в `AppConfig.tree.icons` и, при необходимости, названия в `typeNames` / `limitNames` (`app-config.js`).
 
@@ -3935,17 +3942,20 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 ### 14.5 Acts: `GET /limits` и `SaveContentResponse`
 
-**`GET /api/v1/acts/limits`** (`app/domains/acts/api/limits.py`) — единый источник лимитов конструктора для фронта. Отдаёт три секции, читаемые из настроек (`ACTS__IMAGES__*`/`ACTS__TABLES__*`/`ACTS__TEXTBLOCKS__*`):
+**`GET /api/v1/acts/limits`** (`app/domains/acts/api/limits.py`) — единый источник лимитов конструктора для фронта. Отдаёт пять секций плюс скаляр, читаемые из настроек (`ACTS__IMAGES__*`/`ACTS__TABLES__*`/`ACTS__TEXTBLOCKS__*`/`ACTS__VIOLATIONS__*`/`ACTS__SANITIZER__*`):
 
 ```json
 {
   "images":     { "max_file_size", "max_total_size_per_act", "allowed_mime_types",
                   "max_items_per_violation", "image_max_height_percent" },
-  "tables":     { "max_rows", "max_cols", "min_col_width_px" },
-  "textblocks": { "font_size_min", "font_size_max" }
+  "tables":     { "max_rows", "max_cols", "min_col_width_px", "per_node" },
+  "textblocks": { "font_size_min", "font_size_max", "font_size_default", "per_node" },
+  "violations": { "per_node" },
+  "sanitizer":  { "allowed_tags", "allowed_css_properties", "allowed_data_attrs" },
+  "editor_telemetry_enabled": true
 }
 ```
 
-Все три секции **реально читаются** фронтом: картинки — в `violation-image-validator.js`, таблицы/текстблоки — через `getStructureLimits()` (раньше `tables`/`textblocks` отдавались «в никуда»). Те же настройки питают Pydantic-валидаторы схемы, так что env-лимит меняется по всей цепочке (см. §9.5).
+Секции **реально читаются** фронтом: картинки — в `violation-image-validator.js`, лимиты `per_node` таблиц/текстблоков/нарушений — рантайм-перекрытие фронт-гейтов дерева, санитайзер — `applyActsAllowlist` в `shared/sanitize.js` (синхронизация DOMPurify с бэком), `editor_telemetry_enabled` — kill-switch телеметрии редактора. Те же настройки питают Pydantic-валидаторы схемы, так что env-лимит меняется по всей цепочке (см. §9.5).
 
 **`SaveContentResponse`** (`PUT /api/v1/acts/{id}/content`) несёт, помимо `status`/`message`/`updated_at`/`warning`, **статус валидации содержимого**: `validation_status` (`"ok"`/`"warning"`/`"error"`) и `validation_issues` (список замечаний). Те же поля выставлены в `ActListItem` (для карточек списка) и `ActResponse`. Семантика и поверхности — §10.5a.

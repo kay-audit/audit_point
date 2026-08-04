@@ -1,10 +1,13 @@
 # Редактор текстблоков — архитектура
 
-> Deep-dive по подсистеме текстблоков конструктора: contenteditable-редактор,
+> Deep-dive по движку rich-редактора конструктора: contenteditable-редактор,
 > капсулы (ссылки/сноски), caret-guard'ы, целостность капсул, DOCX-экспорт.
-> Общий фронт (AppState/StorageManager/зоны) — см.
+> С PR #37 (`rich-editor-integration`) движок обобщён до «поверхностей»
+> (EditableSurface) и обслуживает не только текстблоки, но и текстовые поля
+> нарушений — см. §15. Общий фронт (AppState/StorageManager/зоны) — см.
 > [`docs/architecture/frontend-architecture.md`](frontend-architecture.md).
 > Источник истины — код в `static/js/constructor/textblock/`,
+> `static/js/constructor/violation/violation-field-surface.js`,
 > `app/domains/acts/formatters/docx/builders/inline.py`,
 > `app/domains/acts/utils/html_sanitizer.py`. При расхождении документа и
 > кода — источник истины код.
@@ -25,6 +28,7 @@
 12. [Поиск и замена по текстблокам](#12-поиск-и-замена-по-текстблокам)
 13. [Известные компромиссы и non-goals](#13-известные-компромиссы-и-non-goals)
 14. [Тесты](#14-тесты)
+15. [Поверхности (EditableSurface): движок за пределами текстблоков](#15-поверхности-editablesurface-движок-за-пределами-текстблоков)
 
 ---
 
@@ -42,12 +46,15 @@ gitignored working-artifact; здесь фиксируется только то
 
 | Файл | LOC | Назначение |
 |---|---|---|
-| `textblock-core.js` | 289 | `TextBlockManager`/`textBlockManager`, `saveContent`, `execCommand`, `flushActiveEditor`, standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (§4) |
+| `textblock-core.js` | 303 | `TextBlockManager`/`textBlockManager`, `saveContent`, `execCommand`, `flushActiveEditor`, `finalizeEdit`, standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (§4) |
 | `textblock-formatting.js` | 145 | Наследование inline-стилей на капсулы от соседей/предков (`inheritFormattingToElement`, `applyFormattingToNewNodes`) |
-| `textblock-editor.js` | 1497 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
-| `textblock-toolbar.js` | 620 | Глобальный floating-тулбар, кастомный дропдаун размера шрифта, `applyFontSize`, `normalizeFontSizes` |
-| `textblock-links-footnotes.js` | 754 | Создание/редактирование капсул, tooltip, контекстное меню, нумерация сносок, `validateLinkUrl` |
-| `textblock-capsule-integrity.js` | 654 | `validateAndRepairCapsules`, 3-слойный prevent-then-heal (см. §5), атомарное удаление капсулы-юнита |
+| `textblock-editor.js` | 1683 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
+| `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок по поверхности (§15), кастомный дропдаун размера шрифта, `applyFontSize`, `normalizeFontSizes` |
+| `textblock-links-footnotes.js` | 829 | Создание/редактирование капсул, tooltip, контекстное меню, нумерация сносок, `validateLinkUrl` |
+| `textblock-capsule-integrity.js` | 677 | `validateAndRepairCapsules`, 3-слойный prevent-then-heal (см. §5), атомарное удаление капсулы-юнита |
+| `editable-surface.js` | 25 | Контракт `EditableSurface` + `TextBlockSurface` (§15) |
+| `editor-registry.js` | 29 | `EditorRegistry` (активная поверхность) + `SURFACE_POLICY` (§15); лист графа импортов — без app-импортов |
+| `editor-controller.js` | 234 | `EditorController` — mount/unmount поверхности, гейт capsule-lifecycle по политике, drop-обработка (§15) |
 
 LOC — снимок на момент правки (`wc -l`), не поддерживается автоматически; при
 существенном расхождении сверяйте по факту, не считайте точным на все времена.
@@ -55,13 +62,16 @@ LOC — снимок на момент правки (`wc -l`), не поддер
 Поиск/замена по текстблокам (§12) живёт отдельно, в `static/js/constructor/search/`
 (вне scope этой таблицы — файлы перечислены в начале §12).
 
-Корректор текста (кнопка `✨` тулбара, §6) — тоже отдельно, в
+Корректор и формализатор (кнопка `✨` тулбара, §6) — тоже отдельно, в
 `static/js/constructor/text-actions/` (`corrector-popover.js`, `corrector-diff.js`,
-`text-actions-client.js`; перетаскивание — общий `shared/draggable-panel.js`);
-бэкенд — `app/domains/chat/services/text_actions/`.
+`formalizer-popover.js`, `text-actions-client.js`; перетаскивание — общий
+`shared/draggable-panel.js`); бэкенд — `app/domains/chat/services/text_actions/`.
 
-Все файлы — `Object.assign(TextBlockManager.prototype, {...})`-расширения
-одного класса (кроме `textblock-core.js`, где класс объявлен). Порядок
+Файлы-миксины — `Object.assign(TextBlockManager.prototype, {...})`-расширения
+одного класса (кроме `textblock-core.js`, где класс объявлен). Три файла
+инфраструктуры поверхностей (§15) — НЕ миксины: `editor-registry.js` —
+объект-константы (сознательный лист графа импортов), `editable-surface.js` —
+экспорт классов, `editor-controller.js` — объектный литерал-синглтон. Порядок
 импорта в entry (`static/js/entries/constructor.js`) не критичен для
 методов прототипа, но `textblock-links-footnotes.js` явно импортирует
 `./textblock-editor.js` (см. комментарий в файле) — гарантия, что базовый
@@ -69,7 +79,9 @@ LOC — снимок на момент правки (`wc -l`), не поддер
 
 DOM: `div.textblock-section[data-text-block-id]` → `div.textblock-editor[data-text-block-id][contenteditable]`
 (`RENDER_CLASSES.TEXTBLOCK_SECTION`/`TEXTBLOCK_EDITOR`, `render-classes.js:13-15`).
-CSS — `static/css/constructor/textblock/{textblock-content,textblock-links-footnotes,textblock-toolbar}.css`.
+Хосты rich-полей нарушений — `div.violation-field.violation-textarea` с
+`el.__surface` (§15). CSS —
+`static/css/constructor/textblock/{textblock-content,textblock-links-footnotes,textblock-toolbar}.css`.
 
 ---
 
@@ -91,10 +103,6 @@ DOCX читали его как «базу», в которую никто не 
 при `extra="forbid"` его наличие теперь **отвергается** (шим-валидатор
 `_drop_legacy_formatting` снят — обратная совместимость не нужна, БД
 пересоздаётся с нуля).
-На **уже развёрнутых** БД колонку `formatting` нужно снять вручную
-(`create_tables_if_not_exist` не делает ALTER): `ALTER TABLE ... DROP COLUMN
-IF EXISTS formatting` (PG и GP 6.x = PostgreSQL 9.4 — синтаксис общий,
-`DROP COLUMN` снимает и связанный CHECK автоматически).
 
 **Базовый размер шрифта** — единый дефолт настроек (экранные **16px**),
 он не хранится per-block. Конвертация в DOCX — везде единая **×0.75**
@@ -122,7 +130,7 @@ inline-атом, который редактор не даёт «раздвин�
 
 **Зачем `data-*`, а не `<a href>`**: URL/текст сноски хранятся в
 `data-link-url`/`data-footnote-text`, не в `href`/тексте — так переживают
-и bleach-санитайзер (§9), и произвольные схемы (`tel:`/`ftp:`/`file:`,
+и бэкенд-санитайзер (bleach/nh3, §9), и произвольные схемы (`tel:`/`ftp:`/`file:`,
 которые обычный `<a>`-рендеринг браузера не всегда трактует кликабельно).
 DOCX-экспорт (§10) читает эти атрибуты напрямую, не полагаясь на семантику
 `<a>`.
@@ -176,7 +184,7 @@ Chromium): полное удаление всего текста капсулы 
 `contenteditable="false"`-атому, если рядом нет обычного текста (край
 блока, `<br>`, другая капсула). Решение — невидимые текстовые узлы-guard'ы
 из **одного символа `U+FEFF`** (`TextBlockManager.CAP_GUARD_CHAR`,
-`textblock-editor.js:122`), вставляемые туда, где иначе каретке негде
+`textblock-editor.js:124`), вставляемые туда, где иначе каретке негде
 «приземлиться».
 
 **Предикаты капсул/zero-width — самостоятельные экспорты `textblock-core.js`.**
@@ -199,12 +207,12 @@ Chromium): полное удаление всего текста капсулы 
 сначала `_cleanCapGuards` (снять все старые), потом `_placeCapGuards`
 (расставить заново).
 
-Правило (`_placeCapGuards`, `textblock-editor.js:276`): guard ставится
+Правило (`_placeCapGuards`, `textblock-editor.js:278`): guard ставится
 **только** там, где слева/справа от капсулы нет обычного видимого текста —
 край блока (`null`), `<br>` (перенос строки) или другая капсула. Если
 рядом обычный текст — guard не нужен (каретка встаёт штатно).
 
-`_caretHomeSibling` (:158-162) при поиске соседа **пропускает
+`_caretHomeSibling` (:161) при поиске соседа **пропускает
 zero-width-узлы** — не только сам guard, но и span-«якорь размера»
 (`U+200B` из `applyFontSize`), состоящий только из zero-width-символов.
 Иначе такой span, прилёгший к капсуле, маскировал бы границу строки и
@@ -221,7 +229,7 @@ zero-width-узлы** — не только сам guard, но и span-«яко�
 
 `Home`/`←`/`→` без модификаторов у границы капсулы переставляют каретку
 в guard явно (`_placeCaretBesideMarker`) — та же точка приземления, что
-даёт клик мышью. `Home` использует `_currentLineFirstNode` (:193-211),
+даёт клик мышью. `Home` использует `_currentLineFirstNode` (:196),
 которая уважает **текущую визуальную строку** (между `<br>`), а не первый
 ребёнок всего блока — иначе `Home` на 3-й строке телепортировал бы к
 капсуле 1-й строки.
@@ -292,9 +300,9 @@ DOCX по построению — они существуют только в �
 не перехватываются намеренно, их страхует слой 3.
 
 **Удаление целой капсулы идёт нативной командой, не raw `.remove()`.**
-`_deleteCapsuleWhole` (`textblock-capsule-integrity.js:370-387`) строит
+`_deleteCapsuleWhole` (`textblock-capsule-integrity.js:393`) строит
 Range за капсулу и её caret-guard'ы, затем `_execDeleteRange`
-(`:341-358`) исполняет `document.execCommand('delete')` — удаление
+(`:364`) исполняет `document.execCommand('delete')` — удаление
 остаётся в нативном undo-стеке (Ctrl+Z возвращает капсулу), в отличие от
 прямого `.remove()`/`deleteContents()` мимо undo. `_execDeleteRange`
 взводит **два раздельных** флага-гарда на время команды: `editor.__healing`
@@ -320,14 +328,14 @@ Range строится вручную.
 
 ### Слой 3 — heal: `MutationObserver`
 
-`installCapsuleObserver` (`:401-424`) — навешивается **только** на
+`installCapsuleObserver` (`:424`) — навешивается **только** на
 editable-редактор (не read-only), идемпотентно (переустановка отключает
 старый observer — важно при `replaceChild` в `ItemsRenderer.updateTextBlock`,
 иначе detached-редактор с висящим observer'ом — утечка памяти;
 `createTextBlockElement` явно отключает observer старого DOM-узла с тем
 же id перед пересозданием).
 
-`_onCapsuleMutations` (`:438-514`) — **узкий триггер**: реагирует только на
+`_onCapsuleMutations` (`:461`) — **узкий триггер**: реагирует только на
 реальные нарушения инвариантов, а не на каждую структурную мутацию
 (широкий `normalizeMarkers` на каждый `childList` пересоздавал бы
 guard-узлы и ломал каретку при обычном вводе):
@@ -373,7 +381,7 @@ guard'ов — без этого вертикальная навигация л�
 персистятся: `.node-selected` вычищается `_repairCapsulesInRoot` (как и
 `contenteditable`) на каждой точке записи в `content`.
 
-- **Shift-навигация** (`_handleCapsuleShiftArrow`, `textblock-editor.js:1367-1406`)
+- **Shift-навигация** (`_handleCapsuleShiftArrow`, `textblock-editor.js:1553`)
   — Shift+←/→ без Ctrl/Meta/Alt, когда фокус выделения примыкает к капсуле по
   направлению движения, перепрыгивает фокус на ДАЛЬНЮЮ сторону капсулы целиком
   (за её дальний guard) одним шагом — капсула ведёт себя как единый символ при
@@ -384,7 +392,7 @@ guard'ов — без этого вертикальная навигация л�
   нажатие у краевой капсулы уходило бы вхолостую. Капсулу в `editing-mode`
   (§3) пропускает — обычный редактируемый текст, не атом.
 - **`.node-selected`** (`_updateNodeSelectedState`/`_clearNodeSelected`,
-  `textblock-editor.js:1265-1299`) — визуально подсвечивает капсулу, когда
+  `textblock-editor.js:1451/1474`) — визуально подсвечивает капсулу, когда
   текущее выделение охватывает её РОВНО целиком (`_rangeIsWholeCapsule`, тот
   же предикат, что и в ветке атомарного удаления слоя 1). Обновляется на
   каждый `selectionchange` (`handleSelectionChange`), поэтому снятие прежней
@@ -399,7 +407,17 @@ guard'ов — без этого вертикальная навигация л�
 ## 6. Toolbar и размер шрифта
 
 Floating-тулбар (`initGlobalToolbar`) — не привязан к конкретному
-редактору, следует за фокусом (`setActiveEditor`). Кнопки форматирования
+редактору, следует за активной **поверхностью**: точка входа —
+`attachToolbarTo(surface)` (`textblock-toolbar.js:656`) →
+`_applyToolbarPolicy(surface)` (:637), которая гасит кнопки по
+`SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :18-27:
+`createFootnote→footnotes`, `justify*→align`, `createLink→links`,
+`findReplace`, `improveText`); обратная операция — `detachToolbar()`.
+Для текстблоков политика разрешает всё; в полях нарушений отключена
+кнопка сноски (§15). Известная дырка (задокументирована в коде, :14-16):
+`fontSize` из политики этим механизмом не применяется — триггер размера
+`#fontSizeTrigger` не несёт `data-command`; безвредно, пока обе политики
+`fontSize:true`. Кнопки форматирования
 (`bold`/`italic`/`underline`/`strikeThrough`/`justify*`) идут через
 `document.execCommand` (deprecated Web API, но по-прежнему поддержан
 всеми целевыми браузерами — см. §13 про non-goals).
@@ -431,13 +449,21 @@ Floating-тулбар (`initGlobalToolbar`) — не привязан к кон�
 схлопнул бы многострочное выделение в одну строку до отправки в LLM. Бэкенд — `POST /api/v1/chat/text-actions/correct` (домен chat, дословный промпт
 `AUDITOR_SYSTEM_PROMPT`, синхронный one-shot без шины/поллинга).
 
+С PR #37 корректор работает и в rich-полях нарушений: «Принять» коммитит в
+**поверхность-владельца**, захваченную при открытии
+(`_resolveOwnerSurface`, `corrector-popover.js:403` — с гардом
+`active.element === editor`), а не в активную на момент клика; для
+текстблока путь прежний (`finalizeEdit(editor)`), для поля нарушения —
+`surface.persist()` с повторным гардом от ре-рендера. Без владельца —
+`false`, ложный тост об успехе не показывается. E2E — спека 26.
+
 **Размер шрифта — кастомный дропдаун, не `<select>`**: нативный `<select>`
 крадёт фокус у `contenteditable` и схлопывает выделение при открытии, из-за
 чего `applyFontSize` не мог работать по живому Range. Триггер и пункты
 меню гасят `mousedown`/`pointerdown` (`preventDefault`) — редактор не
 теряет фокус/выделение при клике по тулбару.
 
-**`applyFontSize(fontSize)`** (`textblock-toolbar.js:214-300`):
+**`applyFontSize(fontSize)`** (`textblock-toolbar.js:284`):
 
 1. Клампится по границам из `ACTS__TEXTBLOCKS__FONT_SIZE_MIN/MAX`
    (`getStructureLimits()`, читает `/api/v1/acts/limits`).
@@ -460,7 +486,7 @@ caret-guard `U+FEFF`, который стрипается всегда): он н
 трогает. На DOCX-экспорте он всё равно невидим и не должен попасть в
 `<w:t>` — стрипается отдельно в `inline.py::_add_run` (§10).
 
-**`normalizeFontSizes(textBlocks, palette, limits)`** (`textblock-toolbar.js:575`)
+**`normalizeFontSizes(textBlocks, palette, limits)`** (`textblock-toolbar.js:687`)
 — одноразовый идемпотентный проход при загрузке акта: снапает нестандартные
 px-размеры (legacy-акты) к ближайшему значению палитры
 (`textBlockManager.fontSizes` — 16 значений от 8 до 72). Снап-кандидаты —
@@ -478,7 +504,7 @@ px-размеры (legacy-акты) к ближайшему значению п�
 ## 7. Copy/paste: свой буфер vs внешний HTML
 
 Вставка выбирает режим по трём веткам, в фиксированном порядке
-(`_buildPasteFragment`, `textblock-editor.js:824-833`): **свой буфер** (метка
+(`_buildPasteFragment`, `textblock-editor.js:840-849`): **свой буфер** (метка
 `data-aw-clip`) → **Word** (mso-сигнатуры) → **внешний HTML**. Word
 проверяется ДО внешнего намеренно — иначе его разметка попала бы под
 строгую политику «только ссылки» внешнего пути и формат бы потерялся.
@@ -511,7 +537,7 @@ URL (`validateLinkUrl`), а не-капсульный контент прохо�
 может прийти в несфокусированное поле.
 
 **Вставка из Word (подмножество тулбара).** Детект — `_isWordHtml`
-(`:720-735`), на СЫРОМ HTML буфера, до санитизации (DOMPurify выпилил бы
+(`:859`), на СЫРОМ HTML буфера, до санитизации (DOMPurify выпилил бы
 mso-разметку, и после неё сигнатур не осталось бы): `class="Mso*"`, CSS-
 **декларация** `mso-*:` (строгий регекс на декларацию, не голая подстрока
 «mso-» — иначе безобидный внешний HTML со словом «mso-» ушёл бы на
@@ -523,13 +549,13 @@ Word-путь), мета-генератор Microsoft Word, `xmlns:o=`/office-na
 font-size (инлайн), плюс ссылки → капсулы. Цвет, фон, выравнивание и списки
 отбрасываются сознательно. Allowlist тегов/атрибутов/CSS — не замороженный
 список констант, а ПЕРЕСЕЧЕНИЕ с живым профилем `'acts'`
-(`_wordAllowedTags`/`_wordAllowedAttrs`/`_wordCssAllowlist`, `:891-919`):
+(`_wordAllowedTags`/`_wordAllowedAttrs`/`_wordCssAllowlist`, `:1066`):
 уберёт бэк тег из allowlist'а (`applyActsAllowlist`) — Word-путь уронит его
 тоже, не «замороженный снимок» набора. CSS-allowlist — профиль `'acts'`
 МИНУС `color`/`background-color`/`text-align` (оставляет ровно то, что умеет
 тулбар).
 
-Регекс-пред-очистка ДО парсинга (`_wordPreClean`, `:876-883`) убирает то, что
+Регекс-пред-очистка ДО парсинга (`_wordPreClean`, `:1051`) убирает то, что
 allowlist DOMPurify не чистит начисто: условные комментарии
 `<!--[if]...<![endif]-->`, `<xml>`-острова (office-метаданные), пустые
 `<o:p>`; теги `<w:*>` (content-control'ы `w:sdt`/`w:smartTag`)
@@ -537,20 +563,20 @@ allowlist DOMPurify не чистит начисто: условные комм�
 рана внутри них.
 
 Размер Word пишет в pt (`11.0pt`) — `_normalizeWordFontSizes`/
-`_wordFontSizeToPx` (`:929-959`) приводит к целым px: `pt → round(v×4/3)`,
+`_wordFontSizeToPx` (`:1104`) приводит к целым px: `pt → round(v×4/3)`,
 `px → round(v)`, любая другая единица (em/rem/%/безразмерное) отбрасывается
 вовсе, не оставляем НИ ОДНОЙ не-px величины. Клампинг по
 `[fontSizeMin, fontSizeMax]` из `getStructureLimits()`. Без этой
 нормализации фронтовый CSS-хук единицы не валидирует, а бэк на save срезает
 любой не-px `font-size` (§9/§10) — был бы шов превью↔сохранённое.
 
-`<a href>` → капсулы ссылок (`_reconstructWordLinks`, `:968-983`) со
+`<a href>` → капсулы ссылок (`_reconstructWordLinks`, `:1143`) со
 свежими id, схема прогоняется через `validateLinkUrl` (§8); невалидная/
 пустая ссылка не выкидывается, а разворачивается в свои инлайн-дети —
 окружающий формат не теряется.
 
 Блоки (`<p>/<div>/<li>`) расплющиваются в инлайн-поток + `<br>`-разделители
-(`_flattenWordBlocks`, `:993-1016`), перенося инлайн-детей ЦЕЛИКОМ (в отличие
+(`_flattenWordBlocks`, `:1168`), перенося инлайн-детей ЦЕЛИКОМ (в отличие
 от внешнего пути ниже, который берёт только `textContent`) — структура
 абзацев Word в v1 не переносится (известное ограничение, §12), но вложенное
 форматирование строки сохраняется. Хвостовой `<br>` после последнего абзаца
@@ -666,18 +692,38 @@ API в обход UI). Показ пользователю (сам редакт�
 `shared/sanitize.js` — allowlist-профиль `'acts'`, зеркало бэкового
 `html_sanitizer.py`: те же теги/data-атрибуты + доп. allowlist CSS-свойств
 для inline `style` (`ACTS_CSS_PROPERTIES`). Используется при рендере
-`content` в редактор/превью — обходит любой vector stored-XSS на клиенте
+`content` в редактор/превью (`renderActContent`) — и текстблоков, и
+rich-полей нарушений (§15) — обходит любой vector stored-XSS на клиенте
 (контент из БД мог быть сохранён до появления бэк-санитайзера). Детали —
 `frontend-architecture.md` §11.1.
 
-### 9.3 bleach-санитайзер (бэкенд)
+### 9.3 Бэкенд-санитайзеры: bleach (текстблоки) + nh3 (rich-поля нарушений)
 
-`app/domains/acts/utils/html_sanitizer.py::sanitize_html` — defense in
-depth: HTML-поля акта (включая `textBlocks[*].content`) чистятся через
-`bleach.clean` **на каждую запись** (`ActContentService`/`sanitize_act_data`),
-даже если фронтовый `SafeHTML` обойдут напрямую через API. Allowlist —
-не статические константы, а `ACTS__SANITIZER__*` из `settings_registry`
-(рантайм, единый источник с фронтом): теги
+С PR #37 бэкенд-санитизация — **гибрид двух движков** с общим allowlist'ом
+(`app/domains/acts/utils/html_sanitizer.py`, докстринг модуля):
+
+| Функция | Движок | Что чистит |
+|---|---|---|
+| `sanitize_html` (:236) | bleach `Cleaner` | `textBlocks[*].content`, узлы дерева |
+| `sanitize_rich_html` (:300) | `nh3.clean` (Rust/ammonia) | rich-поля нарушений (состав — из реестра `violation_fields.py`, флаг `rich`) |
+
+Текстблоки сознательно оставлены на bleach (докстринг
+`sanitize_rich_html`): у них своя история регрессий (TB-1/TB-6/B-5),
+рисковать их покрытием ради унификации движка не стали. Специфика
+nh3-вызова: `link_rel=None` (иначе nh3 сам дописывает
+`rel="noopener noreferrer"` — расхождение с bleach/DOMPurify),
+`strip_comments=True`. Пост-фильтры per-tag политики (см. ниже)
+продублированы под оба движка: у bleach — токен-фильтры
+`_BlockStyleFilter`/`_FontSizeClampFilter`, у nh3 — `_rich_attribute_filter`
+(:279); регулярки/хелперы общие. Ячейки таблиц и `filename`/`url`
+элементов доп.контента **не** санитизируются (verbatim) — см. §15 про
+границу Фазы 2.
+
+Оба движка — defense in depth: чистка **на каждую запись**
+(`ActContentService`/`sanitize_act_data`), даже если фронтовый `SafeHTML`
+обойдут напрямую через API. Allowlist — не статические константы, а
+`ACTS__SANITIZER__*` из `settings_registry` (рантайм, единый источник с
+фронтом): теги
 (`p/br/b/strong/i/em/u/s/strike/del/span/a/ul/ol/li/h1-h6/div`), CSS-
 свойства для `style` (`font-size/color/background-color/font-weight/
 font-style/text-decoration/text-decoration-line/text-align`), data-
@@ -815,11 +861,19 @@ NBSP-пробелом, а не с самим фактом растяжения �
 - **Blur коммитит немедленно** (`handleEditorBlur`) — не ждёт 500мс
   debounce, гасит висящий `saveTimeout` (та же работа не повторяется) и
   сразу патчит превью точечно (`PreviewManager.updateBlock`).
-- **`flushActiveEditor()`** (`textblock-core.js:70-83`) — persistence-
+- **`flushActiveEditor()`** (`textblock-core.js:107`) — persistence-
   воронки (`StorageManager` перед `exportData()`) вызывают его, чтобы
   прочитать `innerHTML` активного редактора с непогашенным `saveTimeout`
   до сериализации всего акта (иначе автосейв/экспорт/switch акта могли бы
   прочитать состояние без последних введённых символов).
+- **`EditorRegistry.flushActive()`** — вторая ветка той же воронки
+  (`StorageManager._flushPendingEdits`, `storage-manager.js:796-820`):
+  коммитит активную **поверхность** любого kind (`_active?.commit?.()`) —
+  `flushActiveEditor` выше ловит только `.textblock-editor` и поля
+  нарушений не покрывает; для текстблока вызов идемпотентен. Третья
+  ветка — `cellsOps.commitPendingEdit()` (редактируемая ячейка таблицы,
+  легаси-путь мимо реестра до Фазы 2). Все три — в try/catch, флаш не
+  валит сохранение. См. §15.
 - **`finalizeEdit(editor, {renumber?})`** (`textblock-core.js`) — **единый
   сток завершения правки**: в фиксированном порядке пересчитывает
   производные состояния, чтобы ни один путь правки (Enter у капсулы, paste,
@@ -830,7 +884,11 @@ NBSP-пробелом, а не с самим фактом растяжения �
   `renumberAllFootnotes` глобально, если число сносок изменилось с прошлого
   стока (кэш `editor.__lastFootnoteCount` ловит нативное удаление/paste
   поверх сноски) или `opts.renumber`; (в) класс пустоты; (в.1) снятие
-  осиротевших `U+200B`-якорей размера; затем `saveContent`. Нормализация
+  осиротевших `U+200B`-якорей размера; (г) `saveContent`; (д) **мост
+  персистентности к поверхности** (`textblock-core.js:206`): если editor —
+  не текстблок (нет валидного `textBlockId`) и именно он смонтирован как
+  активная поверхность реестра — `active.commit()`; для текстблока шаг
+  аддитивно не срабатывает (запись уже сделал шаг (г)). Нормализация
   двигает caret-guard'ы — вызывающие, которые сами ставят каретку, обязаны
   звать `finalizeEdit` **до** установки каретки.
 - **`saveContent`** — единая точка записи: `_stripGuards` →
@@ -871,10 +929,7 @@ NBSP-пробелом, а не с самим фактом растяжения �
 обеих `schema.sql`) обязаны совпадать построчно — рассинхрон делает
 `track()` тихим no-op на фронте (`KNOWN_EVENTS.has` гейтит ДО отправки, ни
 сетевого запроса, ни ошибки), а не 422/500: новое событие просто никогда
-не попадёт в БД, молча. `create_tables_if_not_exist` не делает `ALTER`
-существующего CHECK — на уже развёрнутых БД новое значение типа события
-требует ручного `DROP CONSTRAINT`/`ADD CONSTRAINT`, тем же способом, что
-и колонка `formatting` (§2). Точки вызова — опциональные
+не попадёт в БД, молча. Точки вызова — опциональные
 однострочники `window.EditorTelemetry?.track?.('...')`: отсутствие модуля
 (portal, тесты) ничего не ломает, ошибки сети проглатываются (телеметрия
 не должна ронять редактор).
@@ -897,8 +952,8 @@ NBSP-пробелом, а не с самим фактом растяжения �
 ## 12. Поиск и замена по текстблокам
 
 Отдельная подсистема вне `static/js/constructor/textblock/` — живёт в
-`static/js/constructor/search/` (`find-bar.js` 555 LOC, `act-search-engine.js`
-502, `act-search-highlight.js` 104, `act-search-replace.js` 138). Единственный
+`static/js/constructor/search/` (`find-bar.js` 787 LOC, `act-search-engine.js`
+812, `act-search-highlight.js` 104, `act-search-replace.js` 190). Единственный
 внешний потребитель капсульного инварианта этого документа: движок опирается
 на «капсула — атом» (§3) и на `finalizeEdit` (§11) как единственный
 санкционированный сток персистентности. Импортирует `isCapsuleNode`/
@@ -909,20 +964,31 @@ NBSP-пробелом, а не с самим фактом растяжения �
 ### 12.1 `SearchTarget`: абстракция искомой поверхности
 
 Duck-typed контракт `{ id, collectRuns(), persist() }` (`act-search-engine.js`,
-шапка файла) — задел под будущие цели (ячейки таблиц), не трогая движок. Две
-реализации: `TextBlockSearchTarget` (обёртка над `.textblock-editor`, видимый
-текст блока) и `FootnoteBodySearchTarget` (обёртка над ОДНИМ `span.text-footnote`,
-тело сноски — см. §12.8). Обе несут `blockId` (владеющий текстблок,
-для `TextBlockSearchTarget` совпадает с `id`, для `FootnoteBodySearchTarget` —
-отдельное поле, `id` у неё составной `<blockId>:footnote:<footnoteId>`) —
-нужен `find-bar.js` для custom-undo снимка `content` (§12.7) по РЕАЛЬНОМУ
-блоку, а не по искусственному id цели. `TextBlockSearchTarget.collectRuns()`
-делегирует в кэш движка (12.3); `persist()` обеих реализаций = ЕДИНСТВЕННЫЙ
-вызов `textBlockManager.finalizeEdit(editor)` соответствующего блока — сам
+шапка файла) — заложенный seam доказал расширяемость: реализации **три**.
+`TextBlockSearchTarget` (обёртка над `.textblock-editor`, видимый текст
+блока), `FootnoteBodySearchTarget` (обёртка над ОДНИМ `span.text-footnote`,
+тело сноски — см. §12.8) и `ViolationFieldSearchTarget`
+(`act-search-engine.js:189` — rich-поле нарушения через `el.__surface`, §15:
+`collectRuns` через тот же кэш, `persist()` = `surface.commit()` + синк
+empty-класса; дополнительно несёт `getContent`/`setContent` — для снимков
+undo, у текстблока их роль играет `AppState.textBlocks`). Все несут
+`blockId` (для `TextBlockSearchTarget` совпадает с `id`, для
+`FootnoteBodySearchTarget` — отдельное поле, `id` у неё составной
+`<blockId>:footnote:<footnoteId>`, для violation-цели — `surface.id`
+вида `viol:<id>:<path>`) — нужен `find-bar.js` для custom-undo (§12.7)
+по РЕАЛЬНОМУ владельцу, а не по искусственному id цели.
+`TextBlockSearchTarget.collectRuns()` делегирует в кэш движка (12.3);
+`persist()` целей текстблока/сноски = ЕДИНСТВЕННЫЙ вызов
+`textBlockManager.finalizeEdit(editor)` соответствующего блока — сам
 движок `finalizeEdit` никогда не зовёт, это ответственность вызывающего
-(`find-bar.js`). `buildTargets()` перечисляет цели в порядке документа: на
-каждый текстблок — его `TextBlockSearchTarget`, сразу следом — по одной
-`FootnoteBodySearchTarget` на КАЖДУЮ его сноску (блок может нести несколько).
+(`find-bar.js`). `buildTargets()` (`:313`) перечисляет цели в **порядке
+документа** одним проходом
+`querySelectorAll('.textblock-editor[data-text-block-id], .violation-field')`:
+на каждый текстблок — его `TextBlockSearchTarget`, сразу следом — по одной
+`FootnoteBodySearchTarget` на КАЖДУЮ его сноску (блок может нести несколько);
+на каждое rich-поле нарушения — `ViolationFieldSearchTarget` (сносочных
+под-целей у полей нарушения нет — `footnotes:false`). Ячейки таблиц целями
+по-прежнему не являются (Фаза 2).
 
 ### 12.2 Сбор «пробегов» (`collectRuns`) — капсула как непрозрачный атом
 
@@ -1004,6 +1070,11 @@ text-only-обходчик не видит.
 5000` — жёсткий потолок (защита от зависания на «e» в огромном акте), с
 флагом `capped` в результате.
 
+Перенос пометок `capsuleText`/`footnoteBody` с пробега на матч — единая
+точка `_carryRunMeta` (`act-search-engine.js:556`), общая для
+`findInRuns`/`findInTarget`/`buildAllMatches`; новую пометку добавлять там,
+а не в трёх местах вызова.
+
 ### 12.5 Подсветка: CSS Custom Highlight API
 
 `ActSearchHighlight` — **без DOM-обёрток** вокруг текста (никаких `<mark>`,
@@ -1076,14 +1147,34 @@ API. ОТДЕЛЬНО: замена, которая ОПУСТОШИЛА бы в
 (`group[i]` по убыванию `i`) — более ранние Range остаются валидны, т.к.
 правка позже по тексту не сдвигает предшествующие смещения → один глобальный
 проход перенумерации сносок ПОСЛЕ всего пакета → снимок content ПОСЛЕ
-пакета. Программная замена не попадает в нативный `Ctrl+Z` — одношаговый
+пакета. Порядок важен: цели/группы для РЕАЛЬНОЙ мутации
+(`groups`/`targets`/`blockIdsTouched`) резолвятся **ПОСЛЕ** подтверждения
+диалога, на свежем DOM (`find-bar.js:624-635`) — диалог асинхронен, и за
+время его показа акт мог измениться (блок со сноской — удалиться); ДО
+диалога считается только число блоков для текста сообщения
+(`blocksForMessage`). Одиночная замена, пропущенная как опустошающая,
+пересобирает совпадения с `keepIdx: true` (`find-bar.js:587`) — курсор
+навигации не сбрасывается на первое совпадение (пропуск — рутинный случай,
+а не сбой). Программная замена не попадает в нативный `Ctrl+Z` — одношаговый
 custom-undo («Отменить замену») хранит пары `{before, after}` по блоку;
 `_undoReplaceAll` — **divergence-guard**: блок откатывается к `before`
 ТОЛЬКО если его текущий `content` всё ещё равен снимку `after` (не менялся с
 момента замены пользователем); изменившиеся/удалённые блоки пропускаются со
 счётчиком «пропущено» — иначе откат затёр бы более поздние правки. Открытие
 панели или обычная одиночная замена инвалидируют старый снимок (`_clearUndo`)
-— «Отменить» относится только к последнему пакету.
+— «Отменить» относится только к последнему пакету. `_undoReplaceAll`
+завершается тем же глобальным проходом `renumberAllFootnotes()`, что и сама
+«Заменить всё» (`find-bar.js:760-762`): откат может менять число действующих
+сносок (например, возвращает опустошённую и потому развёрнутую), а нумерация
+сквозная по акту — без повторного прохода номера в НЕтронутых откатом блоках
+остались бы от версии «после замены».
+
+Для rich-полей нарушений — **параллельный второй снимок**
+(`_lastUndoSurfaces`, `find-bar.js:99`): `snapshotSurfaceContents`/
+`restoreSurfaceSnapshot` (`act-search-replace.js:140-177`) снимают
+**модельные** строки через `getContent()`/`setContent()` поверхности; откат
+идёт по заново отрезолвленным целям с тем же divergence-guard'ом
+(`getContent() !== snap.after` → пропуск).
 
 ### 12.8 Тело сноски: невидимая в DOM поверхность поиска
 
@@ -1117,10 +1208,19 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
   обычного `showTooltip`) — открывается/закрывается явно панелью при
   навигации между совпадениями и при закрытии панели (`_clearFootnoteTooltip`).
   Обе функции делят приватную геометрию позиционирования
-  (`_positionAndShowTooltip`).
+  (`_positionAndShowTooltip`). Форс-tooltip и hover-tooltip делят одно поле
+  `currentTooltip` — форс помечается `tooltip._isSearchTooltip = true`
+  (`textblock-links-footnotes.js:486`), и `hideFootnoteSearchTooltip`
+  закрывает только СВОЙ tooltip (`:584`); без пометки владельца поиск и
+  hover тихо вытесняли бы tooltip'ы друг друга.
 - **Замена** — `_spliceFootnoteBodyText(footnoteEl, start, end, replacement)`
   сплайсит подстроку строки-атрибута (`before.slice(0,start) + replacement +
-  before.slice(end)`) и `setAttribute` обратно, БЕЗ Range API. «Заменить всё»
+  before.slice(end)`) и `setAttribute` обратно, БЕЗ Range API. `start`/`end`
+  при этом КЛАМПЯТСЯ в границы ТЕКУЩЕГО значения атрибута
+  (`find-bar.js:515-516`): тело сноски могло быть отредактировано другим
+  путём (двойной клик по маркеру) между поиском и заменой, и протухшие
+  смещения иначе вырезали бы не тот кусок текста (`slice` не бросает на
+  выходе за границы — молча подрезает индексы). «Заменить всё»
   внутри одной footnote-цели идёт тем же back-to-front порядком (`group[i]`
   по убыванию), что и DOM-группы — группа однородна по построению (targetId
   различает типы целей, никогда не смешивает footnoteBody и DOM-Range матчи
@@ -1159,6 +1259,17 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
 - **Внешний paste теряет структуру источника кроме ссылок** (§7) —
   сознательный выбор простоты. Свой буфер (`data-aw-clip`) — исключение:
   капсулы round-trip'ятся полностью.
+- **Сноски в rich-полях нарушений — non-goal** (§15): сквозная нумерация
+  держится на обходе дерева текстблоков и инварианте «порядок treeData ==
+  DOM == экспорт»; поля нарушений в обход не входят. Запрет —
+  `SURFACE_POLICY.violationField.footnotes:false`, enforcement в 4 точках
+  (тулбар, Ctrl+Shift+F, paste, drop). Ссылки-капсулы — разрешены.
+- **Ячейки таблиц НЕ на движке** (Фаза 2, сознательно отложена): ячейка —
+  временный `<textarea>` по dblclick, plain-строка, verbatim на бэке
+  (тест-страж `TestSaveContentTableCellsStoredVerbatim`), не цель
+  поиска/замены. Задел: `SURFACE_POLICY` расширяется одной строкой
+  (`// cell — Фаза 2`), `EditorController` монтирует любую поверхность.
+  План и риски — `docs/reports/2026-07-30-rich-editor-consolidated.md`.
 - **Полное удаление текста editing-капсулы разворачивает её в plain-text**
   (§3) — семантика Chromium, не фиксится: правка начисто очищенной капсулы
   бессмысленна, тело сноски/URL при этом теряется намеренно.
@@ -1207,7 +1318,18 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
 `textblock-whole-capsule-selection.test.mjs` (капсула-юнит, §5),
 `textblock-word-paste.test.mjs` (§7), `diff-renderer-textblock-profile.test.mjs`.
 Поиск/замена (§12) — отдельно: `act-search-engine.test.mjs`,
-`act-search-replace.test.mjs`. Стаб DOM — `_browser-stub.mjs`; zero-width
+`act-search-replace.test.mjs`. Поверхности и интеграция с нарушениями
+(§15): `editable-surface.test.mjs`, `editor-registry.test.mjs`,
+`editor-controller.test.mjs`, `editor-surface-wiring.test.mjs`,
+`editor-drop.test.mjs`, `editor-drop-capsule-routing.test.mjs`,
+`toolbar-attach-policy.test.mjs`, `flush-pending-edits.test.mjs`,
+`violation-rich-fields.test.mjs`, `violation-rich-surface.test.mjs`,
+`violation-single-commit.test.mjs`, `violation-field-empty.test.mjs`,
+`corrector-persist-surface.test.mjs`, `formalizer-apply-surface.test.mjs`,
+`formalizer-rich-adapters.test.mjs`, `html-text.test.mjs`,
+`rich-text.test.mjs`. E2E (Playwright) — спеки
+`24-violation-field-drop`/`25-violation-find-replace`/`26-corrector-ownership`
++ дополненная `16-capsule-integrity`. Стаб DOM — `_browser-stub.mjs`; zero-width
 символы — `chr(0xFEFF)`/`chr(0x200B)`, не raw escape в исходнике теста (см.
 правило проекта про invisible-символы только escape'ами в коде, но
 литеральные значения в рантайм-строках тестов допустимы).
@@ -1224,3 +1346,111 @@ NBSP), `test_inline_footnotes.py`, `test_inline_hyperlinks.py`,
 seed — `docs/reports/` (working-artifact, не коммитится); краткий рецепт
 записан в памяти агента (`local-browser-test-harness`), не дублируется
 здесь как не-код-артефакт.
+
+---
+
+## 15. Поверхности (EditableSurface): движок за пределами текстблоков
+
+С PR #37 (`rich-editor-integration`, merge `defc1043`) движок редактора
+обслуживает не только текстблоки: введена абстракция «поверхность
+редактирования», и на неё посажены **все текстовые поля нарушений**.
+История решений, судьба находок код-ревью и roadmap Фаз 2/3 —
+`docs/reports/2026-07-30-rich-editor-consolidated.md` (gitignored
+working-artifact); здесь — устройство.
+
+### 15.1 Контракт и реализации
+
+`EditableSurface` — duck-typed контракт: `id`, `kind`, `rich`, `element`,
+`getContent()` (читает **модель**, не DOM), `setContent(html)` (модель →
+element с ре-рендером; внешняя запись — формализатор, undo поиска),
+`commit()` (element → модель без ре-рендера; обычный ввод, каретка жива),
+`persist()`.
+
+| Класс | Файл | kind | Точка записи в модель |
+|---|---|---|---|
+| `TextBlockSurface` | `textblock/editable-surface.js:12` | `textblock` | `saveContent`/`flushActiveEditor`/`finalizeEdit` |
+| `ViolationFieldSurface` | `violation/violation-field-surface.js:125` | `violationField` | `setViolationField` |
+| `ViolationContentItemSurface` | `violation-field-surface.js:196` | `violationField` | `setContentItemField` |
+| `ViolationListItemSurface` | `violation-field-surface.js:258` | `violationField` | `setViolationListItem` |
+
+Запись в модель нарушения — **только** через мутаторы
+(`requireWrite`-guard + обновление превью); прямое присваивание в
+`violation[field]` обходит guard и запрещено.
+
+### 15.2 `EditorRegistry` + `SURFACE_POLICY`
+
+`textblock/editor-registry.js` — сознательный лист графа импортов (без
+app-импортов). Реестр: `setActive/getActive/clear/flushActive`
+(`flushActive` = `_active?.commit?.()`, ветка persistence-воронки — §11).
+Политика возможностей по kind:
+
+| kind | footnotes | fontSize | align | links | findReplace | improveText | capsuleLifecycle |
+|---|---|---|---|---|---|---|---|
+| `textblock` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `violationField` | **—** | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** |
+
+**`capsuleLifecycle` НЕ значит «есть/нет капсулы»** — это «капсульный
+lifecycle (observer, beforeinput, copy/cut/paste/drop, tooltip) ведёт
+`EditorController`». Текстблоки держат капсулы своим путём
+(`handleEditorFocus`, слушатели навешаны в `createEditor`) и через
+контроллер **не монтируются**: единственный вызов `EditorController.mount`
+во фронте — `violation-field-surface.js:423`. Будущий `kind='cell'`
+(Фаза 2) включит lifecycle одной строкой политики.
+
+`textBlockManager.activeEditor` — **элемент-проекция** активной поверхности
+реестра (мост для легаси-читателей тулбара/форматирования); источник
+истины — surface в `EditorRegistry`. Пишутся в лок-степе
+(`_activateSurfaceForEditor`, `textblock-editor.js:448` /
+`attachToolbarTo`), снимаются с ownership-гардом (`_clearSurfaceIfOwned`).
+
+### 15.3 `EditorController`: lifecycle одной поверхности
+
+`textblock/editor-controller.js` — синглтон, одна активная поверхность,
+DOM-ссылок между сессиями не держит. `mount(surface)`: реестр → тулбар →
+базовые `input`/`blur` → под гейтом
+`_usesCapsuleLifecycle` (`rich && SURFACE_POLICY[kind].capsuleLifecycle`) —
+observer целостности, beforeinput, keydown, copy/cut/paste,
+link/footnote-handlers. `unmount()`: гигиена → **`surface.commit()` до
+снятия слушателей** (иначе висящий ввод теряется) → `detachToolbar()` →
+очистка реестра с ownership-гардом. В `_onInput` capsule-поверхность
+коммитит через единый debounce-сток `handleEditorInput` (ровно один
+commit на паузу набора), не-capsule — write-through.
+
+**Drop** (`handleSurfaceDrop`): слушатель вешается **при создании поля,
+не на mount** — `focus` диспатчится как default-action события `drop`,
+mount-time слушатель опоздал бы на drop в несфокусированное поле (основной
+сценарий: сноска создаётся только в текстблоке). Гейт сносок читается из
+**захваченной** поверхности, не из реестра; drop файлов гасится (сырой
+`<img>` в модель не идёт, событие всплывает к file-upload); own-путь
+реконструкции капсул без метки `data-aw-clip` — §7.
+
+### 15.4 Rich-поля нарушений
+
+Фабрика — `_createRichFieldEditor(surface, {placeholder, isReadOnly})`
+(`violation-field-surface.js:366`): `div.violation-field.violation-textarea`
+с `contentEditable`, наполнение из модели через `renderActContent`
+(профиль 'acts'), `field.__surface = surface` (линчпин поиска/замены,
+ставится до read-only-ветки — RO-поля тоже ищутся), `focus → mount`,
+`drop → handleSurfaceDrop`. Rich стали **все** текстовые поля: `violated`,
+`established`, 4 опциональных (`reasons`/`measures`/`consequences`/
+`responsible`), пункты `descriptionList`, кейсы/свободный текст и подпись
+картинки доп.контента. Plain остались: `filename`, `url` (base64),
+`width`, чекбоксы, метки. Канон состава — реестр
+`app/domains/acts/violation_fields.py` (флаг `rich`) + фронт-зеркало
+`violation-fields.js`; guard-тесты пиннят флаги с обеих сторон.
+
+Teardown при пересоздании DOM — `_teardownActiveRichField(violationId)`;
+при удалении пункта списка зовётся строго **до** `splice` (адресация
+`ViolationListItemSurface` индексная).
+
+Корректор коммитит в поверхность-владельца (§6), формализатор пишет через
+`surface.setContent` (`plainToRichHtml` из `shared/html-text.js`, обратный
+адаптер `_richToPlain` санитизирует до `innerHTML`), поиск/замена видит
+поля как `ViolationFieldSearchTarget` (§12.1) с параллельным
+undo-снимком поверхностей (§12.7).
+
+Бэкенд-парность: санитизация nh3 по реестру (§9.3), HTML-aware проверка
+пустоты (`content_validation.py::_is_html_value_empty`), DOCX через общий
+`render_block_segments`, MD/TXT через `text_conv`-параметры
+`violation_render.py` + узловой MD-конвертер с экранированием
+(`html_utils.py::_MarkdownParser`).
