@@ -114,6 +114,7 @@
     --acts-grid-min-column-width: 17.5rem;
     --acts-grid-max-columns: 5;
     --acts-manager-max-width: 2200px;
+    --act-card-icon-button-size: 2.125rem;
     --acts-empty-icon-opacity: 0.3;
 
     /* Status tag */

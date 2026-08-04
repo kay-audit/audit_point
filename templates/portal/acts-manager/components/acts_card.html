@@ -28,18 +28,22 @@
             <button class="btn btn-primary" data-action="open">
                 Открыть
             </button>
-            <button class="btn btn-secondary" data-action="edit" title="Редактировать метаданные">
-                ✏️
-            </button>
-            <button class="btn btn-secondary" data-action="history" title="История изменений" style="display:none;">
-                📜
-            </button>
-            <button class="btn btn-secondary" data-action="duplicate" title="Дублировать акт">
-                📋
-            </button>
-            <button class="btn btn-secondary btn-danger-text" data-action="delete" title="Удалить акт">
-                🗑️
-            </button>
+            {# Иконки — одной группой: на узкой колонке они переносятся под
+               «Открыть» все вместе, а не по одной, оставляя сироту в углу #}
+            <div class="act-card-actions-icons">
+                <button class="btn btn-secondary" data-action="edit" title="Редактировать метаданные">
+                    ✏️
+                </button>
+                <button class="btn btn-secondary" data-action="history" title="История изменений" style="display:none;">
+                    📜
+                </button>
+                <button class="btn btn-secondary" data-action="duplicate" title="Дублировать акт">
+                    📋
+                </button>
+                <button class="btn btn-secondary btn-danger-text" data-action="delete" title="Удалить акт">
+                    🗑️
+                </button>
+            </div>
         </div>
     </div>
 </template>
