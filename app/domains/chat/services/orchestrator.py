@@ -601,23 +601,15 @@ class Orchestrator:
                 )
                 return
             # Fallback: батчер не инициализирован (тесты, dev без lifespan).
-            agen = get_tool_metrics_repository()
-            repo = await agen.__anext__()
-            try:
-                await repo.record(
-                    tool_name=tool_name,
-                    status=status,
-                    latency_ms=latency_ms,
-                    username=self._current_user_id,
-                    conversation_id=self._current_conversation_id,
-                    error_message=error_message,
-                )
-            finally:
-                # Закрываем async-generator, освобождая соединение в пул.
-                try:
-                    await agen.aclose()
-                except Exception:
-                    pass
+            repo = get_tool_metrics_repository()
+            await repo.record(
+                tool_name=tool_name,
+                status=status,
+                latency_ms=latency_ms,
+                username=self._current_user_id,
+                conversation_id=self._current_conversation_id,
+                error_message=error_message,
+            )
         except Exception:
             logger.warning(
                 "Не удалось записать tool-метрику",

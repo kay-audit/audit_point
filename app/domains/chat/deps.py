@@ -1,15 +1,15 @@
 """
 DI-зависимости домена чата.
 
-Предоставляет фабрики сервисов для использования в FastAPI Depends,
-оборачивая get_db() (asynccontextmanager) в async generator.
+Предоставляет фабрики сервисов для использования в FastAPI Depends.
+Сервисы строятся на исполнителе БД (``get_executor()``): соединение берётся
+из пула на время одного SQL-вызова или одной явной транзакции, а не на весь
+HTTP-запрос.
 """
-
-from collections.abc import AsyncGenerator
 
 from app.core.metrics_batcher import MetricsBatcher
 from app.core.settings_registry import get as get_domain_settings
-from app.db.connection import get_db
+from app.db.executor import get_executor
 from app.domains.chat.repositories.chat_audit_log_repository import (
     ChatAuditLogRecord,
     ChatAuditLogRepository,
@@ -128,102 +128,75 @@ def get_rate_limiter() -> UserRateLimiter:
     return _rate_limiter
 
 
-async def get_conversation_service() -> AsyncGenerator[ConversationService, None]:
-    """Создаёт ConversationService с подключением из пула.
-
-    audit_service подключается на том же соединении: запись audit-лога
-    идёт в той же сессии БД, что и основная операция сервиса.
-    """
-    async with get_db() as conn:
-        audit = ChatAuditService(
-            repo=ChatAuditLogRepository(conn),
-            batcher=_audit_log_batcher,
-        )
-        yield ConversationService(
-            conv_repo=ConversationRepository(conn),
-            settings=get_chat_settings(),
-            audit_service=audit,
-        )
+def _make_audit_service() -> ChatAuditService:
+    """ChatAuditService на исполнителе; батчер — актуальный из lifespan."""
+    return ChatAuditService(
+        repo=ChatAuditLogRepository(get_executor()),
+        batcher=_audit_log_batcher,
+    )
 
 
-async def get_message_service() -> AsyncGenerator[MessageService, None]:
-    """Создаёт MessageService с подключением из пула."""
-    async with get_db() as conn:
-        audit = ChatAuditService(
-            repo=ChatAuditLogRepository(conn),
-            batcher=_audit_log_batcher,
-        )
-        yield MessageService(
-            msg_repo=MessageRepository(conn),
-            conv_repo=ConversationRepository(conn),
-            settings=get_chat_settings(),
-            audit_service=audit,
-        )
+def get_conversation_service() -> ConversationService:
+    """Создаёт ConversationService на исполнителе БД (соединение на операцию)."""
+    return ConversationService(
+        conv_repo=ConversationRepository(get_executor()),
+        settings=get_chat_settings(),
+        audit_service=_make_audit_service(),
+    )
 
 
-async def get_file_service() -> AsyncGenerator[FileService, None]:
-    """Создаёт FileService с подключением из пула."""
-    async with get_db() as conn:
-        audit = ChatAuditService(
-            repo=ChatAuditLogRepository(conn),
-            batcher=_audit_log_batcher,
-        )
-        yield FileService(
-            file_repo=FileRepository(conn),
-            conv_repo=ConversationRepository(conn),
-            settings=get_chat_settings(),
-            audit_service=audit,
-        )
+def get_message_service() -> MessageService:
+    """Создаёт MessageService на исполнителе БД."""
+    ex = get_executor()
+    return MessageService(
+        msg_repo=MessageRepository(ex),
+        conv_repo=ConversationRepository(ex),
+        settings=get_chat_settings(),
+        audit_service=_make_audit_service(),
+    )
 
 
-async def get_feedback_service() -> AsyncGenerator[ChatFeedbackService, None]:
-    """Создаёт ChatFeedbackService с подключением из пула.
-
-    audit_service подключается на том же соединении (best-effort запись
-    события feedback_submitted/feedback_cleared в chat_audit_log).
-    """
-    async with get_db() as conn:
-        audit = ChatAuditService(
-            repo=ChatAuditLogRepository(conn),
-            batcher=_audit_log_batcher,
-        )
-        yield ChatFeedbackService(
-            repo=ChatMessageFeedbackRepository(conn),
-            audit_service=audit,
-        )
+def get_file_service() -> FileService:
+    """Создаёт FileService на исполнителе БД."""
+    ex = get_executor()
+    return FileService(
+        file_repo=FileRepository(ex),
+        conv_repo=ConversationRepository(ex),
+        settings=get_chat_settings(),
+        audit_service=_make_audit_service(),
+    )
 
 
-async def get_analytics_service() -> AsyncGenerator[ChatAnalyticsService, None]:
-    """Создаёт ChatAnalyticsService (admin-аналитика чата) с подключением из пула."""
-    async with get_db() as conn:
-        yield ChatAnalyticsService(
-            feedback_repo=ChatMessageFeedbackRepository(conn),
-            msg_repo=MessageRepository(conn),
-        )
+def get_feedback_service() -> ChatFeedbackService:
+    """Создаёт ChatFeedbackService на исполнителе БД."""
+    return ChatFeedbackService(
+        repo=ChatMessageFeedbackRepository(get_executor()),
+        audit_service=_make_audit_service(),
+    )
 
 
-async def get_agent_channel_service() -> AsyncGenerator[AgentChannelService, None]:
-    """Создаёт AgentChannelService с подключением из пула."""
-    async with get_db() as conn:
-        yield AgentChannelService(conn, get_chat_settings())
+def get_analytics_service() -> ChatAnalyticsService:
+    """Создаёт ChatAnalyticsService (admin-аналитика чата) на исполнителе БД."""
+    ex = get_executor()
+    return ChatAnalyticsService(
+        feedback_repo=ChatMessageFeedbackRepository(ex),
+        msg_repo=MessageRepository(ex),
+    )
 
 
-async def get_tool_metrics_repository() -> AsyncGenerator[
-    ChatToolMetricsRepository, None,
-]:
-    """Создаёт ChatToolMetricsRepository с подключением из пула.
-
-    Использовать как контекстный async-generator (паттерн ``async for ... in``);
-    каждый вызов берёт новое соединение из пула на одну операцию ``record``.
-    """
-    async with get_db() as conn:
-        yield ChatToolMetricsRepository(conn)
+def get_agent_channel_service() -> AgentChannelService:
+    """Создаёт AgentChannelService на исполнителе БД."""
+    return AgentChannelService(get_executor(), get_chat_settings())
 
 
-async def get_audit_service() -> AsyncGenerator[ChatAuditService, None]:
-    """Создаёт ChatAuditService с подключением из пула.
+def get_tool_metrics_repository() -> ChatToolMetricsRepository:
+    """Создаёт ChatToolMetricsRepository на исполнителе БД."""
+    return ChatToolMetricsRepository(get_executor())
+
+
+def get_audit_service() -> ChatAuditService:
+    """Создаёт ChatAuditService на исполнителе БД.
 
     Сервис глушит исключения внутри; вызывающим не нужно оборачивать в try.
     """
-    async with get_db() as conn:
-        yield ChatAuditService(repo=ChatAuditLogRepository(conn))
+    return ChatAuditService(repo=ChatAuditLogRepository(get_executor()))

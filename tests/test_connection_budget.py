@@ -29,14 +29,6 @@ EXCLUDED_MODULES = {"app/db/executor.py"}
 # ``_user_directory_factory`` → ``_gen``). Переход фабрики на исполнитель
 # снимает всю цепочку разом.
 ALLOWLIST = {
-    "app/domains/chat/deps.py::get_conversation_service",
-    "app/domains/chat/deps.py::get_message_service",
-    "app/domains/chat/deps.py::get_file_service",
-    "app/domains/chat/deps.py::get_feedback_service",
-    "app/domains/chat/deps.py::get_analytics_service",
-    "app/domains/chat/deps.py::get_agent_channel_service",
-    "app/domains/chat/deps.py::get_tool_metrics_repository",
-    "app/domains/chat/deps.py::get_audit_service",
     "app/domains/acts/deps.py::get_crud_service",
     "app/domains/acts/deps.py::get_lock_service",
     "app/domains/acts/deps.py::get_content_service",

@@ -76,15 +76,15 @@ def _make_channel_service() -> MagicMock:
     return svc
 
 
-def _channel_service_gen(channel_svc: object):
-    """Async-генератор-фабрика для patch'а messages.get_agent_channel_service.
+def _channel_service_factory(channel_svc: object):
+    """Фабрика-заглушка для patch'а messages.get_agent_channel_service.
 
-    Эндпоинт строит channel_service лениво через ``aclosing(get_agent_channel_service())``
-    (а не через Depends), поэтому в тестах подменяем саму функцию-генератор.
+    Эндпоинт строит channel_service прямым вызовом фабрики (а не через
+    Depends), поэтому в тестах подменяем саму функцию-фабрику.
     """
-    async def _gen():
-        yield channel_svc
-    return _gen
+    def _factory():
+        return channel_svc
+    return _factory
 
 
 def _build_app(
@@ -425,7 +425,7 @@ class TestSendMessageB1:
         with (
             patch(
                 "app.domains.chat.api.messages.get_agent_channel_service",
-                _channel_service_gen(channel_svc),
+                _channel_service_factory(channel_svc),
             ),
             patch(
                 "app.domains.chat.api.messages.get_agent_channel_poller",
@@ -481,7 +481,7 @@ class TestSendMessageB1:
         with (
             patch(
                 "app.domains.chat.api.messages.get_agent_channel_service",
-                _channel_service_gen(channel_svc),
+                _channel_service_factory(channel_svc),
             ),
             patch(
                 "app.domains.chat.api.messages.get_agent_channel_poller",

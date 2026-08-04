@@ -3,7 +3,6 @@
 import json
 import logging
 import uuid
-from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import JSONResponse
@@ -172,18 +171,17 @@ async def send_message(
             )
             return JSONResponse({"message_id": assistant_message_id})
 
-        # channel_service строим лениво: в off/adaptive он не нужен, а как
-        # request-зависимость держал бы соединение пула всё время LLM-вызова.
-        async with aclosing(get_agent_channel_service()) as agen:
-            channel_service = await anext(agen)
-            question_uid = await channel_service.submit(
-                conversation_id=conversation_id,
-                user_id=username,
-                assistant_message_id=assistant_message_id,
-                text=message,
-                mode="always",
-                media=file_blocks if file_blocks else None,
-            )
+        # channel_service строим здесь, а не через Depends: в off/adaptive он
+        # не нужен. Соединения он не держит — работает на исполнителе БД.
+        channel_service = get_agent_channel_service()
+        question_uid = await channel_service.submit(
+            conversation_id=conversation_id,
+            user_id=username,
+            assistant_message_id=assistant_message_id,
+            text=message,
+            mode="always",
+            media=file_blocks if file_blocks else None,
+        )
         poller.subscribe(
             assistant_message_id=assistant_message_id,
             question_uid=question_uid,
