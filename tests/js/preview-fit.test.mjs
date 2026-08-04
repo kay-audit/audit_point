@@ -10,7 +10,10 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeFitScale } from '../../static/js/constructor/preview/preview-fit.js';
+import {
+  computeFitScale,
+  isNegligibleRefit,
+} from '../../static/js/constructor/preview/preview-fit.js';
 
 test('узкая панель: масштаб = доля ширины (<1)', () => {
   assert.equal(computeFitScale(400, 800), 0.5);
@@ -50,4 +53,37 @@ test('Infinity ширины панели → 1 (защита)', () => {
 
 test('нулевая ширина панели → 1 (защита)', () => {
   assert.equal(computeFitScale(0, 800), 1);
+});
+
+// --- isNegligibleRefit: гейт переприменения масштаба ---
+
+test('refit: первый расчёт (applied=null) всегда применяется', () => {
+  assert.equal(isNegligibleRefit(null, 794, 1123, 1.02), false);
+});
+
+test('refit: субпиксельный сдвиг масштаба (<0.5px ширины) пропускается', () => {
+  const applied = { natW: 794, natH: 1123, k: 1.0281 };
+  // Δk×natW = 0.0004×794 ≈ 0.32px < 0.5px → дребезг, не переприменяем.
+  assert.equal(isNegligibleRefit(applied, 794, 1123, 1.0285), true);
+});
+
+test('refit: заметный сдвиг масштаба применяется', () => {
+  const applied = { natW: 794, natH: 1123, k: 1.0281 };
+  // Скроллбар (−15px панели): Δk×natW ≈ 15px — обязаны применить.
+  assert.equal(isNegligibleRefit(applied, 794, 1123, 1.047), false);
+});
+
+test('refit: изменение натуральной высоты листа применяется даже при том же k', () => {
+  const applied = { natW: 794, natH: 1123, k: 1.0281 };
+  assert.equal(isNegligibleRefit(applied, 794, 1500, 1.0281), false);
+});
+
+test('refit: изменение натуральной ширины листа применяется', () => {
+  const applied = { natW: 794, natH: 1123, k: 1.0281 };
+  assert.equal(isNegligibleRefit(applied, 800, 1123, 1.0281), false);
+});
+
+test('refit: полное совпадение пропускается', () => {
+  const applied = { natW: 794, natH: 1123, k: 1.0281 };
+  assert.equal(isNegligibleRefit(applied, 794, 1123, 1.0281), true);
 });

@@ -29,6 +29,17 @@
    ============================================ */
 
 .landing-sidebar {
+    /* Геометрия свёрнутого рельса — переменными: из неё считается левый отступ
+       шапки, чтобы кнопка-стрелка стояла на одном и том же месте в обоих
+       состояниях и при переключении только отражалась. */
+    --sidebar-collapsed-width: 68px;
+    --sidebar-toggle-size: 30px;
+    /* Отступ, при котором кнопка ровно по центру свёрнутого рельса. Правая
+       граница входит в width (border-box глобально), поэтому вычитается. */
+    --sidebar-rail-inset: calc(
+        (var(--sidebar-collapsed-width) - var(--border-width-thin) - var(--sidebar-toggle-size)) / 2
+    );
+
     width: 280px;
     background: var(--bg-primary);
     border-right: var(--border-width-thin) solid var(--border-light);
@@ -40,11 +51,15 @@
 }
 
 .landing-sidebar.collapsed {
-    width: 68px;
+    width: var(--sidebar-collapsed-width);
 }
 
+/* Шапка: кнопка-стрелка слева, за ней название. Логотипа нет — в свёрнутом
+   рельсе на его месте всё равно оказывалась стрелка, поэтому при разворачивании
+   они менялись местами: стрелка будто перепрыгивала вправо, а слева возникал
+   посторонний знак. */
 .sidebar-header {
-    padding: var(--spacing-lg) var(--spacing-2xl);
+    padding: var(--spacing-lg) var(--spacing-2xl) var(--spacing-lg) var(--sidebar-rail-inset);
     border-bottom: var(--border-width-thin) solid var(--border-light);
     display: flex;
     align-items: center;
@@ -52,16 +67,6 @@
     height: 57px;
     box-sizing: border-box;
     flex-shrink: 0;
-}
-
-.sidebar-logo {
-    flex-shrink: 0;
-    line-height: 0;
-}
-
-.sidebar-logo svg {
-    width: 28px;
-    height: 28px;
 }
 
 .sidebar-title {
@@ -85,8 +90,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    width: var(--sidebar-toggle-size);
+    height: var(--sidebar-toggle-size);
     border-radius: var(--radius-sm);
     border: var(--border-width-thin) solid var(--border-light);
     background: var(--bg-primary);
@@ -94,7 +99,6 @@
     cursor: pointer;
     transition: all var(--duration-fast);
     flex-shrink: 0;
-    margin-left: auto;
 }
 
 .sidebar-toggle-btn:hover {
@@ -111,17 +115,12 @@
     transform: rotate(180deg);
 }
 
+/* Свёрнутое состояние: слева отступ тот же (из базового правила), справа — такой
+   же, и кнопка оказывается ровно по центру рельса. justify-content:center здесь
+   не годится — обнулённое по ширине название остаётся флекс-элементом, и его
+   зазор сдвигал бы кнопку вправо на пол-gap'а. */
 .landing-sidebar.collapsed .sidebar-header {
-    padding: var(--spacing-lg);
-    justify-content: center;
-}
-
-.landing-sidebar.collapsed .sidebar-logo {
-    display: none;
-}
-
-.landing-sidebar.collapsed .sidebar-toggle-btn {
-    margin-left: 0;
+    padding-right: var(--sidebar-rail-inset);
 }
 
 /* Навигация по инструментам */
@@ -135,7 +134,7 @@
 .sidebar-nav-group-label {
     display: block;
     padding: 8px 16px 4px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     text-transform: uppercase;
     color: var(--text-secondary);
     letter-spacing: 0.5px;
@@ -191,7 +190,14 @@
     font-weight: var(--font-weight-semibold);
 }
 
+/* Размер иконок — из CSS, а не из атрибутов svg: у доменных пунктов разметка
+   приходит готовой строкой (item.icon_svg), и править её поштучно негде.
+   18px вместо прежних 20 — вслед за общим уплотнением портала. Кнопка чата в
+   футере носит тот же класс и уменьшается вместе с навигацией; высоты футера
+   это не меняет, поэтому он остаётся вровень с футером ЦК (обоим по 48px). */
 .sidebar-nav-icon {
+    width: 18px;
+    height: 18px;
     flex-shrink: 0;
 }
 
@@ -385,7 +391,7 @@
 }
 
 .topbar-user-role {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     line-height: 1.2;
 }
@@ -473,12 +479,11 @@
    ============================================ */
 
 @media (max-width: 768px) {
+    /* Узкий рельс задаём переменной, а не width у .collapsed: из неё считается
+       отступ шапки, иначе кнопка-стрелка осталась бы отцентрованной по 68px. */
     .landing-sidebar {
+        --sidebar-collapsed-width: 56px;
         width: 240px;
-    }
-
-    .landing-sidebar.collapsed {
-        width: 56px;
     }
 
     .landing-topbar {

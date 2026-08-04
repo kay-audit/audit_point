@@ -4,12 +4,14 @@
  * Включает индикацию статусов: заблокирован, требует внимания, критичный
  */
 
-/* Базовый стиль карточки акта */
+/* Базовый стиль карточки акта.
+   Поля на ступень меньше прежних 2xl: при пяти карточках в ряду они съедали по
+   четверти полезной ширины колонки. */
 .act-card {
     background: var(--card-bg);
     border: var(--border-width-thin) solid var(--card-border);
     border-radius: var(--radius-lg);
-    padding: var(--spacing-2xl);
+    padding: var(--spacing-xl);
     transition: var(--transition-all);
     position: relative;
 }
@@ -123,24 +125,41 @@
     criticalGlow 2s var(--ease-in-out-smooth) infinite;
 }
 
-/* Шапка карточки с заголовком и бейджем роли */
+/* Шапка карточки: капсула роли отдельной строкой, под ней заголовок.
+   Раньше они стояли в одной строке через space-between, и капсула (nowrap,
+   flex-shrink:0) отбирала у заголовка ~140px — длинное название переносилось
+   на восемь строк и растягивало вниз весь ряд карточек, поскольку строки грида
+   тянутся по самой высокой. */
 .act-card-header {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
     align-items: flex-start;
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-xl);
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
     position: relative;
 }
 
-/* Заголовок карточки (название акта) */
+/* Заголовок карточки (название акта).
+   Занимает ровно две строки всегда: сверху обрезается клампом, снизу
+   добирается min-height. Иначе у короткого названия всё, что ниже, поднималось
+   на строку вверх, и в ряду карточки шли вразнобой — метаданные, разделитель и
+   кнопки стояли на разной высоте у соседей.
+   Полный текст длинного названия доступен по наведению (title проставляет
+   acts-manager-page.js). -webkit-box — единственный способ клампа по строкам,
+   поддержан всеми актуальными браузерами; unprefixed line-clamp — на будущее. */
 .act-card-title {
     font-size: var(--font-size-xl);
     font-weight: var(--font-weight-semibold);
     color: var(--text-primary);
     margin: 0;
-    flex: 1;
     line-height: var(--line-height-tight);
+    min-height: calc(2 * var(--line-height-tight) * 1em);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
 }
 
 /* Бейдж с ролью пользователя (автор/редактор) */
@@ -155,11 +174,12 @@
     flex-shrink: 0;
 }
 
-/* Тело карточки с метаданными */
+/* Тело карточки с метаданными. Интервал на ступень меньше прежнего: четыре
+   блока метаданных давали три зазора, и карточка вытягивалась вниз. */
 .act-card-body {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     position: relative;
 }
 
@@ -180,36 +200,68 @@
 .act-card-timestamp {
     font-size: var(--font-size-xs);
     color: var(--text-tertiary);
-    margin-top: var(--spacing-sm);
-    padding-top: var(--spacing-md);
+    margin-top: var(--spacing-xs);
+    padding-top: var(--spacing-sm);
     border-top: var(--border-width-thin) solid var(--border-light);
 }
 
-/* Контейнер для действий с актом (кнопки открыть, дублировать, удалить) */
+/* Контейнер для действий с актом. Два элемента: «Открыть» слева, группа иконок
+   справа. Перенос — страховка для узкой колонки: при пяти карточках в ряду
+   колонка доходит до ~230px, и четыре кнопки-иконки съедают почти всю строку.
+   Без переноса «Открыть» сплющивалась до нечитаемых 34px, а ряд вылезал за
+   карточку; переносится теперь вся группа иконок разом. */
 .act-card-actions {
     display: flex;
-    gap: var(--spacing-sm);
-    margin-top: var(--spacing-xl);
-    padding-top: var(--spacing-xl);
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-md);
     border-top: var(--border-width-thin) solid var(--border-light);
     position: relative;
 }
 
-/* Основная кнопка действия (обычно "Открыть") */
-.act-card-actions .btn {
-    flex: 1;
+/* Основная кнопка действия (обычно "Открыть"). Селектор прямого потомка:
+   кнопки-иконки лежат во вложенной группе и под это правило попадать не должны.
+   Не растягиваем: при flex:1 ширина «Открыть» зависела от числа видимых иконок,
+   и в одном ряду соседние карточки получали кнопки 208px и 110px — роли
+   «Участник» иконки правки и удаления не положены. Теперь ширина одна на всех.
+   min-width — то, ниже чего сжимать её бессмысленно: при меньшем переносится
+   группа иконок, а не режется подпись. */
+.act-card-actions > .btn {
+    flex: 0 1 auto;
+    min-width: 6rem;
     padding: var(--spacing-sm) var(--spacing-lg);
     font-size: var(--font-size-sm);
     min-height: var(--button-size-sm);
 }
 
-/* Дополнительные кнопки-иконки (дублировать, удалить) */
-.act-card-actions .btn:not(:first-child) {
-    flex: 0 0 var(--button-size-sm);
+/* Группа кнопок-иконок: переносится под «Открыть» целиком */
+.act-card-actions-icons {
+    display: flex;
+    gap: var(--spacing-xs);
+    flex-shrink: 0;
+}
+
+/* Дополнительные кнопки-иконки (дублировать, удалить).
+   Квадрат мельче общего --button-size-sm: внутри 12px-эмодзи, и на узкой
+   колонке четыре кнопки прежнего размера не оставляли места подписи «Открыть». */
+.act-card-actions-icons .btn {
+    flex: 0 0 var(--act-card-icon-button-size);
+    min-width: 0;
+    min-height: var(--act-card-icon-button-size);
     padding: var(--spacing-xs);
+    font-size: var(--font-size-sm);
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* display:flex выше перебивает стандартный display:none у [hidden] — возвращаем
+   его явно (приём из ck-breakdown-editor.css). Правку и удаление роли
+   «Участник» acts-manager-page.js прячет именно через hidden. */
+.act-card-actions-icons .btn[hidden] {
+    display: none;
 }
 
 /* Эффект при наведении на кнопку - небольшой подъем */

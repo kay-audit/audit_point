@@ -51,7 +51,9 @@
 }
 
 .team-member-search-item-details {
-    font-size: 0.75rem;
+    /* Токен, а не 0.75rem литералом: см. .profile-role-badge — мимо токена
+       подпись проваливалась под пол мелкого кегля портала. */
+    font-size: var(--font-size-xs);
     color: var(--text-tertiary);
     margin-top: 2px;
 }

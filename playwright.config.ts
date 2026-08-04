@@ -25,6 +25,18 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: /27-preview-fit-stability/,
+    },
+    {
+      // Спеку петли «скроллбар ↔ fit-масштаб» нужен нативный скроллбар,
+      // занимающий место в layout: headless Chromium по умолчанию стартует
+      // с --hide-scrollbars, и петля физически не воспроизводится.
+      name: 'chromium-scrollbars',
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] },
+      },
+      testMatch: /27-preview-fit-stability/,
     },
   ],
 });

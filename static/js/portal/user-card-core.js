@@ -24,19 +24,43 @@ export function resolveUserCardFields(profile, fallbackUsername) {
 }
 
 /**
- * Выбирает две строки блока пользователя в топбаре: имя и логин под ним.
+ * Сокращает ФИО до фамилии и имени: «Фамилия Имя Отчество» → «Фамилия Имя».
+ *
+ * Справочник хранит ФИО одной строкой (колонка fullname), на части оно не
+ * разобрано — режем по словам и берём первые два. Одно-два слова возвращаются
+ * как есть: это либо уже сокращённая форма («Иванов И.И.»), либо логин-фолбэк.
+ * Порядок слов «Фамилия Имя Отчество» — формат справочника.
+ *
+ * @param {string|null} fullname
+ * @returns {string}
+ */
+export function formatShortFio(fullname) {
+    const parts = String(fullname || '').trim().split(/\s+/).filter(Boolean);
+    return parts.slice(0, 2).join(' ');
+}
+
+/**
+ * Выбирает строки блока пользователя в топбаре: имя, полное ФИО и логин.
+ *
+ * В топбаре имя сокращено до фамилии и имени — полное ФИО там не помещается и
+ * упиралось в многоточие. Полное отдаётся отдельным полем: вызывающий вешает
+ * его в title, а целиком оно и так показано в hover-карточке и в профиле.
  *
  * Когда ФИО не подтянулось, первая строка сама показывает логин — вторую
  * тогда возвращаем пустой, чтобы логин не дублировался.
  *
  * @param {{fullname?: string, login?: string}|null} profile
  * @param {string|null} [fallbackUsername] Username на случай отсутствия профиля.
- * @returns {{name: string, login: string}} Пустой login — строку скрыть.
+ * @returns {{name: string, fullName: string, login: string}} Пустой login — строку скрыть.
  */
 export function resolveTopbarUserLines(profile, fallbackUsername) {
-    const { name } = resolveUserCardFields(profile, fallbackUsername);
+    const { name: fullName } = resolveUserCardFields(profile, fallbackUsername);
     const login = (profile && profile.login) || fallbackUsername || '';
-    return { name, login: login === name ? '' : login };
+    return {
+        name: formatShortFio(fullName),
+        fullName,
+        login: login === fullName ? '' : login,
+    };
 }
 
 /**
@@ -66,6 +90,7 @@ if (typeof window !== 'undefined') {
     window.UserCardCore = {
         resolveUserCardFields,
         resolveTopbarUserLines,
+        formatShortFio,
         buildAvatarPath,
     };
 }

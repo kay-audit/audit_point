@@ -404,11 +404,14 @@
     display: none;
 }
 
+/* Модальный чат — основной режим на портале, поэтому окно крупное: прежние
+   700×80vh с потолком 900px на большом мониторе оставляли узкую колонку, в
+   которой таблицы и картинки из ответов ассистента приходилось прокручивать.
+   Потолок высоты снят — его задаёт vh. */
 .chat-modal-container {
-    width: 700px;
-    max-width: 90vw;
-    height: 80vh;
-    max-height: 900px;
+    width: 1200px;
+    max-width: 94vw;
+    height: 92vh;
     background: var(--bg-primary);
     border-radius: var(--radius-lg);
     border: var(--border-width-thin) solid var(--border-light);

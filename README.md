@@ -302,12 +302,16 @@ npx playwright test --reporter=html && npm run e2e:report
 
 Структура:
 
-- `playwright.config.ts` — конфиг, baseURL=`http://127.0.0.1:8005`, chromium only.
+- `playwright.config.ts` — конфиг, baseURL=`http://127.0.0.1:8005`; два проекта:
+  `chromium` и `chromium-scrollbars`. Второй нужен спеке `27-preview-fit-stability`
+  (`ignoreDefaultArgs: ['--hide-scrollbars']`): ей нужен нативный скроллбар,
+  занимающий место в layout, иначе воспроизводимая ею петля «скроллбар ↔ масштаб»
+  не возникает. `npm run e2e` гоняет оба; `--project=chromium` молча пропустит спеку 27.
 - `tests/playwright/global-setup.ts` / `global-teardown.ts` — старт/стоп uvicorn,
   PID хранится в `tests/playwright/.uvicorn.pid`, лог в `.uvicorn.log` (gitignored).
 - `tests/playwright/seed.py` — создаёт 3 акта (`SEED_ACTS` в `fixtures.ts`).
 - `tests/playwright/fixtures.ts` — общие helpers (`openAct`, `waitForSaveComplete`).
-- `tests/playwright/specs/*.spec.ts` — 30 spec-файлов (`@smoke`-теги).
+- `tests/playwright/specs/*.spec.ts` — 34 spec-файла (`@smoke`-теги).
 
 Скип-семантика: 6 spec-файлов несут условный `test.skip`, гейтящийся
 переменной окружения (`RUN_<NAME>_E2E=1`) — по умолчанию пропускаются, т.к.

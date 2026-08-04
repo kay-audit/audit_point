@@ -111,19 +111,21 @@ export class PortalSidebar {
     }
 
     /**
-     * Загружает информацию о текущем пользователе в topbar: ФИО (с фолбэком
-     * на username), логин второй строкой и фото профиля.
+     * Загружает информацию о текущем пользователе в topbar: фамилию и имя (с
+     * фолбэком на username), логин второй строкой и фото профиля.
      * @private
      */
     static _loadUserInfo() {
         try {
             const profile = AuthManager.getCurrentUserProfile();
             const username = AuthManager.getCurrentUser();
-            const { name, login } = resolveTopbarUserLines(profile, username);
+            const { name, fullName, login } = resolveTopbarUserLines(profile, username);
 
             const userNameElement = document.getElementById('currentUserName');
             if (userNameElement && name) {
                 userNameElement.textContent = name;
+                // Отчество в топбар не влезает, полное ФИО — по наведению
+                userNameElement.title = fullName;
             }
 
             const userLoginElement = document.getElementById('currentUserLogin');

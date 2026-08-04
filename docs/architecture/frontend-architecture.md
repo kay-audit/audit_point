@@ -35,12 +35,12 @@ Audit Workstation — Server-side rendered (Jinja2) + vanilla JS приложе�
 | `constructor/` (редактор актов) | приблизительно 106 файлов (включая `search/` и инфраструктуру поверхностей, §1.2) |
 | `shared/` (cross-zone модули + чат) | приблизительно 42 файла (включая 13 модулей чата) |
 | `portal/` (sidebar-страницы) | приблизительно 32 файла (включая профиль/карточку пользователя) |
-| Всего CSS-файлов | 95 |
-| `constructor/` CSS | 44 файла |
-| `portal/` CSS | 19 файлов |
+| Всего CSS-файлов | 97 |
+| `constructor/` CSS | 45 файлов (включая `layout/density.css`, §13.5) |
+| `portal/` CSS | 20 файлов (включая `layout/density.css`, §13.5) |
 | `shared/` CSS | 17 файлов |
 | `base/` CSS | 11 файлов |
-| CSS-переменных | 580, `base/variables.css` — агрегатор, сами переменные в `base/variables/{colors,components,typography,spacing,shadows,motion,z-index}.css` |
+| CSS-переменных | 581 (уникальных имён, дублей нет), `base/variables.css` — агрегатор, сами переменные в `base/variables/{colors,components,typography,spacing,shadows,motion,z-index}.css` |
 
 ### 1.2 Три зоны
 
@@ -725,6 +725,17 @@ static scheduleTyping(options = {}) {
 
 `update` и `scheduleTyping` — взаимозаменяемые для callsite'а: тяжёлая структурная операция (add/delete table) использует `update` (немедленный RAF), typing-flow — `scheduleTyping` (debounce).
 
+### 8.3 Fit-масштаб листа (`preview-fit.js`)
+
+`PreviewFitScaler` вписывает лист A4 в ширину панели: `transform: scale(k)` на самом листе плюс sizer, который держит габариты под прокрутку. Четыре инварианта — каждый закрывает свой сорт «дёргания» превью, и каждый легко снести по незнанию:
+
+- **Место под скроллбар зарезервировано всегда** — `scrollbar-gutter: stable` у `.column` (`two-columns.css`) и у холста меню превью (`preview-menu.css`). Без резерва появление скроллбара сужает колонку → падает `k` → лист становится ниже → скроллбар исчезает → и так кадр за кадром: на пограничной высоте окна петля живая, а не теоретическая.
+- **Натуральные размеры листа меряются layout-метриками** `offsetWidth`/`offsetHeight`, а не `getBoundingClientRect()`. Они не зависят ни от собственного transform листа, ни от transform предков: прежний замер во время scaleIn-анимации модалки давал искажённый масштаб, который застревал после её конца — transform не дёргает `ResizeObserver`.
+- **`ResizeObserver` наблюдает и лист**, а не только панель. Поздний рост контента (декодировалась картинка, точечный патч блока) бокс панели не меняет, и без наблюдения листа sizer оставался бы с устаревшим footprint'ом — лишняя или обрезанная прокрутка.
+- **Гейт `isNegligibleRefit`** — расчёт не переприменяется, если натуральные размеры те же, а сдвиг масштабированной ширины меньше полпикселя (субпиксельный дребезг целочисленного `clientWidth` при дробном browser zoom). Изменение размеров листа — всегда переприменение.
+
+Регрессии: `tests/js/preview-fit.test.mjs` (юнит) и e2e-спека `27-preview-fit-stability`, которой нужен отдельный Playwright-проект `chromium-scrollbars` — см. [дев-гайд §8.1](../guides/developer-guide.md).
+
 ---
 
 ## 9. Диалоги
@@ -1045,7 +1056,8 @@ Constructor **не адаптивен** (0 media queries в `constructor/*`). Э
 
 ```
 @import './shared.css';
-@import '../constructor/layout/*.css';                    # 6 файлов
+@import '../constructor/layout/*.css';                    # 7 файлов; первым —
+                                                          #   density.css (§13.5)
 @import '../shared/layout/settings-menu.css';             # 1
 @import '../shared/notifications-center/notifications-center.css'; # 1 (reuse)
 @import '../constructor/tree/*.css';                      # 5
@@ -1064,14 +1076,17 @@ Constructor **не адаптивен** (0 media queries в `constructor/*`). Э
 @import '../constructor/utilities/*.css';                 # 3
 ```
 
-≈49 файлов через каскад.
+≈50 файлов через каскад.
 
 ### 13.3 Каскад portal.css
 
 ```
 @import './shared.css';
+├── portal/layout/density.css        # сразу после токенов, до всех потребителей
 ├── portal/layout/sidebar.css
+├── portal/layout/user-avatar.css
 ├── shared/layout/settings-menu.css
+├── shared/notifications-center/notifications-center.css
 ├── portal/landing/landing.css
 ├── portal/acts-manager/{base, cards, team-member-search,
 │                        audit-log-dialog, version-preview}.css
@@ -1080,7 +1095,11 @@ Constructor **не адаптивен** (0 media queries в `constructor/*`). Э
 │                        preview-typography, preview-violation}.css  # см. §10.5
 ├── portal/admin/{admin-page, admin-search,
 │                 admin-roles, admin-add-user}.css
-└── portal/ck/{ck-page, ck-table, ck-form, ck-process-picker}.css
+├── shared/datatable.css             # тулкит таблиц, используется ЦК
+├── portal/ck/{ck-page, ck-table, ck-form, ck-process-picker,
+│              ck-breakdown-editor}.css
+├── portal/sqlagent/sqlagent.css
+└── portal/profile/profile-page.css
 ```
 
 ### 13.4 Переменные
@@ -1099,15 +1118,35 @@ Constructor **не адаптивен** (0 media queries в `constructor/*`). Э
 
 Все 580 переменных по-прежнему доступны под прежними именами — это пере-разбиение, не переименование. `@import` в CSS — runtime-каскад, порядок резолва значений не зависит от порядка @import.
 
-### 13.5 Z-index map
+### 13.5 Плотность интерфейса (rem-масштаб)
+
+Корневой `font-size` — рычаг плотности: почти весь хром (кегли, отступы, кнопки, панели) задан rem-токенами и следует за корнем разом. Ступени у зон разные, каждая живёт в своём файле и входит **только** в свой entry — сразу после `shared.css`, до всех потребителей:
+
+| Файл | Корень | Зона |
+|---|---|---|
+| `constructor/layout/density.css` | `html { font-size: 12px }` (75% от браузерных 16px) | конструктор |
+| `portal/layout/density.css` | `html { font-size: 13px }` | портал (лендинг, `/acts`, admin, ЦК, профиль) |
+
+Портальная ступень мягче намеренно: портал — смесь rem-зон и голых px (таблицы и формы ЦК, журнал изменений, предпросмотр версии). Плоские 75% сжали бы только обрамление, а ЦК не шелохнулся бы. Ориентир — кегль самого ЦК: корень 13px даёт основной текст 12px и подписи 11px, ровно как `.ck-table` (`--font-size-sm`) и `.ck-form__label` (`--font-size-xs`).
+
+**Что от масштаба защищено** — иначе печатная точность уехала бы вместе с UI:
+
+- **Лист предпросмотра** — геометрия и тело заданы в px/pt/mm (`preview-page.css`) и от rem не зависят. Заголовки листа (`.preview h1…h6`) — исключение, они считаются от токенов, поэтому зонные сжатия кегля на панель предпросмотра не вешают.
+- **Тело текстблок-редактора** — `.textblock-editor` возвращает `--font-size-base/lg/xl` в печатные px (база 16px ≈ 12pt Word, EXP-2). Инвариант «16px → 12pt» из [`textblock-editor-architecture.md`](textblock-editor-architecture.md) держится этим переопределением, а не наследованием от корня: править корень конструктора, не проверив его, — прямой путь сбить кегль документа.
+- **Мелкий кегль портала** — `--font-size-xs`/`--font-size-sm` прибиты в px (11/12px). При корне 13px формула дала бы 9.75 и 11.4px: первое ниже предела читаемости подписи, второе мельче тела соседних таблиц ЦК. `--font-size-sm` нагружен особо — это дефолт `body` из `reset.css`.
+- **Полоса шапки конструктора** — `--header-height: 8vh` при поле `--header-min-height: 68px`. Пол именно в px: rem-ный уехал бы вместе с корнем, а содержимое полосы (кнопки 32px + подписи) в основном px-ное и не сжимается — кнопки упирались бы в края.
+
+Рабочие зоны, наоборот, сжимаются сверх общего масштаба: `.items-container` (форма заполнения) опускает свою шкалу ещё на ступень — там счёт идёт на строки, влезающие в экран. Дерево в список не входит: высоту строки держат отступы, и мельчающий в них текст добавил бы пустоты при том же числе видимых строк.
+
+### 13.6 Z-index map
 
 Управляется через CSS-переменные (`--z-tooltip`, `--z-overlay`, `--z-modal`, `--z-popover`, `--z-modal-elevated`, `--z-popover-elevated`). Wave 3 ввёл `*-elevated`-уровни для вложенных диалогов поверх обычных модалок. Локальный `calc(var(--z-modal) + 1)` в нескольких CSS-файлах — потенциальная проблема пересечения с соседними layer'ами (известный технический долг, M-Z-CALC).
 
-### 13.6 Cache-busting
+### 13.7 Cache-busting
 
 Jinja-фильтр `versioned` (применяется ко всем `url_for('static', path='...')`) добавляет `?v={APP_VERSION}` к URL. `APP_VERSION` берётся из `app.core.config.Settings`. При смене версии браузер форсированно перезагружает статику.
 
-### 13.7 `<meta name="app-version">`
+### 13.8 `<meta name="app-version">`
 
 `base_*.html:8` — `<meta name="app-version" content="{{ app_version }}">`. Бейдж версии в topbar и admin-diagnostics tab читают это значение.
 

@@ -5,11 +5,17 @@
 
 /* Контейнер шапки элемента */
 .item-header {
-    margin-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--spacing);
+}
+
+/* У карточки без содержимого (раздел без подпунктов) отступ под заголовком
+   был бы пустым дном — карточка вытягивалась вдвое против своего текста. */
+.item-header:last-child {
+    margin-bottom: 0;
 }
 
 /* Заголовок элемента первого уровня */

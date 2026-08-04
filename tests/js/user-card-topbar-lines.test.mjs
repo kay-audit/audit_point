@@ -9,13 +9,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAvatarPath,
+  formatShortFio,
   resolveTopbarUserLines,
 } from '../../static/js/portal/user-card-core.js';
 
-test('resolveTopbarUserLines: есть ФИО — имя сверху, логин снизу', () => {
+test('resolveTopbarUserLines: есть ФИО — в топбаре без отчества, полное отдельным полем', () => {
   const profile = { fullname: 'Иванов Иван Иванович', login: '12345' };
   assert.deepEqual(resolveTopbarUserLines(profile, '12345'), {
-    name: 'Иванов Иван Иванович',
+    name: 'Иванов Иван',
+    fullName: 'Иванов Иван Иванович',
     login: '12345',
   });
 });
@@ -24,16 +26,48 @@ test('resolveTopbarUserLines: ФИО не подтянулось — логин 
   const profile = { fullname: '', login: '12345' };
   assert.deepEqual(resolveTopbarUserLines(profile, '12345'), {
     name: '12345',
+    fullName: '12345',
     login: '',
   });
 });
 
 test('resolveTopbarUserLines: профиль не загружен — имя из username, вторая строка пуста', () => {
-  assert.deepEqual(resolveTopbarUserLines(null, '12345'), { name: '12345', login: '' });
+  assert.deepEqual(resolveTopbarUserLines(null, '12345'), {
+    name: '12345',
+    fullName: '12345',
+    login: '',
+  });
 });
 
 test('resolveTopbarUserLines: ни профиля, ни username — обе строки пусты', () => {
-  assert.deepEqual(resolveTopbarUserLines(null, null), { name: '', login: '' });
+  assert.deepEqual(resolveTopbarUserLines(null, null), {
+    name: '',
+    fullName: '',
+    login: '',
+  });
+});
+
+test('formatShortFio: три слова — фамилия и имя', () => {
+  assert.equal(formatShortFio('МАШТАКОВ ДЕНИС РОМАНОВИЧ'), 'МАШТАКОВ ДЕНИС');
+});
+
+test('formatShortFio: два слова и одно — как есть', () => {
+  assert.equal(formatShortFio('Иванов И.И.'), 'Иванов И.И.');
+  assert.equal(formatShortFio('12345'), '12345');
+});
+
+test('formatShortFio: лишние пробелы схлопываются', () => {
+  assert.equal(formatShortFio('  Волкова   Наталья  Александровна '), 'Волкова Наталья');
+});
+
+test('formatShortFio: пустое значение — пустая строка', () => {
+  assert.equal(formatShortFio(''), '');
+  assert.equal(formatShortFio(null), '');
+  assert.equal(formatShortFio(undefined), '');
+});
+
+test('formatShortFio: больше трёх слов — всё равно первые два', () => {
+  assert.equal(formatShortFio('Де Ла Круз Хуан'), 'Де Ла');
 });
 
 test('resolveTopbarUserLines: логин из профиля важнее username-фолбэка', () => {

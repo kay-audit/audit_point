@@ -452,6 +452,13 @@ export class ActsManagerPage {
         };
         this._fillFields(cardFragment, data);
 
+        // Название обрезается двумя строками (acts-manager-cards.css), полное
+        // показываем по наведению
+        const titleElement = cardElement.querySelector('.act-card-title');
+        if (titleElement && act.inspection_name) {
+            titleElement.title = act.inspection_name;
+        }
+
         // Привязываем обработчики к кнопкам действий
         const openBtn = cardElement.querySelector('[data-action="open"]');
         const editBtn = cardElement.querySelector('[data-action="edit"]');

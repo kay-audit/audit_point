@@ -42,7 +42,7 @@
     background: var(--bg-secondary);
     text-align: left;
     font-weight: 600;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
 }
@@ -121,7 +121,7 @@
     flex: 1;
     min-width: 0;
     box-sizing: border-box;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     padding: 3px 6px;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -200,14 +200,14 @@
 .dt-date-row label {
     width: 32px;
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
 }
 
 .dt-date-input {
     flex: 1;
     min-width: 0;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     padding: 3px 6px;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -225,7 +225,7 @@
     background: transparent;
     color: var(--primary);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     padding: 2px 4px;
 }
 
@@ -251,7 +251,7 @@
     align-items: center;
     gap: 6px;
     padding: 3px 2px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
     cursor: pointer;
 }
@@ -283,10 +283,10 @@
 .dt-th-chip {
     display: inline-flex; align-items: center; gap: 2px; max-width: 100%;
     padding: 0 4px; border-radius: 8px; background: var(--bg-tertiary);
-    font-size: 11px; line-height: 16px;
+    font-size: var(--font-size-xs); line-height: 16px;
 }
 .dt-th-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.dt-th-chip-x { border: 0; background: none; cursor: pointer; padding: 0 2px; color: var(--text-secondary); font-size: 12px; line-height: 1; }
+.dt-th-chip-x { border: 0; background: none; cursor: pointer; padding: 0 2px; color: var(--text-secondary); font-size: var(--font-size-sm); line-height: 1; }
 .dt-th-chip-x:hover { color: var(--text-primary); }
 
 .dt-th-sort,
@@ -296,7 +296,7 @@
     background: transparent;
     cursor: pointer;
     padding: 0 2px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     line-height: 1;
     color: var(--text-secondary);
 }
@@ -307,7 +307,7 @@
 }
 
 .dt-th-clear {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
 }
 
 .dt-th-clear:hover {
@@ -382,7 +382,7 @@
     padding: 10px 12px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
     z-index: 1000;
-    font-size: 13px;
+    font-size: var(--font-size-base);
     color: var(--text-primary);
 }
 
@@ -419,7 +419,7 @@
 /* Заголовок группы колонок в панели ⚙ (типографика — как группы сайдбара) */
 .dt-colvis-grouplabel {
     grid-column: 1 / -1;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-secondary);
@@ -432,7 +432,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 13px;
+    font-size: var(--font-size-base);
     color: var(--text-primary);
     cursor: pointer;
 }
@@ -447,7 +447,7 @@
 
 /* Пагинация в футере */
 .dt-total {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
 }
 
@@ -463,7 +463,7 @@
     border: 1px solid var(--border);
     background: var(--bg-primary);
     border-radius: 4px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     color: var(--text-primary);
 }
