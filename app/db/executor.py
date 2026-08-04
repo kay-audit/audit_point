@@ -105,7 +105,11 @@ class DbExecutor:
 
         Вложенный вызов на том же task делегируется в ``conn.transaction()``
         того же соединения — asyncpg открывает SAVEPOINT (семантика вложенных
-        транзакций сохраняется, см. ``act_content.py``).
+        транзакций сохраняется, см. ``act_content.py``). Параметры asyncpg
+        (isolation и т.п.) сознательно не поддерживаются.
+
+        Инвариант: блок открывается и закрывается в ОДНОМ task — закрытие из
+        другого task (shield, отложенное завершение) не поддерживается.
         """
         bound = _current_bound()
         if bound is not None:
@@ -118,7 +122,17 @@ class DbExecutor:
                 async with conn.transaction():
                     yield
             finally:
-                _bound_tx.reset(token)
+                try:
+                    _bound_tx.reset(token)
+                except ValueError:
+                    # Закрытие из другого Context (нарушение инварианта выше) —
+                    # не роняем основную операцию, но фиксируем в логе.
+                    logger.warning(
+                        "transaction() закрыт вне Context'а открытия — "
+                        "bound-соединение сброшено небезопасно",
+                        stack_info=True,
+                    )
+                    _bound_tx.set(None)
 
 
 _executor = DbExecutor()

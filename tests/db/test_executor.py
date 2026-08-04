@@ -156,6 +156,53 @@ def test_get_executor_singleton():
     assert get_executor() is get_executor()
 
 
+async def test_cancelled_call_releases_connection(fake_pool, monkeypatch):
+    """Отмена task'а посреди SQL не теряет соединение (release в finally)."""
+    started = asyncio.Event()
+    hang = asyncio.Event()
+
+    async def hanging_fetch(query, *args, timeout=None):
+        started.set()
+        await hang.wait()
+
+    orig_acquire = fake_pool.acquire
+
+    async def acquire(timeout=None):
+        conn = await orig_acquire(timeout=timeout)
+        conn.fetch = hanging_fetch
+        return conn
+
+    monkeypatch.setattr(fake_pool, "acquire", acquire)
+
+    task = asyncio.create_task(DbExecutor().fetch("SELECT hang"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fake_pool.live == 0
+
+
+async def test_cancelled_transaction_releases_and_unbinds(fake_pool):
+    """Отмена внутри transaction(): соединение отдано, bound-состояние снято."""
+    started = asyncio.Event()
+    hang = asyncio.Event()
+    ex = DbExecutor()
+
+    async def work():
+        async with ex.transaction():
+            started.set()
+            await hang.wait()
+
+    task = asyncio.create_task(work())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fake_pool.live == 0
+    await ex.fetch("SELECT after")          # не падает и берёт свежее соединение
+    assert fake_pool.acquires == 2
+
+
 async def test_nested_get_db_warns_by_default(fake_pool, caplog, monkeypatch):
     monkeypatch.setattr(dbconn, "_strict_acquire_guard", False)
     async with dbconn.get_db():
