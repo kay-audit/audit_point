@@ -25,9 +25,30 @@ export function computeFitScale(innerWidth, naturalWidth, maxScale = Infinity) {
     return Math.min(innerWidth / naturalWidth, maxScale);
 }
 
+/**
+ * Гейт переприменения: true, если новый расчёт эффективно совпадает с уже
+ * применённым — натуральные размеры листа те же, а сдвиг масштабированной
+ * ширины меньше полпикселя (субпиксельный дребезг целочисленного clientWidth
+ * при дробном browser zoom). Изменение размеров листа (контент дорендерился,
+ * картинка декодировалась) — всегда переприменение.
+ * @param {{natW: number, natH: number, k: number}|null} applied Последний применённый расчёт.
+ * @param {number} natW Натуральная ширина листа, px.
+ * @param {number} natH Натуральная высота листа, px.
+ * @param {number} k Новый коэффициент масштаба.
+ * @returns {boolean}
+ */
+export function isNegligibleRefit(applied, natW, natH, k) {
+    return !!applied
+        && applied.natW === natW
+        && applied.natH === natH
+        && Math.abs(k - applied.k) * natW < 0.5;
+}
+
 export class PreviewFitScaler {
     constructor() {
         this._pane = null;
+        this._sheet = null;
+        this._applied = null;
         this._ro = null;
         this._rafScheduled = false;
         this._apply = this._apply.bind(this);
@@ -56,6 +77,8 @@ export class PreviewFitScaler {
     detach() {
         if (this._ro) { this._ro.disconnect(); this._ro = null; }
         this._pane = null;
+        this._sheet = null;
+        this._applied = null;
         this._rafScheduled = false;
     }
 
@@ -84,19 +107,35 @@ export class PreviewFitScaler {
             return;
         }
 
-        // Натуральные размеры меряем при сброшенном transform: свежесозданный
-        // лист может не иметь transform, а прежний — иметь; сброс гарантирует
-        // истинный размер. Всё в пределах одного кадра, лишней отрисовки нет.
-        sheet.style.transform = 'none';
-        const rect = sheet.getBoundingClientRect();
-        const natW = rect.width;
-        const natH = rect.height;
+        // Перерендер пересоздаёт лист — наблюдаем актуальный. Поздняя смена
+        // ВЫСОТЫ контента (декодирование картинки, точечный патч блока) не
+        // меняет бокс панели, и без наблюдения листа sizer оставался бы с
+        // устаревшим footprint'ом (лишняя/обрезанная прокрутка).
+        if (this._sheet !== sheet) {
+            if (this._sheet && this._ro) this._ro.unobserve(this._sheet);
+            if (this._ro) this._ro.observe(sheet);
+            this._sheet = sheet;
+        }
+
+        // Натуральные размеры — layout-метрики offsetWidth/offsetHeight: они не
+        // зависят ни от собственного transform листа, ни от transform-анимаций
+        // предков (scaleIn модалки). Прежний замер getBoundingClientRect со
+        // сбросом transform во время такой анимации давал искажённый масштаб,
+        // который застревал после её конца (transform не дёргает ResizeObserver).
+        const natW = sheet.offsetWidth;
+        const natH = sheet.offsetHeight;
 
         const cs = getComputedStyle(pane);
         const padX = parseFloat(cs.paddingLeft || '0') + parseFloat(cs.paddingRight || '0');
         const innerW = pane.clientWidth - padX;
 
         const k = computeFitScale(innerW, natW);
+
+        // Субпиксельный дребезг (целочисленный clientWidth при дробном browser
+        // zoom) не переприменяем — гасит микропетли пересчёта.
+        if (isNegligibleRefit(this._applied, natW, natH, k)) return;
+        this._applied = { natW, natH, k };
+
         sheet.style.transform = `scale(${k})`;
         sizer.style.width = `${natW * k}px`;
         sizer.style.height = `${natH * k}px`;
