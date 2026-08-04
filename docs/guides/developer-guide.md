@@ -808,8 +808,10 @@ Vanilla JS (ES6+), **Native ES Modules без bundler'а**. Браузер са�
 ```
 static/css/entry/{shared,portal,constructor}.css
 portal.css     → @import './shared.css' → base/ + shared/
-constructor.css → @import './shared.css' + constructor-specific (45 файлов в каскаде)
+constructor.css → @import './shared.css' + constructor-specific (~50 файлов в каскаде)
 ```
+
+Каждая зона задаёт свой корневой `font-size` (конструктор 12px, портал 13px) — плотность интерфейса управляется им, а печатно-точные зоны от него защищены явными px. Деталь — `frontend-architecture.md` §13.5.
 
 CSS-переменные (576 шт.) — `static/css/base/variables.css`. Cache-busting через Jinja-фильтр `versioned` (`{{ 'css/entry/...' | versioned }}`).
 
@@ -2418,10 +2420,12 @@ async def open_act_page_handler(
 | pytest-asyncio | Async-тесты |
 | httpx / TestClient | API-тесты (через `dependency_overrides`) |
 | unittest.mock (AsyncMock, MagicMock) | Моки репозиториев и сервисов |
-| node:test (`*.test.mjs`) | JS-юнит-тесты фронта (~572 теста) |
-| Playwright (`*.spec.*`) | E2E-сценарии конструктора (требуют поднятого сервера + seed) |
+| node:test (`*.test.mjs`) | JS-юнит-тесты фронта (~1750 тестов; точное число — `npm run test:js`) |
+| Playwright (`*.spec.*`) | E2E-сценарии конструктора (требуют поднятого сервера + seed). Два проекта — см. ниже |
 
-**Иерархия тестов** (backend — см. `pytest --collect-only`; фронт ~572 теста node:test):
+**Playwright: два проекта в `playwright.config.ts`.** Обычный `chromium` и `chromium-scrollbars` (`ignoreDefaultArgs: ['--hide-scrollbars']`). Второй нужен спеке `27-preview-fit-stability`: она воспроизводит петлю «скроллбар ↔ fit-масштаб», а headless Chromium по умолчанию стартует с `--hide-scrollbars`, скроллбар не занимает места в layout и петля физически не возникает — спека проходила бы вхолостую. Разведены жёстко: `chromium` игнорирует спеку 27 (`testIgnore`), `chromium-scrollbars` берёт только её (`testMatch`). `npm run e2e` без аргументов гоняет оба проекта; запуск с `--project=chromium` молча пропустит спеку 27.
+
+**Иерархия тестов** (backend — см. `pytest --collect-only`; фронт — `npm run test:js`):
 
 ```
 tests/
