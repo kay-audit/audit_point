@@ -296,34 +296,36 @@ class Orchestrator:
         if not file_blocks:
             return user_message
 
-        from app.db.connection import get_db
+        from app.db.executor import get_executor
         from app.domains.chat.repositories.file_repository import FileRepository
         from app.domains.chat.services.file_extraction import extract_text_async
 
         parts = [user_message]
-        async with get_db() as conn:
-            file_repo = FileRepository(conn)
-            for fb in file_blocks:
-                file_id = fb.get("file_id")
-                if not file_id:
-                    continue
-                # Получаем данные через репозиторий с проверкой conversation_id
-                if conversation_id:
-                    row = await file_repo.get_file_content(
-                        file_id=file_id,
-                        conversation_id=conversation_id,
-                    )
-                else:
-                    row = await file_repo.get_file_content(
-                        file_id=file_id,
-                        conversation_id="",
-                    )
-                if not row:
-                    continue
-                text = await extract_text_async(
-                    row["file_data"], row["mime_type"], row["filename"],
+        # Репозиторий на исполнителе: соединение берётся на каждый SELECT и
+        # НЕ удерживается на время extract_text_async — парсинг PDF/DOCX в
+        # thread-pool может занимать секунды (инвариант 1).
+        file_repo = FileRepository(get_executor())
+        for fb in file_blocks:
+            file_id = fb.get("file_id")
+            if not file_id:
+                continue
+            # Получаем данные через репозиторий с проверкой conversation_id
+            if conversation_id:
+                row = await file_repo.get_file_content(
+                    file_id=file_id,
+                    conversation_id=conversation_id,
                 )
-                parts.append(f"\n--- Файл: {row['filename']} ---\n{text}")
+            else:
+                row = await file_repo.get_file_content(
+                    file_id=file_id,
+                    conversation_id="",
+                )
+            if not row:
+                continue
+            text = await extract_text_async(
+                row["file_data"], row["mime_type"], row["filename"],
+            )
+            parts.append(f"\n--- Файл: {row['filename']} ---\n{text}")
 
         return "\n".join(parts)
 

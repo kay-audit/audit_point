@@ -21,7 +21,9 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, AsyncIterator
 
-from app.db.connection import get_db
+# Импорт модулем (не именем): тесты патчат app.db.connection.get_db, и вызов
+# через атрибут модуля видит патч (принятая в проекте патч-точка БД).
+from app.db import connection as _connection
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +66,14 @@ class DbExecutor:
         bound = _current_bound()
         if bound is not None:
             return await bound.conn.fetch(query, *args, timeout=timeout)
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             return await conn.fetch(query, *args, timeout=timeout)
 
     async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:
         bound = _current_bound()
         if bound is not None:
             return await bound.conn.fetchrow(query, *args, timeout=timeout)
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             return await conn.fetchrow(query, *args, timeout=timeout)
 
     async def fetchval(
@@ -80,14 +82,14 @@ class DbExecutor:
         bound = _current_bound()
         if bound is not None:
             return await bound.conn.fetchval(query, *args, column=column, timeout=timeout)
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             return await conn.fetchval(query, *args, column=column, timeout=timeout)
 
     async def execute(self, query: str, *args: Any, timeout: float | None = None) -> Any:
         bound = _current_bound()
         if bound is not None:
             return await bound.conn.execute(query, *args, timeout=timeout)
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             return await conn.execute(query, *args, timeout=timeout)
 
     async def executemany(
@@ -96,7 +98,7 @@ class DbExecutor:
         bound = _current_bound()
         if bound is not None:
             return await bound.conn.executemany(command, args, timeout=timeout)
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             return await conn.executemany(command, args, timeout=timeout)
 
     @asynccontextmanager
@@ -116,7 +118,7 @@ class DbExecutor:
             async with bound.conn.transaction():
                 yield
             return
-        async with get_db() as conn:
+        async with _connection.get_db() as conn:
             token = _bound_tx.set(_BoundTx(conn, asyncio.current_task()))
             try:
                 async with conn.transaction():

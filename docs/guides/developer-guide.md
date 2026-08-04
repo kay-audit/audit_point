@@ -2638,7 +2638,7 @@ async def test_get_by_id(mock_conn):
     assert act["km_number"] == "КМ-24-12345"
 ```
 
-Реального `db_conn` нет — integration-фикстуры с поднятой БД отсутствуют. Integration-тесты делаются через мокирование БД и LLM (см. `tests/domains/chat/test_orchestrator_forward_integration.py`).
+Реального `db_conn` нет — integration-фикстуры с поднятой БД отсутствуют. Integration-тесты делаются через мокирование БД и LLM (см. `tests/domains/chat/test_forward_tool_factory.py` и forward-сценарии в `tests/domains/chat/test_chat_api_e2e.py`).
 
 **Важные правила:**
 
