@@ -29,7 +29,6 @@ EXCLUDED_MODULES = {"app/db/executor.py"}
 # ``_user_directory_factory`` → ``_gen``). Переход фабрики на исполнитель
 # снимает всю цепочку разом.
 ALLOWLIST = {
-    "app/domains/admin/deps.py::get_admin_service",
     "app/domains/admin/_lifecycle.py::register_factories",
     "app/domains/admin/_lifecycle.py::_user_directory_factory",
     "app/domains/admin/_lifecycle.py::_user_avatars_factory",
@@ -37,10 +36,6 @@ ALLOWLIST = {
     "app/domains/notifications/_lifecycle.py::register_factories",
     "app/domains/notifications/_lifecycle.py::_push_factory",
     "app/domains/notifications/_lifecycle.py::_gen",
-    "app/domains/notifications/deps.py::get_notification_service",
-    "app/domains/ck_client_exp/deps.py::get_cs_validation_service",
-    "app/domains/ck_fin_res/deps.py::get_fr_validation_service",
-    "app/domains/ua_data/deps.py::get_dictionary_service",
 }
 
 
