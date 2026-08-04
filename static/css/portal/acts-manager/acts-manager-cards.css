@@ -134,8 +134,8 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: var(--spacing-sm);
-    margin-bottom: var(--spacing-md);
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
     position: relative;
 }
 
@@ -170,11 +170,12 @@
     flex-shrink: 0;
 }
 
-/* Тело карточки с метаданными */
+/* Тело карточки с метаданными. Интервал на ступень меньше прежнего: четыре
+   блока метаданных давали три зазора, и карточка вытягивалась вниз. */
 .act-card-body {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     position: relative;
 }
 
@@ -195,32 +196,36 @@
 .act-card-timestamp {
     font-size: var(--font-size-xs);
     color: var(--text-tertiary);
-    margin-top: var(--spacing-sm);
-    padding-top: var(--spacing-md);
+    margin-top: var(--spacing-xs);
+    padding-top: var(--spacing-sm);
     border-top: var(--border-width-thin) solid var(--border-light);
 }
 
-/* Контейнер для действий с актом. Два элемента: «Открыть» и группа иконок.
-   Перенос — страховка для узкой колонки: при пяти карточках в ряду колонка
-   доходит до ~230px, и четыре кнопки-иконки съедают почти всю строку. Без
-   переноса «Открыть» сплющивалась до нечитаемых 34px, а ряд вылезал за
+/* Контейнер для действий с актом. Два элемента: «Открыть» слева, группа иконок
+   справа. Перенос — страховка для узкой колонки: при пяти карточках в ряду
+   колонка доходит до ~230px, и четыре кнопки-иконки съедают почти всю строку.
+   Без переноса «Открыть» сплющивалась до нечитаемых 34px, а ряд вылезал за
    карточку; переносится теперь вся группа иконок разом. */
 .act-card-actions {
     display: flex;
     flex-wrap: wrap;
+    justify-content: space-between;
     gap: var(--spacing-xs);
-    margin-top: var(--spacing-xl);
-    padding-top: var(--spacing-xl);
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-md);
     border-top: var(--border-width-thin) solid var(--border-light);
     position: relative;
 }
 
 /* Основная кнопка действия (обычно "Открыть"). Селектор прямого потомка:
    кнопки-иконки лежат во вложенной группе и под это правило попадать не должны.
+   Не растягиваем: при flex:1 ширина «Открыть» зависела от числа видимых иконок,
+   и в одном ряду соседние карточки получали кнопки 208px и 110px — роли
+   «Участник» иконки правки и удаления не положены. Теперь ширина одна на всех.
    min-width — то, ниже чего сжимать её бессмысленно: при меньшем переносится
    группа иконок, а не режется подпись. */
 .act-card-actions > .btn {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 6rem;
     padding: var(--spacing-sm) var(--spacing-lg);
     font-size: var(--font-size-sm);

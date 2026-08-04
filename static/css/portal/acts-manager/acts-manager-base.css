@@ -58,7 +58,7 @@
     border: var(--border-width-thin) solid var(--border-light);
 }
 
-/* Сетка карточек: от одной колонки до --acts-grid-max-columns.
+/* Сетка карточек: от одной колонки до --acts-columns.
    auto-fill сам набирает столько колонок, сколько влезает по
    --acts-grid-min-column-width, но потолка у него нет — на широком мониторе он
    набрал бы и шесть, и семь. Поэтому минимум колонки берётся как максимум из
@@ -66,14 +66,30 @@
    больше порога, следующая колонка перестаёт помещаться по определению.
    Ширину ряда даёт 100% — это content-box сетки, поля контейнера уже вычтены. */
 .acts-grid {
+    /* Потолок колонок — по числу карточек: пустых дорожек auto-fill не
+       схлопывает, и на трёх актах ряд из пяти колонок оставлял справа две
+       пустые (~37% ширины), а сами карточки выходили узкими и вытянутыми.
+       Пол в три колонки: одна карточка на весь ряд смотрелась бы баннером.
+       Считает CSS, потому что «Загрузить ещё» дописывает карточки в тот же
+       грид — при подгрузке потолок поднимается сам. */
+    --acts-columns: 3;
+
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(
         max(
             var(--acts-grid-min-column-width),
-            (100% - (var(--acts-grid-max-columns) - 1) * var(--spacing-2xl)) / var(--acts-grid-max-columns)
+            (100% - (var(--acts-columns) - 1) * var(--spacing-2xl)) / var(--acts-columns)
         ),
         1fr));
     gap: var(--spacing-2xl);
+}
+
+.acts-grid:has(.act-card:nth-child(4)) {
+    --acts-columns: 4;
+}
+
+.acts-grid:has(.act-card:nth-child(5)) {
+    --acts-columns: 5;
 }
 
 /* Состояние загрузки - центрированный спиннер с текстом */
