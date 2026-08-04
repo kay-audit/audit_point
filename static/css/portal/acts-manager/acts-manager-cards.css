@@ -140,16 +140,20 @@
 }
 
 /* Заголовок карточки (название акта).
-   Обрезается на двух строках: карточка перестаёт расти от длины названия, а
-   полный текст доступен по наведению (title проставляет acts-manager-page.js).
-   -webkit-box — единственный способ клампа по строкам, поддержан всеми
-   актуальными браузерами; unprefixed line-clamp указан на будущее. */
+   Занимает ровно две строки всегда: сверху обрезается клампом, снизу
+   добирается min-height. Иначе у короткого названия всё, что ниже, поднималось
+   на строку вверх, и в ряду карточки шли вразнобой — метаданные, разделитель и
+   кнопки стояли на разной высоте у соседей.
+   Полный текст длинного названия доступен по наведению (title проставляет
+   acts-manager-page.js). -webkit-box — единственный способ клампа по строкам,
+   поддержан всеми актуальными браузерами; unprefixed line-clamp — на будущее. */
 .act-card-title {
     font-size: var(--font-size-xl);
     font-weight: var(--font-weight-semibold);
     color: var(--text-primary);
     margin: 0;
     line-height: var(--line-height-tight);
+    min-height: calc(2 * var(--line-height-tight) * 1em);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
