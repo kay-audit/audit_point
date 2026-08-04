@@ -218,3 +218,23 @@ async def test_nested_get_db_raises_in_strict_mode(fake_pool, monkeypatch):
         async with dbconn.get_db():
             async with dbconn.get_db():
                 pass
+
+
+async def test_child_task_acquire_not_flagged_by_guard(fake_pool, monkeypatch, caplog):
+    """Наследованная через create_task глубина родителя — не «повторный захват».
+
+    Дочерний task получает копию contextvar'а с ненулевой глубиной родителя,
+    но его собственное первое соединение — отдельное и легальное: страж
+    обязан считать глубину в рамках одного task (регрессия к задаче #13).
+    """
+    monkeypatch.setattr(dbconn, "_strict_acquire_guard", True)
+
+    async def child():
+        async with dbconn.get_db():
+            pass
+
+    async with dbconn.get_db():
+        await asyncio.create_task(child())
+
+    assert fake_pool.acquires == 2
+    assert not any("Повторный захват" in r.message for r in caplog.records)

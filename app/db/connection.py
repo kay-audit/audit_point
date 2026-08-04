@@ -28,9 +28,28 @@ _adapter: DatabaseAdapter | None = None
 # Таймаут ожидания свободного соединения из пула (сек), берётся из настроек при
 # init_db. None → asyncpg ждёт бесконечно (поведение до инициализации/в тестах).
 _acquire_timeout: float | None = None
+class _AcquireDepth:
+    """Глубина захватов пула вместе с task-владельцем.
+
+    Владелец нужен, потому что contextvar копируется в ``create_task``:
+    дочерний task наследует значение родителя, но его собственный первый
+    захват — не «повторный» (это отдельное соединение, легальная ситуация).
+    Глубина считается только в рамках одного task — по аналогии с
+    ``_bound_tx`` исполнителя (``app/db/executor.py``).
+    """
+
+    __slots__ = ("task", "depth")
+
+    def __init__(self, task: "asyncio.Task | None", depth: int) -> None:
+        self.task = task
+        self.depth = depth
+
+
 # Глубина захватов пула в текущем task. Больше 1 — риск самоблокировки
 # на пуле max=2: держим соединение и просим второе.
-_acquire_depth: ContextVar[int] = ContextVar("db_acquire_depth", default=0)
+_acquire_depth: ContextVar[_AcquireDepth | None] = ContextVar(
+    "db_acquire_depth", default=None
+)
 # Реакция на повторный захват: True — RuntimeError, False — WARNING со стеком.
 # Значение приезжает из настроек в init_db.
 _strict_acquire_guard: bool = False
@@ -360,21 +379,25 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
         RuntimeError: Если пул не инициализирован либо сработал строгий страж
             повторного захвата (``DATABASE__STRICT_ACQUIRE_GUARD``)
     """
-    depth = _acquire_depth.get()
-    if depth > 0:
+    entry = _acquire_depth.get()
+    task = asyncio.current_task()
+    own_depth = entry.depth if (entry is not None and entry.task is task) else 0
+    if own_depth > 0:
         msg = (
             "Повторный захват соединения БД в том же task (глубина %d): "
             "риск самоблокировки пула. Используйте DbExecutor и его transaction() "
-            "вместо вложенного get_db()." % (depth + 1)
+            "вместо вложенного get_db()." % (own_depth + 1)
         )
         if _strict_acquire_guard:
             raise RuntimeError(msg)
         logger.warning(msg, stack_info=True)
 
-    # Декремент — явным set(get() - 1), БЕЗ Token.reset: get_db приостанавливается
-    # между setup и teardown, и token к моменту сброса может оказаться в другом
-    # Context (ValueError). Инкремент/декремент в одном task безопасны.
-    _acquire_depth.set(depth + 1)
+    # Значение каждый раз — НОВЫЙ объект (не мутируем существующий): контекст
+    # дочерних task'ов делит ссылку на текущее значение, мутация протекла бы
+    # в чужой учёт. Декремент — явным set(), БЕЗ Token.reset: get_db
+    # приостанавливается между setup и teardown, и token к моменту сброса
+    # может оказаться в другом Context (ValueError).
+    _acquire_depth.set(_AcquireDepth(task, own_depth + 1))
     try:
         pool = get_pool()
 
@@ -423,7 +446,11 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
         finally:
             await pool.release(connection)
     finally:
-        _acquire_depth.set(_acquire_depth.get() - 1)
+        cur = _acquire_depth.get()
+        if cur is not None and cur.task is asyncio.current_task():
+            _acquire_depth.set(
+                _AcquireDepth(cur.task, cur.depth - 1) if cur.depth > 1 else None
+            )
 
 
 async def create_tables_if_not_exist(domains=None) -> None:

@@ -1450,15 +1450,11 @@ patch-точки `patch.multiple("app.db.connection", get_db=..., get_adapter=..
   (`tests/conftest.py`), независимо от `.env`.
 - `false` (дефолт, `.env.example`, ПРОМ) — WARNING со стеком, запрос не падает.
 
-Известное ограничение стража: глубина в `ContextVar` не привязана к
-task-владельцу (в отличие от `_bound_tx` у `transaction()`, который сверяет
-`bound.task is not asyncio.current_task()`) — дочерний task, порождённый
-`create_task` пока родитель держит соединение, наследует копию ненулевой
-глубины и может ложно словить «Повторный захват» на своём первом же
-`get_db()`, хотя реально ничего не захватывал дважды. Сегодня в приложении
-нет кода, порождающего task с работой БД внутри держащего соединение task'а
-(см. инвариант 2), поэтому пробел не проявляется в проде; ловится он
-юнит-тестом `tests/db/test_executor.py::test_foreign_task_gets_own_connection`.
+Глубина хранится вместе с task-владельцем (`_AcquireDepth`): contextvar
+копируется в `create_task`, дочерний task наследует значение родителя — но его
+собственный первый захват считается с нуля, а не «повторным» (по аналогии с
+`_bound_tx` у `transaction()`). Регрессия:
+`tests/db/test_executor.py::test_child_task_acquire_not_flagged_by_guard`.
 
 **Ratchet-тест** `tests/test_connection_budget.py` — статический AST-обход
 `app/`: находит функции, где `async with get_db()` содержит `yield` внутри
