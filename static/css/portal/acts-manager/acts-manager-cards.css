@@ -125,24 +125,37 @@
     criticalGlow 2s var(--ease-in-out-smooth) infinite;
 }
 
-/* Шапка карточки с заголовком и бейджем роли */
+/* Шапка карточки: капсула роли отдельной строкой, под ней заголовок.
+   Раньше они стояли в одной строке через space-between, и капсула (nowrap,
+   flex-shrink:0) отбирала у заголовка ~140px — длинное название переносилось
+   на восемь строк и растягивало вниз весь ряд карточек, поскольку строки грида
+   тянутся по самой высокой. */
 .act-card-header {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
     align-items: flex-start;
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-xl);
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
     position: relative;
 }
 
-/* Заголовок карточки (название акта) */
+/* Заголовок карточки (название акта).
+   Обрезается на двух строках: карточка перестаёт расти от длины названия, а
+   полный текст доступен по наведению (title проставляет acts-manager-page.js).
+   -webkit-box — единственный способ клампа по строкам, поддержан всеми
+   актуальными браузерами; unprefixed line-clamp указан на будущее. */
 .act-card-title {
     font-size: var(--font-size-xl);
     font-weight: var(--font-weight-semibold);
     color: var(--text-primary);
     margin: 0;
-    flex: 1;
     line-height: var(--line-height-tight);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
 }
 
 /* Бейдж с ролью пользователя (автор/редактор) */
