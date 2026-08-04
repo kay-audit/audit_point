@@ -29,7 +29,10 @@
 /* Область контента текущего шага */
 .step-content {
     padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-lg) var(--spacing-lg);
-    padding-top: var(--spacing-12xl);
+    /* Буфер под fixed-шапку — формулой от её высоты, не магическим числом:
+       фиксированные 112px на высоких вьюпортах (9vh > 112px при ≥1244px)
+       давали шапке перекрывать верх контента. */
+    padding-top: var(--body-padding-top);
     height: 100%;
     display: flex;
     flex: 1;

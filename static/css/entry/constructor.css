@@ -4,6 +4,10 @@
  */
 @import './shared.css';
 
+/* Плотность: корневой rem-масштаб интерфейса конструктора (после shared —
+   переопределяет браузерный дефолт до загрузки остальных слоёв). */
+@import '../constructor/layout/density.css';
+
 /* Constructor layout */
 @import '../constructor/layout/container.css';
 @import '../constructor/layout/header.css';
