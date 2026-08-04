@@ -95,7 +95,9 @@
     border: var(--border-width-thin) solid var(--border-light);
     background: var(--bg-secondary);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    /* Токен, а не 0.75rem литералом: у мелкого кегля в портале есть пол
+       (portal/layout/density.css), и мимо токена бейдж проваливался под него. */
+    font-size: var(--font-size-xs);
     white-space: nowrap;
 }
 

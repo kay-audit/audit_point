@@ -4,6 +4,9 @@
  */
 @import './shared.css';
 
+/* Плотность интерфейса — сразу после токенов, до всех потребителей */
+@import '../portal/layout/density.css';
+
 /* Portal layout */
 @import '../portal/layout/sidebar.css';
 @import '../portal/layout/user-avatar.css';
