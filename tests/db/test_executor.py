@@ -1,6 +1,7 @@
 """Юнит-тесты DbExecutor: соединение на операцию, ambient-транзакция, стражи."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -79,6 +80,10 @@ def fake_pool(monkeypatch):
     pool = FakePool()
     monkeypatch.setattr(dbconn, "_pool", pool)
     monkeypatch.setattr(dbconn, "_acquire_timeout", 1.0)
+    # setup_logging() ставит логгеру audit_workstation propagate=False, и если
+    # его вызвал любой предыдущий тест (через create_app), caplog на root'е
+    # перестаёт видеть WARNING'и стража. Возвращаем распространение на тест.
+    monkeypatch.setattr(logging.getLogger("audit_workstation"), "propagate", True)
     return pool
 
 
@@ -149,3 +154,20 @@ async def test_pool_timeout_maps_to_service_unavailable(monkeypatch):
 
 def test_get_executor_singleton():
     assert get_executor() is get_executor()
+
+
+async def test_nested_get_db_warns_by_default(fake_pool, caplog, monkeypatch):
+    monkeypatch.setattr(dbconn, "_strict_acquire_guard", False)
+    async with dbconn.get_db():
+        async with dbconn.get_db():
+            pass
+    assert fake_pool.acquires == 2
+    assert any("Повторный захват" in r.message for r in caplog.records)
+
+
+async def test_nested_get_db_raises_in_strict_mode(fake_pool, monkeypatch):
+    monkeypatch.setattr(dbconn, "_strict_acquire_guard", True)
+    with pytest.raises(RuntimeError, match="Повторный захват"):
+        async with dbconn.get_db():
+            async with dbconn.get_db():
+                pass
