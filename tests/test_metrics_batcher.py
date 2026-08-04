@@ -173,6 +173,37 @@ async def test_callback_exception_does_not_propagate_and_drops_batch(caplog):
     assert tracker.batches == []
 
 
+async def test_size_flush_runs_outside_caller_task():
+    """Flush по порогу не исполняется в task'е вызывающего add().
+
+    Вызывающий может держать соединение/транзакцию (аудит внутри
+    save-content), а flush_callback берёт своё соединение из пула — в том же
+    task'е страж get_db счёл бы это повторным захватом и flush падал бы
+    с потерей пакета. Отдельный task = отдельный контекст.
+    """
+    caller_task = asyncio.current_task()
+    flush_tasks: list[asyncio.Task | None] = []
+
+    class _TaskTracker(_CallbackTracker):
+        async def __call__(self, batch: list) -> None:
+            flush_tasks.append(asyncio.current_task())
+            await super().__call__(batch)
+
+    tracker = _TaskTracker()
+    batcher: MetricsBatcher[int] = MetricsBatcher(
+        flush_callback=tracker,
+        max_batch_size=3,
+        flush_interval_sec=1000.0,
+        name="t_task_identity",
+    )
+    for i in range(3):
+        await batcher.add(i)
+    # Контракт сохранён: flush завершён к возврату add()...
+    assert tracker.batches == [[0, 1, 2]]
+    # ...но исполнялся в собственном task'е, не в task'е вызывающего.
+    assert flush_tasks and flush_tasks[0] is not caller_task
+
+
 async def test_parallel_add_serialised_by_lock():
     """Параллельные add() корректно сериализуются: все записи доходят, нет дублей."""
     tracker = _CallbackTracker()

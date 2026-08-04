@@ -60,6 +60,9 @@ class MetricsBatcher(Generic[T]):
         self._buffer: list[T] = []
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        # Живые task'и flush-по-порогу (см. add): держим сильные ссылки,
+        # иначе event loop может собрать ещё не стартовавший task.
+        self._threshold_flushes: set[asyncio.Task] = set()
         self._shutdown = False
         # Серилизует stop() относительно текущего flush, чтобы финальный
         # flush не пересекался с фоновым.
@@ -80,8 +83,11 @@ class MetricsBatcher(Generic[T]):
         """Добавляет запись в буфер; при достижении ``max_batch_size`` — flush.
 
         Под локом: добавление + проверка размера + защитный дроп старых
-        записей при превышении ``max_buffer_size``.
+        записей при превышении ``max_buffer_size``. Сам flush по порогу
+        исполняется в отдельном task'е (``_flush_by_size``), но с ожиданием —
+        контракт «flush завершён к возврату add()» сохранён.
         """
+        flush_needed = False
         async with self._lock:
             self._buffer.append(record)
             if len(self._buffer) > self._max_buffer_size:
@@ -100,7 +106,26 @@ class MetricsBatcher(Generic[T]):
                     },
                 )
             if len(self._buffer) >= self._max_batch_size:
-                await self._flush_locked()
+                flush_needed = True
+        if flush_needed:
+            # Flush — в СОБСТВЕННОМ task'е: вызывающий add() код может держать
+            # соединение или транзакцию (например, аудит внутри save-content),
+            # а flush_callback берёт своё соединение из пула. В task'е
+            # вызывающего это был бы «повторный захват» (страж get_db,
+            # инвариант 2); отдельный task = отдельный контекст и легальный
+            # независимый захват.
+            task = asyncio.create_task(
+                self._flush_by_size(),
+                name=f"metrics_batcher:{self._name}:size_flush",
+            )
+            self._threshold_flushes.add(task)
+            task.add_done_callback(self._threshold_flushes.discard)
+            await task
+
+    async def _flush_by_size(self) -> None:
+        """Flush по достижении порога — берёт лок сам (работает в своём task'е)."""
+        async with self._lock:
+            await self._flush_locked()
 
     async def start(self) -> None:
         """Стартует фоновую задачу периодического flush.
@@ -131,6 +156,13 @@ class MetricsBatcher(Generic[T]):
             except (asyncio.CancelledError, Exception):
                 pass
             self._task = None
+        # Дожидаемся flush'ей по порогу, стартовавших из add(), — финальный
+        # flush ниже должен видеть согласованный буфер.
+        for task in list(self._threshold_flushes):
+            try:
+                await task
+            except Exception:
+                pass
         # Финальный flush — под общим flush-локом, чтобы не пересечься с
         # последним фоновым тиком, если он уже стартовал.
         async with self._flush_in_progress:
