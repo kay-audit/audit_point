@@ -83,16 +83,18 @@
     display: none;
 }
 
-/* Шапка меню. Единый светлый стиль для портала И конструктора (решение:
-   колокольчик везде как на лендинге; конструктор перестал быть исключением). */
+/* Шапка меню. Базовый стиль — как у остальных выпадающих меню шапки
+   конструктора (.acts-menu-header, .settings-menu-header, .preview-menu-header):
+   градиент и светлый текст. Светлая шапка была единственной в этом ряду и
+   выбивалась. Портал переопределяет её ниже — там topbar сам светлый. */
 .notifications-menu-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: var(--spacing-md);
     padding: var(--spacing-xl) var(--spacing-2xl);
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    background: var(--gradient-header);
+    color: var(--text-on-primary);
     border-bottom: var(--border-width-thin) solid var(--border-light);
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     flex-shrink: 0;
@@ -113,12 +115,12 @@
     margin-left: auto;
 }
 
-/* Кнопка «Прочитать все» (на светлой шапке) */
+/* Кнопка «Прочитать все» (на градиентной шапке) */
 .notifications-read-all {
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--text-secondary);
+    color: var(--text-on-primary);
     font-size: var(--font-size-sm);
     line-height: 1;
     padding: var(--spacing-xs) var(--spacing-sm);
@@ -130,17 +132,16 @@
 
 .notifications-read-all:hover {
     opacity: 1;
-    background: var(--gray-100);
-    color: var(--primary);
+    background: var(--help-close-hover);
 }
 
-/* Кнопка закрытия (на светлой шапке) */
+/* Кнопка закрытия (на градиентной шапке) */
 .notifications-menu-close {
     background: none;
     border: none;
     font-size: var(--font-size-3xl);
     cursor: pointer;
-    color: var(--text-secondary);
+    color: var(--text-on-primary);
     line-height: 1;
     padding: 0;
     display: flex;
@@ -151,8 +152,7 @@
 }
 
 .notifications-menu-close:hover {
-    background: var(--gray-100);
-    color: var(--primary);
+    background: var(--help-close-hover);
     transform: rotate(var(--rotate-close-button));
 }
 
@@ -364,11 +364,27 @@
 }
 
 /* ============================================================================
- * Портал/лендинг: только позиционная правка дропдауна.
- * Стиль шапки теперь единый и светлый в базе (см. .notifications-menu-header) —
- * отдельных цветовых override'ов для портала больше нет. У портала topbar ниже,
- * чем у конструктора, поэтому прижимаем меню чуть плотнее к нему.
+ * Портал/лендинг. Во-первых, позиция: topbar портала ниже, чем шапка
+ * конструктора, — прижимаем меню чуть плотнее к нему. Во-вторых, светлая шапка
+ * дропдауна: .landing-topbar белый, градиент конструктора смотрелся бы на нём
+ * чужеродно (тот же приём, что у .landing-settings-menu .settings-menu-header).
  * ============================================================================ */
 .landing-topbar-actions .notifications-menu {
     top: calc(100% + var(--spacing-sm));
+}
+
+.landing-topbar-actions .notifications-menu-header {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.landing-topbar-actions .notifications-read-all,
+.landing-topbar-actions .notifications-menu-close {
+    color: var(--text-secondary);
+}
+
+.landing-topbar-actions .notifications-read-all:hover,
+.landing-topbar-actions .notifications-menu-close:hover {
+    background: var(--gray-100);
+    color: var(--primary);
 }
