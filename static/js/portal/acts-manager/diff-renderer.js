@@ -4,7 +4,7 @@
  */
 import { SafeHTML, renderActContent } from '../../shared/sanitize.js';
 import { iterateVisibleCells } from '../../constructor/table/grid-merges.js';
-import { VIOLATION_LABELS, CASE_LABEL_TEMPLATE, FREE_TEXT_LABEL } from '../../constructor/violation/violation-fields.js';
+import { VIOLATION_LABELS, VIOLATION_SCALAR_RICH_KEYS, CASE_LABEL_TEMPLATE, FREE_TEXT_LABEL } from '../../constructor/violation/violation-fields.js';
 import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
 import { computeAdditionalContentNumbers } from '../../constructor/violation/violation-numbering.js';
@@ -176,7 +176,11 @@ export class DiffRenderer {
         if (node._moved) {
             const badge = document.createElement('span');
             badge.className = 'diff-node-moved-badge';
-            badge.textContent = 'перемещён';
+            // Направление есть только при перестановке среди сиблингов одного
+            // родителя (_moveDirection, см. diff-engine._diffTree); при смене
+            // родителя направление не определено — бейдж без стрелки.
+            const arrow = node._moveDirection === 'up' ? ' ↑' : node._moveDirection === 'down' ? ' ↓' : '';
+            badge.textContent = `перемещён${arrow}`;
             el.appendChild(badge);
         }
     }
@@ -373,7 +377,7 @@ export class DiffRenderer {
         const data = violDiff.newData || violDiff.oldData;
         if (!data) return;
 
-        const fields = ['violated', 'established', 'reasons', 'measures', 'consequences', 'responsible'];
+        const fields = VIOLATION_SCALAR_RICH_KEYS;
 
         for (const field of fields) {
             const val = this._getViolFieldValue(data, field);

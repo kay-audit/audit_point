@@ -140,6 +140,41 @@ export const violationMutations = {
         _schedulePreview(violation.id, field === 'width');
         return true;
     },
+
+    /**
+     * Переставляет элемент дополнительного контента (drag-and-drop, §5.10a).
+     * Раньше handleDrop сплайсил items напрямую, мимо мутаторного слоя:
+     * read-only держался только на том, что draggable не выставляется в режиме
+     * просмотра, — программный путь гейта не имел.
+     *
+     * toIndex — позиция вставки В ИСХОДНОМ массиве (как её считает dragover),
+     * поэтому при движении вниз она уменьшается на 1: удаление элемента с
+     * fromIndex сдвигает всё, что правее, влево.
+     *
+     * DOM не трогаем (в этом модуле его нет вовсе): перерисовку контейнера
+     * делает вызывающая сторона, превью — мутатор, как у соседей.
+     *
+     * @param {Object} violation - Объект нарушения
+     * @param {number} fromIndex - Индекс перетаскиваемого элемента
+     * @param {number} toIndex - Позиция вставки в исходном массиве
+     * @returns {boolean} true — переставлено; false — read-only либо
+     *          fromIndex вне границ массива
+     */
+    moveContentItem(violation, fromIndex, toIndex) {
+        if (ValidationCore.requireWrite('cannotEdit')) return false;
+
+        const items = violation.additionalContent.items;
+        if (fromIndex < 0 || fromIndex >= items.length) return false;
+
+        const [moved] = items.splice(fromIndex, 1);
+        if (fromIndex < toIndex) toIndex -= 1;
+        toIndex = Math.max(0, Math.min(toIndex, items.length));
+        items.splice(toIndex, 0, moved);
+
+        // Порядок элементов — позиция в массиве, отдельного поля order нет (#24).
+        _schedulePreview(violation.id, true);
+        return true;
+    },
 };
 
 // Домешиваем мутатор в прототип ViolationManager (как остальные violation-*).

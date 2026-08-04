@@ -208,11 +208,8 @@ export function validateImageType(file, { itemsCount = 0, limits = null } = {}) 
         };
     }
     if (itemsCount >= lim.maxItemsPerViolation) {
-        return {
-            ok: false,
-            reason: `Достигнут лимит элементов дополнительного контента на нарушение `
-                + `(${lim.maxItemsPerViolation}).`,
-        };
+        // №14: текст — из единой точки формирования (app-config.js), не хардкод.
+        return { ok: false, reason: AppConfig.content.errors.contentItemsLimitReached(lim.maxItemsPerViolation) };
     }
     if (typeof file.size === 'number' && file.size > ABSURD_RAW_MAX_BYTES) {
         return {

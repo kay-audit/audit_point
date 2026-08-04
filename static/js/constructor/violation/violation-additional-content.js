@@ -8,6 +8,7 @@ import { PreviewManager } from '../preview/preview.js';
 import { ViolationManager } from './violation-core.js';
 import { ValidationCore } from '../validation/validation-core.js';
 import { Notifications } from '../../shared/notifications.js';
+import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import {
     estimateActImageBytes,
@@ -19,7 +20,7 @@ import {
 } from './violation-image-validator.js';
 import { CONTENT_TYPE_IMAGE, createContentItem } from './violation-content-item.js';
 import { sniffImageMagic, RECOGNIZED_IMAGE_FORMATS } from './violation-file-reading.js';
-import { downscaleImage } from './violation-image-resize.js';
+import { downscaleImage, resolveActualFilename } from './violation-image-resize.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 
 /** localStorage-ключ предвыбора режима качества (Q3 всё равно спрашивает каждый раз). */
@@ -286,9 +287,8 @@ Object.assign(ViolationManager.prototype, {
         const toInsert = available >= items.length ? items : items.slice(0, available);
 
         if (toInsert.length < items.length) {
-            Notifications.warning(
-                `Достигнут лимит элементов дополнительного контента на нарушение (${maxItems}).`,
-            );
+            // №14: текст — из единой точки формирования (app-config.js), не хардкод.
+            Notifications.warning(AppConfig.content.errors.contentItemsLimitReached(maxItems));
         }
 
         if (toInsert.length === 0) return 0;
@@ -445,7 +445,9 @@ Object.assign(ViolationManager.prototype, {
             runningBytes += bytes;
             items.push(createContentItem(CONTENT_TYPE_IMAGE, {
                 url: result.url,
-                filename: result.file.name,
+                // #12: имя должно отражать факт (downscaleImage мог молча
+                // перекодировать непрозрачный PNG в JPEG).
+                filename: resolveActualFilename(result.file, result.url),
             }));
         }
 

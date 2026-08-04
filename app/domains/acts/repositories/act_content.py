@@ -103,19 +103,20 @@ class ActContentRepository(BaseRepository):
 
         # Маппинг {node_id -> {number, label, parent_item_node_id}} за один обход
         node_map = self._build_node_map(data.tree)
-        # Обратный индекс реально используемых id (находка #21) — отдельный
-        # набор, node_map им не расширяем (горячий путь сохранения).
-        used_refs = self._build_used_refs(data.tree)
+        # Рефереры по id записи (находка #21 + лечение устаревшего nodeId,
+        # см. _build_referrers) — отдельная структура, node_map ей не
+        # расширяем (горячий путь сохранения).
+        referrers = self._build_referrers(data.tree)
 
         await self._save_tree(act_id, data.tree)
         dropped_tables = await self._save_tables(
-            act_id, audit_act_id, data, audit_point_map, node_map, used_refs["tables"]
+            act_id, audit_act_id, data, audit_point_map, node_map, referrers["tables"]
         )
         dropped_textblocks = await self._save_textblocks(
-            act_id, audit_act_id, data, audit_point_map, node_map, used_refs["textBlocks"]
+            act_id, audit_act_id, data, audit_point_map, node_map, referrers["textBlocks"]
         )
         dropped_violations = await self._save_violations(
-            act_id, audit_act_id, data, audit_point_map, node_map, used_refs["violations"]
+            act_id, audit_act_id, data, audit_point_map, node_map, referrers["violations"]
         )
         await self._sync_invoices(act_id, audit_act_id, data, audit_point_map)
         await self._sync_directives(act_id, audit_act_id, data, audit_point_map)
@@ -273,35 +274,72 @@ class ActContentRepository(BaseRepository):
         return node_map
 
     @staticmethod
-    def _build_used_refs(tree: dict) -> dict[str, set[str]]:
+    def _build_referrers(tree: dict) -> dict[str, dict[str, list[str]]]:
         """
-        Обратный индекс (находка #21, Вариант Б): множество id, на которые
-        РЕАЛЬНО ссылается хотя бы один узел дерева через своё поле-ссылку
-        (tableId/textBlockId/violationId).
+        Обратный индекс (находка #21, Вариант Б; расширен под лечение
+        устаревшего nodeId — «restore теряет таблицу»): для каждого словаря
+        (tables/textBlocks/violations) — {entry_id: [node_id, ...]}, узлы
+        дерева, чьё поле-ссылка (tableId/textBlockId/violationId) реально
+        указывает на entry_id, В ДОКУМЕНТНОМ ПОРЯДКЕ (родитель раньше детей,
+        дети — в естественном порядке).
 
         orphan-фильтр раньше проверял лишь существование узла с nodeId
         записи (_build_node_map/node_map) — этого недостаточно: запись
         могла указывать на существующий узел, который в реальности
-        ссылается на ДРУГУЮ запись словаря. Такой фантом переживал
-        фильтр. Обратный индекс закрывает это симметрично для tables/
-        textBlocks/violations.
+        ссылается на ДРУГУЮ запись словаря (такой фантом переживал старый
+        фильтр), либо на узел, которого вовсе нет в дереве (мёртвый
+        nodeId) — тогда запись дропалась ДАЖЕ если другой живой узел на неё
+        реально ссылался (путь restore_version мимо фронтового санитайзера
+        терял таблицу/нарушение целиком). Список рефереров вместо простого
+        множества нужен для лечения: если entry.nodeId не входит в список,
+        запись не дропается, а получает первого реферера — см.
+        _resolve_owner_node_id.
 
         Returns:
-            {dictName: {entry_id, ...}} — по одному множеству на словарь.
+            {dictName: {entry_id: [node_id, ...]}} — по одному словарю на
+            словарь контента.
         """
-        used: dict[str, set[str]] = {dict_name: set() for _, dict_name in LEAF_BLOCK_REFS.values()}
+        referrers: dict[str, dict[str, list[str]]] = {
+            dict_name: {} for _, dict_name in LEAF_BLOCK_REFS.values()
+        }
         stack: list[dict] = [tree]
 
         while stack:
             node = stack.pop()
-            for ref_field, dict_name in LEAF_BLOCK_REFS.values():
-                ref = node.get(ref_field)
-                if ref:
-                    used[dict_name].add(ref)
-            for child in node.get("children", []):
+            node_id = node.get("id")
+            if node_id:
+                for ref_field, dict_name in LEAF_BLOCK_REFS.values():
+                    ref = node.get(ref_field)
+                    if ref:
+                        referrers[dict_name].setdefault(ref, []).append(node_id)
+            # reversed(): LIFO-стек с детьми, добавленными в обратном порядке,
+            # отдаёт их через pop() в естественном порядке — обязательно для
+            # документного порядка рефереров (см. docstring/Returns).
+            for child in reversed(node.get("children", [])):
                 stack.append(child)
 
-        return used
+        return referrers
+
+    @staticmethod
+    def _resolve_owner_node_id(
+        entry_id: str, node_id: str, referrers: dict[str, list[str]]
+    ) -> str | None:
+        """
+        Определяет владельца записи словаря по (де)нормализованному nodeId.
+
+        Returns:
+            None — запись сирота (ни один узел дерева не ссылается на
+            entry_id), вызывающий код её дропает. Иначе — валидный node_id
+            владельца: сам entry.nodeId, если он входит в список рефереров
+            (валидная ссылка, не переписывается), либо первый реферер в
+            документном порядке — денормализованный nodeId ЛЕЧИТСЯ по
+            актуальной ссылке дерева вместо того, чтобы запись отбрасывалась
+            целиком.
+        """
+        refs = referrers.get(entry_id)
+        if not refs:
+            return None
+        return node_id if node_id in refs else refs[0]
 
     async def _save_tree(self, act_id: int, tree: dict) -> None:
         """Обновляет дерево структуры акта."""
@@ -318,14 +356,18 @@ class ActContentRepository(BaseRepository):
     async def _save_tables(
         self, act_id: int, audit_act_id: str | None,
         data: ActDataSchema, audit_point_map: dict,
-        node_map: dict[str, dict], used_ids: set[str]
+        node_map: dict[str, dict], referrers: dict[str, list[str]]
     ) -> int:
         """Пересоздаёт таблицы акта (batch INSERT через executemany).
 
         Returns:
-            Число таблиц-сирот (nodeId отсутствует в дереве ИЛИ ни один узел
-            реально не ссылается на table_id — находка #21), отброшенных
-            orphan-фильтром — сервис агрегирует это в warning пользователю.
+            Число таблиц-сирот (ни один узел дерева реально не ссылается на
+            table_id — находка #21), отброшенных orphan-фильтром — сервис
+            агрегирует это в warning пользователю. Таблица с устаревшим/
+            несуществующим nodeId, на которую при этом реально ссылается
+            живой узел, сиротой НЕ считается — её nodeId лечится на
+            актуального реферера (_resolve_owner_node_id); раньше такую
+            запись дропало восстановление версии («restore теряет таблицу»).
         """
         await self.conn.execute(
             f"DELETE FROM {self.tables} WHERE act_id = $1",
@@ -335,15 +377,15 @@ class ActContentRepository(BaseRepository):
         args: list[tuple] = []
         dropped = 0
         for table_id, table_data in data.tables.items():
-            node_id = table_data.nodeId
-            # Orphan-фильтр: таблица, чей nodeId отсутствует в дереве ИЛИ на
-            # чей table_id ни один узел реально не ссылается (находка #21,
-            # обратная сверка) — не пишется (иначе в act_tables копятся
-            # записи без узла-владельца или фантомы с чужим nodeId).
-            if node_id not in node_map or table_id not in used_ids:
+            owner_node_id = self._resolve_owner_node_id(table_id, table_data.nodeId, referrers)
+            # Orphan-фильтр: ни один узел дерева реально не ссылается на
+            # table_id (находка #21, обратная сверка) — не пишется (иначе в
+            # act_tables копятся записи без узла-владельца или фантомы с
+            # чужим tableId).
+            if owner_node_id is None:
                 dropped += 1
                 continue
-            info = node_map.get(node_id, {})
+            info = node_map.get(owner_node_id, {})
             parent_node_id = info.get("parent_item_node_id")
             audit_point_id = audit_point_map.get(parent_node_id) if parent_node_id else None
 
@@ -352,7 +394,7 @@ class ActContentRepository(BaseRepository):
                 audit_act_id,
                 audit_point_id,
                 table_id,
-                node_id,
+                owner_node_id,
                 info.get("number"),
                 info.get("label"),
                 json.dumps([
@@ -390,13 +432,16 @@ class ActContentRepository(BaseRepository):
     async def _save_textblocks(
         self, act_id: int, audit_act_id: str | None,
         data: ActDataSchema, audit_point_map: dict,
-        node_map: dict[str, dict], used_ids: set[str]
+        node_map: dict[str, dict], referrers: dict[str, list[str]]
     ) -> int:
         """Пересоздаёт текстовые блоки акта (batch INSERT через executemany).
 
         Returns:
             Число текстблоков-сирот, отброшенных orphan-фильтром (в т.ч. по
-            обратной сверке — находка #21).
+            обратной сверке — находка #21). Текстблок с устаревшим nodeId, на
+            который при этом реально ссылается живой узел, — не сирота, его
+            nodeId лечится (_resolve_owner_node_id, единообразно с
+            _save_tables).
         """
         await self.conn.execute(
             f"DELETE FROM {self.textblocks} WHERE act_id = $1",
@@ -406,14 +451,13 @@ class ActContentRepository(BaseRepository):
         args: list[tuple] = []
         dropped = 0
         for tb_id, tb_data in data.textBlocks.items():
-            node_id = tb_data.nodeId
-            # Orphan-фильтр: текстблок без узла-владельца в дереве ИЛИ без
-            # обратной ссылки узла (находка #21) не пишется (единообразно
-            # с _save_tables, см. pbe-4).
-            if node_id not in node_map or tb_id not in used_ids:
+            owner_node_id = self._resolve_owner_node_id(tb_id, tb_data.nodeId, referrers)
+            # Orphan-фильтр: без обратной ссылки узла (находка #21) не
+            # пишется (единообразно с _save_tables, см. pbe-4).
+            if owner_node_id is None:
                 dropped += 1
                 continue
-            info = node_map.get(node_id, {})
+            info = node_map.get(owner_node_id, {})
             parent_node_id = info.get("parent_item_node_id")
             audit_point_id = audit_point_map.get(parent_node_id) if parent_node_id else None
 
@@ -422,7 +466,7 @@ class ActContentRepository(BaseRepository):
                 audit_act_id,
                 audit_point_id,
                 tb_id,
-                node_id,
+                owner_node_id,
                 info.get("number"),
                 tb_data.content,
             ))
@@ -450,13 +494,16 @@ class ActContentRepository(BaseRepository):
     async def _save_violations(
         self, act_id: int, audit_act_id: str | None,
         data: ActDataSchema, audit_point_map: dict,
-        node_map: dict[str, dict], used_ids: set[str]
+        node_map: dict[str, dict], referrers: dict[str, list[str]]
     ) -> int:
         """Пересоздаёт нарушения акта (batch INSERT через executemany).
 
         Returns:
             Число нарушений-сирот, отброшенных orphan-фильтром (в т.ч. по
-            обратной сверке — находка #21).
+            обратной сверке — находка #21). Нарушение с устаревшим nodeId, на
+            которое при этом реально ссылается живой узел, — не сирота, его
+            nodeId лечится (_resolve_owner_node_id, единообразно с
+            _save_tables).
         """
         await self.conn.execute(
             f"DELETE FROM {self.violations} WHERE act_id = $1",
@@ -466,14 +513,13 @@ class ActContentRepository(BaseRepository):
         args: list[tuple] = []
         dropped = 0
         for v_id, v_data in data.violations.items():
-            node_id = v_data.nodeId
-            # Orphan-фильтр: нарушение без узла-владельца в дереве ИЛИ без
-            # обратной ссылки узла (находка #21) не пишется (единообразно
-            # с _save_tables, см. pbe-4).
-            if node_id not in node_map or v_id not in used_ids:
+            owner_node_id = self._resolve_owner_node_id(v_id, v_data.nodeId, referrers)
+            # Orphan-фильтр: без обратной ссылки узла (находка #21) не
+            # пишется (единообразно с _save_tables, см. pbe-4).
+            if owner_node_id is None:
                 dropped += 1
                 continue
-            info = node_map.get(node_id, {})
+            info = node_map.get(owner_node_id, {})
             parent_node_id = info.get("parent_item_node_id")
             audit_point_id = audit_point_map.get(parent_node_id) if parent_node_id else None
 
@@ -482,7 +528,7 @@ class ActContentRepository(BaseRepository):
                 audit_act_id,
                 audit_point_id,
                 v_id,
-                node_id,
+                owner_node_id,
                 info.get("number"),
                 v_data.violated,
                 v_data.established,

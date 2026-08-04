@@ -346,23 +346,6 @@ def sanitize_rich_html(html: str | None) -> str:
     )
 
 
-def sanitize_plain_text(text: str | None) -> str:
-    """
-    Чистит plain-текстовое поле: вырезает ВСЕ теги (пустой whitelist).
-
-    Для полей, которые по контракту — просто текст (строки descriptionList,
-    подпись/имя файла картинки): HTML-теги в них не легитимны, поэтому
-    выкусываются целиком, остаточные спецсимволы bleach экранирует.
-    """
-    if text is None:
-        return ""
-    if not isinstance(text, str):
-        text = str(text)
-    if not text:
-        return ""
-    return bleach.clean(text, tags=[], attributes={}, strip=True)
-
-
 def sanitize_tree_nodes(node: dict) -> None:
     """Рекурсивно чистит content в узлах дерева (узлы хранятся как dict)."""
     if not isinstance(node, dict):

@@ -167,6 +167,51 @@ test('setContentItemField пишет content → typing, caption → typing, wid
     assert.equal(previewCalls.at(-1).fn, 'updateBlock');
 });
 
+// --- moveContentItem (§5.10a): перестановка элементов доп. контента ---
+
+/** Нарушение с items из массива id. */
+function makeViolationWithItems(ids) {
+    const v = makeViolation();
+    v.additionalContent.items = ids.map((id) => ({ id, type: 'freeText', content: id }));
+    return v;
+}
+
+test('moveContentItem переставляет вниз (поправка на удаление исходной позиции)', () => {
+    reset();
+    const v = makeViolationWithItems(['A', 'B', 'C', 'D']);
+    const ok = mutations.moveContentItem.call({}, v, 0, 3);
+    assert.equal(ok, true);
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'C', 'A', 'D']);
+    assert.deepEqual(previewCalls, [{ fn: 'updateBlock', type: 'violation', id: 'v1' }]);
+});
+
+test('moveContentItem переставляет вверх (поправки нет)', () => {
+    reset();
+    const v = makeViolationWithItems(['A', 'B', 'C', 'D']);
+    assert.equal(mutations.moveContentItem.call({}, v, 3, 1), true);
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'D', 'B', 'C']);
+});
+
+test('moveContentItem: toIndex за границами массива — clamp, элемент не теряется', () => {
+    reset();
+    const v = makeViolationWithItems(['A', 'B', 'C']);
+    assert.equal(mutations.moveContentItem.call({}, v, 0, 99), true);
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'C', 'A']);
+
+    const v2 = makeViolationWithItems(['A', 'B', 'C']);
+    assert.equal(mutations.moveContentItem.call({}, v2, 2, -5), true);
+    assert.deepEqual(v2.additionalContent.items.map((i) => i.id), ['C', 'A', 'B']);
+});
+
+test('moveContentItem: fromIndex вне границ → false, массив не тронут', () => {
+    reset();
+    const v = makeViolationWithItems(['A', 'B']);
+    assert.equal(mutations.moveContentItem.call({}, v, 5, 0), false);
+    assert.equal(mutations.moveContentItem.call({}, v, -1, 0), false);
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B']);
+    assert.deepEqual(previewCalls, [], 'превью при отказе не планируется');
+});
+
 // --- read-only guard: запись НЕ происходит, возвращается false, превью не зовётся ---
 
 test('read-only: setViolationField не пишет и возвращает false', () => {
@@ -195,6 +240,15 @@ test('read-only: list-мутаторы ничего не меняют и воз�
     assert.equal(mutations.setViolationListItem.call({}, v, 'descriptionList', 0, 'x'), false);
     assert.equal(mutations.removeViolationListItem.call({}, v, 'descriptionList', 0), false);
     assert.deepEqual(v.descriptionList.items, ['a']);
+    assert.deepEqual(previewCalls, []);
+});
+
+test('read-only: moveContentItem не переставляет и возвращает false', () => {
+    reset(true);
+    const v = makeViolationWithItems(['A', 'B', 'C']);
+    const ok = mutations.moveContentItem.call({}, v, 0, 2);
+    assert.equal(ok, false);
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B', 'C']);
     assert.deepEqual(previewCalls, []);
 });
 

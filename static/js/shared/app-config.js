@@ -442,6 +442,17 @@ export class AppConfig {
             cannotAddToTextBlock: (type) => `Нельзя добавить ${type} к текстовому блоку`,
             cannotAddToViolation: (type) => `Нельзя добавить ${type} к нарушению`,
             limitReached: (type, limit) => `Достигнуто максимальное количество ${type} (${limit}) для этого пункта`,
+            // §5.10b: лимит элементов дополнительного контента — не «на пункт»,
+            // а внутри одного нарушения, поэтому отдельная фраза, а не limitReached.
+            // №14: единственная точка формирования этого текста — используется
+            // и здесь (paste/undo-гейт validation-tree.js), и кнопкой/приёмом
+            // картинок (violation-image-validator.js), и вставкой доп.контента
+            // (violation-additional-content.js). Синхронизировано ВРУЧНУЮ с
+            // бэкендом (act_content.py: ViolationAdditionalContentSchema.
+            // validate_items_count) — текст должен совпадать дословно (прецедент
+            // синхронизации — names.py ↔ chat-client-actions.js).
+            contentItemsLimitReached: (limit) =>
+                `Достигнут лимит элементов дополнительного контента на нарушение (${limit}).`,
             protectedFromDeletion: 'Эта таблица защищена от удаления',
             notFound: (type) => `${type} не найден`
         },
