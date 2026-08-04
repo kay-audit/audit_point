@@ -16,7 +16,10 @@
 /* Карточка отдельного элемента */
 .item-block {
     background: var(--bg-primary);
-    padding: var(--spacing-lg);
+    /* Поля карточки компактные: на этапе заполнения карточки вложены одна в
+       другую (секция → подпункт → таблица/текстблок), и щедрые поля на каждом
+       уровне складывались в экран воздуха. */
+    padding: var(--spacing);
     border-radius: var(--radius-md);
     border: var(--border-width-thin) solid var(--border);
     border-left: var(--border-width-thick) solid var(--primary);

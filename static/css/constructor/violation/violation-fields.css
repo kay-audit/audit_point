@@ -6,8 +6,8 @@
 /* Секция опциональных полей */
 .violation-optional-fields {
     border-top: var(--border-width-thin) solid var(--border);
-    padding-top: var(--spacing-md);
-    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
 }
 
 /* Заголовок секции опциональных полей */

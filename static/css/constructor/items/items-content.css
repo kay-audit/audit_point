@@ -84,8 +84,9 @@
 
 /* Контейнер для вложенных дочерних элементов */
 .item-children {
-    margin-top: var(--spacing-md);
-    padding-top: var(--spacing-md);
+    /* Разделитель отбит от заголовка его же margin-bottom — собственный отступ
+       сверху дублировал бы его. */
+    padding-top: var(--spacing-sm);
     border-top: var(--border-width-thin) solid var(--border-light);
     display: flex;
     flex-direction: column;

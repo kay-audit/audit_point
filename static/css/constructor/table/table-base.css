@@ -5,8 +5,10 @@
 
 /* Секция таблицы с заголовком */
 .table-section {
-    margin: var(--spacing-lg) 0;
-    padding: var(--spacing-lg);
+    /* Без внешних отступов: секция лежит внутри карточки .item-block, её поля
+       уже отбивают таблицу от краёв — свои поля шли бы вторым слоем. */
+    margin: 0;
+    padding: var(--spacing);
     background: var(--bg-primary);
     border-radius: var(--radius-md);
     border: var(--border-width-thin) solid var(--border);
@@ -18,7 +20,7 @@
 /* Заголовок секции таблицы */
 .table-section h3 {
     color: var(--text-primary);
-    margin-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-semibold);
     line-height: var(--line-height-tight);

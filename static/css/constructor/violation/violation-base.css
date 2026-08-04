@@ -5,8 +5,10 @@
 
 /* Контейнер секции нарушения */
 .violation-section {
-    margin: var(--spacing-lg) 0;
-    padding: var(--spacing-lg);
+    /* Как и .table-section: секция лежит внутри карточки .item-block, её поля
+       уже отбивают форму от краёв — свои внешние отступы шли бы вторым слоем. */
+    margin: 0;
+    padding: var(--spacing);
     border: var(--border-width-thin) solid var(--border);
     border-left: var(--violation-border-left-width) solid var(--primary);
     border-radius: var(--radius-md);
@@ -23,7 +25,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
     padding-bottom: var(--spacing-sm);
     border-bottom: var(--border-width-thin) solid var(--border-light);
 }
@@ -39,8 +41,8 @@
 .violation-columns {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-lg);
+    gap: var(--spacing);
+    margin-bottom: var(--spacing);
 }
 
 /* Отдельная колонка */
