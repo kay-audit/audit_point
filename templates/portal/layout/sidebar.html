@@ -1,18 +1,14 @@
 <!-- Общий sidebar для landing и acts-manager страниц -->
 <aside class="landing-sidebar" id="landingSidebar">
+    <!-- Кнопка первая, логотипа нет: в свёрнутом рельсе на его месте всё равно
+         оказывается стрелка, и при разворачивании они менялись местами -->
     <div class="sidebar-header">
-        <div class="sidebar-logo">
-            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                <rect width="32" height="32" rx="6" fill="var(--primary)"/>
-                <path d="M8 12L16 8L24 12V20L16 24L8 20V12Z" fill="white" stroke="white" stroke-width="1.5"/>
-            </svg>
-        </div>
-        <h1 class="sidebar-title">Инструменты</h1>
         <button class="sidebar-toggle-btn" id="sidebarToggleBtn" title="Свернуть/развернуть">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                 <path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         </button>
+        <h1 class="sidebar-title">Инструменты</h1>
     </div>
 
     <nav class="sidebar-nav">
