@@ -43,10 +43,14 @@
     width: var(--header-action-column-width);
 }
 
-/* Кнопка */
+/* Кнопка.
+ * Размер в px, а не в rem: иконки внутри — svg с жёсткими width/height="20" в
+ * шаблонах шапки, они за плотностью интерфейса (density.css) не следуют. Пока
+ * кнопка была rem-ной, уплотнение сжимало её, а иконку нет — та начинала
+ * распирать кнопку. 36px держит привычную пропорцию иконки к кнопке. */
 .header-action-btn {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 36px;
+    height: 36px;
     background: var(--step-bg);
     border: 1px solid var(--step-border);
     border-radius: var(--radius-sm);
@@ -59,6 +63,14 @@
     justify-content: center;
     position: relative;
     overflow: hidden;
+}
+
+/* Иконка внутри кнопки: единый размер поверх разнобоя width/height в шаблонах
+ * (16px у индикатора сохранности, 20px у остальных) и независимо от плотности
+ * интерфейса — по той же причине, что и размер самой кнопки. */
+.header-action-btn svg {
+    width: 20px;
+    height: 20px;
 }
 
 /* Эффект ripple при клике */
