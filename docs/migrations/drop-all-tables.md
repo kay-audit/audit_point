@@ -84,6 +84,7 @@ DROP TABLE IF EXISTS t_db_oarb_audit_act_acts;
 -- ╔══════════════════════════════════════════════════════════════════════╗
 -- ║  Домен ADMIN (зависимые → родительские)                             ║
 -- ╚══════════════════════════════════════════════════════════════════════╝
+DROP TABLE IF EXISTS t_db_oarb_audit_act_user_avatars;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_admin_http_metrics;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_admin_audit_log;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_access_denied_audit;
@@ -146,6 +147,7 @@ DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_acts;
 -- ╔══════════════════════════════════════════════════════════════════════╗
 -- ║  Домен ADMIN (зависимые → родительские)                             ║
 -- ╚══════════════════════════════════════════════════════════════════════╝
+DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_user_avatars;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_admin_http_metrics;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_admin_audit_log;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_access_denied_audit;

@@ -48,7 +48,7 @@ gitignored working-artifact; здесь фиксируется только то
 |---|---|---|
 | `textblock-core.js` | 303 | `TextBlockManager`/`textBlockManager`, `saveContent`, `execCommand`, `flushActiveEditor`, `finalizeEdit`, standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (§4) |
 | `textblock-formatting.js` | 145 | Наследование inline-стилей на капсулы от соседей/предков (`inheritFormattingToElement`, `applyFormattingToNewNodes`) |
-| `textblock-editor.js` | 1667 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
+| `textblock-editor.js` | 1683 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
 | `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок по поверхности (§15), кастомный дропдаун размера шрифта, `applyFontSize`, `normalizeFontSizes` |
 | `textblock-links-footnotes.js` | 829 | Создание/редактирование капсул, tooltip, контекстное меню, нумерация сносок, `validateLinkUrl` |
 | `textblock-capsule-integrity.js` | 677 | `validateAndRepairCapsules`, 3-слойный prevent-then-heal (см. §5), атомарное удаление капсулы-юнита |
@@ -381,7 +381,7 @@ guard'ов — без этого вертикальная навигация л�
 персистятся: `.node-selected` вычищается `_repairCapsulesInRoot` (как и
 `contenteditable`) на каждой точке записи в `content`.
 
-- **Shift-навигация** (`_handleCapsuleShiftArrow`, `textblock-editor.js:1537`)
+- **Shift-навигация** (`_handleCapsuleShiftArrow`, `textblock-editor.js:1553`)
   — Shift+←/→ без Ctrl/Meta/Alt, когда фокус выделения примыкает к капсуле по
   направлению движения, перепрыгивает фокус на ДАЛЬНЮЮ сторону капсулы целиком
   (за её дальний guard) одним шагом — капсула ведёт себя как единый символ при
@@ -392,7 +392,7 @@ guard'ов — без этого вертикальная навигация л�
   нажатие у краевой капсулы уходило бы вхолостую. Капсулу в `editing-mode`
   (§3) пропускает — обычный редактируемый текст, не атом.
 - **`.node-selected`** (`_updateNodeSelectedState`/`_clearNodeSelected`,
-  `textblock-editor.js:1458`) — визуально подсвечивает капсулу, когда
+  `textblock-editor.js:1451/1474`) — визуально подсвечивает капсулу, когда
   текущее выделение охватывает её РОВНО целиком (`_rangeIsWholeCapsule`, тот
   же предикат, что и в ветке атомарного удаления слоя 1). Обновляется на
   каждый `selectionchange` (`handleSelectionChange`), поэтому снятие прежней
@@ -463,7 +463,7 @@ Floating-тулбар (`initGlobalToolbar`) — не привязан к кон�
 меню гасят `mousedown`/`pointerdown` (`preventDefault`) — редактор не
 теряет фокус/выделение при клике по тулбару.
 
-**`applyFontSize(fontSize)`** (`textblock-toolbar.js:214-300`):
+**`applyFontSize(fontSize)`** (`textblock-toolbar.js:284`):
 
 1. Клампится по границам из `ACTS__TEXTBLOCKS__FONT_SIZE_MIN/MAX`
    (`getStructureLimits()`, читает `/api/v1/acts/limits`).
@@ -486,7 +486,7 @@ caret-guard `U+FEFF`, который стрипается всегда): он н
 трогает. На DOCX-экспорте он всё равно невидим и не должен попасть в
 `<w:t>` — стрипается отдельно в `inline.py::_add_run` (§10).
 
-**`normalizeFontSizes(textBlocks, palette, limits)`** (`textblock-toolbar.js:575`)
+**`normalizeFontSizes(textBlocks, palette, limits)`** (`textblock-toolbar.js:687`)
 — одноразовый идемпотентный проход при загрузке акта: снапает нестандартные
 px-размеры (legacy-акты) к ближайшему значению палитры
 (`textBlockManager.fontSizes` — 16 значений от 8 до 72). Снап-кандидаты —
@@ -504,7 +504,7 @@ px-размеры (legacy-акты) к ближайшему значению п�
 ## 7. Copy/paste: свой буфер vs внешний HTML
 
 Вставка выбирает режим по трём веткам, в фиксированном порядке
-(`_buildPasteFragment`, `textblock-editor.js:824-833`): **свой буфер** (метка
+(`_buildPasteFragment`, `textblock-editor.js:840-849`): **свой буфер** (метка
 `data-aw-clip`) → **Word** (mso-сигнатуры) → **внешний HTML**. Word
 проверяется ДО внешнего намеренно — иначе его разметка попала бы под
 строгую политику «только ссылки» внешнего пути и формат бы потерялся.
@@ -537,7 +537,7 @@ URL (`validateLinkUrl`), а не-капсульный контент прохо�
 может прийти в несфокусированное поле.
 
 **Вставка из Word (подмножество тулбара).** Детект — `_isWordHtml`
-(`:843`), на СЫРОМ HTML буфера, до санитизации (DOMPurify выпилил бы
+(`:859`), на СЫРОМ HTML буфера, до санитизации (DOMPurify выпилил бы
 mso-разметку, и после неё сигнатур не осталось бы): `class="Mso*"`, CSS-
 **декларация** `mso-*:` (строгий регекс на декларацию, не голая подстрока
 «mso-» — иначе безобидный внешний HTML со словом «mso-» ушёл бы на
@@ -549,13 +549,13 @@ Word-путь), мета-генератор Microsoft Word, `xmlns:o=`/office-na
 font-size (инлайн), плюс ссылки → капсулы. Цвет, фон, выравнивание и списки
 отбрасываются сознательно. Allowlist тегов/атрибутов/CSS — не замороженный
 список констант, а ПЕРЕСЕЧЕНИЕ с живым профилем `'acts'`
-(`_wordAllowedTags`/`_wordAllowedAttrs`/`_wordCssAllowlist`, `:1050`):
+(`_wordAllowedTags`/`_wordAllowedAttrs`/`_wordCssAllowlist`, `:1066`):
 уберёт бэк тег из allowlist'а (`applyActsAllowlist`) — Word-путь уронит его
 тоже, не «замороженный снимок» набора. CSS-allowlist — профиль `'acts'`
 МИНУС `color`/`background-color`/`text-align` (оставляет ровно то, что умеет
 тулбар).
 
-Регекс-пред-очистка ДО парсинга (`_wordPreClean`, `:1035`) убирает то, что
+Регекс-пред-очистка ДО парсинга (`_wordPreClean`, `:1051`) убирает то, что
 allowlist DOMPurify не чистит начисто: условные комментарии
 `<!--[if]...<![endif]-->`, `<xml>`-острова (office-метаданные), пустые
 `<o:p>`; теги `<w:*>` (content-control'ы `w:sdt`/`w:smartTag`)
@@ -563,20 +563,20 @@ allowlist DOMPurify не чистит начисто: условные комм�
 рана внутри них.
 
 Размер Word пишет в pt (`11.0pt`) — `_normalizeWordFontSizes`/
-`_wordFontSizeToPx` (`:1088`) приводит к целым px: `pt → round(v×4/3)`,
+`_wordFontSizeToPx` (`:1104`) приводит к целым px: `pt → round(v×4/3)`,
 `px → round(v)`, любая другая единица (em/rem/%/безразмерное) отбрасывается
 вовсе, не оставляем НИ ОДНОЙ не-px величины. Клампинг по
 `[fontSizeMin, fontSizeMax]` из `getStructureLimits()`. Без этой
 нормализации фронтовый CSS-хук единицы не валидирует, а бэк на save срезает
 любой не-px `font-size` (§9/§10) — был бы шов превью↔сохранённое.
 
-`<a href>` → капсулы ссылок (`_reconstructWordLinks`, `:1127`) со
+`<a href>` → капсулы ссылок (`_reconstructWordLinks`, `:1143`) со
 свежими id, схема прогоняется через `validateLinkUrl` (§8); невалидная/
 пустая ссылка не выкидывается, а разворачивается в свои инлайн-дети —
 окружающий формат не теряется.
 
 Блоки (`<p>/<div>/<li>`) расплющиваются в инлайн-поток + `<br>`-разделители
-(`_flattenWordBlocks`, `:1152`), перенося инлайн-детей ЦЕЛИКОМ (в отличие
+(`_flattenWordBlocks`, `:1168`), перенося инлайн-детей ЦЕЛИКОМ (в отличие
 от внешнего пути ниже, который берёт только `textContent`) — структура
 абзацев Word в v1 не переносится (известное ограничение, §12), но вложенное
 форматирование строки сохраняется. Хвостовой `<br>` после последнего абзаца

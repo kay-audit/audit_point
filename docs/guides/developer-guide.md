@@ -3257,7 +3257,7 @@ def test_chat_settings_defaults():
 | `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `16` | Базовый экранный размер текстблока (px; 16px → 12pt в DOCX) |
 | `ACTS__TEXTBLOCKS__PER_NODE` | int | `10` | Макс. текстблоков-детей одного узла (серверный гейт) |
 | `ACTS__VIOLATIONS__PER_NODE` | int | `10` | Макс. нарушений-детей одного узла (серверный гейт) |
-| `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (23 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
+| `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (22 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
 | `ACTS__SANITIZER__ALLOWED_CSS_PROPERTIES` | list | `font-size/…/text-align` (8 свойств) | Allowlist CSS-свойств inline-`style` |
 | `ACTS__SANITIZER__ALLOWED_DATA_ATTRS` | list | `data-footnote-*`, `data-link-*` | Data-атрибуты капсул ссылок/сносок |
 

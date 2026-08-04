@@ -31,13 +31,13 @@ Audit Workstation — Server-side rendered (Jinja2) + vanilla JS приложе�
 
 | Параметр | Значение |
 |---|---|
-| Всего JS-файлов | приблизительно на момент написания: 176 (`static/js/**/*.js`) |
-| `constructor/` (редактор актов) | приблизительно 105 файлов (включая `search/` и инфраструктуру поверхностей, §1.2) |
-| `shared/` (cross-zone модули + чат) | приблизительно 41 файл (включая 13 модулей чата) |
-| `portal/` (sidebar-страницы) | приблизительно 28 файлов |
-| Всего CSS-файлов | 92 |
-| `constructor/` CSS | 45 файлов |
-| `portal/` CSS | 16 файлов |
+| Всего JS-файлов | приблизительно на момент написания: 183 (`static/js/**/*.js`) |
+| `constructor/` (редактор актов) | приблизительно 106 файлов (включая `search/` и инфраструктуру поверхностей, §1.2) |
+| `shared/` (cross-zone модули + чат) | приблизительно 42 файла (включая 13 модулей чата) |
+| `portal/` (sidebar-страницы) | приблизительно 32 файла (включая профиль/карточку пользователя) |
+| Всего CSS-файлов | 95 |
+| `constructor/` CSS | 44 файла |
+| `portal/` CSS | 19 файлов |
 | `shared/` CSS | 17 файлов |
 | `base/` CSS | 11 файлов |
 | CSS-переменных | 580, `base/variables.css` — агрегатор, сами переменные в `base/variables/{colors,components,typography,spacing,shadows,motion,z-index}.css` |
@@ -75,7 +75,7 @@ static/js/
     ├── search/       # FindBar (Ctrl+F) + ActSearchEngine/Highlight/Replace —
     │                 #   поиск/замена по текстблокам и rich-полям нарушений,
     │                 #   deep-dive §12 в textblock-editor-architecture.md
-    ├── violation/    # ViolationManager (19 файлов, включая
+    ├── violation/    # ViolationManager (20 файлов, включая
     │                 #   violation-field-surface.js — rich-поверхности полей)
     ├── preview/      # PreviewManager + per-type renderer'ы
     ├── dialog/       # HelpManager, InvoiceDialog
@@ -162,6 +162,7 @@ CSS повторяет тройное разделение — см. главу 
 | `shared/api-errors.js` | `formatValidationDetail` | функция (window-публикация с guard для node:test) |
 | `shared/html-text.js` | `plainToRichHtml` | функция (plain → rich-HTML: escape + `\n`→`<br>`; формализатор/корректор) |
 | `shared/rich-text.js` | `serializeVisibleText` | функция (rich-HTML → видимый plain-текст с переносами) |
+| `shared/editable-target.js` | `isEditableTarget` | предикат «фокус в редактируемом поле» (input/textarea/select/contenteditable; чекбоксы-кнопки — нет); общий для ESC-слоёв, clipboard и undo |
 
 **`shared/chat/`** — 13 модулей (ChatEventBus, ChatRenderer, ClientActionsRegistry, ChatStream, ChatHistory, ChatUI, ChatFiles, ChatTitle, ChatContext, ChatMessages, ChatManager, ChatModalManager, ChatFeedback). Полный реестр — [`docs/architecture/chat-frontend-architecture.md`](chat-frontend-architecture.md).
 
