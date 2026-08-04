@@ -3,7 +3,6 @@
  * Перестановка элементов внутри дополнительного контента
  */
 
-import { PreviewManager } from '../preview/preview.js';
 import { ViolationManager } from './violation-core.js';
 import {
     CONTENT_TYPE_CASE,
@@ -164,24 +163,18 @@ Object.assign(ViolationManager.prototype, {
 
         // Позиция вставки: точная из dragover (учитывает верх/низ половину
         // элемента), иначе — индекс элемента под курсором (fallback без dragover).
-        let toIndex = this.lastDragOverIndex !== null ? this.lastDragOverIndex : targetIndex;
+        const toIndex = this.lastDragOverIndex !== null ? this.lastDragOverIndex : targetIndex;
 
-        // Index-based перестановка (#6): DOM больше НЕ сдвинут оптимистично, порядок
-        // считаем из данных. Поправка на удаление исходной позиции при движении вниз.
-        const [moved] = items.splice(fromIndex, 1);
-        if (fromIndex < toIndex) toIndex -= 1;
-        toIndex = Math.max(0, Math.min(toIndex, items.length));
-        items.splice(toIndex, 0, moved);
-
-        // Порядок элементов — позиция в массиве, отдельного поля order нет (#24).
+        // Index-based перестановка (#6): DOM больше НЕ сдвинут оптимистично,
+        // порядок считаем из данных. Сам splice — в мутаторе (§5.10a), там же
+        // read-only-guard и превью; отказ мутатора не коммитим.
+        if (!this.moveContentItem(violation, fromIndex, toIndex)) return;
 
         // Коммит состоялся — handleDragEnd не должен перерисовывать повторно.
         this._dropCommitted = true;
 
         // Перерисовываем с обновленными индексами
         this.renderContentItems(violation, container);
-
-        PreviewManager.updateBlock('violation', violation.id);
     },
 
     /**

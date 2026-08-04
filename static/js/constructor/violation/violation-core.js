@@ -7,10 +7,18 @@ import { RENDER_CLASSES } from '../render-classes.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AppState } from '../state/state-core.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
+import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
 import { plainToRichHtml } from '../../shared/html-text.js';
 import { toggleEmptyClass } from './violation-field-empty.js';
+
+// Предикат «цель — редактируемое поле» общий с глобальными хоткеями Ctrl+Z /
+// Ctrl+C/Ctrl+V (shared/editable-target.js): раньше у каждой подсистемы была
+// своя копия, и они разошлись. Ре-экспорт — потому что потребитель графа
+// нарушений (violation-paste.js, #19) импортирует предикат отсюда: hub-модуль
+// остаётся его точкой входа, обратный импорт core → paste замкнул бы цикл.
+export { isEditableTarget };
 
 export class ViolationManager {
     constructor() {
@@ -56,6 +64,14 @@ export class ViolationManager {
         this.currentActiveContainer = container;
         if (!this._escapeZoneUnsub) {
             this._escapeZoneUnsub = EscapeStack.push(() => {
+                // §5.9: смысл ESC определяет ФОКУС, а не положение мыши. Каретка
+                // в редактируемом поле — событие принадлежит редактору (blur поля
+                // или отмена inline-правки капсулы): отказываемся от него
+                // сентинелом EscapeStack.PASS, и стек отдаёт ESC слоям ниже, а
+                // если отказались все — редактору. Иначе один и тот же ESC
+                // означал бы разное в зависимости от того, где висит мышь.
+                // Сброс зоны — только когда фокус вне поля, а мышь в зоне.
+                if (isEditableTarget(document.activeElement)) return EscapeStack.PASS;
                 this._resetActiveZone();
                 Notifications.info('Активная зона сброшена');
             });

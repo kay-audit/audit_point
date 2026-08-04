@@ -86,6 +86,7 @@ async def get_config(
     """Отдаёт фронту настройки центра уведомлений (частота опроса по таймеру)."""
     return NotificationsConfigResponse(
         pollIntervalSeconds=settings.poll_interval_seconds,
+        emailEnabled=settings.email.enabled,
     )
 
 

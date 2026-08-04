@@ -65,8 +65,7 @@ class AccessGuard:
 
         Проверяется и срок: истёкший лок не даёт права на запись (H9, TOCTOU) —
         иначе после истечения срока и перехвата лока другим пользователем
-        обе стороны могли бы писать одновременно (lost-write). Признак
-        lock_expired вычисляет БД (серверное время), см. get_lock_info.
+        обе стороны могли бы писать одновременно (lost-write).
         """
         lock_info = await self._lock.get_lock_info(act_id)
         if not lock_info or not lock_info["locked_by"]:
@@ -76,8 +75,4 @@ class AccessGuard:
                 f"Акт редактируется пользователем {lock_info['locked_by']}",
                 locked_by=lock_info["locked_by"],
                 locked_until=str(lock_info["lock_expires_at"]),
-            )
-        if lock_info.get("lock_expired"):
-            raise ActLockError(
-                "Срок блокировки истёк. Откройте акт заново для продолжения работы."
             )

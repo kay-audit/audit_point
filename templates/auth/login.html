@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход в систему</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') | versioned }}">
+</head>
+<body>
+    <div class="auth-container">
+        <div class="auth-form">
+            <div class="auth-header">
+                <h1>Аудиторская рабочая станция</h1>
+                <p>Введите email для входа</p>
+            </div>
+
+            <form id="loginForm" class="form-group">
+                <div class="input-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Получить код входа</button>
+            </form>
+
+            <div id="otpSection" class="form-group" style="display: none;">
+                <div class="input-group">
+                    <label for="otp">Код из email</label>
+                    <input type="text" id="otp" name="otp" maxlength="{{ otp_length }}" required>
+                </div>
+
+                <button type="button" id="verifyOtp" class="btn btn-success">Войти</button>
+                <button type="button" id="resendOtp" class="btn btn-link">Отправить код повторно</button>
+            </div>
+
+            <div id="message" class="message"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', path='js/auth.js') | versioned }}"></script>
+</body>
+</html>

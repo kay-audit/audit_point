@@ -108,7 +108,7 @@ async def get_audit_log_deps() -> AsyncGenerator[tuple[AccessGuard, ActAuditLogR
     """Создает зависимости для аудит-лога: guard + репозитории."""
     async with get_db() as conn:
         access = ActAccessRepository(conn)
-        lock = ActLockRepository(conn)
+        lock = ActLockRepository()
         guard = AccessGuard(access, lock)
         audit_repo = ActAuditLogRepository(conn)
         versions_repo = ActContentVersionRepository(conn)
@@ -121,7 +121,7 @@ async def get_audit_log_service() -> AsyncGenerator:
 
     async with get_db() as conn:
         access = ActAccessRepository(conn)
-        lock = ActLockRepository(conn)
+        lock = ActLockRepository()
         guard = AccessGuard(access, lock)
         audit_repo = ActAuditLogRepository(conn)
         versions_repo = ActContentVersionRepository(conn)

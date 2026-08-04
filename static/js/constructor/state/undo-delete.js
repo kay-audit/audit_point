@@ -34,6 +34,19 @@
  * в отличие от «родитель удалён» — ОТКАЗ БЕЗ выбрасывания снимка (транзиентная
  * причина: пользователь может освободить место в целевом узле и повторить Ctrl+Z).
  *
+ * Решение «лимит элементов доп. контента» (ревью #6: maxItemsPerViolation) —
+ * ИСКЛЮЧЕНИЕ из решения выше: эта проверка на undo-пути не выполняется вовсе
+ * (ValidationTree.canInsertSubtree вызывается с {skipContentItemsLimit: true}).
+ * Причина в отличии источника: лимит блоков считается по ДЕРЕВУ (внешнее,
+ * временное условие — пользователь может его изменить), а лимит элементов —
+ * по словарю нарушений САМОГО СНИМКА (содержимое удалённого фрагмента, каким
+ * оно было на момент удаления). Если админ снизил лимит ниже фактического
+ * количества элементов уже существующего нарушения, этот снимок НИКОГДА не
+ * пройдёт проверку — а так как undoLast() всегда берёт верхний снимок стека,
+ * это заклинило бы весь LIFO-стек навсегда. Undo восстанавливает ранее
+ * существовавшее состояние, а не создаёт новое, поэтому лимит контента к
+ * нему не применяется (paste — создание нового — проверку не пропускает).
+ *
  * Восстановление идёт через официальные мутаторы AppState
  * (insertNodeAt + словарные присваивания через tracked-Proxy), поэтому
  * _nodeIndex/_parentIndex и dirty-tracking остаются консистентными.
@@ -47,6 +60,7 @@ import { MetricsRiskCoordinator } from './metrics-risk-coordinator.js';
 import { TreeUtils } from '../tree/tree-utils.js';
 import { ValidationTree } from '../validation/validation-tree.js';
 import { AppConfig } from '../../shared/app-config.js';
+import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
 
 /** Максимальная глубина стека отката (LIFO, старые вытесняются). */
@@ -173,8 +187,17 @@ export const UndoDeleteManager = {
         // удалён» ниже (перманентный отказ — снимок выбрасывает _restoreNode),
         // лимит транзиентен: пользователь может освободить место и повторить
         // Ctrl+Z, поэтому снимок при отказе по лимиту остаётся в стеке.
+        //
+        // skipContentItemsLimit: лимит элементов доп. контента исключён из этой
+        // политики (см. «Решение «лимит элементов доп. контента»» в шапке файла
+        // и JSDoc ValidationTree.canInsertSubtree).
         if (AppState._findNodeRaw?.(snapshot.parentId)) {
-            const limitCheck = ValidationTree.canInsertSubtree(snapshot.parentId, snapshot.node);
+            const limitCheck = ValidationTree.canInsertSubtree(
+                snapshot.parentId,
+                snapshot.node,
+                snapshot.dicts.violations,
+                {skipContentItemsLimit: true},
+            );
             if (!limitCheck.valid) {
                 Notifications.error(limitCheck.message);
                 return false;
@@ -294,8 +317,9 @@ export const UndoDeleteManager = {
 
     /**
      * Устанавливает глобальный hotkey Ctrl+Z (capture-фаза).
-     * Внутри активных редакторов (contenteditable/textarea/input/select)
-     * живёт браузерный undo — не перехватываем.
+     * Внутри активных редакторов (contenteditable / textarea / select /
+     * текстовый input — общий предикат isEditableTarget) живёт браузерный
+     * undo, не перехватываем.
      */
     installHotkey() {
         if (this._hotkeyInstalled) return;
@@ -303,7 +327,7 @@ export const UndoDeleteManager = {
 
         document.addEventListener('keydown', (e) => {
             if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyZ' || e.shiftKey || e.altKey) return;
-            if (this._isEditableTarget(document.activeElement)) return;
+            if (isEditableTarget(document.activeElement)) return;
             if (AppConfig.readOnlyMode?.isReadOnly) return;
             if (!this.canUndo()) return;
 
@@ -311,18 +335,6 @@ export const UndoDeleteManager = {
             e.stopPropagation();
             this.undoLast();
         }, true);
-    },
-
-    /**
-     * Активный элемент — текстовый редактор (там живёт браузерный undo).
-     * @private
-     * @param {Element|null} el - document.activeElement
-     * @returns {boolean}
-     */
-    _isEditableTarget(el) {
-        if (!el) return false;
-        if (el.isContentEditable) return true;
-        return ['TEXTAREA', 'INPUT', 'SELECT'].includes(el.tagName);
     },
 };
 

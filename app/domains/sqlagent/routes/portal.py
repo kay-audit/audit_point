@@ -6,8 +6,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from app.api.v1.deps.role_deps import get_user_roles
-from app.api.v1.endpoints.auth import get_current_user_from_env
-from app.core.config import get_settings
 from app.core.navigation import get_knowledge_bases_as_dicts, get_nav_items_for_user
 from app.core.settings_registry import get as get_domain_settings
 from app.core.templating import get_templates
@@ -19,26 +17,18 @@ router = APIRouter()
 
 
 def _build_sqlagent_src(sidecar_port: int) -> str | None:
-    """URL встраиваемого UI SQLAgent — абсолютный путь от origin-корня.
+    """URL встраиваемого UI SQLAgent.
 
-    Под Greenplum/JupyterHub-proxy SQLAgent доступен соседним проксированным
-    портом того же origin (`/user/{user}/proxy/{port}/`) — зеркало логики
-    root_path в app/main.py; это **same-origin**, поэтому проходит под
-    enforce-CSP `default-src 'self'`. На локальном dev (PostgreSQL) — отдельный
-    localhost-порт: это **cross-origin** (другой порт), и под включённой CSP
-    (нет `frame-src`/`child-src` → фолбэк на `default-src 'self'`) iframe будет
-    заблокирован. Для PG-dev тогда нужен `SECURITY__CSP_*`-релакс (frame-src на
-    порт sidecar) или report-only.
-
-    Возвращает None, если на Greenplum-пути не удалось определить пользователя —
-    собрать валидный proxy-URL нечем; роут трактует это как «недоступен».
+    Если задан SQLAGENT__PUBLIC_URL — используется он (SDP: адрес sidecar-порта
+    на том же хосте). Иначе локальный dev-фоллбэк на localhost-порт; это
+    **cross-origin** (другой порт), и под включённой CSP (нет `frame-src`/
+    `child-src` → фолбэк на `default-src 'self'`) iframe будет заблокирован —
+    для dev нужен `SECURITY__CSP_*`-релакс (frame-src на порт sidecar) или
+    report-only.
     """
-    app_settings = get_settings()
-    if app_settings.database.type == "greenplum":
-        user = get_current_user_from_env(truncate=False)
-        if not user:
-            return None
-        return f"/user/{user}/proxy/{sidecar_port}/"
+    sa_settings = get_domain_settings("sqlagent", SQLAgentSettings)
+    if sa_settings.public_url:
+        return sa_settings.public_url
     return f"http://localhost:{sidecar_port}/"
 
 

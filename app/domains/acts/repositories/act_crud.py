@@ -477,7 +477,11 @@ class ActCrudRepository(BaseRepository):
         limit: int = 50,
         offset: int = 0,
     ) -> list[ActListItem]:
-        """Получает список актов, где пользователь является участником."""
+        """Получает список актов, где пользователь является участником.
+
+        Блокировки живут вне БД (ключи с TTL), поэтому ``is_locked``/``locked_by``
+        здесь не заполняются — их дообогащает ``ActCrudService.list_acts``.
+        """
         rows = await self.conn.fetch(
             f"""
             SELECT
@@ -494,10 +498,6 @@ class ActCrudRepository(BaseRepository):
                 a.service_note,
                 a.audit_act_id,
                 MIN(atm.role) as user_role,
-                a.locked_by,
-                (a.locked_by IS NOT NULL
-                 AND a.lock_expires_at IS NOT NULL
-                 AND a.lock_expires_at > CURRENT_TIMESTAMP) as is_locked,
                 a.needs_created_date,
                 a.needs_directive_number,
                 a.needs_invoice_check,
@@ -520,8 +520,6 @@ class ActCrudRepository(BaseRepository):
                 a.created_at,
                 a.service_note,
                 a.audit_act_id,
-                a.locked_by,
-                a.lock_expires_at,
                 a.needs_created_date,
                 a.needs_directive_number,
                 a.needs_invoice_check,
@@ -552,8 +550,6 @@ class ActCrudRepository(BaseRepository):
                 user_role=row["user_role"],
                 service_note=row["service_note"],
                 audit_act_id=row["audit_act_id"],
-                locked_by=row["locked_by"],
-                is_locked=row["is_locked"],
                 needs_created_date=row["needs_created_date"],
                 needs_directive_number=row["needs_directive_number"],
                 needs_invoice_check=row["needs_invoice_check"],
@@ -572,9 +568,10 @@ class ActCrudRepository(BaseRepository):
         Сводка для колокольчика лендинга: акты с незакрытыми требованиями
         (needs_* — фактура/дата/поручения/СЗ; поддерживаются ETL) ИЛИ
         со структурной валидацией не 'ok' (validation_status пишется при
-        сохранении). Заблокированные (живой lock) исключаем — как делал прежний
-        клиентский живой источник. Один дешёвый запрос вместо клиентского
-        пересчёта по сотне актов; читает те же колонки, что и список.
+        сохранении). Один дешёвый запрос вместо клиентского пересчёта по сотне
+        актов; читает те же колонки, что и список. Заблокированные акты из
+        сводки по-прежнему исключаются, но уже в ``ActCrudService`` — блокировки
+        живут вне БД, в WHERE их не спросить.
 
         ``limit`` — потолок размера ответа (защита от патологического payload);
         реалистично у пользователя их кратно меньше.
@@ -595,11 +592,6 @@ class ActCrudRepository(BaseRepository):
                 SELECT 1 FROM {self.audit_team} atm
                 WHERE atm.act_id = a.id AND atm.username = $1
             )
-              AND NOT (
-                a.locked_by IS NOT NULL
-                AND a.lock_expires_at IS NOT NULL
-                AND a.lock_expires_at > CURRENT_TIMESTAMP
-              )
               AND (
                 a.needs_created_date
                 OR a.needs_directive_number

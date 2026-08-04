@@ -527,3 +527,188 @@ class TestSaveOrphanFilterReverseRef:
         assert len(v_inserts) == 1 and len(v_inserts[0].args[1]) == 1
         assert v_inserts[0].args[1][0][3] == "v_ok"
         assert result["dropped_orphans"] == 2
+
+
+class TestSaveOrphanFilterHealsStaleNodeId:
+    """Ревью-находка №1: «restore версии теряет таблицу с устаревшим nodeId».
+
+    Старый фильтр дропал запись, если entry.nodeId не находился в дереве —
+    ДАЖЕ когда её реально держит живой узел (условие было AND, а не лечение).
+    restore_version (audit_log_service.py) собирает акт из снимка БД и пишет
+    через репозиторий напрямую, минуя фронтовый санитайзер, который для
+    этого же случая уже лечит (не дропает) — поэтому именно путь restore
+    терял таблицу/нарушение целиком.
+
+    Новая политика (_resolve_owner_node_id): сиротой считается запись БЕЗ
+    единого реферера; если реферер есть, но entry.nodeId ему не равен —
+    nodeId лечится на реферера (первого в документном порядке, если их
+    несколько), а не дропается.
+    """
+
+    async def test_dead_nodeid_with_live_referrer_heals_not_drops(self, mock_conn):
+        """a) nodeId не существует в дереве, но живой узел реально ссылается
+        на запись — запись СОХРАНЯЕТСЯ, nodeId лечится на id реферера."""
+        repo = ActContentRepository(mock_conn)
+        mock_conn.fetchval.return_value = None
+        mock_conn.fetch.return_value = []
+
+        stale = MagicMock()
+        stale.nodeId = "ghost"  # такого узла в дереве нет вовсе
+        stale.grid = []
+        stale.colWidths = []
+        stale.protected = False
+        stale.deletable = True
+        stale.kind = "regular"
+
+        data = _make_act_data(tables={"t1": stale})
+        data.tree = {
+            "id": "root", "label": "Акт",
+            "children": [{"id": "n1", "label": "Таблица", "type": "table",
+                          "tableId": "t1", "children": []}],
+        }
+        result = await repo.save_content(act_id=1, data=data, username="user1")
+
+        table_inserts = [
+            c for c in mock_conn.executemany.call_args_list
+            if "act_tables" in c.args[0]
+        ]
+        assert len(table_inserts) == 1
+        rows = table_inserts[0].args[1]
+        assert len(rows) == 1, "таблица с мёртвым nodeId, но живым реферером не должна дропаться"
+        assert rows[0][3] == "t1"   # $4 table_id
+        assert rows[0][4] == "n1"   # $5 node_id — вылечен на id реферера
+        assert result["dropped_orphans"] == 0
+
+    async def test_valid_nodeid_with_duplicate_referrer_not_rewritten(self, mock_conn):
+        """b) entry.nodeId уже валиден (сам входит в рефереров) — даже если
+        есть ЕЩЁ один узел с дублирующей ссылкой, nodeId НЕ переписывается."""
+        repo = ActContentRepository(mock_conn)
+        mock_conn.fetchval.return_value = None
+        mock_conn.fetch.return_value = []
+
+        valid = MagicMock()
+        valid.nodeId = "n2"  # её реальный (не первый по документу) владелец
+        valid.grid = []
+        valid.colWidths = []
+        valid.protected = False
+        valid.deletable = True
+        valid.kind = "regular"
+
+        data = _make_act_data(tables={"t1": valid})
+        data.tree = {
+            "id": "root", "label": "Акт",
+            "children": [
+                {"id": "n1", "label": "Дубль ссылки", "type": "table",
+                 "tableId": "t1", "children": []},
+                {"id": "n2", "label": "Таблица", "type": "table",
+                 "tableId": "t1", "children": []},
+            ],
+        }
+        result = await repo.save_content(act_id=1, data=data, username="user1")
+
+        table_inserts = [
+            c for c in mock_conn.executemany.call_args_list
+            if "act_tables" in c.args[0]
+        ]
+        rows = table_inserts[0].args[1]
+        assert len(rows) == 1
+        # nodeId остаётся "n2" — не переписан на первого по документу "n1".
+        assert rows[0][4] == "n2"
+        assert result["dropped_orphans"] == 0
+
+    async def test_no_referrers_at_all_dropped(self, mock_conn):
+        """c) ни один узел не ссылается на запись — настоящая сирота, дроп."""
+        repo = ActContentRepository(mock_conn)
+        mock_conn.fetchval.return_value = None
+        mock_conn.fetch.return_value = []
+
+        orphan = MagicMock()
+        orphan.nodeId = "n1"  # узел существует, но ни на что не ссылается
+        orphan.grid = []
+        orphan.colWidths = []
+        orphan.protected = False
+        orphan.deletable = True
+        orphan.kind = "regular"
+
+        data = _make_act_data(tables={"t_orphan": orphan})
+        data.tree = {
+            "id": "root", "label": "Акт",
+            "children": [{"id": "n1", "label": "Пункт", "type": "item", "children": []}],
+        }
+        result = await repo.save_content(act_id=1, data=data, username="user1")
+
+        for c in mock_conn.executemany.call_args_list:
+            if "act_tables" in c.args[0]:
+                pytest.fail("сирота без единого реферера попала в INSERT act_tables")
+        assert result["dropped_orphans"] == 1
+
+    async def test_two_live_referrers_dead_nodeid_heals_to_first_in_document_order(self, mock_conn):
+        """e) nodeId мёртв, рефереров двое (оба живые) — лечится на ПЕРВОГО в
+        документном порядке (родитель раньше детей, дети по порядку)."""
+        repo = ActContentRepository(mock_conn)
+        mock_conn.fetchval.return_value = None
+        mock_conn.fetch.return_value = []
+
+        stale = MagicMock()
+        stale.nodeId = "ghost"
+        stale.grid = []
+        stale.colWidths = []
+        stale.protected = False
+        stale.deletable = True
+        stale.kind = "regular"
+
+        data = _make_act_data(tables={"t1": stale})
+        data.tree = {
+            "id": "root", "label": "Акт",
+            "children": [
+                {"id": "n_first", "label": "Таблица 1", "type": "table",
+                 "tableId": "t1", "children": []},
+                {"id": "n_second", "label": "Таблица 2", "type": "table",
+                 "tableId": "t1", "children": []},
+            ],
+        }
+        result = await repo.save_content(act_id=1, data=data, username="user1")
+
+        table_inserts = [
+            c for c in mock_conn.executemany.call_args_list
+            if "act_tables" in c.args[0]
+        ]
+        rows = table_inserts[0].args[1]
+        assert len(rows) == 1
+        assert rows[0][4] == "n_first"  # первый в документном порядке, не n_second
+        assert result["dropped_orphans"] == 0
+
+    async def test_dead_nodeid_with_live_referrer_heals_for_textblock_and_violation(self, mock_conn):
+        """a) единообразно для textBlocks/violations (не только tables)."""
+        repo = ActContentRepository(mock_conn)
+        mock_conn.fetchval.return_value = None
+        mock_conn.fetch.return_value = []
+
+        data = _make_act_data(
+            textblocks={"tb1": _make_textblock("ghost")},
+            violations={"v1": _make_violation("ghost")},
+        )
+        data.tree = {
+            "id": "root", "label": "Акт",
+            "children": [
+                {"id": "n_tb", "label": "ТБ", "type": "textblock",
+                 "textBlockId": "tb1", "children": []},
+                {"id": "n_v", "label": "Нарушение", "type": "violation",
+                 "violationId": "v1", "children": []},
+            ],
+        }
+        result = await repo.save_content(act_id=1, data=data, username="user1")
+
+        tb_inserts = [
+            c for c in mock_conn.executemany.call_args_list
+            if "act_textblocks" in c.args[0]
+        ]
+        v_inserts = [
+            c for c in mock_conn.executemany.call_args_list
+            if "act_violations" in c.args[0]
+        ]
+        assert len(tb_inserts) == 1 and len(tb_inserts[0].args[1]) == 1
+        assert tb_inserts[0].args[1][0][4] == "n_tb"
+        assert len(v_inserts) == 1 and len(v_inserts[0].args[1]) == 1
+        assert v_inserts[0].args[1][0][4] == "n_v"
+        assert result["dropped_orphans"] == 0

@@ -21,10 +21,36 @@ export class AuthManager {
     static _timestampKey = 'auth_timestamp';
 
     /**
+     * Ключ профиля в sessionStorage.
+     *
+     * Профиль хранится не только в памяти класса, потому что браузер грузит
+     * этот модуль ДВАЖДЫ, как два разных ES-модуля: inline-скрипты шаблонов
+     * импортируют его с `?v=<версия>` (фильтр versioned), а импорты внутри
+     * модулей (portal-sidebar.js → ../shared/auth.js) разрешаются
+     * относительно версионного URL и уходят без параметра. Разные URL —
+     * разные экземпляры класса, поэтому профиль, полученный checkAuth() в
+     * одном графе, второму не виден: топбар оставался с логином вместо ФИО,
+     * а аватарка не появлялась вовсе. Хранилище общее для обоих графов.
+     *
+     * Именно sessionStorage, а не localStorage: профиль не должен переживать
+     * вкладку — username там лежит осознанно (сессия на 24 часа), профиль же
+     * восстанавливается ближайшим checkAuth().
+     * @private
+     */
+    static _profileKey = 'auth_profile';
+
+    /**
      * Текущий пользователь (кеш в памяти)
      * @private
      */
     static _currentUser = null;
+
+    /**
+     * Полный профиль текущего пользователя (весь ответ /api/v1/auth/me).
+     * Кеш в памяти поверх sessionStorage (см. _profileKey).
+     * @private
+     */
+    static _profile = null;
 
     /**
      * Флаг авторизации
@@ -103,6 +129,35 @@ export class AuthManager {
     }
 
     /**
+     * Сохраняет профиль в sessionStorage — чтобы его увидел и второй
+     * ES-граф модуля (см. _profileKey)
+     * @private
+     * @param {Object} profile
+     */
+    static _saveProfileToStorage(profile) {
+        try {
+            sessionStorage.setItem(this._profileKey, JSON.stringify(profile));
+        } catch (error) {
+            console.error('Ошибка сохранения профиля в sessionStorage:', error);
+        }
+    }
+
+    /**
+     * Читает профиль из sessionStorage.
+     * Битое значение — null без шума: профиль восстановит ближайший checkAuth().
+     * @private
+     * @returns {Object|null}
+     */
+    static _loadProfileFromStorage() {
+        try {
+            const raw = sessionStorage.getItem(this._profileKey);
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Очищает сохраненный username из localStorage
      * @private
      */
@@ -110,6 +165,7 @@ export class AuthManager {
         try {
             localStorage.removeItem(this._storageKey);
             localStorage.removeItem(this._timestampKey);
+            sessionStorage.removeItem(this._profileKey);
         } catch (error) {
             console.error('Ошибка очистки username из localStorage:', error);
         }
@@ -158,10 +214,12 @@ export class AuthManager {
 
             this._isAuthenticated = data.authenticated;
             this._currentUser = data.username;
+            this._profile = data.authenticated ? data : null;
 
             // Сохраняем в localStorage для последующих операций
             if (data.authenticated && data.username) {
                 this._saveToStorage(data.username);
+                this._saveProfileToStorage(data);
             } else {
                 this._clearStorage();
             }
@@ -176,6 +234,7 @@ export class AuthManager {
             console.error('Ошибка проверки авторизации:', error);
             this._isAuthenticated = false;
             this._currentUser = null;
+            this._profile = null;
             this._clearStorage();
             return {authenticated: false, username: null};
         }
@@ -198,12 +257,14 @@ export class AuthManager {
     }
 
     /**
-     * Показывает ошибку авторизации
+     * Уводит на страницу входа (с пометкой «сессия истекла», если пользователь был)
      * @private
      */
     static _showAuthError() {
         const baseUrl = AppConfig.api.getBaseUrl();
-        window.location.href = `${baseUrl}/error/401`;
+        const hadUser = this._loadFromStorage();
+        this._clearStorage();
+        window.location.href = `${baseUrl}/auth/login${hadUser ? '?expired=1' : ''}`;
     }
 
     /**
@@ -229,6 +290,39 @@ export class AuthManager {
 
         console.warn('Username не найден или сессия истекла');
         return null;
+    }
+
+    /**
+     * Возвращает полный профиль текущего пользователя (ФИО, должность, email,
+     * роли и т.п. — весь ответ /api/v1/auth/me).
+     *
+     * Промах кеша в памяти добирается из sessionStorage: checkAuth() мог
+     * отработать в соседнем ES-графе этого же модуля (см. _profileKey).
+     * null — пока checkAuth() не отработал успешно в этой вкладке.
+     * @returns {Object|null}
+     */
+    static getCurrentUserProfile() {
+        if (!this._profile) {
+            this._profile = this._loadProfileFromStorage();
+        }
+        return this._profile;
+    }
+
+    /**
+     * Обновляет версию фото в закешированном профиле.
+     *
+     * Вызывается со страницы профиля после загрузки/удаления фото: сервер уже
+     * вернул новую версию, повторный /me ради одного поля не нужен. Пишем и в
+     * sessionStorage — иначе второй ES-граф (топбар) остался бы со старой
+     * версией и показывал прежнее фото из кеша браузера.
+     * @param {number|null} version
+     */
+    static updateAvatarVersion(version) {
+        const profile = this.getCurrentUserProfile();
+        if (!profile) return;
+
+        profile.avatar_version = version;
+        this._saveProfileToStorage(profile);
     }
 
     /**
@@ -270,6 +364,7 @@ export class AuthManager {
     static logout() {
         this._currentUser = null;
         this._isAuthenticated = false;
+        this._profile = null;
         this._clearStorage();
 
         if (window.env) {

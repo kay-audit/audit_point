@@ -125,3 +125,74 @@ test('#23: removeViolation без активной зоны не падает', 
     assert.doesNotThrow(() => vm.removeViolation('v1'));
     assert.equal(vm.currentActiveContainer, null);
 });
+
+// ── §5.9: смысл ESC определяет фокус, а не положение мыши ────────────────────
+
+/** Вызывает верхний хэндлер стека, собирая info-тосты и возвращая его вердикт. */
+function fireTopHandler(activeElement) {
+    const infos = [];
+    const origInfo = Notifications.info;
+    Notifications.info = (m) => infos.push(m);
+    document.activeElement = activeElement;
+    try {
+        const top = EscapeStack._stack[EscapeStack._stack.length - 1];
+        return { result: top({ key: 'Escape' }), infos };
+    } finally {
+        Notifications.info = origInfo;
+        document.activeElement = null;
+    }
+}
+
+test('§5.9: каретка в rich-поле → зона отдаёт ESC редактору (PASS), зона цела', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    const zone = makeZone('v1');
+    vm._setActiveZone(zone);
+
+    const inEditor = { tagName: 'SPAN', closest: (s) => (s === '[contenteditable="true"]' ? {} : null) };
+    const { result, infos } = fireTopHandler(inEditor);
+
+    assert.equal(result, EscapeStack.PASS, 'сентинел отказа — стек отдаст ESC слоям ниже, затем редактору');
+    assert.equal(vm.currentActiveContainer, zone, 'зона НЕ сброшена');
+    assert.equal(EscapeStack.size(), 1, 'хэндлер зоны остался в стеке');
+    assert.deepEqual(infos, [], 'тост о сбросе зоны не показан');
+});
+
+test('§5.9: каретка в textarea/текстовом input → тот же отказ', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    vm._setActiveZone(makeZone('v1'));
+
+    assert.equal(fireTopHandler({ tagName: 'TEXTAREA' }).result, EscapeStack.PASS);
+    assert.equal(fireTopHandler({ tagName: 'INPUT', type: 'text' }).result, EscapeStack.PASS);
+    assert.equal(EscapeStack.size(), 1);
+});
+
+test('§5.9: фокус вне полей → прежнее поведение (сброс зоны + тост)', () => {
+    drainStack();
+    const vm = new ViolationManager();
+    vm._setActiveZone(makeZone('v1'));
+
+    const plainDiv = { tagName: 'DIV', closest: () => null };
+    const { result, infos } = fireTopHandler(plainDiv);
+
+    assert.notEqual(result, EscapeStack.PASS, 'событие съедено стеком');
+    assert.equal(vm.currentActiveContainer, null, 'зона сброшена');
+    assert.equal(EscapeStack.size(), 0);
+    assert.deepEqual(infos, ['Активная зона сброшена']);
+});
+
+test('§5.9: фокус на чекбоксе «Дополнительный контент» → зона забирает ESC себе', () => {
+    // Предикат редактируемости раньше матчил ЛЮБОЙ <input>: с фокусом на
+    // чекбоксе (или на скрытом input[type=file] зоны) ESC уходил в никуда
+    // вместо сброса зоны. Чекбокс — не текстовое поле, отказываться незачем.
+    drainStack();
+    const vm = new ViolationManager();
+    vm._setActiveZone(makeZone('v1'));
+
+    const { result, infos } = fireTopHandler({ tagName: 'INPUT', type: 'checkbox' });
+
+    assert.notEqual(result, EscapeStack.PASS, 'событие съедено — ESC принадлежит зоне');
+    assert.equal(vm.currentActiveContainer, null, 'зона сброшена');
+    assert.deepEqual(infos, ['Активная зона сброшена']);
+});

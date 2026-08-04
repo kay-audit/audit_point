@@ -15,6 +15,7 @@
 import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { AppConfig } from '../../static/js/shared/app-config.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
 import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
@@ -102,6 +103,27 @@ test('drop без lastDragOverIndex использует targetIndex элеме�
 
     // A удалён (from=0), to=2, поправка from<to → to=1 → [B,A,C].
     assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'A', 'C']);
+});
+
+test('§5.10a: в режиме просмотра drop не переставляет и не коммитит (гейт мутатора)', () => {
+    previewCalls = 0;
+    setDragging('A');
+    const vm = makeVm();
+    const v = makeViolation(['A', 'B', 'C']);
+    vm.lastDragOverIndex = 2;
+    vm._dropCommitted = false; // как после handleDragStart
+
+    AppConfig.readOnlyMode.isReadOnly = true;
+    try {
+        vm.handleDrop(noopEvent(), v, 2, container);
+    } finally {
+        AppConfig.readOnlyMode.isReadOnly = false;
+    }
+
+    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B', 'C'], 'порядок не тронут');
+    assert.equal(vm._renderCount(), 0, 'перерисовки нет');
+    assert.equal(previewCalls, 0, 'превью не планируется');
+    assert.equal(vm._dropCommitted, false, 'коммит не фиксируется — dragEnd восстановит DOM');
 });
 
 test('dragEnd без коммита восстанавливает порядок из данных (renderContentItems)', () => {

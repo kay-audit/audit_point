@@ -18,6 +18,7 @@ import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DiffEngine } from '../../static/js/portal/acts-manager/diff-engine.js';
+import { VIOLATION_SCALAR_RICH_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 
 function makeViol(over = {}) {
     return {
@@ -37,6 +38,24 @@ function makeViol(over = {}) {
 function diffOne(oldV, newV) {
     return DiffEngine._diffViolations({ v1: oldV }, { v1: newV }).v1;
 }
+
+// --- §5.7: dedup списка полей — движок использует общий реестр ---------------
+// Раньше _diffViolations хранил свою копию списка из 6 ключей, зеркалом
+// diff-renderer._renderDiffViolation держал вторую. По образцу
+// invoice-diff-fields.test.mjs — движок обязан перебирать именно
+// VIOLATION_SCALAR_RICH_KEYS, а не литерал.
+
+test('DiffEngine._diffViolations перебирает скалярные поля именно из VIOLATION_SCALAR_RICH_KEYS', () => {
+    const oldV = makeViol();
+    const newV = makeViol();
+    for (const key of VIOLATION_SCALAR_RICH_KEYS) {
+        oldV[key] = { enabled: true, content: 'old' };
+        newV[key] = { enabled: true, content: 'new' };
+    }
+    const d = diffOne(oldV, newV);
+    const changedFields = Object.keys(d.fieldDiffs).filter(k => VIOLATION_SCALAR_RICH_KEYS.includes(k));
+    assert.deepEqual(changedFields.sort(), [...VIOLATION_SCALAR_RICH_KEYS].sort());
+});
 
 // --- descriptionList --------------------------------------------------------
 

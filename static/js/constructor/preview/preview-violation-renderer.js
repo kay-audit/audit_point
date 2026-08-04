@@ -3,9 +3,9 @@
  *
  * Паритет ПОЛНОТЫ данных с DOCX (build_violation): полные тексты всех полей
  * без обрезки, полный список описаний (descriptionList), полные кейсы и
- * свободные тексты, реальные картинки с подписью (H4/M.3/M.5). Подпись
- * responsible и шаблоны кейс/свободный-текст берутся из контракта
- * violation-fields.js (Task 1); остальные подписи-ярлыки — превью-стилем.
+ * свободные тексты, реальные картинки с подписью (H4/M.3/M.5). ВСЕ подписи
+ * полей — из контракта violation-fields.js (VIOLATION_LABELS/CASE_LABEL_TEMPLATE/
+ * FREE_TEXT_LABEL, №10): ни одного захардкоженного литерала метки в рендерере.
  * Q1: пустые поля рендерятся как «метка + пустое тело», без «—» и без
  * фильтрации по trim() (ядро/кейсы/пункты списка — у них есть метка/маркер).
  * Исключение — свободный текст (freeText): у него нет метки, поэтому пустой
@@ -54,13 +54,13 @@ const USABLE_HEIGHT_MM = SHEET_HEIGHT_MM - 2 * PAGE_MARGIN_VERTICAL_MM;
 export function collectViolationLines(violation) {
     const lines = [];
 
-    lines.push({ type: 'line', label: 'Нарушено', text: violation.violated || '', small: true });
-    lines.push({ type: 'line', label: 'Установлено', text: violation.established || '', small: true });
+    lines.push({ type: 'line', label: VIOLATION_LABELS.violated, text: violation.violated || '', small: true });
+    lines.push({ type: 'line', label: VIOLATION_LABELS.established, text: violation.established || '', small: true });
 
     if (violation.descriptionList?.enabled) {
         const items = violation.descriptionList.items || [];
         if (items.length > 0) {
-            lines.push({ type: 'list', label: '', items, small: true });
+            lines.push({ type: 'list', label: VIOLATION_LABELS.descriptionList, items, small: true });
         }
     }
 
@@ -84,9 +84,9 @@ export function collectViolationLines(violation) {
     }
 
     const optionalFields = [
-        ['reasons', 'Причины'],
-        ['measures', 'Принятые меры'],
-        ['consequences', 'Последствия'],
+        ['reasons', VIOLATION_LABELS.reasons],
+        ['measures', VIOLATION_LABELS.measures],
+        ['consequences', VIOLATION_LABELS.consequences],
         ['responsible', VIOLATION_LABELS.responsible],
     ];
     for (const [key, label] of optionalFields) {

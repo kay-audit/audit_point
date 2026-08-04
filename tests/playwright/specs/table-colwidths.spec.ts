@@ -33,7 +33,6 @@ async function saveToDb(
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'X-JupyterHub-User': '22494524',
         },
         body: JSON.stringify(data),
       });

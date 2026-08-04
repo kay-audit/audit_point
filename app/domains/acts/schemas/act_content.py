@@ -464,9 +464,12 @@ class ViolationAdditionalContentSchema(BaseModel):
         """Ограничивает число элементов доп. контента (лимит — из настроек)."""
         max_items = _acts_settings().images.max_items_per_violation
         if len(v) > max_items:
+            # №14: текст синхронизирован ВРУЧНУЮ с фронтом (единая точка —
+            # AppConfig.content.errors.contentItemsLimitReached,
+            # static/js/shared/app-config.js) — должен совпадать дословно
+            # (прецедент синхронизации — names.py ↔ chat-client-actions.js).
             raise ValueError(
-                f"Слишком много элементов дополнительного контента: {len(v)}. "
-                f"Максимум — {max_items} элементов на нарушение."
+                f"Достигнут лимит элементов дополнительного контента на нарушение ({max_items})."
             )
         return v
 
@@ -645,10 +648,12 @@ class ActDataSchema(BaseModel):
         warning'ом. Поэтому метод НЕ бросает, а ВОЗВРАЩАЕТ список нарушений.
 
         Обратное направление (запись словаря без узла-владельца) здесь НЕ
-        собирается — его лечит orphan-фильтр репозитория при сохранении: ветки
-        `if node_id not in node_map` в ActContentRepository._save_tables /
-        _save_textblocks / _save_violations (repositories/act_content.py),
-        считающие `dropped`-сироты. См. pbe-4.
+        собирается — его лечит orphan-фильтр репозитория при сохранении:
+        `ActContentRepository._resolve_owner_node_id`, вызываемый из
+        _save_tables / _save_textblocks / _save_violations
+        (repositories/act_content.py) — лечит устаревший nodeId по
+        актуальному рефереру дерева и дропает (считает `dropped`-сиротами)
+        только записи вовсе без реферера. См. pbe-4.
 
         Состав проверяемых ссылок строится из реестра LEAF_BLOCK_REFS
         (block_types.py): новый leaf-тип без словаря в схеме упадёт здесь

@@ -33,23 +33,19 @@ async def show_landing(request: Request):
     """
     is_admin = False
     try:
-        from app.api.v1.endpoints.auth import extract_username_digits, get_current_user_from_env
+        from app.auth.dependencies import get_optional_user_id
         from app.api.v1.deps.role_deps import get_user_roles
 
-        header_user = request.headers.get("x-jupyterhub-user")
-        if header_user:
-            username = extract_username_digits(header_user)
-        else:
-            username = get_current_user_from_env()
-
+        # Username кладёт AuthMiddleware (ОТП-режим) либо тест-режим из окружения.
+        username = get_optional_user_id(request)
         if username:
             roles = await get_user_roles(username=username)
             nav_groups = get_nav_items_for_user(roles)
             is_admin = any(r["name"] == "Админ" for r in roles)
         else:
             nav_groups = get_nav_items_grouped()
-    except Exception:
-        logger.debug("Не удалось загрузить роли для landing, показываем все nav items")
+    except Exception as e:
+        logger.debug("Не удалось загрузить роли для landing, показываем все nav items: %s", e)
         nav_groups = get_nav_items_grouped()
 
     return templates.TemplateResponse(

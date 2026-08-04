@@ -1,35 +1,45 @@
 """
-Зависимости для авторизации (FastAPI Depends).
+Зависимости авторизации API.
 
-Используется как в API-эндпоинтах, так и в HTML-роутах для проверки
-авторизации пользователя через переменную окружения JUPYTERHUB_USER.
+ОТП-режим (AUTH__ENABLED=true): username = sub из JWT, который AuthMiddleware
+кладёт в scope["state"]["user"]. Похода в БД нет — sub и есть username справочника
+пользователей. Роли и профиль запрашиваются только там, где нужны.
+
+Тест-режим (AUTH__ENABLED=false): username из окружения (JUPYTERHUB_USER) —
+для pytest/Playwright-харнесса и локальной отладки.
 """
 
 import logging
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
-from app.api.v1.endpoints.auth import get_current_user_from_env
+from app.auth.context import resolve_env_username
+from app.core.config import get_settings
 
 logger = logging.getLogger("audit_workstation.api.deps.auth")
 
 
-def get_username() -> str:
+async def get_username(request: Request) -> str:
     """
-    Извлекает имя пользователя из переменной окружения JUPYTERHUB_USER.
+    Возвращает username текущего пользователя.
 
     Returns:
-        Username в виде цифр
+        Username (табельный номер из справочника)
 
     Raises:
         HTTPException: 401 если пользователь не авторизован
     """
-    username = get_current_user_from_env()
+    if not get_settings().auth.enabled:
+        username = resolve_env_username()
+        if not username:
+            raise HTTPException(
+                status_code=401,
+                detail="Требуется авторизация"
+            )
+        return username
 
+    user_data = request.scope.get("state", {}).get("user") or {}
+    username = user_data.get("sub")
     if not username:
-        raise HTTPException(
-            status_code=401,
-            detail="Требуется авторизация"
-        )
-
+        raise HTTPException(status_code=401, detail="Не авторизован")
     return username

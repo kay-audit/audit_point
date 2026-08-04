@@ -1,4 +1,5 @@
 import { INVOICE_DIFF_FIELD_KEYS } from './invoice-diff-fields.js';
+import { VIOLATION_SCALAR_RICH_KEYS } from '../../constructor/violation/violation-fields.js';
 
 // Инлайновые теги форматирования — граница тега НЕ считается границей слова
 // (сло<b>во</b> визуально сливается с соседним текстом в «слово»). Блочные
@@ -56,6 +57,12 @@ export class DiffEngine {
         // Ранги среди ОБЩИХ сиблингов — для устойчивого сигнала перестановки.
         const oldRanks = this._siblingRanks(oldMeta, newMeta);
         const newRanks = this._siblingRanks(newMeta, oldMeta);
+        // №13: узлы LIS (наибольшей возрастающей подпоследовательности) по
+        // новым рангам, взятым в старом порядке — сохранили порядок ДРУГ
+        // ОТНОСИТЕЛЬНО ДРУГА, move-бейджа не получают. Без этого перетаскивание
+        // ОДНОГО узла сквозь соседей помечало «перемещён» ВСЕХ сдвинутых
+        // соседей, а не только реально перетащенный узел.
+        const stableOrderIds = this._stableOrderIds(oldMeta, newMeta, newRanks);
 
         let hasChanges = false;
 
@@ -73,10 +80,18 @@ export class DiffEngine {
                 const oldParent = oldMeta[node.id] ? oldMeta[node.id].parentId : null;
                 const newParent = newMeta[node.id] ? newMeta[node.id].parentId : null;
                 const parentChanged = oldParent !== newParent;
-                const reordered = !parentChanged && oldRanks[node.id] !== newRanks[node.id];
+                const reordered = !parentChanged && oldRanks[node.id] !== newRanks[node.id]
+                    && !stableOrderIds.has(node.id);
                 if (parentChanged || reordered) {
                     node._moved = true;
                     hasChanges = true;
+                    // Направление — только для reordered (тот же родитель, ранги
+                    // сопоставимы). При смене родителя ранги считаются СРЕДИ
+                    // ОБЩИХ сиблингов разных родителей и несравнимы — направление
+                    // не выставляем (_moveDirection остаётся undefined).
+                    if (reordered) {
+                        node._moveDirection = newRanks[node.id] < oldRanks[node.id] ? 'up' : 'down';
+                    }
                 }
 
                 // Атрибуты узла (content НЕ диффим — во фронт-модели поле мёртвое,
@@ -115,15 +130,16 @@ export class DiffEngine {
     }
 
     /**
-     * Ранг каждого узла среди ОБЩИХ сиблингов — тех, кто ребёнок ТОГО ЖЕ
-     * родителя в ОБОИХ деревьях (сверяем otherMeta[id].parentId). Ранг считается
-     * только по таким узлам, поэтому вставка/удаление соседа И репарент чужого
-     * сиблинга (узел ушёл к другому родителю) не сдвигают ранги оставшихся —
-     * нет ложного «перемещён». Глобально удалённый узел не имеет otherMeta →
-     * тоже отфильтрован. Не LCS — простая сортировка по индексу.
-     * @returns {Object} id → ранг среди общих сиблингов одного родителя.
+     * ОБЩИЕ сиблинги — узлы, чей родитель ОДИНАКОВ в обоих деревьях (сверяем
+     * otherMeta[id].parentId) — сгруппированные по parentId, каждая группа
+     * отсортирована по meta-индексу. Вставка/удаление соседа И репарент
+     * чужого сиблинга (узел ушёл к другому родителю) не входят в группу —
+     * нет ложного сигнала у оставшихся. Глобально удалённый узел не имеет
+     * otherMeta → тоже отфильтрован. Общий билдинг-блок для _siblingRanks
+     * (ранги) и _stableOrderIds (LIS, №13).
+     * @returns {Object} parentId (или '' для корня) → [id...] по meta-индексу.
      */
-    static _siblingRanks(meta, otherMeta) {
+    static _commonSiblingGroups(meta, otherMeta) {
         const groups = {};
         for (const id of Object.keys(meta)) {
             const parentId = meta[id].parentId;
@@ -132,14 +148,82 @@ export class DiffEngine {
             const key = parentId == null ? '' : parentId;
             (groups[key] || (groups[key] = [])).push(id);
         }
-        const ranks = {};
+        const result = {};
         for (const key of Object.keys(groups)) {
-            const common = groups[key]
+            result[key] = groups[key]
                 .filter(id => otherMeta[id] && otherMeta[id].parentId === meta[id].parentId)
                 .sort((a, b) => meta[a].index - meta[b].index);
-            common.forEach((id, rank) => { ranks[id] = rank; });
+        }
+        return result;
+    }
+
+    /**
+     * Ранг каждого узла среди ОБЩИХ сиблингов (см. _commonSiblingGroups).
+     * Не LCS — простая сортировка по индексу.
+     * @returns {Object} id → ранг среди общих сиблингов одного родителя.
+     */
+    static _siblingRanks(meta, otherMeta) {
+        const groups = this._commonSiblingGroups(meta, otherMeta);
+        const ranks = {};
+        for (const key of Object.keys(groups)) {
+            groups[key].forEach((id, rank) => { ranks[id] = rank; });
         }
         return ranks;
+    }
+
+    /**
+     * №13: множество id узлов, сохранивших ОТНОСИТЕЛЬНЫЙ порядок между старым
+     * и новым деревом — наибольшая возрастающая подпоследовательность (LIS,
+     * классический подход диффа перестановок) по новым рангам, взятым в
+     * порядке СТАРЫХ рангов. Перетаскивание одного узла сквозь соседей меняет
+     * АБСОЛЮТНЫЙ ранг каждого соседа, но не порядок соседей ДРУГ ОТНОСИТЕЛЬНО
+     * ДРУГА — узлы вне LIS (обычно только реально перетащенный) получают
+     * move-бейдж, узлы внутри LIS — нет.
+     * @param {Object} oldMeta
+     * @param {Object} newMeta
+     * @param {Object} newRanks - _siblingRanks(newMeta, oldMeta)
+     * @returns {Set<string>} id узлов внутри LIS (без move-бейджа за reorder).
+     */
+    static _stableOrderIds(oldMeta, newMeta, newRanks) {
+        const groups = this._commonSiblingGroups(oldMeta, newMeta);
+        const keep = new Set();
+        for (const key of Object.keys(groups)) {
+            const ids = groups[key];
+            const values = ids.map(id => newRanks[id]);
+            for (const idx of this._lisIndices(values)) keep.add(ids[idx]);
+        }
+        return keep;
+    }
+
+    /**
+     * Индексы наибольшей возрастающей подпоследовательности массива чисел.
+     * O(n²) — сиблингов в группе немного, читаемость важнее асимптотики. При
+     * равенстве длин выбирается первая найденная: у простой перестановки пары
+     * соседей есть 2 равнозначные LIS (либо один, либо другой сохранил
+     * порядок) — выбор конкретной пары не телепатический, но всегда корректный.
+     * @param {number[]} values
+     * @returns {number[]} Индексы элементов LIS (по возрастанию).
+     */
+    static _lisIndices(values) {
+        const n = values.length;
+        if (n === 0) return [];
+        const lengths = new Array(n).fill(1);
+        const prev = new Array(n).fill(-1);
+        for (let i = 1; i < n; i++) {
+            for (let j = 0; j < i; j++) {
+                if (values[j] < values[i] && lengths[j] + 1 > lengths[i]) {
+                    lengths[i] = lengths[j] + 1;
+                    prev[i] = j;
+                }
+            }
+        }
+        let bestIdx = 0;
+        for (let i = 1; i < n; i++) {
+            if (lengths[i] > lengths[bestIdx]) bestIdx = i;
+        }
+        const result = [];
+        for (let cur = bestIdx; cur !== -1; cur = prev[cur]) result.push(cur);
+        return result.reverse();
     }
 
     /**
@@ -309,7 +393,7 @@ export class DiffEngine {
     static _diffViolations(oldViols, newViols) {
         const result = {};
         const allKeys = new Set([...Object.keys(oldViols), ...Object.keys(newViols)]);
-        const fields = ['violated', 'established', 'reasons', 'measures', 'consequences', 'responsible'];
+        const fields = VIOLATION_SCALAR_RICH_KEYS;
 
         for (const id of allKeys) {
             const oldV = oldViols[id];
@@ -433,6 +517,9 @@ export class DiffEngine {
      * *_code (см. diff-renderer._invoiceFieldText). Сравнение всего объекта
      * через JSON.stringify реагировало бы на служебные атрибуты и помечало
      * фактуру «изменено» при неизменном видимом тексте (фантомный дифф).
+     * Коды сортируются перед join СОЗНАТЕЛЬНО — сравнение порядко-независимое:
+     * перестановка тех же кодов не смысловая правка (рендер _invoiceFieldText
+     * в diff-renderer.js показывает хранимый порядок как есть, здесь не трогаем).
      * Прочие объекты — JSON.stringify, скаляры — String().
      */
     static _invoiceFieldValue(inv, field) {
@@ -440,11 +527,11 @@ export class DiffEngine {
         if (val === null || val === undefined) return '';
         if (field === 'metrics' && Array.isArray(val)) {
             return val.map(m => (m && (m.metric_code || m.code || m.metric_name)) || '')
-                .filter(Boolean).join(', ');
+                .filter(Boolean).sort().join(', ');
         }
         if (field === 'process' && Array.isArray(val)) {
             return val.map(m => (m && (m.process_code || m.process_name)) || '')
-                .filter(Boolean).join(', ');
+                .filter(Boolean).sort().join(', ');
         }
         if (typeof val === 'object') return JSON.stringify(val);
         return String(val);

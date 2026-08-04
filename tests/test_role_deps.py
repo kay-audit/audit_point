@@ -7,13 +7,18 @@
 
 from __future__ import annotations
 
+import contextlib
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.v1.deps.auth_deps import get_username
 from app.api.v1.deps.role_deps import (
+    _roles_cache,
     get_user_roles,
+    invalidate_user_roles_cache,
     require_admin,
     require_domain_access,
 )
@@ -229,3 +234,243 @@ class TestFactoryInvariants:
         assert callable(dep)
         import inspect
         assert inspect.iscoroutinefunction(dep)
+
+
+# -------------------------------------------------------------------------
+# get_user_roles — двухуровневый кеш (L1 in-process TTLCache + L2 Redis)
+# -------------------------------------------------------------------------
+
+
+def _fake_get_db(rows: list[dict]):
+    """Фейковый get_db модуля role_deps: один conn.fetch → rows.
+
+    role_deps.py импортирует get_db/get_adapter на уровне модуля, поэтому
+    патчить нужно по месту использования (app.api.v1.deps.role_deps.get_db),
+    не app.db.connection.get_db.
+    """
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=rows)
+
+    @contextlib.asynccontextmanager
+    async def _get_db():
+        yield mock_conn
+
+    return _get_db, mock_conn
+
+
+def _fake_adapter() -> MagicMock:
+    adapter = MagicMock()
+    adapter.get_table_name = lambda name, schema="": name
+    return adapter
+
+
+def _redis_mock() -> MagicMock:
+    m = MagicMock()
+    m.get = AsyncMock(return_value=None)  # эпоха отсутствует → "0"
+    m.get_json = AsyncMock(return_value=None)
+    m.set_json = AsyncMock(return_value=True)
+    m.delete = AsyncMock(return_value=2)
+    m.incr = AsyncMock(return_value=1)
+    return m
+
+
+class TestGetUserRolesCache:
+
+    USERNAME = "22222222"
+    ROWS = [{"id": 1, "name": "Аудитор", "domain_name": "acts"}]
+
+    @pytest.fixture(autouse=True)
+    def _clear_l1(self):
+        _roles_cache.clear()
+        yield
+        _roles_cache.clear()
+
+    async def test_l1_hit_skips_redis(self):
+        """L1 уже заполнен — до Redis дело не доходит."""
+        _roles_cache[self.USERNAME] = self.ROWS
+        redis = _redis_mock()
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis):
+            result = await get_user_roles(username=self.USERNAME)
+
+        assert result == self.ROWS
+        redis.get_json.assert_not_awaited()
+
+    async def test_l1_miss_l2_hit_skips_sql_and_fills_l1(self):
+        """L1 пуст, L2-хит — SQL не вызывается, результат кладётся в L1."""
+        redis = _redis_mock()
+        redis.get_json = AsyncMock(return_value=self.ROWS)
+        fake_get_db, mock_conn = _fake_get_db([])  # не должен быть вызван
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis), \
+             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            result = await get_user_roles(username=self.USERNAME)
+
+        assert result == self.ROWS
+        redis.get_json.assert_awaited_once_with(f"cache:roles:{self.USERNAME}:v0")
+        mock_conn.fetch.assert_not_awaited()
+        assert _roles_cache[self.USERNAME] == self.ROWS
+
+    async def test_l2_miss_calls_sql_and_writes_through(self):
+        """L1 и L2 пусты — SQL выполняется, результат пишется в L1 и L2 (TTL 300с)."""
+        redis = _redis_mock()
+        fake_get_db, mock_conn = _fake_get_db(self.ROWS)
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis), \
+             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            result = await get_user_roles(username=self.USERNAME)
+
+        assert result == self.ROWS
+        mock_conn.fetch.assert_awaited_once()
+        redis.set_json.assert_awaited_once_with(
+            f"cache:roles:{self.USERNAME}:v0", self.ROWS, ex=300,
+        )
+        assert _roles_cache[self.USERNAME] == self.ROWS
+
+    async def test_redis_read_exception_falls_back_to_sql(self):
+        """Сбой Redis на чтении L2 — честный SQL-путь, исключение не пробрасывается."""
+        redis = _redis_mock()
+        redis.get_json = AsyncMock(side_effect=ConnectionError("boom"))
+        fake_get_db, mock_conn = _fake_get_db(self.ROWS)
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis), \
+             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            result = await get_user_roles(username=self.USERNAME)  # не должно бросить
+
+        assert result == self.ROWS
+        mock_conn.fetch.assert_awaited_once()
+
+    async def test_redis_write_exception_still_returns_sql_result(self):
+        """Сбой Redis на записи в L2 — результат из БД всё равно возвращается."""
+        redis = _redis_mock()
+        redis.set_json = AsyncMock(side_effect=ConnectionError("boom"))
+        fake_get_db, mock_conn = _fake_get_db(self.ROWS)
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis), \
+             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            result = await get_user_roles(username=self.USERNAME)  # не должно бросить
+
+        assert result == self.ROWS
+        assert _roles_cache[self.USERNAME] == self.ROWS
+
+    async def test_epoch_read_failure_skips_l2_write(self):
+        """Эпоха не прочиталась — писать некуда: номер ключа неизвестен."""
+        redis = _redis_mock()
+        redis.get = AsyncMock(side_effect=ConnectionError("boom"))
+        fake_get_db, mock_conn = _fake_get_db(self.ROWS)
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis), \
+             patch("app.api.v1.deps.role_deps.get_db", fake_get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            result = await get_user_roles(username=self.USERNAME)  # не должно бросить
+
+        assert result == self.ROWS
+        mock_conn.fetch.assert_awaited_once()
+        redis.set_json.assert_not_awaited()
+
+
+# -------------------------------------------------------------------------
+# invalidate_user_roles_cache
+# -------------------------------------------------------------------------
+
+
+class TestInvalidateUserRolesCache:
+
+    USERNAME = "22222222"
+
+    @pytest.fixture(autouse=True)
+    def _clear_l1(self):
+        _roles_cache.clear()
+        yield
+        _roles_cache.clear()
+
+    async def test_clears_l1_and_bumps_shared_epoch(self):
+        """Один INCR общей эпохи обесценивает и роли, и user-контекст; DEL нет.
+
+        DEL проигрывал бы гонке: запрос, начавший читать БД до инвалидации,
+        дописал бы устаревшие роли уже после неё — и они жили бы весь TTL.
+        """
+        _roles_cache[self.USERNAME] = [{"id": 1, "name": "Аудитор", "domain_name": "acts"}]
+        redis = _redis_mock()
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis):
+            await invalidate_user_roles_cache(self.USERNAME)
+
+        assert self.USERNAME not in _roles_cache
+        redis.incr.assert_awaited_once_with(f"cache:userver:{self.USERNAME}")
+        redis.delete.assert_not_awaited()
+
+    async def test_redis_exception_does_not_raise(self):
+        """Сбой Redis при инвалидации не должен ронять admin-операцию."""
+        _roles_cache[self.USERNAME] = [{"id": 1, "name": "Аудитор", "domain_name": "acts"}]
+        redis = _redis_mock()
+        redis.incr = AsyncMock(side_effect=ConnectionError("boom"))
+
+        with patch("app.api.v1.deps.role_deps.get_redis", return_value=redis):
+            await invalidate_user_roles_cache(self.USERNAME)  # не должно бросить
+
+        assert self.USERNAME not in _roles_cache
+
+
+# -------------------------------------------------------------------------
+# Регрессия: гонка «инвалидация во время чтения БД»
+# -------------------------------------------------------------------------
+
+
+class TestInvalidationRace:
+    """Снятая роль не должна воскресать из кэша до истечения TTL.
+
+    Redis здесь настоящий (fakeredis из autouse-фикстуры) — важна реальная
+    семантика INCR и раздельных ключей эпох.
+    """
+
+    USERNAME = "22222222"
+    OLD = [{"id": 1, "name": "Аудитор", "domain_name": "acts"}]
+    NEW = [{"id": 2, "name": "Чат", "domain_name": "chat"}]
+
+    @pytest.fixture(autouse=True)
+    def _clear_l1(self):
+        _roles_cache.clear()
+        yield
+        _roles_cache.clear()
+
+    async def test_write_after_invalidation_lands_in_dead_key(self, fake_redis):
+        """Роль сменили, пока запрос читал БД: его запись уходит в мёртвый ключ."""
+        fetches: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def _get_db():
+            conn = AsyncMock()
+
+            async def _fetch(*args, **kwargs):
+                fetches.append("sql")
+                if len(fetches) == 1:
+                    # «Медленный» SELECT ещё не вернулся, а админ уже сменил роль
+                    await invalidate_user_roles_cache(self.USERNAME)
+                    return self.OLD
+                return self.NEW
+
+            conn.fetch = _fetch
+            yield conn
+
+        with patch("app.api.v1.deps.role_deps.get_db", _get_db), \
+             patch("app.api.v1.deps.role_deps.get_adapter", return_value=_fake_adapter()):
+            first = await get_user_roles(username=self.USERNAME)
+            # L1 эпохами не версионируется — его страхует собственный TTL 5с;
+            # проверяем L2, поэтому имитируем истёкший (или чужой) L1.
+            _roles_cache.clear()
+            second = await get_user_roles(username=self.USERNAME)
+
+        # Своё чтение опоздавший запрос честно доводит до конца
+        assert first == self.OLD
+        # А следующий читатель видит актуальные роли, а не кэш прошлой эпохи
+        assert second == self.NEW
+        assert len(fetches) == 2
+
+        # Устаревшая запись осталась в ключе старой эпохи — его никто не читает
+        assert await fake_redis.get_json(f"cache:roles:{self.USERNAME}:v0") == self.OLD
+        assert await fake_redis.get_json(f"cache:roles:{self.USERNAME}:v1") == self.NEW

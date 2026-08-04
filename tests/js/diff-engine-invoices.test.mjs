@@ -121,6 +121,44 @@ test('process: одинаковый код, разный служебный ат
     assert.equal(d.status, 'unchanged');
 });
 
+// --- §5.10c: сравнение по кодам порядко-независимое --------------------------
+// Раньше коды сводились в строку через .map(...).join(', ') без сортировки —
+// перестановка тех же кодов (без смысловой правки) давала ложное «изменено».
+
+test('metrics: перестановка тех же кодов → unchanged (порядко-независимое сравнение)', () => {
+    const d = diffOne(
+        inv({ metrics: [{ metric_code: 'ФР00001' }, { metric_code: 'ФР00002' }] }),
+        inv({ metrics: [{ metric_code: 'ФР00002' }, { metric_code: 'ФР00001' }] }),
+    );
+    assert.equal(d.status, 'unchanged');
+});
+
+test('metrics: реальное изменение набора кодов при перестановке → modified', () => {
+    const d = diffOne(
+        inv({ metrics: [{ metric_code: 'ФР00001' }, { metric_code: 'ФР00002' }] }),
+        inv({ metrics: [{ metric_code: 'ФР00003' }, { metric_code: 'ФР00001' }] }),
+    );
+    assert.equal(d.status, 'modified');
+    assert.ok(d.fieldDiffs.metrics);
+});
+
+test('process: перестановка тех же кодов → unchanged (порядко-независимое сравнение)', () => {
+    const d = diffOne(
+        inv({ process: [{ process_code: 'П6152' }, { process_code: 'П6153' }] }),
+        inv({ process: [{ process_code: 'П6153' }, { process_code: 'П6152' }] }),
+    );
+    assert.equal(d.status, 'unchanged');
+});
+
+test('process: реальное изменение набора кодов при перестановке → modified', () => {
+    const d = diffOne(
+        inv({ process: [{ process_code: 'П6152' }, { process_code: 'П6153' }] }),
+        inv({ process: [{ process_code: 'П6154' }, { process_code: 'П6152' }] }),
+    );
+    assert.equal(d.status, 'modified');
+    assert.ok(d.fieldDiffs.process);
+});
+
 // --- compute-интеграция -----------------------------------------------------
 
 test('compute: изменение фактуры отражается в hasChanges и invoices', () => {

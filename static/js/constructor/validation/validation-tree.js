@@ -10,7 +10,7 @@ import { TreeUtils } from '../tree/tree-utils.js';
 import { ValidationCore } from './validation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { getBlockType } from '../block-types.js';
-import { getStructureLimits } from '../violation/violation-image-validator.js';
+import { getImageLimits, getStructureLimits } from '../violation/violation-image-validator.js';
 
 // #8: тип узла → рантайм-ключ структурных лимитов (/acts/limits). Общий для
 // _validateContentLimits (гейт кнопки «Добавить …») и canInsertSubtree (гейт
@@ -190,11 +190,35 @@ export const ValidationTree = {
      *    могло стать невалидным, если лимит с тех пор снизился (буфер обмена в
      *    localStorage переживает перезагрузку страницы).
      *
+     * Третий (опциональный) параметр — словарь нарушений вставляемого фрагмента
+     * (§5.10b). Элементы дополнительного контента лежат не в узлах дерева, а в
+     * записях словаря violations, которые едут рядом с поддеревом при paste/undo,
+     * поэтому проверить их можно только имея этот словарь. Без параметра —
+     * прежнее поведение (drag/move элементов не добавляет, словарь не нужен).
+     *
+     * Четвёртый (опциональный) параметр — options.skipContentItemsLimit.
+     * Undo восстанавливает РАНЕЕ СУЩЕСТВОВАВШЕЕ состояние, а не создаёт новое:
+     * словарь нарушений снимка — это содержимое удалённого фрагмента, каким оно
+     * было НА МОМЕНТ удаления, и пользователь снаружи никак не может его
+     * «облегчить» (в отличие от лимитов блоков-на-узел выше, где можно
+     * освободить место в целевом узле и повторить Ctrl+Z). Если админ снизил
+     * maxItemsPerViolation ниже фактического количества элементов уже
+     * существующего нарушения — без этого флага верхний снимок стека НИКОГДА
+     * не пройдёт проверку items, а undo всегда работает с верхним снимком, так
+     * что весь LIFO-стек отмены оказался бы заблокирован навсегда. Paste
+     * (node-clipboard.js) флаг не передаёт: там это вставка НОВОГО контента в
+     * дерево, и лимит элементов должен действовать как обычно.
+     *
      * @param {string} parentId - ID узла, в children которого встанет node
      * @param {Object} node - Вставляемый/перемещаемый узел (возможно, с поддеревом)
+     * @param {Object} [violationsDict] - Словарь нарушений фрагмента
+     *        (id записи → нарушение) для проверки лимита доп. элементов
+     * @param {Object} [options] - Опции проверки
+     * @param {boolean} [options.skipContentItemsLimit] - Пропустить проверку
+     *        лимита элементов доп. контента (undo — см. выше)
      * @returns {Object} Результат с полями valid, message
      */
-    canInsertSubtree(parentId, node) {
+    canInsertSubtree(parentId, node, violationsDict = null, options = {}) {
         const { TEXTBLOCK, VIOLATION, TABLE } = AppConfig.nodeTypes;
         const structure = getStructureLimits();
 
@@ -227,6 +251,59 @@ export const ValidationTree = {
                 if (!Array.isArray(current.children)) continue;
                 if (TreeUtils.countChildrenByType(current, type) > limit) return fail();
                 stack.push(...current.children);
+            }
+        }
+
+        if (!options.skipContentItemsLimit) {
+            const itemsCheck = this._validateSubtreeContentItems(violationsDict);
+            if (!itemsCheck.valid) return itemsCheck;
+        }
+
+        return ValidationCore.success();
+    },
+
+    /**
+     * Проверяет лимит числа элементов дополнительного контента у нарушений
+     * вставляемого поддерева (§5.10b).
+     *
+     * До этого фронтовый гейт лимита стоял только на путях ДОБАВЛЕНИЯ элемента
+     * (_insertContentItemsBulk), а paste/undo проносили готовые нарушения с уже
+     * набитым additionalContent мимо него — финальным гейтом оставался бэкенд,
+     * отклонявший сохранение всего акта.
+     *
+     * Проверка — та же самосогласованность, что у лимитов блоков-на-узел: у
+     * фрагмента, скопированного/удалённого раньше, число элементов могло стать
+     * невалидным, если админ с тех пор снизил лимит. Effective-лимит — из
+     * getImageLimits().maxItemsPerViolation (рантайм /acts/limits с собственным
+     * фолбэком DEFAULT_IMAGE_LIMITS внутри модуля).
+     *
+     * #11: без обхода дерева — оба вызывающих canInsertSubtree (node-clipboard.js
+     * paste, undo-delete.js) передают violationsDict, собранный
+     * TreeUtils.collectSubtreeDictEntries (undo) либо эквивалентным regenerateIds
+     * (paste) РОВНО по вставляемому поддереву, так что словарь уже содержит
+     * записи только тех нарушений, что реально в нём есть — повторно обходить
+     * дерево, чтобы найти те же id, избыточно. КОНТРАКТ: violationsDict обязан
+     * быть собран по ТОМУ ЖЕ поддереву, что вставляется — при нарушении
+     * контракта проверка либо пропустит чужие записи, либо не найдёт нужные.
+     *
+     * @private
+     * @param {Object|null} violationsDict - Словарь нарушений вставляемого
+     *        поддерева (id записи → нарушение), собранный
+     *        TreeUtils.collectSubtreeDictEntries по этому же поддереву
+     * @returns {Object} Результат с полями valid, message
+     */
+    _validateSubtreeContentItems(violationsDict) {
+        if (!violationsDict) return ValidationCore.success();
+
+        const maxItems = getImageLimits().maxItemsPerViolation;
+        if (typeof maxItems !== 'number') return ValidationCore.success();
+
+        for (const entry of Object.values(violationsDict)) {
+            const itemsCount = entry?.additionalContent?.items?.length || 0;
+            if (itemsCount > maxItems) {
+                return ValidationCore.failure(
+                    AppConfig.content.errors.contentItemsLimitReached(maxItems)
+                );
             }
         }
 

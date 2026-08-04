@@ -62,14 +62,13 @@ class DatabaseSettings(BaseModel):
       переполнении пакета).
     * Поллер канала к внешнему агенту (``chat.agent_channel_poller``)
       — держит коннект короткими порциями (poll каждые N секунд).
-    * Фоновый cleanup expired locks (``acts.expired_locks_cleanup``) — один
-      коннект раз в 60 сек.
 
-    Дефолты ``pool_min_size=5`` / ``pool_max_size=20`` подобраны эмпирически:
-    минимум держит несколько прогретых коннектов под типичный фон,
-    максимум — потолок для всплесков (несколько одновременных HTTP +
-    параллельные batcher-flush + polling-runners). Под Greenplum брать
-    больше 20 нецелесообразно — GP плохо масштабируется на число коннектов.
+    Дефолты ``pool_min_size=1`` / ``pool_max_size=2`` продиктованы ПРОМом: у
+    GP-учётки жёсткий лимит порядка 5 соединений, и «просто поднять пул»
+    (troubleshooting №17) там невозможно. Уложиться в такой потолок позволил
+    переезд горячих путей на Redis: счётчик непрочитанных, роли, user-контекст
+    и блокировки актов больше не ходят в БД на каждый запрос. DEV держим
+    идентичным ПРОМу — иначе нехватка коннектов вскрывается только на проде.
     """
     type: Literal["postgresql", "greenplum"] = Field(default="postgresql")
     host: str = Field(default="localhost")
@@ -77,8 +76,8 @@ class DatabaseSettings(BaseModel):
     name: str = Field(default="audit_workstation")
     user: str = Field(default="postgres")
     password: SecretStr = SecretStr("")
-    pool_min_size: int = Field(default=5, ge=1)
-    pool_max_size: int = Field(default=20, ge=2)
+    pool_min_size: int = Field(default=1, ge=1)
+    pool_max_size: int = Field(default=2, ge=2)
     command_timeout: int = Field(default=60, gt=0)
     # Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула
     # acquire() ждёт не бесконечно, а отдаёт 503 — иначе запрос виснет до
@@ -181,6 +180,80 @@ class ObservabilitySettings(BaseModel):
     )
 
 
+class RedisSettings(BaseModel):
+    """Настройки подключения к Redis.
+
+    Общая инфраструктура приложения: OTP-коды, кэши (роли, user-контекст,
+    уведомления), локи актов; далее — шина внешнего ИИ-агента.
+    """
+    host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "IPv4 явно, не 'localhost': на Windows 'localhost' резолвится в "
+            "IPv6 ::1 первым, redis-py не фолбэкает на IPv4 — connection "
+            "refused/timeout, даже если сервер слушает IPv4"
+        ),
+    )
+    port: int = Field(default=6379, ge=1, le=65535)
+    db: int = Field(default=0, ge=0, le=15)
+    password: SecretStr = SecretStr("")
+    max_connections: int = Field(
+        default=10, gt=0, description="Максимум соединений в пуле клиента Redis"
+    )
+    socket_timeout: float = Field(
+        default=5.0, gt=0, description="Таймаут операций сокета Redis, сек"
+    )
+
+class AuthSettings(BaseModel):
+    """Настройки аутентификации."""
+    enabled: bool = Field(default=False)
+    jwt_secret: SecretStr = Field(default="your-secret-key")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_access_ttl: int = Field(default=900, gt=0)
+    jwt_refresh_ttl: int = Field(default=604800, gt=0)
+    cookie_secure: bool = Field(default=False)
+    cookie_domain: str = Field(default="")
+    # OTP settings
+    otp_length: int = Field(default=6, gt=0, le=10, description="Длина OTP-кода в цифрах")
+    otp_ttl: int = Field(default=300, gt=0, description="Время жизни OTP-кода в секундах (5 минут по умолчанию)")
+    otp_max_attempts: int = Field(
+        default=5, gt=0, description="Максимум неверных попыток ввода OTP перед инвалидацией кода"
+    )
+    otp_request_max_per_minute: int = Field(
+        default=3, gt=0, description="Максимум запросов OTP-кода на один email в минуту"
+    )
+
+    @model_validator(mode="after")
+    def validate_jwt_secret(self):
+        """При включённой авторизации секрет обязателен, не-дефолтен и не короче 32 символов.
+
+        Минимум 32 — требование RFC 7518 §3.2 к длине HMAC-ключа для HS256:
+        с более коротким ключом PyJWT пишет InsecureKeyLengthWarning в лог
+        на каждую операцию с токеном.
+
+        Pydantic не приводит нетронутое дефолтное значение поля к его типу
+        (validate_default выключен), поэтому jwt_secret в этом случае — обычная
+        str, а не SecretStr; учитываем оба варианта.
+        """
+        secret_value = (
+            self.jwt_secret.get_secret_value()
+            if isinstance(self.jwt_secret, SecretStr)
+            else self.jwt_secret
+        )
+        if self.enabled and (not secret_value or secret_value == "your-secret-key"):
+            raise ValueError(
+                "AUTH__JWT_SECRET обязателен при AUTH__ENABLED=true и не может "
+                "оставаться значением по умолчанию ('your-secret-key')"
+            )
+        if self.enabled and len(secret_value) < 32:
+            raise ValueError(
+                "AUTH__JWT_SECRET короче 32 символов — недостаточно для HS256 "
+                "(RFC 7518). Сгенерировать: "
+                "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
+        return self
+
+
 class Settings(BaseSettings):
     """
     Класс настроек приложения на основе Pydantic.
@@ -205,8 +278,11 @@ class Settings(BaseSettings):
     # Вложенные настройки (shared)
     server: ServerSettings = ServerSettings()
     database: DatabaseSettings = DatabaseSettings()
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     security: SecuritySettings = SecuritySettings()
     observability: ObservabilitySettings = ObservabilitySettings()
+    auth: AuthSettings = AuthSettings()
+
     # Базовая директория проекта.
     # Относительный путь от конфига до корня проекта.
     base_dir: ClassVar[Path] = Path(__file__).resolve().parent.parent.parent

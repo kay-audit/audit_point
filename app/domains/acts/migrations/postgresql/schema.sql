@@ -41,11 +41,6 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}acts (
         CHECK (validation_status IN ('ok', 'warning', 'error')),
     validation_issues JSONB,
 
-    -- Блокировка для редактирования
-    locked_by VARCHAR(50) DEFAULT NULL,
-    locked_at TIMESTAMP DEFAULT NULL,
-    lock_expires_at TIMESTAMP DEFAULT NULL,
-
     -- Идентификатор аудита из внешнего сервиса
     audit_act_id VARCHAR(36),
 
@@ -405,15 +400,6 @@ CREATE INDEX IF NOT EXISTS idx_{PREFIX}acts_created_by
 
 CREATE INDEX IF NOT EXISTS idx_{PREFIX}acts_last_edited_at
     ON {SCHEMA}.{PREFIX}acts(last_edited_at DESC NULLS LAST);
-
--- Индексы для блокировок
-CREATE INDEX IF NOT EXISTS idx_{PREFIX}acts_locked_by
-    ON {SCHEMA}.{PREFIX}acts(locked_by)
-    WHERE locked_by IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_{PREFIX}acts_lock_expires
-    ON {SCHEMA}.{PREFIX}acts(lock_expires_at)
-    WHERE lock_expires_at IS NOT NULL;
 
 -- Индексы на audit_team_members
 CREATE INDEX IF NOT EXISTS idx_{PREFIX}audit_team_username

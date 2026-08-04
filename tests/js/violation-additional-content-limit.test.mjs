@@ -80,6 +80,8 @@ test('лимит достигнут: добавление кейса откло�
     assert.equal(warnings.length, 1, 'показан ровно один warning');
     assert.match(warnings[0], /лимит/i);
     assert.match(warnings[0], /1/, 'сообщение содержит число лимита');
+    // №14: текст — из единой точки формирования (app-config.js), не хардкод.
+    assert.equal(warnings[0], AppConfig.content.errors.contentItemsLimitReached(1));
     assert.deepEqual(previewCalls, [], 'превью не обновляется при отказе');
 });
 
@@ -198,6 +200,8 @@ test('insertImageFilesInOrder: гейт срабатывает в середин
     // Гейт лимита успел показать warning ровно один раз (не по разу на оставшиеся файлы).
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /лимит/i);
+    // №14: тот же текст, что и у остальных гейтов лимита (app-config.js).
+    assert.equal(warnings[0], AppConfig.content.errors.contentItemsLimitReached(2));
     assert.deepEqual(errors, [], 'ошибок чтения файлов не было');
 });
 

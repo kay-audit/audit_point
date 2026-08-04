@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Protocol
 
-from app.api.v1.endpoints.auth import get_current_user_from_env
+from app.auth.context import get_request_username
 from app.core.config import request_id_var
 
 logger = logging.getLogger("audit_workstation.middleware.http_metrics")
@@ -81,12 +81,9 @@ class HttpMetricsMiddleware:
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 method = scope.get("method", "")
                 trimmed_path = path[:_PATH_MAX_LEN]
-                # Username берём из env (stateless-auth через JUPYTERHUB_USER).
-                # Может быть None — это валидно для unauthenticated.
-                try:
-                    username = get_current_user_from_env()
-                except Exception:
-                    username = None
+                # Username из контекста запроса (заполняет AuthMiddleware в обоих
+                # режимах). Может быть None — это валидно для unauthenticated.
+                username = get_request_username()
                 request_id = request_id_var.get()
                 if request_id == "-":
                     request_id = None
