@@ -43,8 +43,8 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 | Аспект | Значение |
 |---|---|
 | **Регистрирует** | `app/domains/admin/_lifecycle.py` (или `__init__.py::_build_domain`) |
-| **Использует** | `app/domains/acts/deps.py:132` (`get_factory("admin.user_directory")`) |
-| **Контракт** | Фабрика возвращает `UserDirectoryRepository` с методом `get_user(username: str) -> UserInfo` |
+| **Использует** | `app/domains/acts/deps.py:127` (`get_users_repository`, `get_factory("admin.user_directory")()`) |
+| **Контракт** | Обычный callable без аргументов, возвращает `UserDirectoryRepository` на исполнителе БД (`get_executor()`, см. [`developer-guide.md §6.3a`](../guides/developer-guide.md#63a-исполнитель-бд-connection-per-operation)) с методом `get_user(username: str) -> UserInfo` |
 | **Что сломается** | Удаление/переименование ключа → `acts` потеряет атрибуцию авторов актов. `RuntimeError: factory 'admin.user_directory' not registered` на старте. Чат **не затронут** (не использует) |
 
 ### 2.2. `ua_data.invoice_table_names` — реестр Hive-таблиц
@@ -52,9 +52,35 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 | Аспект | Значение |
 |---|---|
 | **Регистрирует** | `app/domains/ua_data/_lifecycle.py` |
-| **Использует** | `app/domains/acts/deps.py:96` (`get_factory("ua_data.invoice_table_names")()`) |
+| **Использует** | `app/domains/acts/deps.py:88` (`get_invoice_service`, `get_factory("ua_data.invoice_table_names")()`) |
 | **Контракт** | Фабрика возвращает callable, который при вызове отдаёт список имён таблиц для проверки фактур |
 | **Что сломается** | `acts` не сможет валидировать фактуры. Workflow создания/обновления фактур упадёт |
+
+### 2.3. `admin.user_avatars` — фото профиля
+
+| Аспект | Значение |
+|---|---|
+| **Регистрирует** | `app/domains/admin/_lifecycle.py::register_factories` (`_user_avatars_factory`) |
+| **Использует** | `app/auth/router.py::get_avatar_repository` (эндпоинты `POST`/`DELETE /avatar`, `GET /avatar/{username}`) и `_read_avatar_version` (`GET /me`) |
+| **Контракт** | Обычный callable без аргументов, возвращает `UserAvatarRepository` на исполнителе БД — соединение берётся из пула на время каждой операции, не на время фабрики |
+| **Что сломается** | `RuntimeError: factory 'admin.user_avatars' not registered` при загрузке/чтении/удалении фото. Исключение — `/me`: `_read_avatar_version` мягко проверяет `has_factory` и при его отсутствии просто отдаёт «фото нет», не падает (нужно для минимального приложения в тестах и для отключённого admin-домена) |
+
+### 2.4. `notifications.push` — эмиссия персистентных уведомлений
+
+| Аспект | Значение |
+|---|---|
+| **Регистрирует** | `app/domains/notifications/_lifecycle.py::register_factories` (`_push_factory`) |
+| **Использует** | `app/core/notifications_emit.py::push_notification` — общая точка входа для продьюсеров (домены `acts`, `chat`) |
+| **Контракт** | Обычный callable без аргументов, возвращает `NotificationService` на исполнителе БД. Продьюсеры зовут фабрику и `await svc.push(...)` напрямую, без `async for`/`aclosing` |
+| **Что сломается** | `has_factory`-guard в `push_notification` — отсутствие домена `notifications` не ломает продьюсеров: уведомление молча не отправится, в лог уйдёт warning |
+
+Сосед по реестру того же домена, `notifications.email`
+(`_email_factory` в `notifications/_lifecycle.py`, потребитель —
+`app/auth/router.py:177`), — **исключение из этого паттерна**: фабрика
+остаётся async-генератором (`async for svc in factory():`), потому что
+email-сервису соединение БД не нужно, а отправка письма занимает до
+30 секунд — держать это время объект исполнителя не должен. Не путать
+форму двух соседних фабрик одного домена.
 
 ---
 

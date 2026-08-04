@@ -54,6 +54,7 @@
   - [6.1 Схема: основные и справочные таблицы](#61-схема-основные-и-справочные-таблицы)
   - [6.2 Адаптеры (PostgreSQL vs Greenplum)](#62-адаптеры-postgresql-vs-greenplum)
   - [6.3 Пул подключений (asyncpg)](#63-пул-подключений-asyncpg)
+  - [6.3a Исполнитель БД (connection-per-operation)](#63a-исполнитель-бд-connection-per-operation)
   - [6.4 BaseRepository: паттерн работы с БД](#64-baserepository-паттерн-работы-с-бд)
   - [6.5 Миграции](#65-миграции)
   - [6.5a Как добавить CHECK constraint](#65a-как-добавить-check-constraint)
@@ -526,15 +527,13 @@ app/domains/acts/api/
 
 ### 3.2 FastAPI Depends (DI)
 
-Все сервисы получают `asyncpg.Connection` из пула через async generator:
+Все сервисы получают БД через исполнитель `get_executor()` — DI-фабрики
+обычные функции, соединение из пула не удерживают (детали — §6.3a):
 
 ```python
 # app/domains/acts/deps.py
-async def get_crud_service(
-    settings: Settings = Depends(get_settings),
-) -> AsyncGenerator[ActCrudService, None]:
-    async with get_db() as conn:
-        yield ActCrudService(conn=conn, settings=settings)
+def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
+    return ActCrudService(conn=get_executor(), settings=settings)
 ```
 
 **Цепочка зависимостей:**
@@ -543,14 +542,15 @@ async def get_crud_service(
 Эндпоинт
     ↓ Depends()
     ├── get_username() → str (или HTTPException 401)
-    └── get_crud_service() → async generator
-        └── get_db() → asyncpg.Connection из пула
-            └── Service.__init__(conn, settings)
-                └── Repository(conn)
+    └── get_crud_service() → ActCrudService (обычная функция, без yield)
+        └── get_executor() → DbExecutor (процесс-синглтон, соединения не держит)
+            └── Service.__init__(conn=executor, settings)
+                └── Repository(conn=executor)
                     └── self.adapter = get_adapter()
 ```
 
-Connection автоматически возвращается в пул после завершения запроса.
+Соединение из пула исполнитель берёт только на время конкретного SQL-вызова
+(`fetch`/`execute`/…) или явной транзакции — не на время жизни запроса.
 
 **Auth dependency** (`app/api/v1/deps/auth_deps.py`, упрощённо — оба режима `AUTH__ENABLED`, детали §9.3a):
 
@@ -762,14 +762,16 @@ async def app_error_handler(request, exc):
 2. FastAPI routing → acts/api/management.py:get_acts_list()
 3. Depends(get_username) → извлечение username из окружения
 4. Depends(get_crud_service):
-   a. get_db() → asyncpg.Connection из пула
-   b. ActCrudService(conn, settings)
+   a. get_executor() → DbExecutor (синглтон, соединения не держит)
+   b. ActCrudService(conn=executor, settings)
 5. service.list_acts(username):
-   a. self._crud.get_user_acts(username) → SQL SELECT
+   a. self._crud.get_user_acts(username) → executor.fetch(...): взял
+      соединение из пула → SQL SELECT → сразу вернул в пул
    b. Возврат [ActListItem, ...]
 6. FastAPI → JSON response → клиент
-7. Connection возвращается в пул (async generator cleanup)
 ```
+
+Соединение живёт только шаг 5a, а не всё время запроса — детали §6.3a.
 
 ---
 
@@ -1096,8 +1098,8 @@ register_factory("admin.user_directory", _user_directory_factory)
 # acts использует её через get_factory без import UserDirectoryRepository
 from app.core.domain_registry import get_factory
 factory = get_factory("admin.user_directory")
-async for repo in factory():
-    users = await repo.search(query)
+repo = factory()
+users = await repo.search(query)
 ```
 
 Это позволяет домену `acts` зависеть от `admin` через **интерфейс** (контракт фабрики), а не через прямой импорт реализации. Регистрация — на этапе `_build_domain()` (через `register_factories()`), до того как любой потребитель запросит фабрику в Depends.
@@ -1118,7 +1120,7 @@ DomainDescriptor(
 
 Циклические зависимости и ссылки на незарегистрированные домены вызывают `RuntimeError` при старте. Порядок регистрации виден в логах `lifespan` — полезно для отладки «почему мой домен инициализируется до своей зависимости».
 
-**DI между доменами — через factory-registry, не через прямые импорты.** Раньше `acts/deps.py` напрямую импортировал `UserDirectoryRepository` из `admin.services`; теперь `get_users_repository()` идёт через `domain_registry.get_factory("admin.user_directory")`. Контракт фабрики — async-генератор репозитория, готовый к использованию в FastAPI Depends. Преимущества:
+**DI между доменами — через factory-registry, не через прямые импорты.** Раньше `acts/deps.py` напрямую импортировал `UserDirectoryRepository` из `admin.services`; теперь `get_users_repository()` идёт через `domain_registry.get_factory("admin.user_directory")`. Контракт фабрики — обычный callable без аргументов, возвращающий готовый репозиторий на исполнителе БД (`get_executor()`, §6.3a): вызывающая сторона зовёт фабрику напрямую, без `async for`/`aclosing`. Преимущества:
 
 - `acts` зависит от **интерфейса** (фабрика возвращает что-то, что умеет `search()`), а не от конкретного класса `UserDirectoryRepository`.
 - Тесты `acts` могут зарегистрировать стаб через `register_factory("admin.user_directory", fake_factory)` без monkey-patch'а импортов.
@@ -1380,6 +1382,91 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 
 Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул: коннект берётся только на время `_tick`, в `sleep` не удерживается. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
 
+### 6.3a Исполнитель БД (connection-per-operation)
+
+`app/db/executor.py` — класс `DbExecutor`, процесс-синглтон без состояния,
+повторяющий API `asyncpg.Connection` через duck-typing:
+`fetch`/`fetchrow`/`fetchval`/`execute`/`executemany` + `transaction()`.
+Каждый вызов сам берёт соединение из пула через `get_db()` и сразу
+возвращает его — в отличие от held-DI до ветки `connection-per-operation`
+(§3.2 показывает актуальный паттерн), исполнитель никогда не удерживает
+соединение дольше одного SQL-вызова.
+
+```python
+from app.db.executor import get_executor
+
+executor = get_executor()           # процесс-синглтон, без состояния
+await executor.fetch("SELECT ...")  # взял соединение → SQL → сразу отдал
+```
+
+**Явная транзакция** — `executor.transaction()` привязывает соединение к
+`ContextVar` на время блока: все вызовы исполнителя внутри блока (в том
+числе из других репозиториев — они держат тот же синглтон) идут через одно
+и то же соединение.
+
+```python
+async with get_executor().transaction():
+    await repo_a.insert(...)   # то же соединение
+    await repo_b.update(...)   # атомарно с insert выше
+```
+
+Вложенный `transaction()` на том же task делегируется в `conn.transaction()`
+того же соединения — asyncpg открывает SAVEPOINT, семантика вложенных
+транзакций (на неё рассчитывает `act_content.py`) сохраняется 1:1.
+
+**Три инварианта** (заменяют прежнее правило «второе соединение не берём»):
+
+1. Соединение берётся только на время SQL-вызова или явной транзакции —
+   **никогда** на время await'ов сети/LLM/файлов.
+2. Внутри явной транзакции нет новых захватов пула (вложенный `transaction()`
+   → savepoint на том же соединении) и нет `create_task` с работой в этой
+   транзакции.
+3. DI-слой не держит соединений: фабрики зависимостей — обычные функции,
+   отдающие сервисы на исполнителе.
+
+**DI-фабрики** (`deps.py` доменов + реестровые `admin.user_directory` /
+`admin.user_avatars` / `notifications.push`, см. `cross-domain-contracts.md`
+§2) — обычные функции без `yield`:
+
+```python
+def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
+    return ActCrudService(conn=get_executor(), settings=settings)
+```
+
+**Транзиентные `get_db`-места остаются легальным паттерном вне DI** — там,
+где операция БД короткая и не спрятана за yield-фабрикой (батчеры, поллер,
+role_deps, health-check'и, ChatTool action-handlers вроде
+`open_act_page_handler`, разовые вызовы внутри `orchestrator.py`). Переписывать
+их на исполнитель не нужно — это уменьшает диф и сохраняет тестовые
+patch-точки `patch.multiple("app.db.connection", get_db=..., get_adapter=...)`
+(§8, «Handler-функции с `get_db`/`get_adapter`»).
+
+**Страж повторного захвата** (`app/db/connection.py::get_db`) — per-task
+счётчик глубины захвата в `ContextVar`. Повторный `get_db()` в том же task,
+пока первый ещё не отдан, — риск самоблокировки на пуле `max=2`:
+
+- `DATABASE__STRICT_ACQUIRE_GUARD=true` — `RuntimeError`. В тестах включён
+  БЕЗУСЛОВНО через autouse-фикстуру `strict_acquire_guard`
+  (`tests/conftest.py`), независимо от `.env`.
+- `false` (дефолт, `.env.example`, ПРОМ) — WARNING со стеком, запрос не падает.
+
+Известное ограничение стража: глубина в `ContextVar` не привязана к
+task-владельцу (в отличие от `_bound_tx` у `transaction()`, который сверяет
+`bound.task is not asyncio.current_task()`) — дочерний task, порождённый
+`create_task` пока родитель держит соединение, наследует копию ненулевой
+глубины и может ложно словить «Повторный захват» на своём первом же
+`get_db()`, хотя реально ничего не захватывал дважды. Сегодня в приложении
+нет кода, порождающего task с работой БД внутри держащего соединение task'а
+(см. инвариант 2), поэтому пробел не проявляется в проде; ловится он
+юнит-тестом `tests/db/test_executor.py::test_foreign_task_gets_own_connection`.
+
+**Ratchet-тест** `tests/test_connection_budget.py` — статический AST-обход
+`app/`: находит функции, где `async with get_db()` содержит `yield` внутри
+блока (соединение живёт всё время жизни зависимости — held-DI). Ассерт —
+`holders == set()`, любой новый holder валит тест. Модуль `app/db/executor.py`
+исключён из обхода намеренно: `DbExecutor.transaction()` легально удерживает
+соединение на время явной транзакции — это разрешает инвариант 1.
+
 ### 6.4 BaseRepository: паттерн работы с БД
 
 ```python
@@ -1406,6 +1493,12 @@ class ActCrudRepository(BaseRepository):
 ```
 
 Имена таблиц всегда получаются через `self.adapter.get_table_name()` — это обеспечивает работу с обеими СУБД.
+
+В production-коде `conn`, который получает репозиторий, — почти всегда
+`DbExecutor` (§6.3a), а не голое соединение из пула: имя атрибута и
+сигнатура сохранены намеренно, тело репозитория не отличает одно от
+другого (duck-typing). Юнит-тесты по-прежнему передают `mock_conn`
+напрямую — оба варианта совместимы.
 
 ### 6.5 Миграции
 
@@ -3097,6 +3190,7 @@ def test_chat_settings_defaults():
 | `DATABASE__POOL_MAX_SIZE` | int | `2` | Макс. соединений. У ПРОМ-учётки GP лимит ~5 соединений; горячие пути унесены на Redis, поэтому пул минимальный (см. troubleshooting №17) |
 | `DATABASE__COMMAND_TIMEOUT` | int | `60` | Timeout команд (сек) |
 | `DATABASE__ACQUIRE_TIMEOUT` | float | `10` | Таймаут ожидания свободного соединения из пула (сек). При исчерпании пула `get_db` отдаёт 503 (`ServiceUnavailableError`) вместо бессрочного зависания запроса |
+| `DATABASE__STRICT_ACQUIRE_GUARD` | bool | `False` | Повторный захват соединения в одном task: `true` — `RuntimeError` (dev; в тестах включён безусловно), `false` — WARNING со стеком (ПРОМ). См. §6.3a |
 | `DATABASE__POOL_WARMUP_ENABLED` | bool | `True` | Прогрев пула при старте |
 | `DATABASE__TABLE_PREFIX` | str | `t_db_oarb_audit_act_` | Общий префикс таблиц приложения (PG и GP) |
 | `DATABASE__GP__HOST` | str | `gp_dns_pkap1123_audit.gp.df.sbrf.ru` | Хост GP |

@@ -2,9 +2,9 @@
 
 Holder — функция, где ``async with get_db()`` содержит ``yield`` внутри блока:
 соединение живёт всё время жизни зависимости (весь HTTP-запрос). Целевое
-состояние — ноль holder'ов; на время миграции существующие перечислены в
-ALLOWLIST и только убываются (равенство ниже не даёт ни добавить нового,
-ни забыть вычеркнуть переведённого).
+состояние — ноль holder'ов, закреплено навсегда: миграция на исполнитель
+(`app/db/executor.py`, ветка connection-per-operation) завершена, любой найденный
+holder — регрессия, а не временный снимок.
 """
 
 import ast
@@ -18,17 +18,6 @@ APP = pathlib.Path(__file__).resolve().parent.parent / "app"
 # поэтому модуль исполнителя из обхода исключён — иначе целевое состояние
 # «holder'ов ноль» недостижимо в принципе.
 EXCLUDED_MODULES = {"app/db/executor.py"}
-
-# Снимок состояния на 2026-08-04 (начало ветки connection-per-operation).
-# Фазы 1-3 вычёркивают переведённые фабрики; Task 4.1 удаляет список и
-# заменяет ассерт на ``holders == set()``.
-#
-# Вложенные фабрики в ``_lifecycle.py`` дают несколько записей на одну
-# конструкцию: ``ast.walk`` обходит и вложенные def'ы, поэтому holder'ом
-# считается каждая охватывающая функция (``register_factories`` →
-# ``_user_directory_factory`` → ``_gen``). Переход фабрики на исполнитель
-# снимает всю цепочку разом.
-ALLOWLIST: set[str] = set()
 
 
 def _collect_holders() -> set[str]:
@@ -59,8 +48,7 @@ def _collect_holders() -> set[str]:
 
 def test_di_holds_no_connections():
     holders = _collect_holders()
-    assert holders == ALLOWLIST, (
-        "Изменился состав функций, удерживающих соединение через "
-        f"yield-внутри-get_db.\nНовые (запрещено): {sorted(holders - ALLOWLIST)}\n"
-        f"Переведённые (вычеркни из ALLOWLIST): {sorted(ALLOWLIST - holders)}"
+    assert holders == set(), (
+        "DI-слой снова удерживает соединения (yield внутри get_db): "
+        f"{sorted(holders)}. Используйте get_executor() — см. app/db/executor.py."
     )

@@ -29,6 +29,7 @@ from app.domains.admin.interfaces import IUserDirectory
 
 if TYPE_CHECKING:
     from app.domains.acts.services.audit_log_batcher import ActAuditLogBatcher
+    from app.domains.acts.services.audit_log_service import AuditLogService
 
 # Батчер аудит-лога актов. Инициализируется в lifespan
 # (см. ``app/domains/acts/_lifecycle.py``). ``None`` — fallback на
@@ -103,7 +104,7 @@ def get_audit_log_deps() -> tuple[AccessGuard, ActAuditLogRepository, ActContent
     return guard, ActAuditLogRepository(ex), ActContentVersionRepository(ex)
 
 
-def get_audit_log_service():
+def get_audit_log_service() -> "AuditLogService":
     """Создаёт AuditLogService на исполнителе БД."""
     from app.domains.acts.services.audit_log_service import AuditLogService
 

@@ -30,6 +30,22 @@ def fake_redis():
     redis_module._adapter = None
 
 
+@pytest.fixture(autouse=True)
+def strict_acquire_guard(monkeypatch):
+    """Повторный захват соединения в одном task в тестах — всегда ошибка.
+
+    DI больше не держит соединений (ветка connection-per-operation) — любой
+    вложенный ``get_db()`` в том же task теперь либо баг, либо забытый
+    перевод на ``get_executor()``. Тесты, которые намеренно проверяют
+    warning-режим стража, локально возвращают ``False`` через monkeypatch
+    (см. ``tests/db/test_executor.py::test_nested_get_db_warns_by_default``).
+    """
+    import app.db.connection as dbconn
+
+    monkeypatch.setattr(dbconn, "_strict_acquire_guard", True)
+    yield
+
+
 @pytest.fixture
 def mock_conn():
     """Mock asyncpg.Connection для unit-тестов репозиториев."""
