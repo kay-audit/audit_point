@@ -6,16 +6,13 @@
     min-width: auto;
     max-height: 97vh;
     border-radius: var(--radius-xl, 1rem);
-    /* Приведение акцентного цвета к пастельной палитре проекта */
-    --color-primary: var(--primary, #5b6fa8);
-    --color-primary-hover: var(--primary-hover, #4a5d8a);
 }
 
 /* Вкладки */
 .audit-log-tabs {
     display: flex;
     gap: 0;
-    border-bottom: 1px solid var(--color-border, #e0e0e0);
+    border-bottom: 1px solid var(--border-light);
     padding: 0 24px;
 }
 
@@ -25,25 +22,25 @@
     padding: 12px 20px;
     font-size: 14px;
     cursor: pointer;
-    color: var(--color-text-secondary, #666);
+    color: var(--text-secondary);
     border-bottom: 2px solid transparent;
     transition: all 0.15s;
 }
 
 .audit-log-tab:hover {
-    color: var(--color-text-primary, #333);
+    color: var(--text-primary);
 }
 
 .audit-log-tab.active {
-    color: var(--color-primary);
-    border-bottom-color: var(--color-primary);
+    color: var(--primary);
+    border-bottom-color: var(--primary);
     font-weight: 500;
 }
 
 /* Фильтры */
 .audit-log-filters {
     padding: 14px 0;
-    border-bottom: 1px solid var(--color-border, #e8e8e8);
+    border-bottom: 1px solid var(--border-light);
     margin-bottom: 14px;
 }
 
@@ -62,7 +59,7 @@
     padding: 0;
     font-size: 14px;
     font-weight: 600;
-    color: var(--color-text-primary, #333);
+    color: var(--text-primary);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -70,7 +67,7 @@
 }
 
 .audit-log-filters-collapse:hover {
-    color: var(--color-primary);
+    color: var(--primary);
 }
 
 /* Шеврон */
@@ -118,7 +115,7 @@
     padding: 4px 0;
     font-size: var(--font-size-sm);
     font-weight: 600;
-    color: var(--color-text-secondary, #666);
+    color: var(--text-secondary);
     cursor: pointer;
     white-space: nowrap;
     text-align: center;
@@ -126,14 +123,14 @@
 }
 
 .audit-log-group-label:hover {
-    color: var(--color-primary);
+    color: var(--primary);
     text-decoration: underline;
     background: rgba(91, 111, 168, 0.06);
     border-radius: 4px;
 }
 
 .audit-log-chip-group.all-inactive .audit-log-group-label {
-    color: var(--color-text-tertiary, #aaa);
+    color: var(--text-tertiary);
 }
 
 .audit-log-filter-toggle {
@@ -142,7 +139,7 @@
     border: none;
     padding: 0;
     font-size: var(--font-size-base);
-    color: var(--color-primary);
+    color: var(--primary);
     cursor: pointer;
     font-weight: 500;
 }
@@ -165,10 +162,10 @@
     width: calc(50% - 3px);
     box-sizing: border-box;
     padding: 5px 12px;
-    border: 1px solid var(--color-border, #ddd);
+    border: 1px solid var(--border-light);
     border-radius: 20px;
-    background: var(--color-bg-primary, #fff);
-    color: var(--color-text-secondary, #555);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
     font-size: var(--font-size-base);
     font-weight: 500;
     cursor: pointer;
@@ -177,19 +174,19 @@
 }
 
 .audit-log-chip:hover {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
+    border-color: var(--primary);
+    color: var(--primary);
 }
 
 .audit-log-chip.active {
-    background: var(--color-primary);
+    background: var(--primary);
     color: #fff;
-    border-color: var(--color-primary);
+    border-color: var(--primary);
 }
 
 .audit-log-chip.active:hover {
-    background: var(--color-primary-hover);
-    border-color: var(--color-primary-hover);
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
 }
 
 .audit-log-filter-row {
@@ -201,11 +198,11 @@
 
 .audit-log-filter-row input {
     padding: 4px 10px;
-    border: 1px solid var(--color-border, #ddd);
+    border: 1px solid var(--border-light);
     border-radius: 6px;
     font-size: var(--font-size-base);
-    color: var(--color-text-primary, #333);
-    background: var(--color-bg-primary, #fff);
+    color: var(--text-primary);
+    background: var(--bg-primary);
 }
 
 .audit-log-filter-row input[type="text"] {
@@ -233,9 +230,9 @@
 
 .audit-log-entry {
     padding: 14px 16px;
-    border: 1px solid var(--color-border, #e8e8e8);
+    border: 1px solid var(--border-light);
     border-radius: 10px;
-    background: var(--color-bg-secondary, #fafafa);
+    background: var(--bg-secondary);
 }
 
 .audit-log-entry-header {
@@ -249,25 +246,25 @@
 .audit-log-entry-action {
     font-weight: 500;
     font-size: 14px;
-    color: var(--color-text-primary, #333);
+    color: var(--text-primary);
 }
 
 .audit-log-entry-meta {
     font-size: var(--font-size-base);
-    color: var(--color-text-secondary, #888);
+    color: var(--text-secondary);
     white-space: nowrap;
 }
 
 .audit-log-entry-details {
     margin-top: 8px;
     font-size: var(--font-size-base);
-    color: var(--color-text-secondary, #555);
+    color: var(--text-secondary);
     line-height: 1.5;
 }
 
 .audit-log-entry-details code {
     font-size: var(--font-size-sm);
-    background: var(--color-bg-hover, #f0f0f0);
+    background: var(--bg-hover);
     padding: 2px 5px;
     border-radius: 4px;
     word-break: break-all;
@@ -288,7 +285,7 @@
 .audit-log-changelog-toggle {
     background: none;
     border: none;
-    color: var(--color-primary);
+    color: var(--primary);
     font-size: var(--font-size-base);
     cursor: pointer;
     padding: 4px 0;
@@ -303,7 +300,7 @@
     margin: 8px 0 0 16px;
     padding: 0;
     font-size: var(--font-size-base);
-    color: var(--color-text-secondary, #555);
+    color: var(--text-secondary);
     line-height: 1.6;
     list-style: disc;
 }
@@ -319,11 +316,11 @@
     text-align: center;
     padding: 40px 16px;
     font-size: 14px;
-    color: var(--color-text-secondary, #888);
+    color: var(--text-secondary);
 }
 
 .audit-log-error {
-    color: var(--color-danger, #dc2626);
+    color: var(--danger);
 }
 
 /* Load More — пагинация по принципу «загрузить ещё» */
@@ -341,7 +338,7 @@
 
 .load-more-counter {
     font-size: var(--font-size-base);
-    color: var(--color-text-secondary, #888);
+    color: var(--text-secondary);
 }
 
 .load-more-btn {
@@ -359,25 +356,25 @@
 }
 
 .audit-log-modal .btn-primary {
-    background: var(--color-primary);
-    border-color: var(--color-primary);
+    background: var(--primary);
+    border-color: var(--primary);
 }
 
 .audit-log-modal .btn-primary:hover:not(:disabled) {
-    background: var(--color-primary-hover);
-    border-color: var(--color-primary-hover);
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
 }
 
 .audit-log-modal .btn-secondary {
-    background: var(--color-bg-primary, #fff);
-    border-color: var(--color-border, #ddd);
-    color: var(--color-text-primary, #333);
+    background: var(--bg-primary);
+    border-color: var(--border-light);
+    color: var(--text-primary);
 }
 
 .audit-log-modal .btn-secondary:hover:not(:disabled) {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-    background: var(--color-bg-primary, #fff);
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--bg-primary);
 }
 
 /* Детализация изменений в changelog */
@@ -390,12 +387,12 @@
 }
 
 .field-change-item {
-    color: var(--color-text-secondary, #666);
+    color: var(--text-secondary);
     padding: 1px 0;
 }
 
 .field-change-item .field-old {
-    color: var(--color-danger, #dc2626);
+    color: var(--danger);
     text-decoration: line-through;
 }
 
@@ -405,6 +402,6 @@
 }
 
 .field-change-more {
-    color: var(--color-text-tertiary, #aaa);
+    color: var(--text-tertiary);
     font-style: italic;
 }
