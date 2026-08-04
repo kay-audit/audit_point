@@ -95,11 +95,9 @@ def _make_finalizable_service(mock_conn, settings, *, question_user_id="user1"):
 def _register_push_factory(push_mock):
     """Регистрирует фабрику notifications.push, отдающую сервис с push_mock."""
     def _factory():
-        async def _gen():
-            svc = MagicMock()
-            svc.push = push_mock
-            yield svc
-        return _gen()
+        svc = MagicMock()
+        svc.push = push_mock
+        return svc
 
     domain_registry.register_factory("notifications.push", _factory)
 

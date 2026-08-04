@@ -28,15 +28,7 @@ EXCLUDED_MODULES = {"app/db/executor.py"}
 # считается каждая охватывающая функция (``register_factories`` →
 # ``_user_directory_factory`` → ``_gen``). Переход фабрики на исполнитель
 # снимает всю цепочку разом.
-ALLOWLIST = {
-    "app/domains/admin/_lifecycle.py::register_factories",
-    "app/domains/admin/_lifecycle.py::_user_directory_factory",
-    "app/domains/admin/_lifecycle.py::_user_avatars_factory",
-    "app/domains/admin/_lifecycle.py::_gen",
-    "app/domains/notifications/_lifecycle.py::register_factories",
-    "app/domains/notifications/_lifecycle.py::_push_factory",
-    "app/domains/notifications/_lifecycle.py::_gen",
-}
+ALLOWLIST: set[str] = set()
 
 
 def _collect_holders() -> set[str]:

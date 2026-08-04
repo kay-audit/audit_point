@@ -45,18 +45,13 @@ def _register_fake_push_factory() -> MagicMock:
     """Регистрирует фейковую фабрику ``notifications.push``.
 
     Возвращает мок-сервиса с асинхронным ``push`` — на нём проверяем вызов.
-    Фабрика — callable без аргументов, возвращающий async-генератор,
-    отдающий один сервис (зеркало реального контракта _push_factory).
+    Фабрика — callable без аргументов, отдающий сервис напрямую (зеркало
+    реального контракта _push_factory).
     """
     svc = MagicMock()
     svc.push = AsyncMock(return_value="notif-id-1")
 
-    def _factory():
-        async def _gen():
-            yield svc
-        return _gen()
-
-    domain_registry.register_factory("notifications.push", _factory)
+    domain_registry.register_factory("notifications.push", lambda: svc)
     return svc
 
 

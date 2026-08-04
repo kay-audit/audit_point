@@ -4,11 +4,9 @@ DI-зависимости для сервисов актов.
 Предоставляет get_*_service для использования в FastAPI Depends. Сервисы
 строятся на исполнителе БД (``get_executor()``): соединение берётся из пула
 на время одного SQL-вызова или одной явной транзакции, а не на весь
-HTTP-запрос. Исключение — ``get_users_repository``: кросс-доменная фабрика
-``admin.user_directory`` остаётся async-generator'ом до фазы 3.
+HTTP-запрос.
 """
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from fastapi import Depends
@@ -118,16 +116,12 @@ def get_audit_log_service():
     return AuditLogService(guard, audit_repo, versions_repo, ex)
 
 
-async def get_users_repository() -> AsyncGenerator[IUserDirectory, None]:
+def get_users_repository() -> IUserDirectory:
     """Возвращает реализацию IUserDirectory из admin-домена через фабрику.
 
     Кросс-доменная связь — через ``domain_registry.get_factory(...)``,
-    без прямого импорта конкретного класса репозитория. Это сохраняет
-    границу доменов и проходит через топосортировку discover_domains
-    (admin регистрирует фабрику в _build_domain, до создания акт-сервисов).
+    без прямого импорта класса репозитория.
     """
     from app.core.domain_registry import get_factory
 
-    factory = get_factory("admin.user_directory")
-    async for repo in factory():
-        yield repo
+    return get_factory("admin.user_directory")()
