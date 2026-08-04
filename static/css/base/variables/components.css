@@ -45,8 +45,8 @@
     --preview-sup-offset: -0.5em;
     --preview-sub-offset: -0.25em;
     --preview-script-size-ratio: 0.75em;
-    --preview-menu-width: 66vw;
-    --preview-menu-min-width: 30rem;
+    --preview-menu-width: 50vw;
+    --preview-menu-min-width: 480px;
     --preview-menu-max-width: 90vw;
     --preview-menu-max-height: calc(100vh - var(--header-height) - var(--spacing-2xl) - var(--spacing-xl));
     --preview-menu-loading-min-height: 12.5rem;

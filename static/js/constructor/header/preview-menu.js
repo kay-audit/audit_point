@@ -22,9 +22,11 @@ export class PreviewMenuManager {
         this.isResizing = false;
         this.startX = 0;
         this.startWidth = 0;
-        this.minWidth = 480; // 30rem = 480px
+        this.minWidth = 480; // абсолютный пол, синхронен --preview-menu-min-width
         this.maxWidth = window.innerWidth * 0.9;
-        this.defaultWidth = window.innerWidth * 0.66;
+        // Базовая ширина — половина экрана. К ней возвращает двойной клик по
+        // ручке; она же берётся, когда в localStorage ничего не сохранено.
+        this.defaultWidth = window.innerWidth * 0.5;
 
         // Оптимизация: throttle для resize
         this.resizeRAF = null;
@@ -207,16 +209,18 @@ export class PreviewMenuManager {
      */
     _resetWidth() {
         this._setWidth(this.defaultWidth);
-        this._saveWidth();
+        this._saveWidth(this.defaultWidth);
     }
 
     /**
-     * Сохраняет текущую ширину в localStorage
+     * Сохраняет ширину в localStorage
+     * @param {number} [width] Ширина; по умолчанию — фактическая. Явный аргумент
+     * нужен при сбросе: ширина там ещё анимируется transition'ом, и offsetWidth
+     * вернул бы предыдущее значение — базовая ширина не пережила бы перезагрузку.
      * @private
      */
-    _saveWidth() {
-        const width = this.menu.offsetWidth;
-        localStorage.setItem('preview-menu-width', width.toString());
+    _saveWidth(width = this.menu.offsetWidth) {
+        localStorage.setItem('preview-menu-width', Math.round(width).toString());
     }
 
     /**
