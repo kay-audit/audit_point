@@ -29,13 +29,6 @@ EXCLUDED_MODULES = {"app/db/executor.py"}
 # ``_user_directory_factory`` → ``_gen``). Переход фабрики на исполнитель
 # снимает всю цепочку разом.
 ALLOWLIST = {
-    "app/domains/acts/deps.py::get_crud_service",
-    "app/domains/acts/deps.py::get_lock_service",
-    "app/domains/acts/deps.py::get_content_service",
-    "app/domains/acts/deps.py::get_invoice_service",
-    "app/domains/acts/deps.py::get_editor_telemetry_repo",
-    "app/domains/acts/deps.py::get_audit_log_deps",
-    "app/domains/acts/deps.py::get_audit_log_service",
     "app/domains/admin/deps.py::get_admin_service",
     "app/domains/admin/_lifecycle.py::register_factories",
     "app/domains/admin/_lifecycle.py::_user_directory_factory",
