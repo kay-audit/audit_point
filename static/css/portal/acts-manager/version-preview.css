@@ -38,7 +38,7 @@
 }
 
 .version-preview-info span {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary, #888);
 }
 
@@ -60,7 +60,7 @@
     background: var(--color-bg-secondary, #f5f5f5);
     border: none;
     padding: 6px 14px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     color: var(--color-text-secondary, #666);
     transition: all 0.15s;
@@ -107,7 +107,7 @@
     background: var(--color-bg-secondary, #f5f5f5);
     padding: 16px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     line-height: 1.5;
     overflow: auto;
     border: 1px solid var(--color-border, #e0e0e0);
@@ -134,10 +134,10 @@ h1.version-preview-heading { font-size: 18px; }
 h2.version-preview-heading { font-size: 16px; }
 h3.version-preview-heading { font-size: 15px; }
 h4.version-preview-heading { font-size: 14px; }
-h5.version-preview-heading { font-size: 13px; }
+h5.version-preview-heading { font-size: var(--font-size-base); }
 
 .version-preview-label {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--color-text-secondary, #666);
     margin: 12px 0 4px 0;
@@ -164,7 +164,7 @@ h5.version-preview-heading { font-size: 13px; }
     background: var(--color-bg-secondary, #f5f5f5);
     border: none;
     padding: 6px 16px;
-    font-size: 13px;
+    font-size: var(--font-size-base);
     cursor: pointer;
     color: var(--color-text-secondary, #666);
     transition: all 0.15s;
@@ -217,7 +217,7 @@ h5.version-preview-heading { font-size: 13px; }
     display: inline-block;
     margin-left: 8px;
     padding: 1px 6px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     font-weight: normal;
     background: rgba(245, 158, 11, 0.1);
     border-radius: 4px;
@@ -240,7 +240,7 @@ h5.version-preview-heading { font-size: 13px; }
     display: inline-block;
     margin-left: 8px;
     padding: 1px 6px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 500;
     color: #7c3aed;
     background: rgba(124, 58, 237, 0.12);
@@ -270,7 +270,7 @@ h5.version-preview-heading { font-size: 13px; }
 .diff-table-structure {
     margin: 4px 0;
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: #7c3aed;
     background: rgba(124, 58, 237, 0.08);
     border-radius: 4px;
@@ -331,7 +331,7 @@ h5.version-preview-heading { font-size: 13px; }
     display: inline-block;
     margin: 4px 0 0;
     padding: 2px 8px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: #7c3aed;
     background: rgba(124, 58, 237, 0.12);
@@ -382,7 +382,7 @@ h5.version-preview-heading { font-size: 13px; }
 .diff-invoice.diff-modified { border-left-color: #f59e0b; }
 
 .diff-invoice-label {
-    font-size: 13px;
+    font-size: var(--font-size-base);
     font-weight: 600;
     margin-bottom: 2px;
 }
@@ -433,7 +433,7 @@ h5.version-preview-heading { font-size: 13px; }
 .diff-violation-item.diff-reordered { border-left-color: #3b82f6; }
 
 .diff-violation-item-label {
-    font-size: 13px;
+    font-size: var(--font-size-base);
 }
 
 .diff-violation-item-body {
@@ -443,7 +443,7 @@ h5.version-preview-heading { font-size: 13px; }
 }
 
 .diff-violation-sublabel {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: #6b7280;
     margin: 4px 0 2px;
 }
@@ -460,13 +460,13 @@ h5.version-preview-heading { font-size: 13px; }
 }
 
 .diff-violation-image-placeholder {
-    font-size: 13px;
+    font-size: var(--font-size-base);
     color: #6b7280;
     font-style: italic;
 }
 
 .diff-violation-caption {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: #6b7280;
     font-style: italic;
     margin-bottom: 4px;

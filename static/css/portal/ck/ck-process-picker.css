@@ -13,7 +13,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: var(--font-size-base);
     color: var(--text-primary);
     background: var(--input-bg);
     box-sizing: border-box;
@@ -38,7 +38,7 @@
 .ck-process-picker__table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
 }
 
@@ -48,7 +48,7 @@
     background: var(--bg-tertiary);
     padding: 8px 10px;
     text-align: left;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
@@ -76,7 +76,7 @@
     padding: 24px;
     text-align: center;
     color: var(--text-tertiary);
-    font-size: 13px;
+    font-size: var(--font-size-base);
 }
 
 .ck-process-picker__buttons {

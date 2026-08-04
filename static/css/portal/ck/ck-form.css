@@ -1,7 +1,7 @@
 /* Форма редактирования записи ЦК */
 
 .ck-form {
-    font-size: 13px;
+    font-size: var(--font-size-base);
     color: var(--text-primary);
 }
 
@@ -34,7 +34,7 @@
 }
 
 .ck-form__label {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--text-secondary);
     display: block;
@@ -59,7 +59,7 @@
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
     background: var(--input-bg);
     box-sizing: border-box;
@@ -88,7 +88,7 @@
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     background: var(--bg-secondary);
     color: var(--text-primary);
 }
@@ -97,7 +97,7 @@
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -156,7 +156,7 @@
     border-bottom: 1px solid var(--border-light);
     cursor: pointer;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     text-align: left;

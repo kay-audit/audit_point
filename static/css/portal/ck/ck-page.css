@@ -54,7 +54,7 @@
 }
 
 .ck-record-meta {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
 }
 
@@ -106,7 +106,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 0 12px;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
     border-right: 2px solid var(--gray-200);
     height: 100%;

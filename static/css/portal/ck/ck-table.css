@@ -10,7 +10,7 @@
     width: max-content;
     min-width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
 }
 
@@ -26,7 +26,7 @@
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
     background: var(--bg-tertiary);
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
     cursor: pointer;
@@ -95,6 +95,6 @@
    piv:/pivnpl:) — доменные классы ЦКФР поверх generic-панели тулкита
    (dt-colvis-*), поэтому живут здесь, а не в shared/datatable.css */
 .dt-colvis-tbview .dt-colvis-grouplabel { padding-top: 0; }
-.dt-colvis-tbview__radios { display: flex; gap: 12px; font-size: 13px; margin-bottom: 6px; }
-.dt-colvis-tbgrid { display: grid; grid-template-columns: repeat(4, minmax(60px, 1fr)); gap: 4px 10px; font-size: 13px; }
+.dt-colvis-tbview__radios { display: flex; gap: 12px; font-size: var(--font-size-base); margin-bottom: 6px; }
+.dt-colvis-tbgrid { display: grid; grid-template-columns: repeat(4, minmax(60px, 1fr)); gap: 4px 10px; font-size: var(--font-size-base); }
 .dt-colvis-tbgrid input:disabled + span { color: var(--text-secondary); }
