@@ -791,7 +791,7 @@ Vanilla JS (ES6+), **Native ES Modules без bundler'а**. Браузер са�
 | `portal/` | актуальные цифры — `frontend-architecture.md` §1.1 | Sidebar-страницы: landing, acts-manager, admin, ck-fin-res, ck-client-exp |
 | `constructor/` | актуальные цифры — `frontend-architecture.md` §1.1 | Редактор актов (`/constructor?act_id=N`): state/, tree/, items/, table/, textblock/, violation/, preview/, dialog/, context-menu/, header/, validation/, services/ |
 
-Всего ~101 JS-файл и ~78 CSS-файлов (свежие цифры — `frontend-architecture.md` §1.1).
+Всего ~183 JS-файла и ~97 CSS-файлов (свежие цифры — `frontend-architecture.md` §1.1).
 
 **Страницы приложения:**
 

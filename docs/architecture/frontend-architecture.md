@@ -35,12 +35,12 @@ Audit Workstation — Server-side rendered (Jinja2) + vanilla JS приложе�
 | `constructor/` (редактор актов) | приблизительно 106 файлов (включая `search/` и инфраструктуру поверхностей, §1.2) |
 | `shared/` (cross-zone модули + чат) | приблизительно 42 файла (включая 13 модулей чата) |
 | `portal/` (sidebar-страницы) | приблизительно 32 файла (включая профиль/карточку пользователя) |
-| Всего CSS-файлов | 95 |
-| `constructor/` CSS | 44 файла |
-| `portal/` CSS | 19 файлов |
+| Всего CSS-файлов | 97 |
+| `constructor/` CSS | 45 файлов (включая `layout/density.css`, §13.5) |
+| `portal/` CSS | 20 файлов (включая `layout/density.css`, §13.5) |
 | `shared/` CSS | 17 файлов |
 | `base/` CSS | 11 файлов |
-| CSS-переменных | 580, `base/variables.css` — агрегатор, сами переменные в `base/variables/{colors,components,typography,spacing,shadows,motion,z-index}.css` |
+| CSS-переменных | 581 (уникальных имён, дублей нет), `base/variables.css` — агрегатор, сами переменные в `base/variables/{colors,components,typography,spacing,shadows,motion,z-index}.css` |
 
 ### 1.2 Три зоны
 
