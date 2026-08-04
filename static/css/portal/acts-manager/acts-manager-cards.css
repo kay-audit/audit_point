@@ -4,12 +4,14 @@
  * Включает индикацию статусов: заблокирован, требует внимания, критичный
  */
 
-/* Базовый стиль карточки акта */
+/* Базовый стиль карточки акта.
+   Поля на ступень меньше прежних 2xl: при пяти карточках в ряду они съедали по
+   четверти полезной ширины колонки. */
 .act-card {
     background: var(--card-bg);
     border: var(--border-width-thin) solid var(--card-border);
     border-radius: var(--radius-lg);
-    padding: var(--spacing-2xl);
+    padding: var(--spacing-xl);
     transition: var(--transition-all);
     position: relative;
 }
@@ -185,27 +187,38 @@
     border-top: var(--border-width-thin) solid var(--border-light);
 }
 
-/* Контейнер для действий с актом (кнопки открыть, дублировать, удалить) */
+/* Контейнер для действий с актом (кнопки открыть, дублировать, удалить).
+   Перенос — страховка для узкой колонки: до пяти карточек в ряду колонка
+   доходит до ~230px, и четыре кнопки-иконки с зазорами съедают почти всю
+   строку. Без переноса «Открыть» сплющивалась до нечитаемых 34px, а ряд вылезал
+   за карточку. Зазор здесь мельче общего: он повторяется четыре раза подряд. */
 .act-card-actions {
     display: flex;
-    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
     margin-top: var(--spacing-xl);
     padding-top: var(--spacing-xl);
     border-top: var(--border-width-thin) solid var(--border-light);
     position: relative;
 }
 
-/* Основная кнопка действия (обычно "Открыть") */
+/* Основная кнопка действия (обычно "Открыть").
+   min-width — то, ниже чего сжимать её бессмысленно: при меньшем ряд обязан
+   перенести иконки, а не резать подпись. */
 .act-card-actions .btn {
     flex: 1;
+    min-width: 6rem;
     padding: var(--spacing-sm) var(--spacing-lg);
     font-size: var(--font-size-sm);
     min-height: var(--button-size-sm);
 }
 
-/* Дополнительные кнопки-иконки (дублировать, удалить) */
+/* Дополнительные кнопки-иконки (дублировать, удалить).
+   min-width сбрасывается: он задан для «Открыть» правилом выше и иконки бы
+   раздуло до её ширины. */
 .act-card-actions .btn:not(:first-child) {
     flex: 0 0 var(--button-size-sm);
+    min-width: 0;
     padding: var(--spacing-xs);
     display: flex;
     align-items: center;

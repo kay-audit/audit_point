@@ -12,9 +12,12 @@
     min-height: 0;
 }
 
-/* Контейнер с ограничением ширины для центрирования контента */
+/* Контейнер списка. Раскрыт почти на всю ширину окна: прежние 1280px оставляли
+   на широком мониторе по ~130px пустоты с каждой стороны при трёх карточках.
+   Потолок нужен только чтобы на сверхшироких мониторах пятёрка карточек не
+   разъехалась до нечитаемой ширины. */
 .acts-manager-container {
-    max-width: var(--breakpoint-xl);
+    max-width: var(--acts-manager-max-width);
     margin: 0 auto;
 }
 
@@ -55,10 +58,21 @@
     border: var(--border-width-thin) solid var(--border-light);
 }
 
-/* Сетка для карточек актов с адаптивными колонками */
+/* Сетка карточек: от одной колонки до --acts-grid-max-columns.
+   auto-fill сам набирает столько колонок, сколько влезает по
+   --acts-grid-min-column-width, но потолка у него нет — на широком мониторе он
+   набрал бы и шесть, и семь. Поэтому минимум колонки берётся как максимум из
+   порога и доли ряда на предельное число колонок: как только доля становится
+   больше порога, следующая колонка перестаёт помещаться по определению.
+   Ширину ряда даёт 100% — это content-box сетки, поля контейнера уже вычтены. */
 .acts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--acts-grid-min-column-width), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(
+        max(
+            var(--acts-grid-min-column-width),
+            (100% - (var(--acts-grid-max-columns) - 1) * var(--spacing-2xl)) / var(--acts-grid-max-columns)
+        ),
+        1fr));
     gap: var(--spacing-2xl);
 }
 
