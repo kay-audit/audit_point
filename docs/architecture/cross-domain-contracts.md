@@ -43,7 +43,7 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 | Аспект | Значение |
 |---|---|
 | **Регистрирует** | `app/domains/admin/_lifecycle.py` (или `__init__.py::_build_domain`) |
-| **Использует** | `app/domains/acts/deps.py:127` (`get_users_repository`, `get_factory("admin.user_directory")()`) |
+| **Использует** | `app/domains/acts/deps.py::get_users_repository` (`get_factory("admin.user_directory")()`) |
 | **Контракт** | Обычный callable без аргументов, возвращает `UserDirectoryRepository` на исполнителе БД (`get_executor()`, см. [`developer-guide.md §6.3a`](../guides/developer-guide.md#63a-исполнитель-бд-connection-per-operation)) с методом `get_user(username: str) -> UserInfo` |
 | **Что сломается** | Удаление/переименование ключа → `acts` потеряет атрибуцию авторов актов. `RuntimeError: factory 'admin.user_directory' not registered` на старте. Чат **не затронут** (не использует) |
 
@@ -52,7 +52,7 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 | Аспект | Значение |
 |---|---|
 | **Регистрирует** | `app/domains/ua_data/_lifecycle.py` |
-| **Использует** | `app/domains/acts/deps.py:88` (`get_invoice_service`, `get_factory("ua_data.invoice_table_names")()`) |
+| **Использует** | `app/domains/acts/deps.py::get_invoice_service` (`get_factory("ua_data.invoice_table_names")()`) |
 | **Контракт** | Фабрика возвращает callable, который при вызове отдаёт список имён таблиц для проверки фактур |
 | **Что сломается** | `acts` не сможет валидировать фактуры. Workflow создания/обновления фактур упадёт |
 
@@ -76,7 +76,7 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 
 Сосед по реестру того же домена, `notifications.email`
 (`_email_factory` в `notifications/_lifecycle.py`, потребитель —
-`app/auth/router.py:177`), — **исключение из этого паттерна**: фабрика
+`app/auth/router.py::request_otp`), — **исключение из этого паттерна**: фабрика
 остаётся async-генератором (`async for svc in factory():`), потому что
 email-сервису соединение БД не нужно, а отправка письма занимает до
 30 секунд — держать это время объект исполнителя не должен. Не путать

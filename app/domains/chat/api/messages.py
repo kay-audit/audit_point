@@ -251,8 +251,9 @@ async def get_message(
 
     # Промежуточный статус очереди агента — только для streaming-черновиков,
     # привязанных к шине (agent_ref). Best-effort: сбой чтения шины не должен
-    # ломать поллинг готовности. Сервис строим на соединении msg_service —
-    # второе соединение пула на горячем пути поллинга не берём (pool 5/20).
+    # ломать поллинг готовности. Сервис строим на исполнителе msg_service —
+    # соединение берётся из пула на время каждой SQL-операции и не
+    # удерживается на горячем пути поллинга.
     agent_ref = message.get("agent_ref")
     if result["status"] == "streaming" and agent_ref:
         from app.domains.chat.services.agent_channel import AgentChannelService

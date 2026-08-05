@@ -310,16 +310,10 @@ class Orchestrator:
             if not file_id:
                 continue
             # Получаем данные через репозиторий с проверкой conversation_id
-            if conversation_id:
-                row = await file_repo.get_file_content(
-                    file_id=file_id,
-                    conversation_id=conversation_id,
-                )
-            else:
-                row = await file_repo.get_file_content(
-                    file_id=file_id,
-                    conversation_id="",
-                )
+            row = await file_repo.get_file_content(
+                file_id=file_id,
+                conversation_id=conversation_id or "",
+            )
             if not row:
                 continue
             text = await extract_text_async(
