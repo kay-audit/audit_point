@@ -62,6 +62,7 @@ async def test_get_status_after_successful_flush():
     )
     await batcher.add(1)
     await batcher.add(2)  # триггерит flush по размеру
+    await batcher._drain_threshold_flushes()  # flush по порогу — fire-and-forget
     status = batcher.get_status()
     assert status["last_flush_ago_sec"] is not None
     assert status["last_flush_ago_sec"] >= 0.0
@@ -105,6 +106,7 @@ async def test_last_error_set_on_flush_failure(caplog):
     )
     await batcher.add(1)
     await batcher.add(2)  # flush → исключение
+    await batcher._drain_threshold_flushes()  # flush по порогу — fire-and-forget
     status = batcher.get_status()
     assert status["last_error"] is not None
     assert "RuntimeError" in status["last_error"]
@@ -130,8 +132,10 @@ async def test_last_error_cleared_after_successful_flush():
         name="status_recover",
     )
     await batcher.add(1)  # упадёт
+    await batcher._drain_threshold_flushes()  # flush по порогу — fire-and-forget
     assert batcher.get_status()["last_error"] is not None
     await batcher.add(2)  # успех
+    await batcher._drain_threshold_flushes()
     status = batcher.get_status()
     assert status["last_error"] is None
     assert status["last_flush_ago_sec"] is not None

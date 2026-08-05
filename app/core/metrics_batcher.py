@@ -6,10 +6,24 @@ INSERT-транзакции на запись — пакет до ``max_batch_si
 
 Триггеры flush:
 
-- Размер буфера достиг ``max_batch_size`` — мгновенный flush.
+- Размер буфера достиг ``max_batch_size`` — flush запускается сразу, но
+  отдельным task'ом и без ожидания (см. ниже про «мягкий» порог).
 - Прошло ``flush_interval_sec`` секунд после последнего flush — flush даже
   если буфер не полный (фоновая задача в ``start()``).
 - Вызван ``stop()`` — финальный flush (например, при shutdown).
+
+Порог ``max_batch_size`` — **мягкий**. Flush по порогу исполняется в
+собственном task'е по принципу fire-and-forget: ``add()`` не ждёт его
+завершения, потому что вызывающий может сам сидеть в транзакции и держать
+соединение, а flush берёт из пула второе (пул на 2 слота — ожидание
+привело бы к упору в ACQUIRE_TIMEOUT). Из-за этого записи, добавленные,
+пока flush-task ещё не стартовал, попадают в тот же пакет: фактический
+размер пакета может превысить ``max_batch_size``. Для ``executemany``
+это безвредно.
+
+Как следствие: гарантии «запись уже в БД к возврату ``add()``» нет.
+Единственная точка ожидания — ``stop()``: он дожидается активных flush'ей
+по порогу и делает финальный flush.
 
 Защита от переполнения: если ``max_buffer_size`` превышен (например,
 БД недоступна и фоновый flush падает) — старые записи дропаются с одной
@@ -84,8 +98,9 @@ class MetricsBatcher(Generic[T]):
 
         Под локом: добавление + проверка размера + защитный дроп старых
         записей при превышении ``max_buffer_size``. Сам flush по порогу
-        исполняется в отдельном task'е (``_flush_by_size``), но с ожиданием —
-        контракт «flush завершён к возврату add()» сохранён.
+        исполняется в отдельном task'е (``_flush_by_size``) и НЕ ожидается:
+        к возврату ``add()`` записи ещё не в БД, а порог — «мягкий»
+        (см. докстринг модуля).
         """
         flush_needed = False
         async with self._lock:
@@ -108,19 +123,24 @@ class MetricsBatcher(Generic[T]):
             if len(self._buffer) >= self._max_batch_size:
                 flush_needed = True
         if flush_needed:
-            # Flush — в СОБСТВЕННОМ task'е: вызывающий add() код может держать
-            # соединение или транзакцию (например, аудит внутри save-content),
-            # а flush_callback берёт своё соединение из пула. В task'е
-            # вызывающего это был бы «повторный захват» (страж get_db,
-            # инвариант 2); отдельный task = отдельный контекст и легальный
-            # независимый захват.
+            # Flush — в СОБСТВЕННОМ task'е и БЕЗ ожидания (fire-and-forget).
+            # Вызывающий add() код может держать соединение и открытую
+            # транзакцию (аудит внутри save-content), а flush_callback берёт
+            # СВОЁ соединение из пула. Ждать здесь — значит держать
+            # соединение №1, пока добывается №2: на пуле в 2 слота два
+            # конкурентных сохранения упирались бы в ACQUIRE_TIMEOUT, теряя
+            # пакет и подвешивая запрос пользователя. Отдельный task — ещё и
+            # отдельный контекст для стража get_db (инвариант 2): его захват
+            # соединения легален, а не «повторный».
             task = asyncio.create_task(
                 self._flush_by_size(),
                 name=f"metrics_batcher:{self._name}:size_flush",
             )
+            # Сильная ссылка обязательна: без неё GC может собрать ещё не
+            # стартовавший task (asyncio docs, asyncio.create_task).
+            # Снимается своим же done-callback'ом, чтобы реестр не рос.
             self._threshold_flushes.add(task)
             task.add_done_callback(self._threshold_flushes.discard)
-            await task
 
     async def _flush_by_size(self) -> None:
         """Flush по достижении порога — берёт лок сам (работает в своём task'е)."""
@@ -158,16 +178,36 @@ class MetricsBatcher(Generic[T]):
             self._task = None
         # Дожидаемся flush'ей по порогу, стартовавших из add(), — финальный
         # flush ниже должен видеть согласованный буфер.
-        for task in list(self._threshold_flushes):
-            try:
-                await task
-            except Exception:
-                pass
+        await self._drain_threshold_flushes()
         # Финальный flush — под общим flush-локом, чтобы не пересечься с
         # последним фоновым тиком, если он уже стартовал.
         async with self._flush_in_progress:
             async with self._lock:
                 await self._flush_locked()
+
+    async def _drain_threshold_flushes(self) -> None:
+        """Дожидается активных пороговых flush'ей.
+
+        Точка синхронизации для ``stop()`` и для тестов: после перевода flush'а
+        по порогу в fire-and-forget ``add()`` возвращается ДО завершения
+        flush'а, и другого честного способа дождаться записи нет. Вызов из
+        теста — штатный способ, а не обход инкапсуляции; публичного ``drain()``
+        сознательно не заводим, чтобы не расширять API ради тестов.
+
+        ``gather(return_exceptions=True)``: падение или ОТМЕНА отдельного
+        flush-task'а возвращается как элемент результата и наружу не
+        пробрасывается (отмена ребёнка не отменяет сам gather). Это важно на
+        жёстком завершении процесса: иначе ``CancelledError`` (наследник
+        ``BaseException``, обычным ``except Exception`` не ловится) прошибал
+        бы ``stop()`` первого батчера, и финальные flush'и остальных батчеров
+        не выполнялись бы — буферы терялись бы молча.
+
+        Отмена **самого** вызывающего при этом проходит насквозь: гасить
+        собственную отмену нельзя, иначе shutdown зависает.
+        """
+        tasks = list(self._threshold_flushes)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_periodic(self) -> None:
         """Фоновый цикл: спим интервал, потом flush."""
@@ -197,6 +237,10 @@ class MetricsBatcher(Generic[T]):
         Если callback бросает исключение — лог warning, записи НЕ возвращаются
         в буфер (упало = упало, ретраи не плодим, иначе при стабильном падении
         БД буфер раздуется до OOM).
+
+        Отмена callback'а (жёсткое завершение процесса) теряет пакет ровно так
+        же — поэтому учитывается в тех же счётчиках, но саму отмену мы
+        пробрасываем дальше.
         """
         if not self._buffer:
             return
@@ -204,8 +248,12 @@ class MetricsBatcher(Generic[T]):
         self._buffer = []
         try:
             await self._flush_callback(batch)
-        except Exception as exc:
+        except BaseException as exc:
             # Каждая запись из batch'а потеряна — учитываем как дроп.
+            # Ловим BaseException, а не Exception: при отмене flush-task'а
+            # пакет уже вынут из буфера и теряется точно так же, а
+            # /admin/diagnostics обязан это показать, а не отрапортовать
+            # «всё хорошо».
             self._dropped_count += len(batch)
             self._last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
@@ -219,6 +267,10 @@ class MetricsBatcher(Generic[T]):
                     "dropped_count_total": self._dropped_count,
                 },
             )
+            if not isinstance(exc, Exception):
+                # CancelledError и прочие BaseException: потерю учли, а саму
+                # отмену пробрасываем — глушить её нельзя.
+                raise
         else:
             self._last_flush_at = asyncio.get_event_loop().time()
             self._last_error = None

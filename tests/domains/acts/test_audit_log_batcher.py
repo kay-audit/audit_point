@@ -33,10 +33,12 @@ async def test_size_trigger_flush_at_batch_size():
     # 49 — flush не должен сработать
     for _ in range(49):
         await batcher.add(_record())
+    await batcher._drain_threshold_flushes()  # flush по порогу — fire-and-forget
     assert flushed == []
 
     # 50-я запись — flush с пакетом из 50
     await batcher.add(_record())
+    await batcher._drain_threshold_flushes()
     assert len(flushed) == 1
     assert len(flushed[0]) == 50
 
@@ -133,7 +135,9 @@ async def test_flush_uses_executemany(mock_conn, mock_adapter):
             await batcher.add(ActAuditLogRecord(
                 action="create", username="u", act_id=i,
             ))
-        # add вызвал size-triggered flush
+        # add вызвал size-triggered flush; дожидаемся его внутри patch'а —
+        # flush ходит в запатченный get_db.
+        await batcher._drain_threshold_flushes()
     # log_many → executemany
     assert mock_conn.executemany.called, "log_many должен вызывать executemany"
     sql, params = mock_conn.executemany.call_args.args
@@ -156,8 +160,10 @@ async def test_flush_callback_exception_does_not_break_batcher():
     # Первая пара — flush падает
     await batcher.add(_record())
     await batcher.add(_record())
+    await batcher._drain_threshold_flushes()  # flush по порогу — fire-and-forget
     assert state["calls"] == 1
     # Вторая пара — после поломанного flush'а батчер всё равно жив
     await batcher.add(_record())
     await batcher.add(_record())
+    await batcher._drain_threshold_flushes()
     assert state["calls"] == 2
