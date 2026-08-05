@@ -1,12 +1,16 @@
 """
 Транзакционная целостность save_content и restore_version (§9 зона 4).
 
-save_content: контент + diff + аудит-лог + снимок версии — в ОДНОЙ плоской
-транзакции сервиса (без вложенных transaction()/savepoint'ов — Greenplum).
-restore_version: pre-snapshot + перезапись + лог + post-snapshot — так же.
+save_content: контент + diff + снимок версии — в ОДНОЙ плоской транзакции
+сервиса (без вложенных transaction()/savepoint'ов — Greenplum).
+restore_version: pre-snapshot + перезапись + post-snapshot — так же.
 
 Сбой на любом шаге (например, снимок версии) откатывает ВСЁ: контент
 не записывается частично, история не рассогласуется.
+
+Аудит-лог — единственный шаг ВНЕ транзакции, и пишется ПОСЛЕ коммита:
+батчер пишет своим соединением, поэтому изнутри блока запись уехала бы
+в лог и при откате (phantom-запись о несостоявшейся операции).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -106,7 +110,7 @@ def _make_content_service(call_log: list[str]):
 
 
 class TestSaveContentSingleTransaction:
-    """save_content: одна плоская транзакция вокруг всех шагов."""
+    """save_content: одна плоская транзакция, аудит — после коммита."""
 
     async def test_all_steps_inside_one_transaction(self):
         call_log: list[str] = []
@@ -116,13 +120,15 @@ class TestSaveContentSingleTransaction:
 
         # Транзакция открыта ровно один раз (плоская, без вложенности)
         assert conn.transaction.call_count == 1
-        # Все шаги — между входом и коммитом
+        # Запись контента и снимок версии — между входом и коммитом
         assert call_log[0] == "tx:enter"
-        assert call_log[-1] == "tx:exit:commit"
-        inner = call_log[1:-1]
+        commit_at = call_log.index("tx:exit:commit")
+        inner = call_log[1:commit_at]
         assert "repo:save_content" in inner
-        assert "audit:log" in inner
         assert "versions:create" in inner
+        # Аудит — единственный шаг после коммита
+        assert "audit:log" not in inner
+        assert call_log[commit_at + 1:] == ["audit:log"]
 
     async def test_version_failure_rolls_back_content(self):
         """Исключение на шаге «снимок версии» → контент НЕ записан (откат всего)."""
@@ -142,6 +148,27 @@ class TestSaveContentSingleTransaction:
         # ...но транзакция завершилась откатом — запись не зафиксирована.
         assert call_log[-1] == "tx:exit:rollback"
 
+    async def test_rollback_leaves_no_audit_record(self):
+        """Откат не оставляет phantom-записи в аудит-логе.
+
+        Батчер пишет своим соединением, вне транзакции сервиса: логируй мы
+        изнутри блока — запись о несостоявшемся сохранении всё равно уехала
+        бы в лог и попала в пользовательскую историю акта.
+        """
+        call_log: list[str] = []
+        svc, conn, tx = _make_content_service(call_log)
+        svc._versions.create_version = AsyncMock(
+            side_effect=RuntimeError("disk full"),
+        )
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await svc.save_content(
+                act_id=1, data=_make_data("manual"), username="12345",
+            )
+
+        assert "audit:log" not in call_log
+        svc._audit.log.assert_not_awaited()
+
     async def test_auto_save_skips_version_but_still_transactional(self):
         """auto-сейв без снимка версии всё равно идёт в транзакции."""
         call_log: list[str] = []
@@ -151,7 +178,8 @@ class TestSaveContentSingleTransaction:
 
         assert conn.transaction.call_count == 1
         assert "versions:create" not in call_log
-        assert call_log[-1] == "tx:exit:commit"
+        assert call_log[-1] == "audit:log"
+        assert call_log[-2] == "tx:exit:commit"
 
 
 def _make_audit_service(call_log: list[str]):
@@ -189,7 +217,7 @@ def _make_audit_service(call_log: list[str]):
 
 
 class TestRestoreVersionSingleTransaction:
-    """restore_version: 4 шага — в одной транзакции вместо четырёх."""
+    """restore_version: 3 шага в одной транзакции, аудит — после коммита."""
 
     async def test_all_steps_inside_one_transaction(self):
         call_log: list[str] = []
@@ -214,13 +242,15 @@ class TestRestoreVersionSingleTransaction:
 
         assert conn.transaction.call_count == 1
         assert call_log[0] == "tx:enter"
-        assert call_log[-1] == "tx:exit:commit"
-        inner = call_log[1:-1]
-        # pre-snapshot, перезапись, лог, post-snapshot — все внутри
+        commit_at = call_log.index("tx:exit:commit")
+        inner = call_log[1:commit_at]
+        # pre-snapshot, перезапись, post-snapshot — все внутри
         assert "versions:create:auto" in inner
         assert "repo:save_content" in inner
-        assert "audit:log" in inner
         assert "versions:create:manual" in inner
+        # Аудит — единственный шаг после коммита
+        assert "audit:log" not in inner
+        assert call_log[commit_at + 1:] == ["audit:log"]
 
     async def test_post_snapshot_failure_rolls_back_restore(self):
         """Сбой post-snapshot откатывает и перезапись контента (история целостна)."""
@@ -246,6 +276,8 @@ class TestRestoreVersionSingleTransaction:
                 await svc.restore_version(act_id=1, version_id=3, username="12345")
 
         assert call_log[-1] == "tx:exit:rollback"
+        # Откат не оставляет phantom-записи «восстановлено из версии»
+        assert "audit:log" not in call_log
 
 
 class TestSaveContentDanglingRefCleanup:

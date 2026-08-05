@@ -32,10 +32,12 @@ class AuditLogService:
         в истории как отдельная запись и доступна для последующего
         восстановления.
 
-        Все 4 шага (pre-snapshot, перезапись, аудит-лог, post-snapshot)
-        идут в ОДНОЙ плоской транзакции (§9 зона 4): частичный сбой
-        откатывает всё, история и контент не рассогласуются. Репозитории
-        работают на этом же соединении без собственных транзакций.
+        Три шага (pre-snapshot, перезапись, post-snapshot) идут в ОДНОЙ
+        плоской транзакции (§9 зона 4): частичный сбой откатывает всё,
+        история и контент не рассогласуются. Репозитории работают на этом
+        же соединении без собственных транзакций. Аудит-лог пишется ПОСЛЕ
+        коммита: батчер пишет вне нашей транзакции, поэтому изнутри блока
+        запись о несостоявшемся восстановлении уехала бы в лог и при откате.
         """
         await self.guard.require_management_role(act_id, username)
         await self.guard.require_lock_owner(act_id, username)
@@ -130,11 +132,6 @@ class AuditLogService:
                 validation_issues=restore_issues,
             )
 
-            await self.audit_repo.log("restore", username, act_id, {
-                "from_version": version["version_number"],
-                "version_id": version_id,
-            })
-
             # Реальное состояние фактур ПОСЛЕ restore перечитываем из репозитория
             # (как обычное сохранение): verification_status уже 'pending' после
             # save_invoice, номера/аудит-поля освежены _sync_invoices, лишние
@@ -157,6 +154,14 @@ class AuditLogService:
                 violations={vid: v.model_dump(mode="json") for vid, v in restore_data.violations.items()},
                 invoices=post_restore_invoices,
             )
+
+        # Аудит — ПОСЛЕ коммита: батчер пишет вне нашей транзакции, поэтому при
+        # rollback (сбой post-snapshot или самого коммита) запись о
+        # восстановлении всё равно уехала бы в лог для несостоявшейся операции.
+        await self.audit_repo.log("restore", username, act_id, {
+            "from_version": version["version_number"],
+            "version_id": version_id,
+        })
 
         logger.info(
             f"Восстановлено содержимое акта ID={act_id} из версии "
