@@ -9,10 +9,47 @@ Endpoint чата собирает все инструменты и переда
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("audit_workstation.core.chat_tools")
+
+
+# ── Проводные имена инструментов ──
+#
+# Имена ChatTool доменные, с точкой ("acts.open_act_page"). Спека OpenAI
+# ограничивает имя function шаблоном ^[a-zA-Z0-9_-]{1,128}$; sglang и
+# GigaChat его не проверяют, а Anthropic (в т.ч. через OpenRouter) проверяет
+# строго и отвечает 400 "tools.0.custom.name: String should match pattern".
+#
+# Поэтому на провод (схема tools[] и эхо tool_calls в истории) уходит
+# «проводное» имя — точка заменена подчёркиванием. Внутри приложения имя
+# остаётся каноническим: ключ реестра, tool_name в метриках и action_id
+# кнопок внешнего агента не меняются. Преобразование безусловное для всех
+# провайдеров: подчёркивание принимают все, развилка по профилю не нужна.
+
+_WIRE_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def to_wire_name(name: str) -> str:
+    """Каноническое имя ChatTool → имя для передачи провайдеру."""
+    return _WIRE_UNSAFE_RE.sub("_", name)
+
+
+def resolve_wire_name(wire: str) -> str:
+    """Имя из ответа провайдера → каноническое имя ChatTool.
+
+    Каноническое имя (модель могла назвать tool с точкой, увидев его в
+    прозе промпта) возвращается как есть. Незарегистрированное имя тоже
+    возвращается без изменений — «инструмент не найден» отработает выше.
+    """
+    if wire in _tools:
+        return wire
+    for name in _tools:
+        if to_wire_name(name) == wire:
+            return name
+    return wire
 
 
 @dataclass(frozen=True)
@@ -84,7 +121,9 @@ class ChatTool:
         return {
             "type": "function",
             "function": {
-                "name": self.name,
+                # Провайдеру уходит проводное имя (см. to_wire_name):
+                # доменная точка не проходит валидацию Anthropic.
+                "name": to_wire_name(self.name),
                 "description": self.description,
                 "parameters": {
                     "type": "object",
@@ -108,6 +147,15 @@ def register_tools(tools: list[ChatTool]) -> None:
             raise RuntimeError(
                 f"ChatTool '{tool.name}' уже зарегистрирован "
                 f"доменом '{_tools[tool.name].domain}'"
+            )
+        wire = to_wire_name(tool.name)
+        clash = next(
+            (n for n in _tools if to_wire_name(n) == wire), None,
+        )
+        if clash is not None:
+            raise RuntimeError(
+                f"ChatTool '{tool.name}' даёт то же проводное имя '{wire}', "
+                f"что и '{clash}' — LLM не различит их"
             )
         if tool.handler is None and not tool.per_request_handler:
             logger.warning(

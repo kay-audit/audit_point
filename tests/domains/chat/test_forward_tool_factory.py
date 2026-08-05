@@ -38,11 +38,19 @@ def test_build_forward_tool_descriptor_parameters():
 
 
 def test_build_forward_tool_descriptor_to_openai_schema():
-    """to_openai_tool() возвращает валидный function-calling-schema."""
+    """to_openai_tool() возвращает валидный function-calling-schema.
+
+    В схему уходит проводное имя (без точки) — доменное имя с точкой не
+    проходит валидацию Anthropic; см. ``tools.to_wire_name``.
+    """
+    from app.core.chat.tools import to_wire_name
+
     tool = build_forward_tool_descriptor()
     schema = tool.to_openai_tool()
     assert schema["type"] == "function"
-    assert schema["function"]["name"] == TOOL_FORWARD_TO_KNOWLEDGE_AGENT
+    assert schema["function"]["name"] == to_wire_name(
+        TOOL_FORWARD_TO_KNOWLEDGE_AGENT,
+    )
     props = schema["function"]["parameters"]["properties"]
     assert "question" in props
     assert "kb_hint" in props
