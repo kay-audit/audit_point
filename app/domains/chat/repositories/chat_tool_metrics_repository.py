@@ -3,9 +3,8 @@
 import logging
 from dataclasses import dataclass
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_chat_schema
 
 logger = logging.getLogger(
@@ -27,7 +26,7 @@ class ChatToolMetricRecord:
 class ChatToolMetricsRepository(BaseRepository):
     """Append-only журнал latency / status / ошибок для каждого вызова tool'а."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("chat_tool_metrics", schema=resolve_chat_schema())
 

@@ -4,9 +4,8 @@ import json
 import logging
 from dataclasses import dataclass
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_chat_schema
 
 logger = logging.getLogger(
@@ -26,7 +25,7 @@ class ChatAuditLogRecord:
 class ChatAuditLogRepository(BaseRepository):
     """Append-only журнал действий пользователей в чате."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("chat_audit_log", schema=resolve_chat_schema())
 

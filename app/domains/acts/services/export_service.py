@@ -25,7 +25,7 @@ from app.domains.acts.formatters.text_formatter import TextFormatter
 from app.domains.acts.schemas.act_content import ActDataSchema, ActSaveResponse
 from app.domains.acts.services.storage_service import StorageService
 from app.domains.acts.settings import ActsSettings
-from app.domains.acts._lifecycle import get_executor
+from app.domains.acts._lifecycle import get_format_thread_pool
 
 if TYPE_CHECKING:
     from app.domains.acts.services.act_crud_service import ActCrudService
@@ -115,7 +115,7 @@ class ExportService:
                 if fmt == "docx":
                     ctx = ExportContext(metadata=metadata, content=content)
                     formatted_content = await loop.run_in_executor(
-                        get_executor(),
+                        get_format_thread_pool(),
                         self._formatters["docx"].format,
                         ctx,
                     )
@@ -123,7 +123,7 @@ class ExportService:
                     data_dict = content.model_dump(mode="python")
                     data_dict["metadata"] = metadata.model_dump(mode="python")
                     formatted_content = await loop.run_in_executor(
-                        get_executor(),
+                        get_format_thread_pool(),
                         self._formatters[fmt].format,
                         data_dict,
                     )

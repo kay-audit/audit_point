@@ -5,10 +5,9 @@
 import json
 import logging
 
-import asyncpg
-
 from app.domains.acts.exceptions import ActNotFoundError, ActValidationError
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.db.utils.json_db_utils import JSONDBUtils
 from app.domains.acts.utils import KMUtils, ActDirectivesValidator
 from app.domains.acts.schemas.act_metadata import (
@@ -37,7 +36,7 @@ def _parse_validation_issues(value) -> list[dict] | None:
 class ActCrudRepository(BaseRepository):
     """CRUD операции с актами и их связанными сущностями."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.acts = self.adapter.get_table_name("acts")
         self.audit_team = self.adapter.get_table_name("audit_team_members")

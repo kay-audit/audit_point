@@ -10,9 +10,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.db.utils.json_db_utils import JSONDBUtils
 
 
@@ -40,7 +39,7 @@ _ALLOWED_FILTER_FIELDS: frozenset[str] = frozenset({
 class ActAuditLogRepository(BaseRepository):
     """Запись и чтение операций аудит-лога."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.audit_log = self.adapter.get_table_name("audit_log")
         self._tables = self.adapter.get_table_name("act_tables")

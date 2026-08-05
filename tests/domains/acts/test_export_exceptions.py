@@ -137,7 +137,7 @@ async def test_formatter_ose_rror_raises_app_error():
     svc.act_crud_service.get_act = AsyncMock(return_value=_make_mock_metadata())
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
-    with patch("app.domains.acts.services.export_service.get_executor", return_value=None):
+    with patch("app.domains.acts.services.export_service.get_format_thread_pool", return_value=None):
         with pytest.raises(AppError):
             await svc.save_act(42, "testuser", fmt="txt")
 
@@ -151,7 +151,7 @@ async def test_formatter_memory_error_raises_app_error():
     svc.act_crud_service.get_act = AsyncMock(return_value=_make_mock_metadata())
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
-    with patch("app.domains.acts.services.export_service.get_executor", return_value=None):
+    with patch("app.domains.acts.services.export_service.get_format_thread_pool", return_value=None):
         with pytest.raises(AppError):
             await svc.save_act(42, "testuser", fmt="txt")
 
@@ -169,7 +169,7 @@ async def test_storage_oserror_raises_app_error():
     svc.act_crud_service.get_act = AsyncMock(return_value=_make_mock_metadata())
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
-    with patch("app.domains.acts.services.export_service.get_executor", return_value=None):
+    with patch("app.domains.acts.services.export_service.get_format_thread_pool", return_value=None):
         with pytest.raises(AppError, match="Не удалось сохранить файл акта"):
             await svc.save_act(42, "testuser", fmt="txt")
 
@@ -184,7 +184,7 @@ async def test_app_error_from_formatter_propagates():
     svc.act_crud_service.get_act = AsyncMock(return_value=_make_mock_metadata())
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
-    with patch("app.domains.acts.services.export_service.get_executor", return_value=None):
+    with patch("app.domains.acts.services.export_service.get_format_thread_pool", return_value=None):
         with pytest.raises(AppError) as exc_info:
             await svc.save_act(42, "testuser", fmt="md")
         assert exc_info.value is original
@@ -207,7 +207,7 @@ async def test_invalid_span_error_maps_to_export_validation():
     svc.act_crud_service.get_act = AsyncMock(return_value=_make_mock_metadata())
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
-    with patch("app.domains.acts.services.export_service.get_executor", return_value=None):
+    with patch("app.domains.acts.services.export_service.get_format_thread_pool", return_value=None):
         with pytest.raises(ActExportValidationError) as exc_info:
             await svc.save_act(42, "testuser", fmt="docx")
         assert exc_info.value.status_code == 400

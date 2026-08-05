@@ -5,15 +5,14 @@
 Только запись — чтения (Read-API) нет, данные смотрят SQL'ем.
 """
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 
 
 class ActEditorTelemetryRepository(BaseRepository):
     """Пакетная запись счётчиков событий редактора."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("act_editor_telemetry")
 

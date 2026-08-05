@@ -68,42 +68,42 @@ class TestExecutorInAppState:
         await on_shutdown(app)
 
     def test_get_executor_возвращает_объект_из_state(self):
-        """get_executor() возвращает тот же объект что и app.state.executor."""
+        """get_format_thread_pool() возвращает тот же объект что и app.state.executor."""
         from app.domains.acts import _lifecycle as lc
 
         sentinel = MagicMock(spec=ThreadPoolExecutor)
-        lc._executor = sentinel
+        lc._thread_pool = sentinel
         try:
-            result = lc.get_executor()
+            result = lc.get_format_thread_pool()
             assert result is sentinel
         finally:
-            lc._executor = None
+            lc._thread_pool = None
 
     def test_get_executor_без_инициализации_бросает_RuntimeError(self):
-        """get_executor() при _executor=None бросает RuntimeError."""
+        """get_format_thread_pool() при _thread_pool=None бросает RuntimeError."""
         from app.domains.acts import _lifecycle as lc
 
-        original = lc._executor
-        lc._executor = None
+        original = lc._thread_pool
+        lc._thread_pool = None
         try:
             with pytest.raises(RuntimeError, match="не инициализирован"):
-                lc.get_executor()
+                lc.get_format_thread_pool()
         finally:
-            lc._executor = original
+            lc._thread_pool = original
 
     async def test_startup_и_shutdown_синхронизируют_module_level(self):
-        """После startup _executor == app.state.executor; после shutdown == None."""
+        """После startup _thread_pool == app.state.executor; после shutdown == None."""
         from app.domains.acts import _lifecycle as lc
         from app.domains.acts._lifecycle import on_startup, on_shutdown
 
         app = FastAPI()
         await on_startup(app)
         try:
-            assert lc._executor is app.state.executor
+            assert lc._thread_pool is app.state.executor
         finally:
             await on_shutdown(app)
 
-        assert lc._executor is None
+        assert lc._thread_pool is None
 
 
 # ===========================================================================

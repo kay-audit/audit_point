@@ -8,10 +8,9 @@
 import logging
 from datetime import date
 
-import asyncpg
-
 from app.core.settings_registry import get as get_domain_settings
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.ck_client_exp.schemas.cs_validation import CSValidationView
 from app.domains.ck_client_exp.schemas.requests import FilterSpec
 from app.domains.ck_client_exp.settings import CkClientExpSettings
@@ -102,7 +101,7 @@ _INSERT_FIELDS = (
 class CSValidationRepository(BaseRepository):
     """Операции с записями CS-валидации в БД."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         s = get_domain_settings("ck_client_exp", CkClientExpSettings)
         self.table = self.adapter.qualify_table_name(s.cs_validation_table, s.schema_name)

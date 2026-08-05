@@ -6,9 +6,8 @@
 
 import logging
 
-import asyncpg
-
 from app.core.config import Settings
+from app.db.types import DbConn
 from app.domains.acts.block_types import (
     NODE_TYPE_TABLE,
     NODE_TYPE_TEXTBLOCK,
@@ -39,7 +38,7 @@ class ActContentService:
 
     def __init__(
         self,
-        conn: asyncpg.Connection,
+        conn: DbConn,
         settings: Settings,
         acts_settings: ActsSettings,
         *,
@@ -96,14 +95,15 @@ class ActContentService:
     async def save_content(self, act_id: int, data: ActDataSchema, username: str) -> dict:
         """Сохраняет содержимое акта.
 
-        Запись контента, diff, аудит-лог и снимок версии идут в ОДНОЙ плоской
+        Запись контента, diff и снимок версии идут в ОДНОЙ плоской
         транзакции (§9 зона 4): сбой на любом шаге откатывает всё — контент
         не записывается частично, история версий не рассогласуется.
         Вложенных transaction()/savepoint'ов нет (Greenplum): репозитории
         работают на этом же соединении и собственных транзакций не открывают.
-        Аудит-лог через активный батчер пишется его собственным соединением
-        и в транзакцию по определению не входит (fire-and-forget by design);
-        fallback-INSERT одиночного пути попадает в общую транзакцию.
+        Аудит-лог пишется ПОСЛЕ коммита (как в ActCrudService.delete_act):
+        активный батчер пишет своим соединением, вне нашей транзакции, поэтому
+        изнутри блока запись о несостоявшемся сохранении уехала бы в лог и при
+        откате (phantom-запись в пользовательской истории акта).
         """
         await self.guard.require_edit_permission(act_id, username)
         await self.guard.require_lock_owner(act_id, username)
@@ -153,9 +153,6 @@ class ActContentService:
                 validation_issues=validation_issues,
             )
 
-            # Записываем в аудит-лог
-            await self._audit.log("content_save", username, act_id, diff, changelog=data.changelog)
-
             # Создаём снэпшот версии только для manual/periodic
             if data.saveType in ("manual", "periodic"):
                 # Фактуры в снимок берём из БД (act_invoices уже синхронизированы
@@ -175,6 +172,12 @@ class ActContentService:
                     invoices=invoices_snapshot,
                     max_versions=self.acts_settings.audit_log.max_content_versions,
                 )
+
+        # Аудит — ПОСЛЕ коммита: батчер пишет вне нашей транзакции, поэтому при
+        # rollback (сбой снимка версии или самого коммита) запись о сохранении
+        # всё равно уехала бы в лог для несостоявшейся операции. Логируем
+        # только реально записанное содержимое.
+        await self._audit.log("content_save", username, act_id, diff, changelog=data.changelog)
 
         # Одно предупреждение, если что-то вычищено в любую из сторон:
         # stripped_refs — снятые висячие ссылки узлов, dropped_orphans —

@@ -355,6 +355,38 @@ class TestInitDb:
         with pytest.raises(ValueError, match="Неподдерживаемый тип БД"):
             await init_db(settings)
 
+    # --- strict_acquire_guard из настоящего Settings (не mock) ---
+
+    @patch("app.db.connection.asyncpg.create_pool", new_callable=AsyncMock)
+    async def test_strict_acquire_guard_после_init_db_с_настоящим_settings(
+        self, mock_create_pool, monkeypatch
+    ):
+        """``init_db(Settings())`` (не MagicMock, как остальные тесты этого
+        файла) должен оставить строгий страж включённым независимо от
+        локального ``.env`` разработчика.
+
+        Ratchet на находку код-ревью №13: autouse-фикстура
+        ``strict_acquire_guard`` (``tests/conftest.py``) патчит и следствие
+        (``dbconn._strict_acquire_guard``), и источник
+        (``DATABASE__STRICT_ACQUIRE_GUARD`` в окружении) — без источника
+        настоящий ``Settings()`` внутри ``init_db`` переписал бы следствие
+        значением из локального ``.env`` (по умолчанию ``False``), и этот
+        тест падал бы на машине без явного
+        ``DATABASE__STRICT_ACQUIRE_GUARD=true``. ``DATABASE__TYPE`` фиксирован
+        явно, чтобы тест не зависел от типа БД в локальном ``.env``.
+        """
+        from app.core.config import Settings
+
+        monkeypatch.setenv("DATABASE__TYPE", "postgresql")
+
+        mock_pool = AsyncMock()
+        mock_create_pool.return_value = mock_pool
+
+        settings = Settings()
+        await init_db(settings)
+
+        assert connection._strict_acquire_guard is True
+
 
 # ===========================================================================
 # 4. close_db

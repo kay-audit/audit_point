@@ -6,6 +6,7 @@ import logging
 import asyncpg
 
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_chat_schema
 
 logger = logging.getLogger("audit_workstation.domains.chat.repo.message")
@@ -14,7 +15,7 @@ logger = logging.getLogger("audit_workstation.domains.chat.repo.message")
 class MessageRepository(BaseRepository):
     """CRUD-операции с сообщениями чата."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("chat_messages", schema=resolve_chat_schema())
 

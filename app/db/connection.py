@@ -9,6 +9,7 @@ import subprocess as _subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import AsyncGenerator
 
 import asyncpg
@@ -27,6 +28,31 @@ _adapter: DatabaseAdapter | None = None
 # Таймаут ожидания свободного соединения из пула (сек), берётся из настроек при
 # init_db. None → asyncpg ждёт бесконечно (поведение до инициализации/в тестах).
 _acquire_timeout: float | None = None
+class _AcquireDepth:
+    """Глубина захватов пула вместе с task-владельцем.
+
+    Владелец нужен, потому что contextvar копируется в ``create_task``:
+    дочерний task наследует значение родителя, но его собственный первый
+    захват — не «повторный» (это отдельное соединение, легальная ситуация).
+    Глубина считается только в рамках одного task — по аналогии с
+    ``_bound_tx`` исполнителя (``app/db/executor.py``).
+    """
+
+    __slots__ = ("task", "depth")
+
+    def __init__(self, task: "asyncio.Task | None", depth: int) -> None:
+        self.task = task
+        self.depth = depth
+
+
+# Глубина захватов пула в текущем task. Больше 1 — риск самоблокировки
+# на пуле max=2: держим соединение и просим второе.
+_acquire_depth: ContextVar[_AcquireDepth | None] = ContextVar(
+    "db_acquire_depth", default=None
+)
+# Реакция на повторный захват: True — RuntimeError, False — WARNING со стеком.
+# Значение приезжает из настроек в init_db.
+_strict_acquire_guard: bool = False
 
 
 class KerberosTokenExpiredError(Exception):
@@ -287,7 +313,7 @@ async def init_db(settings: Settings) -> None:
         ValueError: Если неверный тип БД или параметры
         RuntimeError: При других ошибках подключения
     """
-    global _pool, _adapter, _acquire_timeout
+    global _pool, _adapter, _acquire_timeout, _strict_acquire_guard
 
     if _pool is not None:
         logger.warning("Database pool уже инициализирован")
@@ -299,6 +325,7 @@ async def init_db(settings: Settings) -> None:
     _adapter = adapter
     _pool = pool
     _acquire_timeout = settings.database.acquire_timeout
+    _strict_acquire_guard = settings.database.strict_acquire_guard
 
 
 async def warmup_pool(pool: Pool, count: int) -> None:
@@ -349,54 +376,81 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 
     Raises:
         KerberosTokenExpiredError: Если токен протух во время работы
-        RuntimeError: Если пул не инициализирован
+        RuntimeError: Если пул не инициализирован либо сработал строгий страж
+            повторного захвата (``DATABASE__STRICT_ACQUIRE_GUARD``)
     """
-    pool = get_pool()
-
-    # Получаем соединение отдельно от тела: таймаут acquire (исчерпан пул) ловим
-    # ТОЛЬКО здесь, чтобы не спутать с asyncio.TimeoutError из самого запроса.
-    try:
-        connection = await pool.acquire(timeout=_acquire_timeout)
-    except asyncio.TimeoutError as e:
-        logger.error(
-            "Пул соединений исчерпан: свободное соединение не получено за %s с — "
-            "отдаём 503. Проверьте занятость пула (см. /admin/diagnostics).",
-            _acquire_timeout,
+    entry = _acquire_depth.get()
+    task = asyncio.current_task()
+    own_depth = entry.depth if (entry is not None and entry.task is task) else 0
+    if own_depth > 0:
+        msg = (
+            "Повторный захват соединения БД в том же task (глубина %d): "
+            "риск самоблокировки пула. Используйте DbExecutor и его transaction() "
+            "вместо вложенного get_db()." % (own_depth + 1)
         )
-        raise ServiceUnavailableError(
-            "Сервис временно перегружен. Повторите запрос через несколько секунд."
-        ) from e
-    except asyncpg.PostgresError as e:
-        # Ошибка установления нового соединения при росте пула (например,
-        # протухший Kerberos-билет на Greenplum).
-        if _is_kerberos_token_expired(str(e)):
-            logger.error(
-                "Kerberos токен протух при получении соединения. "
-                "Выполните 'kinit' для обновления."
-            )
-            raise KerberosTokenExpiredError(
-                "Kerberos токен протух. Выполните 'kinit' для обновления."
-            ) from e
-        raise
+        if _strict_acquire_guard:
+            raise RuntimeError(msg)
+        logger.warning(msg, stack_info=True)
 
+    # Значение каждый раз — НОВЫЙ объект (не мутируем существующий): контекст
+    # дочерних task'ов делит ссылку на текущее значение, мутация протекла бы
+    # в чужой учёт. Декремент — явным set(), БЕЗ Token.reset: get_db
+    # приостанавливается между setup и teardown, и token к моменту сброса
+    # может оказаться в другом Context (ValueError).
+    _acquire_depth.set(_AcquireDepth(task, own_depth + 1))
     try:
-        yield connection
-    except asyncpg.PostgresError as e:
-        error_message = str(e)
+        pool = get_pool()
 
-        if _is_kerberos_token_expired(error_message):
+        # Получаем соединение отдельно от тела: таймаут acquire (исчерпан пул) ловим
+        # ТОЛЬКО здесь, чтобы не спутать с asyncio.TimeoutError из самого запроса.
+        try:
+            connection = await pool.acquire(timeout=_acquire_timeout)
+        except asyncio.TimeoutError as e:
             logger.error(
-                "Kerberos токен протух во время выполнения запроса. "
-                "Выполните 'kinit' для обновления."
+                "Пул соединений исчерпан: свободное соединение не получено за %s с — "
+                "отдаём 503. Проверьте занятость пула (см. /admin/diagnostics).",
+                _acquire_timeout,
             )
-            raise KerberosTokenExpiredError(
-                "Kerberos токен протух. Выполните 'kinit' для обновления."
+            raise ServiceUnavailableError(
+                "Сервис временно перегружен. Повторите запрос через несколько секунд."
             ) from e
+        except asyncpg.PostgresError as e:
+            # Ошибка установления нового соединения при росте пула (например,
+            # протухший Kerberos-билет на Greenplum).
+            if _is_kerberos_token_expired(str(e)):
+                logger.error(
+                    "Kerberos токен протух при получении соединения. "
+                    "Выполните 'kinit' для обновления."
+                )
+                raise KerberosTokenExpiredError(
+                    "Kerberos токен протух. Выполните 'kinit' для обновления."
+                ) from e
+            raise
 
-        # Прокидываем другие ошибки дальше
-        raise
+        try:
+            yield connection
+        except asyncpg.PostgresError as e:
+            error_message = str(e)
+
+            if _is_kerberos_token_expired(error_message):
+                logger.error(
+                    "Kerberos токен протух во время выполнения запроса. "
+                    "Выполните 'kinit' для обновления."
+                )
+                raise KerberosTokenExpiredError(
+                    "Kerberos токен протух. Выполните 'kinit' для обновления."
+                ) from e
+
+            # Прокидываем другие ошибки дальше
+            raise
+        finally:
+            await pool.release(connection)
     finally:
-        await pool.release(connection)
+        cur = _acquire_depth.get()
+        if cur is not None and cur.task is asyncio.current_task():
+            _acquire_depth.set(
+                _AcquireDepth(cur.task, cur.depth - 1) if cur.depth > 1 else None
+            )
 
 
 async def create_tables_if_not_exist(domains=None) -> None:

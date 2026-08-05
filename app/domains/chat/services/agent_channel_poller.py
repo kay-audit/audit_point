@@ -14,7 +14,13 @@ agent_ref IS NOT NULL) и финализирует их, когда внешни
 Adaptive backoff: при активности интервал сбрасывается в min_interval;
 при пустом тике растёт × multiplier до max_interval.
 
-Коннект держится только во время _tick — перед sleep освобождается.
+Соединение БД тик НЕ удерживает: работа идёт через ``DbExecutor``, который
+берёт соединение из пула на каждую SQL-операцию (или на явную транзакцию) и
+сразу возвращает. Это принципиально: внутри тика есть await'ы, уходящие в
+чужой код с собственными обращениями к БД (эмиссия уведомления о готовности
+ответа, трансляция кнопок агента через ChatTool). Удерживай тик соединение —
+эти обращения были бы повторным захватом пула в том же task'е (страж в
+``get_db``), и уведомление с кнопкой молча терялись бы.
 """
 
 from __future__ import annotations
@@ -40,8 +46,8 @@ _MAX_CONSECUTIVE_ENTRY_ERRORS = 30
 class AgentChannelPoller:
     """Process-level поллер ответов агента через bus-таблицу chat_agent_messages_bus.
 
-    Инжектируемые зависимости ``now`` и ``db`` упрощают тестирование
-    без реального event loop и без реальной БД.
+    Инжектируемые зависимости ``now`` и ``executor_factory`` упрощают
+    тестирование без реального event loop и без реальной БД.
     """
 
     def __init__(
@@ -49,18 +55,20 @@ class AgentChannelPoller:
         settings: ChatDomainSettings,
         *,
         now: Callable[[], float] = _time_module.monotonic,
-        db: Any = None,
+        executor_factory: Callable[[], Any] | None = None,
     ) -> None:
         """
-        settings — ChatDomainSettings (берёт agent_channel).
-        now      — провайдер монотонного времени (для тестов).
-        db       — async-контекстменеджер вида ``async with db() as conn``;
-                   по умолчанию get_db (импортируется внутри, чтобы не
-                   тащить зависимость на module-level и оставаться патчабельным).
+        settings         — ChatDomainSettings (берёт agent_channel).
+        now              — провайдер монотонного времени (для тестов).
+        executor_factory — провайдер исполнителя БД; по умолчанию
+                           ``get_executor`` (импортируется внутри, чтобы не
+                           тащить зависимость на module-level и оставаться
+                           патчабельным).
         """
         self._settings = settings
         self._now = now
-        self._db = db  # если None — лениво инициализируем в _get_db_cm()
+        # Если None — лениво берём процесс-синглтон в _get_executor().
+        self._executor_factory = executor_factory
 
         # Реестр подписок: uid вопроса → entry-словарь с idle-состоянием.
         self._subscriptions: dict[str, dict] = {}
@@ -79,16 +87,17 @@ class AgentChannelPoller:
             "current_interval_sec": self._current_interval,
         }
 
-    def _get_db_cm(self):
-        """Возвращает async-контекстменеджер коннекта.
+    def _get_executor(self):
+        """Возвращает исполнитель БД (соединение на операцию).
 
-        Если db не инжектирован — берёт get_db из connection-модуля.
-        Импорт внутри метода обеспечивает патчабельность в тестах.
+        Если фабрика не инжектирована — берёт процесс-синглтон
+        ``get_executor``. Импорт внутри метода обеспечивает патчабельность
+        в тестах.
         """
-        if self._db is not None:
-            return self._db()
-        from app.db.connection import get_db
-        return get_db()
+        if self._executor_factory is not None:
+            return self._executor_factory()
+        from app.db.executor import get_executor
+        return get_executor()
 
     # ── Подписки ──────────────────────────────────────────────────────────────
 
@@ -142,8 +151,13 @@ class AgentChannelPoller:
 
     # ── Тик ───────────────────────────────────────────────────────────────────
 
-    async def _tick(self, conn) -> int:
+    async def _tick(self, executor) -> int:
         """Обходит все подписки и финализирует готовые / таймаутит просроченные.
+
+        ``executor`` — исполнитель БД (``DbExecutor``), а НЕ соединение:
+        соединение берётся из пула на каждую операцию и сразу возвращается,
+        поэтому await'ы внутри тика (уведомления, трансляция кнопок) идут
+        при нулевом числе удерживаемых соединений.
 
         Возвращает количество завершённых (done + timeout) за тик.
         Не падает при ошибке одной подписки — оборачивает каждую в try/except.
@@ -173,7 +187,7 @@ class AgentChannelPoller:
                 continue
             assistant_message_id = entry["assistant_message_id"]
             try:
-                svc = AgentChannelService(conn, self._settings)
+                svc = AgentChannelService(executor, self._settings)
                 res = await svc.poll_once(
                     assistant_message_id=assistant_message_id,
                     question_uid=question_uid,
@@ -250,7 +264,7 @@ class AgentChannelPoller:
                         entry["consecutive_errors"], question_uid,
                     )
                     await self._abandon_subscription(
-                        conn,
+                        executor,
                         question_uid=question_uid,
                         assistant_message_id=assistant_message_id,
                     )
@@ -264,7 +278,7 @@ class AgentChannelPoller:
         return done_count
 
     async def _abandon_subscription(
-        self, conn, *, question_uid: str, assistant_message_id: str,
+        self, executor, *, question_uid: str, assistant_message_id: str,
     ) -> None:
         """Аварийно снимает подписку после серии ошибок подряд.
 
@@ -280,7 +294,7 @@ class AgentChannelPoller:
 
         self.unsubscribe(question_uid)
         try:
-            await AgentChannelService(conn, self._settings).mark_timeout(
+            await AgentChannelService(executor, self._settings).mark_timeout(
                 assistant_message_id=assistant_message_id,
                 question_uid=question_uid,
                 reason=TIMEOUT_REASON_ANSWER,
@@ -312,8 +326,7 @@ class AgentChannelPoller:
         """
         from app.domains.chat.repositories.message_repository import MessageRepository
 
-        async with self._get_db_cm() as conn:
-            drafts = await MessageRepository(conn).get_streaming_drafts()
+        drafts = await MessageRepository(self._get_executor()).get_streaming_drafts()
 
         restored = 0
         for draft in drafts:
@@ -341,15 +354,16 @@ class AgentChannelPoller:
         while not self._stop:
             try:
                 if not self._subscriptions:
-                    # Подписчиков нет — спим, коннект не берём.
+                    # Подписчиков нет — спим, к БД не ходим.
                     interval = cfg.poll_min_interval_sec
                     self._current_interval = interval
                     await asyncio.sleep(interval)
                     continue
 
-                async with self._get_db_cm() as conn:
-                    n = await self._tick(conn)
-                # Коннект освобождён ДО sleep.
+                # Соединение НЕ удерживается на время тика: исполнитель берёт
+                # его из пула на каждую операцию. Оборачивать тик в get_db()
+                # нельзя — см. модульный docstring.
+                n = await self._tick(self._get_executor())
 
                 if n > 0:
                     interval = cfg.poll_min_interval_sec

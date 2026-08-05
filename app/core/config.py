@@ -83,6 +83,11 @@ class DatabaseSettings(BaseModel):
     # acquire() ждёт не бесконечно, а отдаёт 503 — иначе запрос виснет до
     # освобождения соседнего соединения без какой-либо диагностики.
     acquire_timeout: float = Field(default=10.0, gt=0)
+    # Страж повторного захвата соединения в одном task: True — RuntimeError
+    # (dev/тесты), False — WARNING со стеком (ПРОМ). Держать соединение и просить
+    # второе на пуле max=2 — прямой путь к самоблокировке. Включать только когда
+    # DI-слой не удерживает соединений (см. app/db/executor.py).
+    strict_acquire_guard: bool = Field(default=False)
     # При старте — выполнить count=pool_min_size холостых acquire() параллельно,
     # чтобы первые запросы пользователя не платили TCP-handshake.
     pool_warmup_enabled: bool = Field(default=True)

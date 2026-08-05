@@ -9,52 +9,54 @@ def register_factories() -> None:
     """
     Регистрирует фабрики, экспортируемые notifications-доменом для других доменов.
 
-    Контракт фабрики ``notifications.push`` (зеркало ``admin.user_directory``):
-    callable без аргументов, возвращающий async-генератор, который оборачивает
-    ``get_db()`` и отдаёт ``NotificationService(conn)``. Продьюсеры (acts, chat)
+    Контракт фабрики ``notifications.push``: callable без аргументов,
+    возвращающий готовый ``NotificationService`` на исполнителе БД
+    (``get_executor()``) — соединение берётся из пула на время каждой
+    операции сервиса, а не на время жизни фабрики. Продьюсеры (acts, chat)
     используют её мягко через ``has_factory``/``get_factory``:
 
         if has_factory("notifications.push"):
             factory = get_factory("notifications.push")
-            async for svc in factory():
-                await svc.push(source="acts", title=..., recipient_user_id=...)
+            svc = factory()
+            await svc.push(source="acts", title=..., recipient_user_id=...)
 
     Контракт фабрики ``notifications.email``:
     callable без аргументов, возвращающий async-генератор, который отдаёт
     ``EmailService()``. Соединение с БД не берётся: сервис работает только с
     SMTP, а отправка письма занимает до 30 секунд — держать всё это время
-    соединение из пула нельзя. Форма генератора сохранена ради единообразия
-    с ``notifications.push``: продьюсеры используют обе через ``async for``.
+    объект исполнителя нельзя. Форма генератора — не по аналогии с
+    ``notifications.push`` (та фабрика обычная: БД-фабрики переведены на
+    исполнитель, ``get_executor()``), а потому что единственный потребитель
+    (``auth/router.py``) уже вызывает её через ``async for``.
 
     Вызывается на этапе сборки DomainDescriptor (``_build_domain``) — это
     гарантирует, что фабрика доступна до старта lifespan'а продьюсеров.
     Идемпотентна: повторный вызов перезаписывает фабрику.
     """
     from app.core.domain_registry import register_factory
-    from app.db.connection import get_db
+    from app.db.executor import get_executor
     from app.domains.notifications.services.notification_service import (
         NotificationService,
     )
     from app.domains.notifications.services.email_service import EmailService
 
     def _push_factory():
-        """Создаёт NotificationService, оборачивая get_db() в async-генератор.
+        """Создаёт NotificationService на исполнителе БД.
 
-        Возвращает async-генератор — продьюсеры используют его через
-        ``async for svc in factory():`` (соединение освобождается по выходу).
+        Обычная фабрика: продьюсеры зовут её и получают готовый объект
+        (соединение берётся из пула на время каждой операции).
         """
-        async def _gen():
-            async with get_db() as conn:
-                yield NotificationService(conn)
-        return _gen()
+        return NotificationService(get_executor())
 
     register_factory("notifications.push", _push_factory)
 
     def _email_factory():
         """Создаёт EmailService в виде async-генератора.
 
-        Соединения с БД не удерживает (сервису оно не нужно), форма генератора
-        совпадает с ``notifications.push``: ``async for svc in factory():``.
+        Соединения с БД не удерживает (сервису оно не нужно). Форма
+        генератора — не по аналогии с ``notifications.push`` (та фабрика
+        обычная, на исполнителе), а потому что потребитель уже вызывает её
+        как ``async for svc in factory():``.
         """
         async def _gen():
             yield EmailService()

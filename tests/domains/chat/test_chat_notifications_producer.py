@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.core import domain_registry
 from app.domains.chat.services.agent_channel import AgentChannelService
 from app.domains.chat.settings import ChatDomainSettings
+from tests.conftest import register_fake_push_factory
 
 
 # ── Фикстуры ─────────────────────────────────────────────────────────────────
@@ -92,18 +93,6 @@ def _make_finalizable_service(mock_conn, settings, *, question_user_id="user1"):
     return svc, fake_agent_repo, fake_msg_repo
 
 
-def _register_push_factory(push_mock):
-    """Регистрирует фабрику notifications.push, отдающую сервис с push_mock."""
-    def _factory():
-        async def _gen():
-            svc = MagicMock()
-            svc.push = push_mock
-            yield svc
-        return _gen()
-
-    domain_registry.register_factory("notifications.push", _factory)
-
-
 # ── Тесты ─────────────────────────────────────────────────────────────────────
 
 
@@ -118,7 +107,7 @@ class TestChatNotificationsProducer:
             mock_conn, settings, question_user_id="asker-42"
         )
         push_mock = AsyncMock(return_value="notif-1")
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-1",
@@ -167,7 +156,7 @@ class TestChatNotificationsProducer:
             mock_conn, settings
         )
         push_mock = AsyncMock(side_effect=RuntimeError("push упал"))
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-1",
@@ -212,7 +201,7 @@ class TestChatNotificationsProducer:
         svc._message_repo = lambda: fake_msg_repo
 
         push_mock = AsyncMock(return_value="notif-err")
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-2",
@@ -238,7 +227,7 @@ class TestChatNotificationsProducer:
             mock_conn, settings, question_user_id=None
         )
         push_mock = AsyncMock(return_value="notif")
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-1",
@@ -260,7 +249,7 @@ class TestChatNotificationsProducer:
         )
         fake_msg_repo.finalize = AsyncMock(return_value=False)
         push_mock = AsyncMock(return_value="notif")
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-1",
@@ -310,7 +299,7 @@ class TestChatNotificationsProducer:
         svc._message_repo = lambda: fake_msg_repo
 
         push_mock = AsyncMock(return_value="notif")
-        _register_push_factory(push_mock)
+        register_fake_push_factory(push_mock)
 
         res = await svc.poll_once(
             assistant_message_id="msg-9",

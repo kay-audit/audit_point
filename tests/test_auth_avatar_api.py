@@ -12,7 +12,7 @@ import io
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -67,34 +67,6 @@ def _make_client(repo: AsyncMock, username: str = USERNAME) -> TestClient:
     app.dependency_overrides[get_request_username] = lambda: username
     app.dependency_overrides[get_avatar_repository] = lambda: repo
     return TestClient(app)
-
-
-class TestGetAvatarRepositoryCleanup:
-    """get_avatar_repository не должен ронять cleanup фабрики при ошибке."""
-
-    async def test_factory_generator_closed_on_exception(self):
-        """При исключении в эндпоинте (413/422) внутренний ``async with
-        get_db()`` обязан отпустить соединение. Без ``aclosing`` ``async for``
-        бросает генератор фабрики недозакрытым, и при пуле 1/2 соединение
-        виснет до сборщика мусора.
-        """
-        cleanup_done = False
-
-        async def _factory_gen():
-            nonlocal cleanup_done
-            try:
-                yield AsyncMock()
-            finally:
-                cleanup_done = True
-
-        register_factory("admin.user_avatars", lambda: _factory_gen())
-
-        agen = get_avatar_repository()
-        await agen.__anext__()
-        with pytest.raises(HTTPException):
-            await agen.athrow(HTTPException(status_code=413, detail="test"))
-
-        assert cleanup_done is True
 
 
 class TestUploadAvatar:
@@ -267,12 +239,7 @@ class TestMeAvatarVersion:
             sub=USERNAME, email="", login=USERNAME, fullname="Иванов И.И.", job="Аудитор",
         )
         if repo is not None:
-            def _factory():
-                async def _gen():
-                    yield repo
-                return _gen()
-
-            register_factory("admin.user_avatars", _factory)
+            register_factory("admin.user_avatars", lambda: repo)
         return TestClient(app)
 
     def test_returns_version_when_avatar_exists(self):

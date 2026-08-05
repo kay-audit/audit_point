@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -380,22 +379,14 @@ async def get_current_user_me(
 # ---------------------------------------------------------------------------
 
 
-async def get_avatar_repository():
+def get_avatar_repository():
     """Репозиторий фото профиля — фабрика admin-домена.
 
     Таблица принадлежит admin-домену, а обращается к ней слой авторизации,
     поэтому связь идёт через реестр фабрик (как acts → admin.user_directory),
     а не прямым импортом.
-
-    Обёрнуто в ``aclosing``: без него при исключении в эндпоинте (413/422)
-    ``async for`` не закрывает генератор фабрики, и внутренний
-    ``async with get_db()`` не отпускает соединение — при пуле 1/2 оно
-    виснет до сборщика мусора.
     """
-    factory = get_factory("admin.user_avatars")
-    async with aclosing(factory()) as agen:
-        async for repo in agen:
-            yield repo
+    return get_factory("admin.user_avatars")()
 
 
 async def get_request_username(request: Request) -> str:
@@ -434,11 +425,9 @@ async def _read_avatar_version(username: str) -> int | None:
     if not has_factory("admin.user_avatars"):
         return None
 
-    async with aclosing(get_factory("admin.user_avatars")()) as gen:
-        async for repo in gen:
-            updated_at = await repo.get_updated_at(username)
-            return int(updated_at.timestamp()) if updated_at else None
-    return None
+    repo = get_factory("admin.user_avatars")()
+    updated_at = await repo.get_updated_at(username)
+    return int(updated_at.timestamp()) if updated_at else None
 
 
 async def _read_upload_limited(upload: UploadFile, limit: int) -> bytes:

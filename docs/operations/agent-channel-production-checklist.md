@@ -101,8 +101,9 @@ payload-JSON в `media`/`metadata`). Чистка раз в месяц — ко�
 (п. 1), потом профилирование под нагрузкой (см. troubleshooting №17: симптом
 обычно означает удерживаемое соединение, а не тесный пул).
 
-`AgentChannelPoller` **не держит коннект** во время `sleep`/backoff — conn
-берётся только на время SELECT'а шины и финализирующей транзакции.
+`AgentChannelPoller` **не держит коннект вовсе** — тик работает через
+исполнитель (`DbExecutor`), который берёт соединение из пула на каждую
+SQL-операцию (SELECT шины, финализирующая транзакция) и сразу возвращает.
 
 ### 2.2. Таймауты и polling канала (`CHAT__AGENT_CHANNEL__*`)
 
@@ -197,8 +198,9 @@ audit_workstation.domains.chat.agent_loop          # exception в петле о�
 5. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
 6. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
 7. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
-   `chat_agent_messages_bus` по активным запросам с adaptive backoff (без удержания
-   conn в sleep), при старте reconcile подхватывает зависшие
+   `chat_agent_messages_bus` по активным запросам с adaptive backoff
+   (соединение не удерживает — исполнитель берёт коннект на каждую
+   SQL-операцию тика), при старте reconcile подхватывает зависшие
    streaming-черновики `chat_messages`
 8. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
 
@@ -259,8 +261,10 @@ warning в лог.
 - **`AgentChannelService` — единственный writer финализации черновика**
   ассистент-сообщения (`poll_once` / `mark_timeout`). Не добавляй
   save/финализацию в другие места.
-- **Поллер не держит conn в sleep/backoff.** Conn берётся только на SELECT
-  шины и финализирующую транзакцию — не объединять обратно «для простоты».
+- **Поллер не держит conn вовсе.** Исполнитель берёт коннект на каждую
+  SQL-операцию тика (SELECT шины, финализирующая транзакция) и сразу
+  возвращает — не оборачивать тик в `get_db()`/удерживать соединение «для
+  простоты» (см. module docstring `agent_channel_poller.py`).
 - **`CHAT__MAX_PARALLEL_STREAMS_PER_USER`** проверяется через
   `count_active_for_user` ДО записей в шину → 422 при превышении.
 - **`chat_messages.agent_ref`** связывает ассистент-черновик с uid вопроса

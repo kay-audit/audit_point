@@ -5,9 +5,8 @@ import logging
 import uuid
 from datetime import datetime
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_bus_schema
 
 logger = logging.getLogger("audit_workstation.domains.chat.repo.agent_message")
@@ -28,7 +27,7 @@ class AgentMessageRepository(BaseRepository):
 
     def __init__(
         self,
-        conn: asyncpg.Connection,
+        conn: DbConn,
         table_name: str = "chat_agent_messages_bus",
         schema: str | None = None,
     ):

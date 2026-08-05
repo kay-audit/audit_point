@@ -8,9 +8,8 @@ Append-only журнал случаев, когда ``require_domain_access`` в
 import logging
 from dataclasses import dataclass
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 
 logger = logging.getLogger(
     "audit_workstation.domains.admin.repo.access_denied_audit"
@@ -30,7 +29,7 @@ class AccessDeniedRecord:
 class AccessDeniedAuditRepository(BaseRepository):
     """Append-only журнал отказов доступа к доменам."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("access_denied_audit")
 

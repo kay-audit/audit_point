@@ -3,9 +3,8 @@
 import logging
 import uuid
 
-import asyncpg
-
 from app.core.redis import RedisAdapter, get_redis
+from app.db.types import DbConn
 from app.domains.notifications.repositories.notification_repository import (
     NotificationRepository,
 )
@@ -37,7 +36,7 @@ class NotificationService:
     _UNREAD_KEY_PREFIX = "cache:notif:unread:"
     _UNREAD_TTL_SEC = 600
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         self.conn = conn
         self.repo = NotificationRepository(conn)
 

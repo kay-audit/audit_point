@@ -1,15 +1,20 @@
 """Тесты AgentChannelPoller.
 
 Тестируются: subscribe (идемпотентность, поля entry), reconcile (восстановление
-реестра), _tick (done/pending/idle-таймауты по фазам/liveness-сигналы).
-
-Реальный _run не запускается — тесты работают только с _tick/subscribe/reconcile.
+реестра), _tick (done/pending/idle-таймауты по фазам/liveness-сигналы),
+а также инвариант «тик не удерживает соединение» (TestTickDoesNotHoldConnection —
+единственный класс, где реально прокручивается _run).
 """
 
 import pytest
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core import domain_registry
+from app.core.chat import tools as chat_tools
+from app.core.chat.tools import ChatTool
+from app.db.executor import get_executor
 from app.domains.chat.services.agent_channel_poller import AgentChannelPoller
 from app.domains.chat.settings import ChatDomainSettings
 
@@ -22,6 +27,7 @@ def _patch_adapter():
     """Подменяет get_adapter, чтобы BaseRepository работал вне init_db()."""
     adapter = MagicMock()
     adapter.get_table_name = lambda name, schema='': name
+    adapter.qualify_table_name = lambda name, schema='': name
     with patch("app.db.repositories.base.get_adapter", return_value=adapter):
         yield
 
@@ -33,6 +39,7 @@ def settings():
 
 @pytest.fixture
 def mock_conn():
+    """Фейк, играющий роль исполнителя БД (и соединения — API совпадает)."""
     conn = AsyncMock()
     conn.fetchrow = AsyncMock()
     conn.fetch = AsyncMock(return_value=[])
@@ -44,22 +51,19 @@ def mock_conn():
     return conn
 
 
-def _make_poller(settings, *, now=None, mock_conn=None):
-    """Создаёт поллер с инжектированными зависимостями."""
-    if mock_conn is not None:
-        # Фейковый db — возвращает asynccontextmanager вокруг mock_conn.
-        from contextlib import asynccontextmanager
+def _make_poller(settings, *, now=None, executor=None):
+    """Создаёт поллер с инжектированными зависимостями.
 
-        @asynccontextmanager
-        async def _fake_db():
-            yield mock_conn
-
-        db = _fake_db
-    else:
-        db = None
-
-    poller = AgentChannelPoller(settings, now=now or (lambda: 0.0), db=db)
-    return poller
+    ``executor`` — фейковый исполнитель БД: поллер работает через DbExecutor
+    (соединение на операцию), а не через удерживаемое соединение, поэтому
+    инжектируется фабрика исполнителя. AsyncMock подходит: DbExecutor и
+    asyncpg.Connection совпадают по используемому API (fetch/fetchrow/
+    fetchval/execute/transaction).
+    """
+    factory = (lambda: executor) if executor is not None else None
+    return AgentChannelPoller(
+        settings, now=now or (lambda: 0.0), executor_factory=factory,
+    )
 
 
 def _poll_res(**overrides):
@@ -128,7 +132,7 @@ class TestReconcile:
         )
 
         t = [5.0]
-        poller = _make_poller(settings, now=lambda: t[0], mock_conn=mock_conn)
+        poller = _make_poller(settings, now=lambda: t[0], executor=mock_conn)
         await poller.reconcile()
 
         assert "Q1" in poller._subscriptions
@@ -151,7 +155,7 @@ class TestReconcile:
             ]
         )
 
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         await poller.reconcile()
 
         assert len(poller._subscriptions) == 0
@@ -169,7 +173,7 @@ class TestReconcile:
             ]
         )
 
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
         await poller.reconcile()
 
@@ -201,7 +205,7 @@ class TestTick:
 
     async def test_tick_done_removes_subscription(self, settings, mock_conn):
         """Если poll_once возвращает outcome='done' — подписка снимается."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with patch(
@@ -216,7 +220,7 @@ class TestTick:
 
     async def test_tick_done_does_not_call_mark_timeout(self, settings, mock_conn):
         """При outcome='done' mark_timeout НЕ вызывается."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with (
@@ -246,7 +250,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
         # Первый тик устанавливает baseline queue_ahead (None → None, без activity)
 
@@ -283,7 +287,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with (
@@ -328,7 +332,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with (
@@ -377,7 +381,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with (
@@ -413,7 +417,7 @@ class TestTick:
 
     async def test_tick_pending_keeps_subscription_no_liveness(self, settings, mock_conn):
         """Если poll_once возвращает outcome='pending' без признаков жизни — подписка остаётся."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with patch(
@@ -428,7 +432,7 @@ class TestTick:
 
     async def test_tick_want_queue_position_only_in_pending(self, settings, mock_conn):
         """want_queue_position=True только в pending-фазе; в processing — False."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with patch(
@@ -465,7 +469,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
         # Переводим в processing, чтобы answer_updated_at был релевантен
         poller._subscriptions["Q1"]["phase"] = "processing"
@@ -506,7 +510,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with (
@@ -571,7 +575,7 @@ class TestTick:
             idx[0] = min(idx[0] + 1, len(times) - 1)
             return val
 
-        poller = _make_poller(settings, now=fake_now, mock_conn=mock_conn)
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
         # Сразу переводим в processing, чтобы тестировать answer_updated_at-ветку
         poller._subscriptions["Q1"]["phase"] = "processing"
@@ -626,7 +630,7 @@ class TestTick:
         self, settings, mock_conn
     ):
         """Ошибка в одной подписке не прерывает обработку остальных."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
         poller.subscribe(assistant_message_id="m2", question_uid="Q2")
 
@@ -661,7 +665,7 @@ class TestTick:
             _MAX_CONSECUTIVE_ENTRY_ERRORS,
         )
 
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with patch(
@@ -692,7 +696,7 @@ class TestTick:
             _MAX_CONSECUTIVE_ENTRY_ERRORS,
         )
 
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         with patch(
@@ -711,7 +715,7 @@ class TestTick:
 
     async def test_tick_success_resets_consecutive_errors(self, settings, mock_conn):
         """Успешный тик сбрасывает счётчик ошибок — ошибки должны идти ПОДРЯД."""
-        poller = _make_poller(settings, mock_conn=mock_conn)
+        poller = _make_poller(settings, executor=mock_conn)
         poller.subscribe(assistant_message_id="m1", question_uid="Q1")
 
         calls = [RuntimeError("транзиентная ошибка"), _poll_res()]
@@ -732,3 +736,169 @@ class TestTick:
             await poller._tick(mock_conn)
 
         assert poller._subscriptions["Q1"]["consecutive_errors"] == 0
+
+
+# ── Удержание соединения ──────────────────────────────────────────────────────
+
+
+class _StopLoop(Exception):
+    """Прерывает бесконечный цикл _run сразу после первого тика."""
+
+
+class _CountingPool:
+    """Фейковый пул: считает одновременно выданные соединения.
+
+    ``held`` — выдано прямо сейчас, ``peak`` — максимум за тест. Поверх пула
+    работает НАСТОЯЩИЙ ``get_db`` вместе со стражем повторного захвата
+    (autouse-фикстура conftest включает строгий режим), поэтому тик,
+    удерживающий соединение, ловится ровно как в dev-окружении.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.held = 0
+        self.peak = 0
+
+    async def acquire(self, timeout=None):
+        self.held += 1
+        self.peak = max(self.peak, self.held)
+        return self._conn
+
+    async def release(self, conn):
+        self.held -= 1
+
+
+class _BusFakeConn:
+    """Соединение-заглушка на один тик: вопрос, ответ агента и draft-сообщение."""
+
+    def __init__(self, question, answer):
+        self._question = question
+        self._answer = answer
+        self.executed = []
+
+    async def fetchrow(self, query, *args, **kwargs):
+        if "FOR UPDATE" in query:          # draft в chat_messages
+            return {"content": "[]", "status": "streaming"}
+        if "reply_to" in query:            # строка-ответ агента
+            return self._answer
+        return self._question              # строка-вопрос по id
+
+    async def fetchval(self, query, *args, **kwargs):
+        return 0
+
+    async def fetch(self, query, *args, **kwargs):
+        return []
+
+    async def execute(self, query, *args, **kwargs):
+        self.executed.append(query)
+        return "UPDATE 1"
+
+    def transaction(self):
+        @asynccontextmanager
+        async def _tx():
+            yield
+
+        return _tx()
+
+
+class TestTickDoesNotHoldConnection:
+    """Регрессия: тик поллера НЕ удерживает соединение из пула.
+
+    Пока _run оборачивал тик в get_db(), обращения к БД из хвоста финализации
+    — эмиссия уведомления «готов ответ базы знаний» и трансляция кнопок агента
+    (acts.open_act_page → open_url) — оказывались повторным захватом пула в том
+    же task'е. Страж get_db бросал RuntimeError, а вызывающий код его глотал:
+    уведомление молча терялось, кнопка оставалась непереведённой.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_global_registries(self):
+        """Реестр фабрик и реестр ChatTool — глобальное состояние."""
+        domain_registry.reset_registry()
+        chat_tools.reset()
+        yield
+        domain_registry.reset_registry()
+        chat_tools.reset()
+
+    async def test_notification_and_buttons_run_with_zero_held_connections(
+        self, settings
+    ):
+        """Один тик _run: пик захватов == 1, а уведомление и трансляция
+        кнопок выполняются при нуле удерживаемых соединений."""
+        question = {
+            "id": "q-uid", "user_id": "u1", "status": "processing",
+            "created_at": None,
+        }
+        answer = {
+            "id": "a-uid", "role": "assistant", "status": "completed",
+            "content": "Ответ агента", "metadata": {}, "media": None,
+            "reply_to": "q-uid", "updated_at": None,
+            "buttons": [{
+                "action_id": "acts.open_act_page",
+                "label": "Открыть акт",
+                "params": {"km_number": "КМ-23-001"},
+            }],
+        }
+        conn = _BusFakeConn(question, answer)
+        pool = _CountingPool(conn)
+        seen = {}
+
+        async def _push(**kwargs):
+            seen["push_held"] = pool.held
+            # Уведомление пишется в БД — это и есть «второй захват пула».
+            await get_executor().execute("INSERT INTO notifications ...")
+            seen["pushed"] = True
+
+        def _push_factory():
+            svc = MagicMock()
+            svc.push = _push
+            return svc
+
+        domain_registry.register_factory("notifications.push", _push_factory)
+
+        async def _translate(params):
+            seen["button_held"] = pool.held
+            # Транслятор acts.open_act_page ходит в БД за id акта.
+            await get_executor().fetchval("SELECT 1")
+            seen["button_translated"] = True
+            return {"action": "open_url", "params": {"url": "/constructor?act_id=1"}}
+
+        chat_tools.register_tools([
+            ChatTool(
+                name="acts.open_act_page",
+                domain="acts",
+                description="Открыть страницу акта",
+                button_translator=_translate,
+            )
+        ])
+
+        # Исполнитель — процесс-синглтон (как на проде), поверх фейкового пула.
+        poller = _make_poller(settings)
+        poller.subscribe(assistant_message_id="m1", question_uid="q-uid")
+
+        async def _stop_loop(_interval):
+            raise _StopLoop
+
+        # sleep в конце _run — вне try/except, поэтому исключение из него
+        # выпускает нас из цикла ровно после первого тика.
+        with (
+            patch("app.db.connection._pool", pool),
+            patch(
+                "app.domains.chat.services.agent_channel_poller.asyncio.sleep",
+                _stop_loop,
+            ),
+            pytest.raises(_StopLoop),
+        ):
+            await poller._run()
+
+        assert seen.get("button_translated") is True, (
+            "трансляция кнопки не дошла до БД — тик удерживал соединение"
+        )
+        assert seen["button_held"] == 0
+        assert seen.get("pushed") is True, (
+            "уведомление о готовности ответа потеряно — тик удерживал соединение"
+        )
+        assert seen["push_held"] == 0
+        assert pool.peak == 1
+        assert pool.held == 0
+        assert "q-uid" not in poller._subscriptions

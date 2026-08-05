@@ -12,9 +12,8 @@
 import json
 import logging
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.acts.block_types import LEAF_BLOCK_REFS, LEAF_BLOCK_TYPES
 from app.domains.acts.utils import ActDirectivesValidator, ActTreeUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
@@ -25,7 +24,7 @@ logger = logging.getLogger("audit_workstation.db.repository.content")
 class ActContentRepository(BaseRepository):
     """Операции загрузки и сохранения содержимого актов."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.acts = self.adapter.get_table_name("acts")
         self.tree = self.adapter.get_table_name("act_tree")

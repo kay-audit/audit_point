@@ -2,9 +2,8 @@
 
 import logging
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_chat_schema
 
 logger = logging.getLogger("audit_workstation.domains.chat.repo.file")
@@ -13,7 +12,7 @@ logger = logging.getLogger("audit_workstation.domains.chat.repo.file")
 class FileRepository(BaseRepository):
     """CRUD-операции с файлами чата."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         schema = resolve_chat_schema()
         self.table = self.adapter.get_table_name("chat_files", schema=schema)

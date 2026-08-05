@@ -16,34 +16,28 @@ def register_factories() -> None:
     Идемпотентна: повторный вызов перезаписывает фабрики.
     """
     from app.core.domain_registry import register_factory
-    from app.db.connection import get_db
+    from app.db.executor import get_executor
     from app.domains.admin.repositories.user_avatars import UserAvatarRepository
     from app.domains.admin.services.user_directory import UserDirectoryRepository
 
     def _user_directory_factory():
-        """Создаёт UserDirectoryRepository, оборачивая get_db() в async-генератор.
+        """Создаёт UserDirectoryRepository на исполнителе БД.
 
-        Возвращает async-генератор — потребители используют его
-        в FastAPI Depends или как ``async with`` через ``contextlib``.
+        Обычная фабрика: потребители зовут её и получают готовый объект
+        (соединение берётся из пула на время каждой операции).
         """
-        async def _gen():
-            async with get_db() as conn:
-                yield UserDirectoryRepository(conn)
-        return _gen()
+        return UserDirectoryRepository(get_executor())
 
     register_factory("admin.user_directory", _user_directory_factory)
 
     def _user_avatars_factory():
-        """Создаёт UserAvatarRepository, оборачивая get_db() в async-генератор.
+        """Создаёт UserAvatarRepository на исполнителе БД.
 
         Потребитель — слой авторизации (эндпоинты фото профиля): таблица
         живёт в admin-домене, а обращаются к ней снаружи, поэтому связь
         идёт через реестр фабрик, как и справочник пользователей.
         """
-        async def _gen():
-            async with get_db() as conn:
-                yield UserAvatarRepository(conn)
-        return _gen()
+        return UserAvatarRepository(get_executor())
 
     register_factory("admin.user_avatars", _user_avatars_factory)
 

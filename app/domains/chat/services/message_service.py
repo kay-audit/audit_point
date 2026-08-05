@@ -54,23 +54,26 @@ class MessageService:
         # устраняет race condition при конкурентных send_message от одного
         # пользователя (BUG #10).
         async with _get_user_lock(user_id):
-            msg_count = await self.msg_repo.count_by_conversation(conversation_id)
-            if msg_count >= self.settings.max_messages_per_conversation:
-                raise ChatLimitError(
-                    f"Достигнут лимит сообщений в беседе: "
-                    f"{self.settings.max_messages_per_conversation}."
-                )
-
             # Собираем блоки контента
             blocks: list[dict] = [{"type": "text", "content": content}]
             if file_blocks:
                 blocks.extend(file_blocks)
 
             message_id = str(uuid.uuid4())
-            # Атомарность: вставка сообщения и touch беседы — единая транзакция.
-            # Если touch падает (например, FK или сетевой сбой), сообщение
-            # тоже откатывается, и updated_at не расходится с реальной историей.
+            # Один захват соединения на всю критическую секцию: проверка лимита,
+            # вставка сообщения и touch беседы — единая транзакция. Если touch
+            # падает (например, FK или сетевой сбой), сообщение тоже
+            # откатывается, и updated_at не расходится с реальной историей.
+            # Заодно лимит считается в согласованном снимке вместе со вставкой,
+            # а не отдельным запросом до открытия транзакции.
             async with self.msg_repo.conn.transaction():
+                msg_count = await self.msg_repo.count_by_conversation(conversation_id)
+                if msg_count >= self.settings.max_messages_per_conversation:
+                    raise ChatLimitError(
+                        f"Достигнут лимит сообщений в беседе: "
+                        f"{self.settings.max_messages_per_conversation}."
+                    )
+
                 message = await self.msg_repo.create(
                     id=message_id,
                     conversation_id=conversation_id,

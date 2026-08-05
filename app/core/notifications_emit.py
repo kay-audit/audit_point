@@ -55,16 +55,16 @@ async def push_notification(
             # Домен notifications не зарегистрирован — тихо пропускаем.
             return
         factory = get_factory("notifications.push")
-        async for svc in factory():
-            await svc.push(
-                source=source,
-                title=title,
-                body=body,
-                severity=severity,
-                link=link,
-                recipient_user_id=recipient_user_id,
-                created_by="system",
-            )
+        svc = factory()
+        await svc.push(
+            source=source,
+            title=title,
+            body=body,
+            severity=severity,
+            link=link,
+            recipient_user_id=recipient_user_id,
+            created_by="system",
+        )
     except Exception:
         # Сбой уведомления НЕ должен ломать основную операцию.
         logger.warning(

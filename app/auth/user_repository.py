@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import logging
 
-import asyncpg
-
 from app.core.redis import RedisAdapter, get_redis
 from app.core.settings_registry import get as get_domain_settings
+from app.db.types import DbConn
 from app.domains.admin.settings import AdminSettings
 
 logger = logging.getLogger("audit_workstation.auth.user_repository")
@@ -54,7 +53,7 @@ async def read_user_cache_epoch(redis: RedisAdapter, user_id: str) -> str:
 class AuthUserRepository:
     """Поиск пользователей в справочнике и загрузка контекста для JWT."""
 
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: DbConn) -> None:
         # Импорт репозиториев admin — внутри функции: на уровне модуля он
         # замыкает цикл. app.auth.router подключён к app.api.v1.routes, а
         # пакет admin.services тянет admin_service → app.api.v1.deps.role_deps

@@ -12,6 +12,7 @@ from datetime import datetime
 import asyncpg
 
 from app.core.config import Settings
+from app.db.types import DbConn
 from app.domains.acts.exceptions import (
     ActLockError,
     ActValidationError,
@@ -46,7 +47,7 @@ class ActCrudService:
 
     def __init__(
         self,
-        conn: asyncpg.Connection,
+        conn: DbConn,
         settings: Settings,
         *,
         crud: ActCrudRepository | None = None,
