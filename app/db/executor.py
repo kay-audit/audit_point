@@ -1,9 +1,10 @@
 """
 Исполнитель БД: соединение на операцию (connection-per-operation).
 
-``DbExecutor`` повторяет API ``asyncpg.Connection`` (fetch/fetchrow/fetchval/
-execute/executemany/transaction) и под каждый вызов берёт соединение из пула
-через ``get_db()``, возвращая его сразу после выполнения. Явная транзакция
+``DbExecutor`` реализует протокол ``DbConn`` (``app/db/types.py``: fetch/
+fetchrow/fetchval/execute/executemany/transaction — то же подмножество API, что
+и у ``asyncpg.Connection``) и под каждый вызов берёт соединение из пула через
+``get_db()``, возвращая его сразу после выполнения. Явная транзакция
 (``async with executor.transaction():``) привязывает соединение к contextvar
 на время блока — все вызовы исполнителя внутри блока идут через это
 соединение, в том числе из других репозиториев (они держат тот же синглтон).
@@ -19,11 +20,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
+
+import asyncpg
 
 # Импорт модулем (не именем): тесты патчат app.db.connection.get_db, и вызов
 # через атрибут модуля видит патч (принятая в проекте патч-точка БД).
 from app.db import connection as _connection
+from app.db.types import DbConn
 
 logger = logging.getLogger(__name__)
 
@@ -62,44 +66,49 @@ def _current_bound() -> _BoundTx | None:
 class DbExecutor:
     """Фасад соединения БД: каждый вызов берёт соединение из пула на время SQL."""
 
-    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> Any:
-        bound = _current_bound()
-        if bound is not None:
-            return await bound.conn.fetch(query, *args, timeout=timeout)
-        async with _connection.get_db() as conn:
-            return await conn.fetch(query, *args, timeout=timeout)
+    async def _run(self, op: Callable[[DbConn], Awaitable[Any]]) -> Any:
+        """Единственная точка ветвления «bound-соединение или свежее из пула».
 
-    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+        Публичные методы — тонкие типизированные обёртки над ней: правка
+        ветвления (метрики захватов, диагностика) вносится в одном месте.
+        ``op`` получает соединение и возвращает ещё не выполненную корутину —
+        она await'ится строго внутри выбранной ветки.
+        """
         bound = _current_bound()
         if bound is not None:
-            return await bound.conn.fetchrow(query, *args, timeout=timeout)
+            return await op(bound.conn)
         async with _connection.get_db() as conn:
-            return await conn.fetchrow(query, *args, timeout=timeout)
+            return await op(conn)
+
+    async def fetch(
+        self, query: str, *args: Any, timeout: float | None = None
+    ) -> list[asyncpg.Record]:
+        """Возвращает все строки запроса."""
+        return await self._run(lambda c: c.fetch(query, *args, timeout=timeout))
+
+    async def fetchrow(
+        self, query: str, *args: Any, timeout: float | None = None
+    ) -> asyncpg.Record | None:
+        """Возвращает первую строку запроса либо None."""
+        return await self._run(lambda c: c.fetchrow(query, *args, timeout=timeout))
 
     async def fetchval(
         self, query: str, *args: Any, column: int = 0, timeout: float | None = None
     ) -> Any:
-        bound = _current_bound()
-        if bound is not None:
-            return await bound.conn.fetchval(query, *args, column=column, timeout=timeout)
-        async with _connection.get_db() as conn:
-            return await conn.fetchval(query, *args, column=column, timeout=timeout)
+        """Возвращает одно значение из первой строки (колонка ``column``)."""
+        return await self._run(
+            lambda c: c.fetchval(query, *args, column=column, timeout=timeout)
+        )
 
     async def execute(self, query: str, *args: Any, timeout: float | None = None) -> Any:
-        bound = _current_bound()
-        if bound is not None:
-            return await bound.conn.execute(query, *args, timeout=timeout)
-        async with _connection.get_db() as conn:
-            return await conn.execute(query, *args, timeout=timeout)
+        """Выполняет команду, возвращает статус-строку asyncpg."""
+        return await self._run(lambda c: c.execute(query, *args, timeout=timeout))
 
     async def executemany(
         self, command: str, args: Any, *, timeout: float | None = None
     ) -> Any:
-        bound = _current_bound()
-        if bound is not None:
-            return await bound.conn.executemany(command, args, timeout=timeout)
-        async with _connection.get_db() as conn:
-            return await conn.executemany(command, args, timeout=timeout)
+        """Выполняет команду для каждого набора аргументов из ``args``."""
+        return await self._run(lambda c: c.executemany(command, args, timeout=timeout))
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:

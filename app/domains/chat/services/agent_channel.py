@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
+from app.db.types import DbConn
 from app.domains.chat.exceptions import AgentChannelUnavailableError, ChatLimitError
 from app.domains.chat.repositories.agent_message_repository import AgentMessageRepository
 from app.domains.chat.repositories.message_repository import MessageRepository
@@ -210,12 +211,16 @@ def build_timeout_error_block(reason: str = TIMEOUT_REASON_ANSWER) -> dict:
 class AgentChannelService:
     """Сервис канала к внешнему агенту через bus-таблицу chat_agent_messages_bus.
 
-    Принимает ``conn`` (asyncpg.Connection) и ``settings`` (ChatDomainSettings).
-    Паттерн получения settings идентичен MessageService / ConversationService:
-    вызывающий код инжектирует настройки снаружи.
+    Принимает ``conn`` (``DbConn``) и ``settings`` (ChatDomainSettings). Тип
+    именно протокольный, а не ``asyncpg.Connection``: DI-фабрика, поллер и
+    ``api/messages.py`` передают сюда ``DbExecutor``, а ``agent_loop.py`` —
+    сырое соединение из транзиентного ``get_db()``. Обе реализации
+    удовлетворяют ``DbConn``. Паттерн получения settings идентичен
+    MessageService / ConversationService: вызывающий код инжектирует
+    настройки снаружи.
     """
 
-    def __init__(self, conn: asyncpg.Connection, settings: ChatDomainSettings):
+    def __init__(self, conn: DbConn, settings: ChatDomainSettings):
         self._conn = conn
         self._settings = settings
 

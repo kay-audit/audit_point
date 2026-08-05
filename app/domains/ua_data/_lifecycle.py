@@ -2,7 +2,7 @@
 
 import logging
 
-import asyncpg
+from app.db.types import DbConn
 
 logger = logging.getLogger("audit_workstation.domains.ua_data.lifecycle")
 
@@ -18,10 +18,11 @@ def register_factories() -> None:
 
     Контракт фабрик:
 
-    * ``ua_data.dictionary_repository(conn)`` — принимает открытое соединение
-      asyncpg, возвращает реализацию ``IDictionaryRepository``. Так потребитель
-      делит коннект с собственными репозиториями (одна транзакция, один acquire
-      из пула на запрос).
+    * ``ua_data.dictionary_repository(conn)`` — принимает исполнитель БД
+      (``DbConn``: ``DbExecutor`` из ``deps.py`` потребителя либо открытое
+      соединение asyncpg), возвращает реализацию ``IDictionaryRepository``. Так
+      потребитель делит источник соединений со своими репозиториями: внутри
+      ``executor.transaction()`` все они работают в одной транзакции.
     * ``ua_data.invoice_table_names()`` — без аргументов, возвращает
       ``UaInvoiceTableNames`` (имена справочных таблиц для фактур).
 
@@ -35,8 +36,8 @@ def register_factories() -> None:
         DictionaryRepository,
     )
 
-    def _dictionary_repository_factory(conn: asyncpg.Connection):
-        """Создаёт DictionaryRepository поверх переданного соединения."""
+    def _dictionary_repository_factory(conn: DbConn):
+        """Создаёт DictionaryRepository поверх переданного исполнителя/соединения."""
         return DictionaryRepository(conn)
 
     register_factory("ua_data.dictionary_repository", _dictionary_repository_factory)

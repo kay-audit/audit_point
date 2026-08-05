@@ -4,11 +4,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import asyncpg
 import pytest
 
 import app.db.connection as dbconn
 from app.core.exceptions import ServiceUnavailableError
-from app.db.executor import DbExecutor, get_executor
+from app.db.executor import DbExecutor, _current_bound, get_executor
 
 
 class FakeConn:
@@ -44,24 +45,32 @@ class FakeConn:
         @asynccontextmanager
         async def _tx():
             conn.tx_depth += 1
-            conn.calls.append(("tx_begin", conn.tx_depth))
+            depth = conn.tx_depth
+            conn.calls.append(("tx_begin", depth))
             try:
                 yield
+            except BaseException:
+                # Ошибка в теле блока — asyncpg откатывает транзакцию/savepoint
+                conn.calls.append(("tx_rollback", depth))
+                raise
+            else:
+                conn.calls.append(("tx_commit", depth))
             finally:
-                conn.calls.append(("tx_end", conn.tx_depth))
+                conn.calls.append(("tx_end", depth))
                 conn.tx_depth -= 1
 
         return _tx()
 
 
 class FakePool:
-    """Фейковый пул: считает захваты и пиковую занятость."""
+    """Фейковый пул: считает захваты, пиковую занятость и следит за release."""
 
     def __init__(self):
         self.live = 0
         self.peak = 0
         self.acquires = 0
         self.conns = []
+        self.released = []
 
     async def acquire(self, timeout=None):
         self.live += 1
@@ -72,6 +81,12 @@ class FakePool:
         return conn
 
     async def release(self, conn):
+        # Пул реального asyncpg на таком ломается тихо и позже — ловим сразу
+        if conn not in self.conns:
+            raise AssertionError("release чужого соединения")
+        if conn in self.released:
+            raise AssertionError("повторный release одного соединения")
+        self.released.append(conn)
         self.live -= 1
 
 
@@ -201,6 +216,47 @@ async def test_cancelled_transaction_releases_and_unbinds(fake_pool):
     assert fake_pool.live == 0
     await ex.fetch("SELECT after")          # не падает и берёт свежее соединение
     assert fake_pool.acquires == 2
+
+
+async def test_sql_error_in_transaction_releases_and_unbinds(fake_pool, monkeypatch):
+    """Ошибка SQL на втором операторе транзакции не «залипает» на соединении.
+
+    Путь, который держит инвариант «после сбоя соединение возвращено в пул,
+    а привязка снята»: иначе одно упавшее сохранение выводило бы из строя
+    соединение пула (max_size=2) до конца жизни процесса.
+    """
+    ex = DbExecutor()
+    boom = asyncpg.UniqueViolationError("дубль (km_number_digit, part_number)")
+
+    orig_acquire = fake_pool.acquire
+
+    async def acquire(timeout=None):
+        conn = await orig_acquire(timeout=timeout)
+        if fake_pool.acquires == 1:         # падающее — только первое соединение
+            async def failing_execute(query, *args, timeout=None):
+                conn.calls.append(("execute", query))
+                raise boom
+
+            conn.execute = failing_execute
+        return conn
+
+    monkeypatch.setattr(fake_pool, "acquire", acquire)
+
+    with pytest.raises(asyncpg.UniqueViolationError):
+        async with ex.transaction():
+            await ex.fetch("SELECT 1")                  # первый оператор — ок
+            await ex.execute("INSERT INTO acts ...")    # второй — падает
+
+    conn = fake_pool.conns[0]
+    assert _current_bound() is None                     # (3) привязка снята
+    assert fake_pool.released == [conn]                 # (2) соединение отдано пулу
+    assert fake_pool.live == 0
+    assert ("tx_rollback", 1) in conn.calls             # транзакция откачена,
+    assert ("tx_commit", 1) not in conn.calls           # а не закоммичена
+
+    await ex.fetch("SELECT after")                      # (4) исполнитель работоспособен
+    assert fake_pool.acquires == 2                      # и берёт свежее соединение
+    assert ("fetch", "SELECT after") in fake_pool.conns[1].calls
 
 
 async def test_nested_get_db_warns_by_default(fake_pool, caplog, monkeypatch):
