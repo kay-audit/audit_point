@@ -6,9 +6,8 @@
 
 import logging
 
-import asyncpg
-
 from app.core.config import Settings
+from app.db.types import DbConn
 from app.domains.acts.exceptions import ActLockError
 from app.domains.acts.repositories.act_access import ActAccessRepository
 from app.domains.acts.repositories.act_audit_log import ActAuditLogRepository
@@ -24,7 +23,7 @@ class ActLockService:
 
     def __init__(
         self,
-        conn: asyncpg.Connection,
+        conn: DbConn,
         settings: Settings,
         *,
         acts_settings: ActsSettings,

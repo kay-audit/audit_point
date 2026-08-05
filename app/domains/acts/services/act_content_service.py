@@ -6,9 +6,8 @@
 
 import logging
 
-import asyncpg
-
 from app.core.config import Settings
+from app.db.types import DbConn
 from app.domains.acts.block_types import (
     NODE_TYPE_TABLE,
     NODE_TYPE_TEXTBLOCK,
@@ -39,7 +38,7 @@ class ActContentService:
 
     def __init__(
         self,
-        conn: asyncpg.Connection,
+        conn: DbConn,
         settings: Settings,
         acts_settings: ActsSettings,
         *,

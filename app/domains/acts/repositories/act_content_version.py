@@ -9,9 +9,8 @@ import hashlib
 import json
 import logging
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 
 logger = logging.getLogger("audit_workstation.db.repository.content_version")
 
@@ -58,7 +57,7 @@ def compute_content_hash(
 class ActContentVersionRepository(BaseRepository):
     """Версионирование содержимого актов."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.versions_table = self.adapter.get_table_name("act_content_versions")
 

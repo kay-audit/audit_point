@@ -11,10 +11,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import get_args
 
-import asyncpg
-
 from app.core.settings_registry import get as get_domain_settings
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.ck_fin_res.exceptions import FRGroupConflictError, FRValidationError
 from app.domains.ck_fin_res.schemas.fr_validation import FRValidationView
 from app.domains.ck_fin_res.schemas.requests import FilterSpec
@@ -239,7 +238,7 @@ def _norm_cmp(field: str, value):
 class FRValidationRepository(BaseRepository):
     """Операции с записями FR-валидации в БД."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         s = get_domain_settings("ck_fin_res", CkFinResSettings)
         self.table = self.adapter.qualify_table_name(s.fr_validation_table, s.schema_name)

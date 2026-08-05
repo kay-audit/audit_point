@@ -2,9 +2,8 @@
 
 import logging
 
-import asyncpg
-
 from app.api.v1.deps.role_deps import DEFAULT_ROLE_NAMES
+from app.db.types import DbConn
 from app.domains.admin.exceptions import LastAdminError, RoleNotFoundError, UserNotFoundError
 from app.domains.admin.repositories.admin_audit_log import AdminAuditLogRepository
 from app.domains.admin.repositories.admin_repository import AdminRepository
@@ -18,7 +17,7 @@ MIN_SEARCH_LENGTH = 2
 class AdminService:
     """Управление ролями и справочником пользователей."""
 
-    def __init__(self, conn: asyncpg.Connection, settings: AdminSettings):
+    def __init__(self, conn: DbConn, settings: AdminSettings):
         self.conn = conn
         self.settings = settings
         self.repo = AdminRepository(conn, settings)

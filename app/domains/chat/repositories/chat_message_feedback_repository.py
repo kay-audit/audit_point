@@ -9,9 +9,8 @@
 import json
 import logging
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 from app.domains.chat.settings import resolve_chat_schema
 
 logger = logging.getLogger("audit_workstation.domains.chat.repo.feedback")
@@ -20,7 +19,7 @@ logger = logging.getLogger("audit_workstation.domains.chat.repo.feedback")
 class ChatMessageFeedbackRepository(BaseRepository):
     """CRUD обратной связи по сообщениям ассистента."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         schema = resolve_chat_schema()
         self.table = self.adapter.get_table_name(

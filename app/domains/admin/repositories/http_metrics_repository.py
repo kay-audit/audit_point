@@ -3,9 +3,8 @@
 import logging
 from dataclasses import dataclass
 
-import asyncpg
-
 from app.db.repositories.base import BaseRepository
+from app.db.types import DbConn
 
 logger = logging.getLogger(
     "audit_workstation.domains.admin.repo.http_metrics"
@@ -26,7 +25,7 @@ class HttpMetricRecord:
 class HttpMetricsRepository(BaseRepository):
     """Append-only журнал HTTP-запросов: метод, путь, статус, latency."""
 
-    def __init__(self, conn: asyncpg.Connection):
+    def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.table = self.adapter.get_table_name("admin_http_metrics")
 
