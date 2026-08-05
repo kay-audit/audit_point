@@ -56,26 +56,30 @@ def _get_acts_settings() -> ActsSettings:
     return get_domain_settings(DOMAIN_NAME, ActsSettings)
 
 
-def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
+async def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
     """Создаёт ActCrudService на исполнителе БД (соединение на операцию)."""
     return ActCrudService(conn=get_executor(), settings=settings)
 
 
-def get_lock_service(settings: Settings = Depends(get_settings)) -> ActLockService:
+async def get_lock_service(settings: Settings = Depends(get_settings)) -> ActLockService:
     """Создаёт ActLockService на исполнителе БД."""
     return ActLockService(
         conn=get_executor(), settings=settings, acts_settings=_get_acts_settings()
     )
 
 
-def get_content_service(settings: Settings = Depends(get_settings)) -> ActContentService:
+async def get_content_service(
+    settings: Settings = Depends(get_settings),
+) -> ActContentService:
     """Создаёт ActContentService на исполнителе БД."""
     return ActContentService(
         conn=get_executor(), settings=settings, acts_settings=_get_acts_settings()
     )
 
 
-def get_invoice_service(settings: Settings = Depends(get_settings)) -> ActInvoiceService:
+async def get_invoice_service(
+    settings: Settings = Depends(get_settings),
+) -> ActInvoiceService:
     """Создаёт ActInvoiceService на исполнителе БД.
 
     Имена таблиц фактур ua_data — через ``get_factory`` (без прямого импорта).
@@ -90,12 +94,12 @@ def get_invoice_service(settings: Settings = Depends(get_settings)) -> ActInvoic
     )
 
 
-def get_editor_telemetry_repo() -> ActEditorTelemetryRepository:
+async def get_editor_telemetry_repo() -> ActEditorTelemetryRepository:
     """Создаёт репозиторий телеметрии редактора на исполнителе БД."""
     return ActEditorTelemetryRepository(get_executor())
 
 
-def get_audit_log_deps() -> tuple[AccessGuard, ActAuditLogRepository, ActContentVersionRepository]:
+async def get_audit_log_deps() -> tuple[AccessGuard, ActAuditLogRepository, ActContentVersionRepository]:
     """Создаёт зависимости аудит-лога: guard + репозитории (на исполнителе)."""
     ex = get_executor()
     access = ActAccessRepository(ex)
@@ -104,20 +108,15 @@ def get_audit_log_deps() -> tuple[AccessGuard, ActAuditLogRepository, ActContent
     return guard, ActAuditLogRepository(ex), ActContentVersionRepository(ex)
 
 
-def get_audit_log_service() -> "AuditLogService":
-    """Создаёт AuditLogService на исполнителе БД."""
+async def get_audit_log_service() -> "AuditLogService":
+    """Создаёт AuditLogService на исполнителе БД (поверх ``get_audit_log_deps``)."""
     from app.domains.acts.services.audit_log_service import AuditLogService
 
-    ex = get_executor()
-    access = ActAccessRepository(ex)
-    lock = ActLockRepository()
-    guard = AccessGuard(access, lock)
-    audit_repo = ActAuditLogRepository(ex)
-    versions_repo = ActContentVersionRepository(ex)
-    return AuditLogService(guard, audit_repo, versions_repo, ex)
+    guard, audit_repo, versions_repo = await get_audit_log_deps()
+    return AuditLogService(guard, audit_repo, versions_repo, get_executor())
 
 
-def get_users_repository() -> IUserDirectory:
+async def get_users_repository() -> IUserDirectory:
     """Возвращает реализацию IUserDirectory из admin-домена через фабрику.
 
     Кросс-доменная связь — через ``domain_registry.get_factory(...)``,

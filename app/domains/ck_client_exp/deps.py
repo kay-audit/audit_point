@@ -17,7 +17,7 @@ from app.domains.ck_client_exp.services.cs_validation_service import (
 from app.domains.ua_data.interfaces import IDictionaryRepository
 
 
-def get_cs_validation_service() -> CSValidationService:
+async def get_cs_validation_service() -> CSValidationService:
     """Создаёт CSValidationService на исполнителе БД.
 
     DictionaryRepository разрешается через ``domain_registry.get_factory`` —

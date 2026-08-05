@@ -13,7 +13,7 @@ from app.domains.notifications.services.notification_service import (
 from app.domains.notifications.settings import NotificationsSettings
 
 
-def get_notification_service() -> NotificationService:
+async def get_notification_service() -> NotificationService:
     """Создаёт NotificationService на исполнителе БД (соединение на операцию)."""
     return NotificationService(get_executor())
 

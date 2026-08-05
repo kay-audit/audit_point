@@ -17,7 +17,7 @@ from app.domains.ck_fin_res.services.fr_validation_service import (
 from app.domains.ua_data.interfaces import IDictionaryRepository
 
 
-def get_fr_validation_service() -> FRValidationService:
+async def get_fr_validation_service() -> FRValidationService:
     """Создаёт FRValidationService на исполнителе БД.
 
     DictionaryRepository разрешается через ``domain_registry.get_factory`` —

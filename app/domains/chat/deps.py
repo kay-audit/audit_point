@@ -136,7 +136,7 @@ def _make_audit_service() -> ChatAuditService:
     )
 
 
-def get_conversation_service() -> ConversationService:
+async def get_conversation_service() -> ConversationService:
     """Создаёт ConversationService на исполнителе БД (соединение на операцию)."""
     return ConversationService(
         conv_repo=ConversationRepository(get_executor()),
@@ -145,7 +145,7 @@ def get_conversation_service() -> ConversationService:
     )
 
 
-def get_message_service() -> MessageService:
+async def get_message_service() -> MessageService:
     """Создаёт MessageService на исполнителе БД."""
     ex = get_executor()
     return MessageService(
@@ -156,7 +156,7 @@ def get_message_service() -> MessageService:
     )
 
 
-def get_file_service() -> FileService:
+async def get_file_service() -> FileService:
     """Создаёт FileService на исполнителе БД."""
     ex = get_executor()
     return FileService(
@@ -167,7 +167,7 @@ def get_file_service() -> FileService:
     )
 
 
-def get_feedback_service() -> ChatFeedbackService:
+async def get_feedback_service() -> ChatFeedbackService:
     """Создаёт ChatFeedbackService на исполнителе БД."""
     return ChatFeedbackService(
         repo=ChatMessageFeedbackRepository(get_executor()),
@@ -175,7 +175,7 @@ def get_feedback_service() -> ChatFeedbackService:
     )
 
 
-def get_analytics_service() -> ChatAnalyticsService:
+async def get_analytics_service() -> ChatAnalyticsService:
     """Создаёт ChatAnalyticsService (admin-аналитика чата) на исполнителе БД."""
     ex = get_executor()
     return ChatAnalyticsService(
@@ -185,18 +185,18 @@ def get_analytics_service() -> ChatAnalyticsService:
 
 
 def get_agent_channel_service() -> AgentChannelService:
-    """Создаёт AgentChannelService на исполнителе БД."""
+    """Создаёт AgentChannelService на исполнителе БД.
+
+    Синхронная сознательно: зовётся прямым вызовом из ``api/messages.py``
+    (только в режиме ``always``), а не через ``Depends``.
+    """
     return AgentChannelService(get_executor(), get_chat_settings())
 
 
 def get_tool_metrics_repository() -> ChatToolMetricsRepository:
-    """Создаёт ChatToolMetricsRepository на исполнителе БД."""
-    return ChatToolMetricsRepository(get_executor())
+    """Создаёт ChatToolMetricsRepository на исполнителе БД.
 
-
-def get_audit_service() -> ChatAuditService:
-    """Создаёт ChatAuditService на исполнителе БД.
-
-    Сервис глушит исключения внутри; вызывающим не нужно оборачивать в try.
+    Синхронная сознательно: зовётся прямым вызовом из оркестратора,
+    а не через ``Depends``.
     """
-    return ChatAuditService(repo=ChatAuditLogRepository(get_executor()))
+    return ChatToolMetricsRepository(get_executor())

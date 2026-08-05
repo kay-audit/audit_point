@@ -18,7 +18,7 @@ def _get_admin_settings() -> AdminSettings:
     return get_domain_settings("admin", AdminSettings)
 
 
-def get_admin_service() -> AdminService:
+async def get_admin_service() -> AdminService:
     """Создаёт AdminService на исполнителе БД (соединение на операцию)."""
     return AdminService(conn=get_executor(), settings=_get_admin_settings())
 
