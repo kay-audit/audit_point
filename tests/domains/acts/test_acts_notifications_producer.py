@@ -20,6 +20,7 @@ import pytest
 
 from app.core import domain_registry
 from app.domains.acts.services.notifications_producer import emit_act_notification
+from tests.conftest import register_fake_push_factory
 
 
 # ── Autouse-сброс реестра фабрик ─────────────────────────────────────────────
@@ -37,29 +38,12 @@ def _reset_registries():
     domain_registry.reset_registry()
 
 
-# ── Хелперы ──────────────────────────────────────────────────────────────────
-
-
-def _register_fake_push_factory() -> MagicMock:
-    """Регистрирует фейковую фабрику ``notifications.push``.
-
-    Возвращает мок-сервиса с асинхронным ``push`` — на нём проверяем вызов.
-    Фабрика — callable без аргументов, отдающий сервис напрямую (зеркало
-    реального контракта _push_factory).
-    """
-    svc = MagicMock()
-    svc.push = AsyncMock(return_value="notif-id-1")
-
-    domain_registry.register_factory("notifications.push", lambda: svc)
-    return svc
-
-
 # ── Контракт emit_act_notification ───────────────────────────────────────────
 
 
 async def test_emit_pushes_when_factory_registered():
     """При зарегистрированной фабрике вызывается svc.push с верными полями."""
-    svc = _register_fake_push_factory()
+    svc = register_fake_push_factory()
 
     await emit_act_notification(
         title="Создан акт КМ-01-00001",
@@ -93,7 +77,7 @@ async def test_emit_noop_when_factory_absent():
 
 async def test_emit_swallows_push_error():
     """Сбой svc.push не пробрасывается наружу (основная операция не ломается)."""
-    svc = _register_fake_push_factory()
+    svc = register_fake_push_factory()
     svc.push = AsyncMock(side_effect=RuntimeError("БД недоступна"))
 
     # Не должно поднять исключение.
