@@ -121,15 +121,17 @@
 
 ### 5. LLM возвращает 4xx (включая GigaChat 422)
 
-**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (Qwen/SGLang) или `422 RequestInputValidationException` (GigaChat).
+**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (Qwen/SGLang) или `422 RequestInputValidationException` (GigaChat). Отдельный случай — падение на **первом же** запросе с `400 invalid_request_error: tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}'` (Anthropic-модели, в т.ч. через профиль `openrouter`).
 
-**Причина:** одна из двух известных проблем:
+**Причина:** одна из трёх известных проблем:
 - assistant-сообщение в history содержит `content=null` + `tool_calls`.
 - `arguments=""` для no-args tool_call'ов (`chat.list_pages` и т.п.) попало в эхо.
+- в `tools[]` уехало доменное имя с точкой. Anthropic валидирует имя по спеке OpenAI строго, sglang и GigaChat — нет, поэтому проблема видна только после смены провайдера.
 
 **Решение:**
-1. Обнови ветку до актуального master — оба бага закрыты (`safe_args` в `orchestrator_helpers.py`, явная сборка dict с `content=raw_msg.content or ""`).
+1. Обнови ветку до актуального master — все три бага закрыты (`safe_args` в `orchestrator_helpers.py`, явная сборка dict с `content=raw_msg.content or ""`, `to_wire_name` в `app/core/chat/tools.py`).
 2. Если фикс уже есть, а ошибка повторяется — проверь, не делает ли твой новый код `messages.append(response.choices[0].message)` напрямую (Pydantic `ChatCompletionMessage` сериализует `content` как `null`).
+3. Для `tools.N.custom.name` — проверь, что схему строит `ChatTool.to_openai_tool()`, а не собранный руками dict с `tool.name`; см. dev-guide §7.1a «Имена инструментов: каноническое ≠ проводное».
 
 **См. также:** правила «assistant с `content=null` + tool_calls недопустим для Qwen/SGLang (400) и GigaChat-proxy (422)» и «`arguments=""` для no-args tool_call'ов даёт тот же класс падений — оба эха собираются вручную через `safe_args()` (хелпер в `app/domains/chat/services/orchestrator_helpers.py`) и применяются в обеих ветках agent loop'а (основной `run_agent_loop` non-streaming и ветка GigaChat-fallback)».
 
