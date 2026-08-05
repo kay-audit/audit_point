@@ -82,7 +82,7 @@ sequenceDiagram
         EXT->>DB: UPDATE chat_agent_messages_bus вопроса<br/>status='processing' (claim)
         EXT->>DB: INSERT chat_agent_messages_bus ответа<br/>(role='assistant', reply_to=question_uid),<br/>стримит reasoning-дельты в metadata.reasoning,<br/>пишет content и status='completed' + UPDATE вопроса status='completed'
     and поллер шины
-        loop adaptive backoff (без удержания conn в sleep)
+        loop adaptive backoff (соединение не удерживается вовсе — исполнитель берёт коннект на операцию)
             POLL->>CS: poll_once(assistant_message_id, question_uid, ...)
             CS->>DB: SELECT вопрос по question_uid
             alt строки-ответа ещё нет
@@ -117,8 +117,10 @@ sequenceDiagram
   `_MAX_CONSECUTIVE_ENTRY_ERRORS` (30) ошибок ПОДРЯД — признак «отравленной»
   подписки (например, сменилась структура bus-таблицы): подписка снимается,
   draft best-effort финализируется error-блоком через `mark_timeout`.
-  Полный отказ БД до счётчиков не доходит — ловится в `_run` на получении
-  коннекта.
+  Полный отказ БД тоже проявляется здесь: `_get_executor()` соединения не
+  берёт (просто отдаёт синглтон), поэтому реальный сбой БД падает уже внутри
+  `_tick` на первом SQL-вызове каждой подписки и ловится тем же
+  per-подписочным `try/except`, наращивая `consecutive_errors`.
 
 ---
 

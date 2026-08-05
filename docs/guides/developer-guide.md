@@ -527,12 +527,14 @@ app/domains/acts/api/
 
 ### 3.2 FastAPI Depends (DI)
 
-Все сервисы получают БД через исполнитель `get_executor()` — DI-фабрики
-обычные функции, соединение из пула не удерживают (детали — §6.3a):
+Все сервисы получают БД через исполнитель `get_executor()` — DI-фабрики,
+вызываемые через `Depends`, оформлены корутинами (`async def`, чтобы FastAPI
+исполнял их в event loop, а не гонял через пул потоков `run_in_threadpool`);
+соединение из пула они всё равно не удерживают (детали — §6.3a):
 
 ```python
 # app/domains/acts/deps.py
-def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
+async def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
     return ActCrudService(conn=get_executor(), settings=settings)
 ```
 
@@ -542,7 +544,7 @@ def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudServi
 Эндпоинт
     ↓ Depends()
     ├── get_username() → str (или HTTPException 401)
-    └── get_crud_service() → ActCrudService (обычная функция, без yield)
+    └── get_crud_service() → ActCrudService (async def, без yield — соединение не держит)
         └── get_executor() → DbExecutor (процесс-синглтон, соединения не держит)
             └── Service.__init__(conn=executor, settings)
                 └── Repository(conn=executor)
@@ -1380,7 +1382,7 @@ async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
 
 **Размер пула** (`DATABASE__POOL_MIN_SIZE` / `DATABASE__POOL_MAX_SIZE`, дефолты `1` / `2`, одинаковые во всех окружениях). Обоснование: у ПРОМ-учётки Greenplum жёсткий лимит порядка 5 соединений, и «поднять пул» там невозможно в принципе. Уложиться в такой потолок позволил переезд горячих путей на Redis — счётчик непрочитанных, роли, user-контекст и блокировки актов больше не ходят в БД на каждый запрос, а батчеры и `AgentChannelPoller` берут коннект короткими порциями. DEV держим идентичным ПРОМу: вилка дефолтов прятала бы нехватку коннектов до самого прода. Диагностика исчерпания — troubleshooting №17.
 
-Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул: коннект берётся только на время `_tick`, в `sleep` не удерживается. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
+Канал к внешнему ИИ-агенту (`AgentChannelPoller`) также использует пул, но не держит соединение даже на время тика — тик работает через исполнитель (`DbExecutor`, §6.3a), берущий коннект из пула на каждую SQL-операцию отдельно. Архитектура канала и sequence-диаграмма — §11.5–§11.7.
 
 ### 6.3a Исполнитель БД (connection-per-operation)
 
@@ -1421,25 +1423,45 @@ async with get_executor().transaction():
 2. Внутри явной транзакции нет новых захватов пула (вложенный `transaction()`
    → savepoint на том же соединении) и нет `create_task` с работой в этой
    транзакции.
-3. DI-слой не держит соединений: фабрики зависимостей — обычные функции,
-   отдающие сервисы на исполнителе.
+3. DI-слой не держит соединений: фабрики зависимостей отдают сервисы на
+   исполнителе, без `yield`.
 
-**DI-фабрики** (`deps.py` доменов + реестровые `admin.user_directory` /
-`admin.user_avatars` / `notifications.push`, см. `cross-domain-contracts.md`
-§2) — обычные функции без `yield`:
+**DI-фабрики домена** (`deps.py` каждого домена, вызываются через `Depends`)
+оформлены корутинами (`async def`): синхронную зависимость FastAPI шлёт в
+пул потоков через `run_in_threadpool`, а на горячих путях (в т.ч. поллинг
+чата) это лишний оверхед. Тело фабрики не изменилось — `yield` в ней как не
+было, так и нет, соединение по-прежнему не удерживается:
 
 ```python
-def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
+async def get_crud_service(settings: Settings = Depends(get_settings)) -> ActCrudService:
     return ActCrudService(conn=get_executor(), settings=settings)
 ```
 
+**Когда фабрика остаётся `def` (без `async`)** — если её НЕ зовут через
+`Depends`:
+- **Реестровые фабрики** `domain_registry` — `admin.user_directory` /
+  `admin.user_avatars` / `notifications.push` (см.
+  `cross-domain-contracts.md` §2). Их вызывают как `get_factory("...")()`
+  напрямую, FastAPI про них не знает и в threadpool не заворачивает.
+- **Фабрики домена, вызываемые напрямую из кода, а не из роутера** —
+  `chat/deps.py::get_agent_channel_service` (зовётся из `api/messages.py`
+  в режиме `always`) и `chat/deps.py::get_tool_metrics_repository` (зовётся
+  из оркестратора).
+
 **Транзиентные `get_db`-места остаются легальным паттерном вне DI** — там,
-где операция БД короткая и не спрятана за yield-фабрикой (батчеры, поллер,
+где операция БД короткая и не спрятана за yield-фабрикой (батчеры,
 role_deps, health-check'и, ChatTool action-handlers вроде
 `open_act_page_handler`, разовые вызовы внутри `orchestrator.py`). Переписывать
 их на исполнитель не нужно — это уменьшает диф и сохраняет тестовые
 patch-точки `patch.multiple("app.db.connection", get_db=..., get_adapter=...)`
 (§8, «Handler-функции с `get_db`/`get_adapter`»).
+
+Исключение — поллер шины агента (`AgentChannelPoller`, §11.6): его перевели
+на исполнитель отдельно, потому что тик вызывает чужой код с собственными
+обращениями к БД (эмиссия уведомлений, трансляция кнопок) — держать
+транзиентное соединение всё это время означало бы повторный захват пула в
+том же task'е. Фоновые задачи тоже подчиняются инварианту 1: соединение
+живёт не дольше одной SQL-операции, даже вне DI-слоя.
 
 **Страж повторного захвата** (`app/db/connection.py::get_db`) — per-task
 счётчик глубины захвата в `ContextVar`. Повторный `get_db()` в том же task,
@@ -1850,7 +1872,7 @@ always / forward: submit вопроса в шину + черновик (status='
 | `llm_call` | `llm_call.py` | `call_llm_with_fallback`: retry + circuit breaker + переключение primary/fallback |
 | `tool_executor` | `tool_executor.py` | `execute_tool_call`: валидация args, конвертация типов, `asyncio.wait_for(TOOL_EXECUTION_TIMEOUT)`, запись `tool_metric` через `MetricsBatcher`. Враппер `Orchestrator._execute_tool_call` оставлен для совместимости с тестами, патчащими его на инстансе |
 | `AgentChannelService` | `agent_channel.py` | Канал к внешнему агенту через bus-таблицу `chat_agent_messages_bus`: `submit`, `poll_once`, `mark_timeout`, `get_queue_details`; `map_answer_to_blocks` (ответ → блоки), `build_timeout_error_block` (см. §11.5–§11.6) |
-| `AgentChannelPoller` | `agent_channel_poller.py` | Фоновый poll шины: `subscribe`/`unsubscribe`/`_tick`/`_run` (adaptive-backoff без удержания conn в sleep)/`reconcile`/`start`/`stop`/`get_status` |
+| `AgentChannelPoller` | `agent_channel_poller.py` | Фоновый poll шины: `subscribe`/`unsubscribe`/`_tick`/`_run` (adaptive-backoff, соединение не удерживает — исполнитель берёт коннект на каждую операцию)/`reconcile`/`start`/`stop`/`get_status` |
 | `button_translator` | `button_translator.py` | `translate_buttons`: кнопка с `action_id` зарегистрированного `ChatTool` → client-action `open_url` |
 | `forward_tool_factory` | `forward_tool_factory.py` | `build_forward_tool_descriptor()` — статический ChatTool `forward_to_knowledge_agent` для режима `adaptive` |
 | `orchestrator_helpers` | `orchestrator_helpers.py` | Чистые хелперы и константы: `safe_args`, `convert_param`, `unpack_pending_tool_call` (dict / Pydantic-`function` / плоский FinalizedToolCall), `ToolValidationTracker` + `build_tool_loop_exit_answer` (выход из tool-loop'а при 2 одинаковых ChatToolValidationError'ах подряд), `BASE_SYSTEM_PROMPT`, `TOOL_VALIDATION_NEUTRAL_MESSAGE`, `TOOL_VALIDATION_LOOP_THRESHOLD` |
@@ -2120,7 +2142,7 @@ interval = min(interval * poll_backoff_multiplier, poll_max_interval_sec)  # п�
 | `POLL_MAX_INTERVAL_SEC` | `10.0` | Максимальный (при тишине от агента) |
 | `POLL_BACKOFF_MULTIPLIER` | `1.5` | Шаг роста при пустом тике |
 
-Коннект из пула берётся только на время `_tick`, перед `sleep` освобождается. При появлении активности (ответ, рост reasoning, изменение очереди) — interval сбрасывается в `poll_min`. Управляется hook'ом `chat.agent_channel_poller`; `reconcile()` восстанавливает подписки из streaming-черновиков после рестарта uvicorn.
+Соединение из пула тик не удерживает вовсе — работа идёт через исполнитель (`DbExecutor`, §6.3a), берущий коннект на каждую SQL-операцию отдельно и сразу возвращающий его. При появлении активности (ответ, рост reasoning, изменение очереди) — interval сбрасывается в `poll_min`. Управляется hook'ом `chat.agent_channel_poller`; `reconcile()` восстанавливает подписки из streaming-черновиков после рестарта uvicorn.
 
 **Общий паттерн lifespan hooks для батчеров:**
 
@@ -2323,7 +2345,7 @@ chat-modal.js / chat-popup.js
 
 - **Polling-only**, без LISTEN/NOTIFY и постоянных соединений (между AW и агент-сервисом нет прямой сети — оба общаются только через БД).
 - **Структура шины — внешний контракт**: типы uuid/text/timestamptz задаёт владелец-агент; наша конвенция VARCHAR(36) к шине не применяется (dev-имитация зеркалит прод, чтобы ловить те же type-ошибки).
-- **Poller не держит conn в sleep**: коннект берётся только на время `_tick`. `reconcile()` восстанавливает подписки из streaming-черновиков после рестарта uvicorn.
+- **Poller не держит соединение вовсе**: тик работает через исполнитель (`DbExecutor`), берущий коннект на каждую SQL-операцию отдельно и сразу возвращающий его. `reconcile()` восстанавливает подписки из streaming-черновиков после рестарта uvicorn.
 - **Лимит параллельных запросов**: `AgentMessageRepository.count_active_for_user(user_id, *, pending_created_after, processing_updated_after)` ≥ `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3) → `submit` бросает `ChatLimitError` до записей → HTTP 422. Двойная отсечка: `pending`-строки считаются живыми по `created_at` (окно `CLAIM_TIMEOUT_SEC`), `processing`-строки — по `updated_at` (окно `ANSWER_TIMEOUT_SEC`); зависшая строка с нетерминальным статусом (CHECK владельца не позволил записать `failed`) не съедает слот навсегда.
 - **Retention** — задача администратора (в приложении НЕ реализован).
 
@@ -3908,7 +3930,7 @@ class ToolCallAccumulator:
 | Кто | Что делает |
 |---|---|
 | `AgentChannelService.submit` | **В одной транзакции** INSERT вопроса (`role='user'`, `status='pending'`) в `chat_agent_messages_bus` + создание черновика `chat_messages` (`status='streaming'`, `agent_ref=<uid вопроса>`) — атомарность исключает осиротевшую строку, занимающую слот лимита |
-| `AgentChannelPoller` (один asyncio-task на процесс) | Поллит шину по подписанным `question_uid`, adaptive-backoff, **не держит conn в sleep**. На каждый тик зовёт `poll_once` |
+| `AgentChannelPoller` (один asyncio-task на процесс) | Поллит шину по подписанным `question_uid`, adaptive-backoff, **соединение не удерживает** — тик работает через исполнитель (коннект на каждую SQL-операцию). На каждый тик зовёт `poll_once` |
 | `AgentChannelService.poll_once` | `poll_once(*, assistant_message_id, question_uid, last_reasoning_len=0, want_queue_position=False) -> dict` — возвращает `{outcome, question_status, answer_exists, reasoning_len, queue_ahead, answer_updated_at}`. Две ветки: если ответ агента финальный — `map_answer_to_blocks` + финализация черновика + best-effort закрытие вопроса в шине; если reasoning растёт, но ответа нет — `upsert_block` частичного reasoning (replace-семантика, block_id `{answer_id}:reasoning:0`). `finalize` мержит replace-семантикой: финальный reasoning-блок замещает накопленный |
 | `AgentChannelService.get_queue_details` | `get_queue_details(question_uid) -> {bus_status, queue_ahead}` — позиция в очереди для GET-ответа на streaming-черновик (best-effort, без исключений) |
 | `AgentChannelService.mark_timeout` | `mark_timeout(question_uid, reason='claim'|'answer')` — дописывает error-блок (`build_timeout_error_block(reason)`; код `agent_claim_timeout` / `agent_timeout`) и переводит черновик в `failed`; вопрос в шине best-effort закрывается `failed` |
@@ -3923,7 +3945,7 @@ class ToolCallAccumulator:
 
 Первое наблюдение `answer_updated_at` ставится как baseline (без продления активности). Откат строки шины назад (агент сбросил `updated_at`) **не** продлевает таймаут — смена только вперёд.
 
-**Adaptive backoff poллера.** Интервал тика растёт от `POLL_MIN_INTERVAL_SEC` (2.0 c) до `POLL_MAX_INTERVAL_SEC` (10.0 c) с шагом `POLL_BACKOFF_MULTIPLIER` (1.5) при пустых тиках и сбрасывается в минимум при активности. Коннект из пула берётся только на время `_tick`, перед `sleep` освобождается.
+**Adaptive backoff poллера.** Интервал тика растёт от `POLL_MIN_INTERVAL_SEC` (2.0 c) до `POLL_MAX_INTERVAL_SEC` (10.0 c) с шагом `POLL_BACKOFF_MULTIPLIER` (1.5) при пустых тиках и сбрасывается в минимум при активности. Соединение из пула тик не удерживает: работа идёт через исполнитель (`DbExecutor`), берущий коннект на каждую SQL-операцию отдельно — принципиально, поскольку внутри тика есть await'ы в чужой код (эмиссия уведомлений, трансляция кнопок агента), которые иначе оказались бы повторным захватом пула в том же task'е.
 
 **Подписки.** `subscribe(assistant_message_id, question_uid)` идемпотентен (повторная подписка — no-op с info-логом); `unsubscribe(question_uid)` снимает запись из реестра. `_run()` не падает от одиночных ошибок тика; ошибка обработки одной подписки внутри `_tick` ретраится, но после `_MAX_CONSECUTIVE_ENTRY_ERRORS` (30) ошибок подряд подписка снимается аварийно с best-effort финализацией draft'а через `mark_timeout` (защита от «отравленной» подписки, которая иначе держала бы draft в `streaming` до рестарта; счётчик сбрасывается успешным тиком). `get_status()` отдаёт снимок для diagnostics-эндпоинта.
 
