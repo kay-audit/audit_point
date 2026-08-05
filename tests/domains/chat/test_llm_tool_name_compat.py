@@ -276,6 +276,158 @@ class TestAgentLoopWireNames:
         assert blocks[0]["code"] == "agent_unavailable"
 
 
+# ── GigaChat ─────────────────────────────────────────────────────────────────
+
+
+def _gigachat_function_call_response(name: str, arguments: dict):
+    """ChatCompletion в native-формате GigaChat (singular function_call)."""
+    from openai.types.chat import ChatCompletion
+
+    completion = ChatCompletion.model_validate({
+        "id": "cmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "GigaChat-3-Ultra",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "function_call": {"name": name, "arguments": ""},
+            },
+            "finish_reason": "function_call",
+        }],
+    })
+    # GigaChat отдаёт arguments dict'ом — адаптер сам сериализует.
+    completion.choices[0].message.function_call.arguments = arguments
+    return completion
+
+
+def _gigachat_text_response(text: str):
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion.model_validate({
+        "id": "cmpl-2",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "GigaChat-3-Ultra",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+    })
+
+
+class TestGigaChatRoundtrip:
+    """GigaChat матчит tool-результат по ИМЕНИ функции, а не по tool_call_id.
+
+    Поэтому имя обязано совпадать в трёх местах одного диалога:
+    ``extra_body.functions[]`` (объявление), ``function_call.name`` (эхо
+    вызова) и ``role="function"`` → ``name`` (результат). Проводное имя
+    ничего не ломает ровно до тех пор, пока оно одно и то же во всех трёх.
+    """
+
+    async def test_declaration_echo_and_result_use_same_wire_name(self):
+        from app.domains.chat.services.gigachat_adapter import (
+            GigaChatAdapterClient,
+        )
+
+        async def handler(**kwargs):
+            return "ok"
+
+        register_tools([
+            ChatTool(
+                name=TOOL_LIST_PAGES, domain="chat", description="d",
+                handler=handler,
+            ),
+        ])
+        wire = to_wire_name(TOOL_LIST_PAGES)
+
+        orch = _make_orch(
+            profile="gigachat",
+            api_base="http://liveaccess/v1/gc",
+            model="GigaChat-3-Ultra",
+        )
+        underlying = AsyncMock(side_effect=[
+            # GigaChat зовёт функцию тем именем, под которым её объявили.
+            _gigachat_function_call_response(wire, {}),
+            _gigachat_text_response("Готово."),
+        ])
+        adapter = GigaChatAdapterClient(
+            base_url="http://x", api_key="t", default_headers={}, timeout=10,
+        )
+        adapter._underlying.chat.completions.create = underlying
+        orch._get_openai_client = MagicMock(return_value=adapter)
+
+        result = await orch.run(
+            conversation_id="c1", user_message="что умеешь?", message_id="m1",
+        )
+
+        # 1. Объявление: native functions[] — проводные имена.
+        declared = [
+            f["name"]
+            for f in underlying.await_args_list[0].kwargs["extra_body"]["functions"]
+        ]
+        assert declared == [wire]
+        for name in declared:
+            assert PROVIDER_NAME_RE.match(name)
+
+        # 2. Канонический tool исполнился, метрики/sources — каноническое имя.
+        assert result["sources"] == [TOOL_LIST_PAGES]
+
+        # 3. Второй раунд: эхо и результат ссылаются на объявленное имя.
+        messages = underlying.await_args_list[1].kwargs["messages"]
+        echoed = [m for m in messages if m.get("function_call")]
+        assert [m["function_call"]["name"] for m in echoed] == [wire]
+
+        results = [m for m in messages if m.get("role") == "function"]
+        assert [m["name"] for m in results] == [wire], (
+            "имя в role=function разошлось с объявленным — GigaChat не "
+            "сматчит результат с вызовом"
+        )
+
+    async def test_queued_tool_calls_resolve_wire_names(self):
+        """Очередь GigaChat (>1 tool за раунд) тоже ресолвит проводные имена."""
+        calls: list[str] = []
+
+        async def handler_a(**kwargs):
+            calls.append("a")
+            return "ok"
+
+        async def handler_b(**kwargs):
+            calls.append("b")
+            return "ok"
+
+        register_tools([
+            ChatTool(
+                name=TOOL_LIST_PAGES, domain="chat", description="d",
+                handler=handler_a,
+            ),
+            ChatTool(
+                name=TOOL_OPEN_ACT_PAGE, domain="acts", description="d",
+                handler=handler_b,
+            ),
+        ])
+
+        orch = _make_orch(profile="gigachat", model="GigaChat-3-Ultra")
+        first = _make_response(tool_calls=[
+            _make_tc(to_wire_name(TOOL_LIST_PAGES), "id-1"),
+            _make_tc(to_wire_name(TOOL_OPEN_ACT_PAGE), "id-2"),
+        ])
+        final = _make_response(content="готово")
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[first, final])
+        orch._get_openai_client = MagicMock(return_value=client)
+
+        result = await orch.run(
+            conversation_id="c1", user_message="давай оба", message_id="m1",
+        )
+
+        assert calls == ["a", "b"], "второй tool из очереди не отресолвился"
+        assert result["sources"] == [TOOL_LIST_PAGES, TOOL_OPEN_ACT_PAGE]
+
+
 # ── Промпты ──────────────────────────────────────────────────────────────────
 
 
