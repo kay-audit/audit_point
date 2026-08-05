@@ -1,5 +1,7 @@
 """Тесты сервисов домена чата."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -202,6 +204,118 @@ class TestMessageServiceSaveUser:
             )
         assert exc_info.value.status_code == 422
         assert "лимит" in str(exc_info.value).lower()
+
+
+class _FakeExecutor:
+    """Мини-имитация ``DbExecutor`` (см. ``app/db/executor.py``): считает
+    захваты «соединения» и входы в explicit-транзакцию.
+
+    Семантика зеркалит реальный исполнитель: любой вызов вне активной
+    транзакции — отдельный захват; ``transaction()`` захватывает соединение
+    один раз на весь блок, вложенный ``transaction()`` — SAVEPOINT того же
+    соединения (новых захватов нет).
+    """
+
+    def __init__(self):
+        self.acquires = 0
+        self.transaction_enters = 0
+        self.fetchval_return = 0
+        self._depth = 0
+
+    def _mark(self):
+        if self._depth == 0:
+            self.acquires += 1
+
+    async def fetchval(self, query, *args, timeout=None):
+        self._mark()
+        return self.fetchval_return
+
+    async def fetchrow(self, query, *args, timeout=None):
+        self._mark()
+        return None
+
+    async def execute(self, query, *args, timeout=None):
+        self._mark()
+        return "OK"
+
+    @asynccontextmanager
+    async def transaction(self):
+        if self._depth == 0:
+            self.acquires += 1
+            self.transaction_enters += 1
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+
+
+class _FakeMessageRepo:
+    """Фейковый MessageRepository: методы делегируют в ``conn``, как настоящий
+    репозиторий, без SQL и парсинга — нужен только для проверки, что
+    ``save_user_message`` укладывается в один захват соединения.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def count_by_conversation(self, conversation_id):
+        return await self.conn.fetchval("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = $1")
+
+    async def create(self, *, id, conversation_id, role, content, model=None, token_usage=None):
+        await self.conn.fetchrow("INSERT INTO chat_messages ... RETURNING *")
+        return {"id": id, "role": role, "content": content}
+
+
+class _FakeConversationRepo:
+    """Фейковый ConversationRepository — см. ``_FakeMessageRepo``."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def touch(self, conversation_id):
+        await self.conn.execute("UPDATE chat_conversations SET updated_at = now() WHERE id = $1")
+
+
+class TestMessageServiceSingleAcquisition:
+    """Регрессия код-ревью (п.7, ветка connection-per-operation):
+    ``count_by_conversation`` перенесён внутрь ``msg_repo.conn.transaction()``
+    вместе с create+touch — раньше это были два отдельных захвата соединения
+    (count — до транзакции, insert+touch — внутри неё).
+    """
+
+    async def test_save_user_message_single_connection_acquisition(self, settings):
+        """Успешный путь: один захват соединения на весь save_user_message."""
+        conn = _FakeExecutor()
+        msg_repo = _FakeMessageRepo(conn)
+        conv_repo = _FakeConversationRepo(conn)
+        service = MessageService(msg_repo=msg_repo, conv_repo=conv_repo, settings=settings)
+
+        await service.save_user_message(
+            conversation_id="conv-1", content="Привет", user_id="user1",
+        )
+
+        assert conn.transaction_enters == 1
+        assert conn.acquires == 1
+
+    async def test_save_user_message_limit_exceeded_single_acquisition(self, settings):
+        """При превышении лимита ChatLimitError долетает без изменений,
+        а транзакция всё равно открывается только один раз (откат пустой —
+        INSERT/touch до неё не доходят)."""
+        conn = _FakeExecutor()
+        conn.fetchval_return = settings.max_messages_per_conversation
+        msg_repo = _FakeMessageRepo(conn)
+        conv_repo = _FakeConversationRepo(conn)
+        service = MessageService(msg_repo=msg_repo, conv_repo=conv_repo, settings=settings)
+
+        with pytest.raises(ChatLimitError) as exc_info:
+            await service.save_user_message(
+                conversation_id="conv-1", content="Текст", user_id="user1",
+            )
+
+        assert exc_info.value.status_code == 422
+        assert conn.transaction_enters == 1
+        assert conn.acquires == 1
 
 
 class TestMessageServiceSaveAssistant:
