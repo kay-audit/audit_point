@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from app.core.chat.names import TOOL_FORWARD_TO_KNOWLEDGE_AGENT
+from app.core.chat.tools import to_wire_name
+
 
 # Нейтральное сообщение для tool-результата при ChatToolValidationError —
 # попадает в messages[], НЕ показывается пользователю напрямую.
@@ -107,13 +110,17 @@ def unpack_pending_tool_call(tc: Any) -> tuple[str, str, Any]:
 
 # Базовый system-prompt оркестратора. Дописывается per-domain-промптами в
 # ``Orchestrator._build_system_messages``.
+#
+# Инструменты в прозе называются проводными именами (``to_wire_name``) — теми
+# же, что в схеме tools[]. Иначе модель зовёт tool именем из промпта, и оно
+# не совпадает со схемой.
 BASE_SYSTEM_PROMPT = (
     "Ты — ассистент в AuditWorkstation.\n\n"
     "ВАЖНОЕ ПРАВИЛО ПРИОРИТЕТА:\n"
     "По умолчанию любые вопросы пользователя про данные, контент, акты, "
     "нормативы, регламенты, фактуры, нарушения, метрики, реестры — "
-    "передавай через chat.forward_to_knowledge_agent. Внешний агент сам "
-    "найдёт информацию.\n\n"
+    f"передавай через {to_wire_name(TOOL_FORWARD_TO_KNOWLEDGE_AGENT)}. "
+    "Внешний агент сам найдёт информацию.\n\n"
     "Локальные action-tools (open_*, navigate_*, notify, ...) — вызывай "
     "ТОЛЬКО когда пользователь явно просит что-то сделать в интерфейсе "
     "(\"открой\", \"создай\", \"перейди\", \"покажи на странице\").\n\n"

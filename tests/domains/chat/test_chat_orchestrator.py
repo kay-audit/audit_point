@@ -265,14 +265,18 @@ def test_system_prompt_includes_available_pages_section(orchestrator_default_set
 
 
 def test_system_prompt_includes_open_page_instructions(orchestrator_default_settings):
-    """Системный промпт содержит инструкции про chat.list_pages и open_*."""
+    """Системный промпт содержит инструкции про list_pages и open_*.
+
+    Инструменты названы проводными именами — теми же, что в схеме tools[]
+    (см. ``app/core/chat/tools.py::to_wire_name``).
+    """
     msgs = orchestrator_default_settings._build_system_messages(None)
     content = msgs[0]["content"]
 
     assert "## Открытие страниц" in content
-    assert "chat.list_pages" in content
-    assert "admin.open_admin_panel" in content
-    assert "acts.open_act_page" in content
+    assert "chat_list_pages" in content
+    assert "admin_open_admin_panel" in content
+    assert "acts_open_act_page" in content
 
 
 def test_system_prompt_mentions_forward_priority(orchestrator_default_settings):

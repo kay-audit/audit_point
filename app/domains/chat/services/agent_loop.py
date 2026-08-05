@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.chat.block_id_generator import BlockIdGenerator
 from app.core.chat.names import TOOL_FORWARD_TO_KNOWLEDGE_AGENT
+from app.core.chat.tools import resolve_wire_name, to_wire_name
 from app.domains.chat.exceptions import ChatLimitError, ChatToolValidationError
 from app.domains.chat.services.orchestrator_helpers import (
     TOOL_VALIDATION_NEUTRAL_MESSAGE,
@@ -232,10 +233,13 @@ async def run_agent_loop(
     tools = orch._get_tools(domains)
 
     # В режимах, отличных от "adaptive", forward-тул скрыт от LLM.
+    # В схеме имя проводное (см. tools.to_wire_name) — сравниваем после
+    # обратного преобразования.
     if agent_mode != "adaptive":
         tools = [
             t for t in tools
-            if t.get("function", {}).get("name") != TOOL_FORWARD_TO_KNOWLEDGE_AGENT
+            if resolve_wire_name(t.get("function", {}).get("name", ""))
+            != TOOL_FORWARD_TO_KNOWLEDGE_AGENT
         ]
 
     # Собираем messages: system + history + текущее сообщение
@@ -283,6 +287,7 @@ async def run_agent_loop(
             if pending_tool_calls:
                 tc = pending_tool_calls.pop(0)
                 tool_name, tc_id, raw_args = unpack_pending_tool_call(tc)
+                tool_name = resolve_wire_name(tool_name)
                 try:
                     arguments = json.loads(_safe_args(raw_args))
                 except json.JSONDecodeError:
@@ -353,7 +358,10 @@ async def run_agent_loop(
                         "id": tc.id,
                         "type": "function",
                         "function": {
-                            "name": tc.function.name,
+                            # Эхо тоже валидируется провайдером: если модель
+                            # назвала tool каноническим именем (списала из
+                            # прозы промпта), в историю кладём проводное.
+                            "name": to_wire_name(tc.function.name),
                             "arguments": _safe_args(tc.function.arguments),
                         },
                     }
@@ -374,7 +382,7 @@ async def run_agent_loop(
             )
 
             for tc in tcs_this_round:
-                tool_name = tc.function.name
+                tool_name = resolve_wire_name(tc.function.name)
                 try:
                     arguments = json.loads(_safe_args(tc.function.arguments))
                 except json.JSONDecodeError:

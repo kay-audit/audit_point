@@ -1907,6 +1907,15 @@ always / forward: submit вопроса в шину + черновик (status='
 
 **Фабрика клиента** — `app/domains/chat/services/llm_client.py::build_llm_client(profile)`. Для `gigachat` возвращает `GigaChatAdapterClient` (duck-typed обёртка над `AsyncOpenAI`), все остальные — обычный `AsyncOpenAI`.
 
+**Имена инструментов: каноническое ≠ проводное (все профили).** Имена ChatTool доменные, с точкой (`acts.open_act_page`). Спека OpenAI ограничивает имя function шаблоном `^[a-zA-Z0-9_-]{1,128}$`; sglang и GigaChat его не проверяют, а Anthropic-модели (в т.ч. через `openrouter`) проверяют строго и отвечают `400 invalid_request_error: tools.0.custom.name: String should match pattern`. Поэтому:
+
+- на провод (схема `tools[]`, эхо `tool_calls` в истории, упоминания инструментов в system-промпте и в `description` тулов) уходит **проводное** имя — точка заменена подчёркиванием (`acts_open_act_page`), см. `to_wire_name` в `app/core/chat/tools.py`;
+- внутри приложения имя остаётся **каноническим**: ключ реестра, `tool_name` в метриках/аудите и `action_id` кнопок внешнего агента не меняются. Ответ провайдера переводится обратно через `resolve_wire_name` в `agent_loop` (каноническое имя, если модель списала его из прозы, тоже принимается);
+- преобразование безусловное для всех профилей — подчёркивание принимают все, развилки по профилю нет;
+- два инструмента, схлопывающихся в одно проводное имя, — `RuntimeError` при регистрации (`register_tools`).
+
+Промпты и описания тулов **не хардкодят** имена: подставляют `to_wire_name(TOOL_*)`, иначе модель зовёт имя из прозы, которого нет в схеме. Регрессия — `tests/domains/chat/test_llm_tool_name_compat.py`.
+
 **GigaChat-нюансы (`app/domains/chat/services/gigachat_adapter.py`):**
 
 - **Streaming не поддерживается** (proxy возвращает 422 EventException). Это не проблема: `run_agent_loop` делает non-streaming LLM-вызов, а клиенту ответ отдаётся через polling `GET /messages/{message_id}`.
@@ -1916,6 +1925,7 @@ always / forward: submit вопроса в шину + черновик (status='
 - **Roundtrip multi-round**: ассистент-сообщение с синтетическим `tool_calls` возвращается в следующий раунд через `_translate_messages` — собирается обратно в native `function_call`. На request-стороне `arguments` обязан быть **dict** (`_args_to_dict`), а не JSON-string: GigaChat-proxy валидирует request-схему строго и отдаёт 422 на string. На путь ответа конвертация наоборот — `dict → JSON-string` (под OpenAI SDK-схему).
 - **content=null + tool_calls недопустим**: GigaChat-proxy отдаёт 422 `RequestInputValidationException` на ассистент-сообщение с `content: null` при наличии `function_call`, хотя OpenAI-spec это разрешает. Оркестратор санитизирует `content = raw_msg.content or ""` в `run_agent_loop` + `_translate_messages` подстраховывает на случай Pydantic-объекта из истории.
 - **arguments="" недопустим**: симметрично — для no-args вызовов (`chat.list_pages()`, `*.open_*_page()` и т.п.) SDK и стрим-аккумулятор отдают `arguments=""`. Эхо в следующий LLM-вызов ломает Qwen/SGLang chat-template (`json.loads("")` → 400 "zero-length, empty document") и GigaChat-proxy (422). Хелпер `safe_args(raw)` в `orchestrator_helpers.py` нормализует пустые значения в `"{}"`; применяется в эхо tool_calls и в `json.loads(...)` перед вызовом handler'а.
+- **Результат тула матчится по ИМЕНИ, не по `tool_call_id`**: native-формат не знает id — `_translate_messages` строит mapping `tool_call_id → name` из предыдущих assistant-сообщений и отдаёт результат как `{role:"function", name:...}` (не нашлось — `unknown_function` + warning). Отсюда инвариант: одно и то же имя обязано стоять в трёх местах одного диалога — объявление в `extra_body.functions[]`, эхо `function_call.name`, результат `role="function"`. Все три — проводные (см. «Имена инструментов» выше), так что переименование на границе GigaChat не ломает; но любая правка, трогающая имя в одной из трёх точек, обязана трогать и остальные две. Регрессия — `TestGigaChatRoundtrip` в `tests/domains/chat/test_llm_tool_name_compat.py`.
 
 **Отладка GigaChat:**
 
@@ -1927,6 +1937,7 @@ always / forward: submit вопроса в шину + черновик (status='
 | Tool вызвался с `arguments={}` | Сломанный JSON / dict с non-serializable | Логи содержат raw args; `default=str` гарантирует, что fall-через сработает |
 | Пустой ответ | Профиль `gigachat` (non-streaming) | Это by design: ответ собирается целиком и сохраняется финальным; фронт получает его через polling |
 | `unknown_function` в логах адаптера | tool_call_id в истории не имеет mapping (мост-сценарий) | Проверить, что history содержит assistant-сообщение с `tool_calls[]` перед tool-message |
+| `400 invalid_request_error: tools.N.custom.name: String should match pattern` (Anthropic/OpenRouter) | В `tools[]` уехало имя с точкой мимо `to_wire_name` | Проверить, что схему строит `ChatTool.to_openai_tool()`, а эхо `tool_calls` — `to_wire_name(...)`; см. «Имена инструментов» выше |
 
 **Как добавить новый профиль:**
 

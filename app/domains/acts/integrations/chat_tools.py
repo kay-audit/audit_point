@@ -4,8 +4,11 @@
 get_act_by_km и др. — всего 27) удалены: внешний агент сам ходит в БД.
 Здесь остаются только action-tools — команды интерфейса.
 """
-from app.core.chat.names import TOOL_OPEN_ACT_PAGE
-from app.core.chat.tools import ChatTool, ChatToolParam
+from app.core.chat.names import (
+    TOOL_FORWARD_TO_KNOWLEDGE_AGENT,
+    TOOL_OPEN_ACT_PAGE,
+)
+from app.core.chat.tools import ChatTool, ChatToolParam, to_wire_name
 from app.domains.acts.integrations.action_handlers import (
     open_act_page_button_translator,
     open_act_page_handler,
@@ -24,7 +27,7 @@ def get_chat_tools() -> list[ChatTool]:
                 "Открыть страницу конкретного акта в интерфейсе AuditWorkstation. "
                 "Использовать ТОЛЬКО когда пользователь явно просит открыть/перейти "
                 "к акту (а не запрашивает данные о нём — для этого есть "
-                "chat.forward_to_knowledge_agent). "
+                f"{to_wire_name(TOOL_FORWARD_TO_KNOWLEDGE_AGENT)}). "
                 "Принимает КМ-номер или номер служебной записки (СЗ); должен быть "
                 "указан хотя бы один. Если по критериям найдено несколько актов "
                 "(один КМ может быть разбит на части с разными СЗ), tool вернёт "

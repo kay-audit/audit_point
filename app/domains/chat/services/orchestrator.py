@@ -13,9 +13,16 @@ import time
 from typing import Any
 
 from app.core.chat.block_id_generator import BlockIdGenerator
+from app.core.chat.names import (
+    TOOL_FORWARD_TO_KNOWLEDGE_AGENT,
+    TOOL_LIST_PAGES,
+    TOOL_OPEN_ACT_PAGE,
+    TOOL_OPEN_ADMIN_PANEL,
+)
 from app.core.chat.tools import (
     get_openai_tools,
     get_tools_by_domain,
+    to_wire_name,
 )
 from app.core.settings_registry import get as get_domain_settings
 from app.domains.chat.services.circuit_breaker import get_breaker
@@ -119,7 +126,8 @@ class Orchestrator:
             "\n\nДля small-talk (приветствия, вопросы о тебе) давай "
             "локальный краткий текстовый ответ без вызова инструментов."
             if self.settings.smalltalk_mode == "local"
-            else "\n\nДля small-talk также вызывай chat.forward_to_knowledge_agent."
+            else "\n\nДля small-talk также вызывай "
+                 f"{to_wire_name(TOOL_FORWARD_TO_KNOWLEDGE_AGENT)}."
         )
         base_prompt = BASE_SYSTEM_PROMPT + smalltalk_line
 
@@ -149,17 +157,20 @@ class Orchestrator:
                 available_pages,
             )
 
+        # Имена инструментов — проводные (как в схеме tools[]), см.
+        # app/core/chat/tools.py::to_wire_name.
         base_prompt += (
             "\n\n## Открытие страниц\n"
             "- Когда пользователь спрашивает что ты умеешь, какие функции "
             "доступны, что есть в системе — вызови инструмент "
-            "chat.list_pages. Не пиши свой текст перед или после — "
-            "инструмент сам выдаст описание и кнопки.\n"
+            f"{to_wire_name(TOOL_LIST_PAGES)}. Не пиши свой текст перед или "
+            "после — инструмент сам выдаст описание и кнопки.\n"
             "- Когда пользователь просит открыть конкретную страницу из "
             "списка — вызови соответствующий инструмент "
-            "`<домен>.open_<...>` (например admin.open_admin_panel).\n"
+            f"`<домен>_open_<...>` (например "
+            f"{to_wire_name(TOOL_OPEN_ADMIN_PANEL)}).\n"
             "- Для открытия конкретного акта по КМ-номеру или СЗ — вызови "
-            "acts.open_act_page.\n"
+            f"{to_wire_name(TOOL_OPEN_ACT_PAGE)}.\n"
         )
 
         return [{"role": "system", "content": base_prompt}]

@@ -39,6 +39,8 @@ async def _health_check() -> dict:
 
 def _build_domain():
     """Ленивое построение DomainDescriptor (вызывается из domain_registry)."""
+    from app.core.chat.names import TOOL_OPEN_ACT_PAGE
+    from app.core.chat.tools import to_wire_name
     from app.core.domain import DomainDescriptor, KnowledgeBase, NavItem
     from app.domains.acts.api import get_api_routers
     from app.domains.acts.routes import get_html_routers
@@ -88,7 +90,8 @@ def _build_domain():
                 group="Аудит",
                 description=(
                     "Список и редактирование актов аудита; конкретный акт "
-                    "открывается через инструмент acts.open_act_page"
+                    "открывается через инструмент "
+                    f"{to_wire_name(TOOL_OPEN_ACT_PAGE)}"
                 ),
             ),
         ],

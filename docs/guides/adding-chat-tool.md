@@ -27,6 +27,14 @@ TOOL_GET_USER_ACTS: Final[str] = "acts.get_user_acts"
 **Зачем централизация:** orchestrator, кнопочные транслейторы и тесты
 ссылаются на имя — переименование в одном месте.
 
+**Точка в имени остаётся:** LLM видит инструмент под «проводным» именем
+(`acts_get_user_acts`) — Anthropic-модели не принимают точку в имени tool'а.
+Преобразование делает `to_wire_name` в `app/core/chat/tools.py`, обратно —
+`resolve_wire_name`; внутри приложения (реестр, метрики, `action_id` кнопок
+внешнего агента) имя каноническое. Если упоминаешь инструмент в промпте или в
+`description` другого тула — подставляй `to_wire_name(TOOL_*)`, не строку.
+Детали — dev-guide §7.1a.
+
 ---
 
 ## Шаг 2. Handler инструмента в `app/domains/<domain>/integrations/`
