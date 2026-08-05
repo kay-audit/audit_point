@@ -94,7 +94,7 @@ async def test_export_to_text_success():
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
     with patch(
-        "app.domains.acts.services.export_service.get_executor",
+        "app.domains.acts.services.export_service.get_format_thread_pool",
         return_value=None,
     ):
         result = await svc.save_act(42, "testuser", fmt="txt")
@@ -121,7 +121,7 @@ async def test_export_to_markdown_success():
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
     with patch(
-        "app.domains.acts.services.export_service.get_executor",
+        "app.domains.acts.services.export_service.get_format_thread_pool",
         return_value=None,
     ):
         result = await svc.save_act(42, "testuser", fmt="md")
@@ -146,7 +146,7 @@ async def test_export_to_docx_success():
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
     with patch(
-        "app.domains.acts.services.export_service.get_executor",
+        "app.domains.acts.services.export_service.get_format_thread_pool",
         return_value=None,
     ):
         result = await svc.save_act(42, "testuser", fmt="docx")
@@ -204,7 +204,7 @@ async def test_export_uses_correct_formatter_per_type():
     svc.act_content_service.get_content = AsyncMock(return_value=_minimal_content_dict())
 
     with patch(
-        "app.domains.acts.services.export_service.get_executor",
+        "app.domains.acts.services.export_service.get_format_thread_pool",
         return_value=None,
     ):
         await svc.save_act(42, "testuser", fmt="md")
