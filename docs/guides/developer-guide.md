@@ -172,7 +172,7 @@ Audit Workstation — веб-приложение для создания и у�
 ```bash
 # 1. Клонировать репозиторий
 git clone <repo-url>
-cd "Act Constructor"
+cd "Audit Workstation"
 
 # 2. Создать виртуальное окружение
 python -m venv venv
@@ -212,7 +212,7 @@ python -m app.main
 ### 1.4 Структура репозитория
 
 ```
-Act Constructor/
+Audit Workstation/
 ├── app/                          — основной пакет приложения
 │   ├── main.py                   — точка входа FastAPI (app factory, lifespan)
 │   ├── core/                     — ядро (config, middleware, domain registry)

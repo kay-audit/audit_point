@@ -13,10 +13,10 @@ def build_otp_email(otp: str, ttl_minutes: int) -> tuple[str, str]:
     Returns:
         Пара (тема, HTML-тело).
     """
-    subject = "Ваш OTP-код для входа в Audit Workstation"
+    subject = "Ваш OTP-код для входа в Единое рабочее место"
     html = f"""
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #2c3e50;">Audit Workstation</h2>
+                <h2 style="color: #2c3e50;">Единое рабочее место</h2>
                 <p style="font-size: 16px; color: #333;">Ваш код подтверждения:</p>
                 <div style="background-color: #f8f9fa; padding: 20px; text-align: center; margin: 20px 0;">
                     <span style="font-size: 32px; font-weight: bold; color: #3498db; letter-spacing: 5px;">
