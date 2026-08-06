@@ -127,6 +127,11 @@ export class NavigationManager {
             // 2. Экспорт файлов (если в настройках выбраны форматы).
             if (formats.length > 0) {
                 await this._exportFiles(formats);
+            } else if (withExport) {
+                // Сняты все галочки форматов: в БД сохранили, а скачивать нечего.
+                // Молчать нельзя — отсутствие файлов выглядит как сбой сохранения.
+                // Ctrl+S сюда не попадает: у него formats пуст по построению.
+                Notifications.warning('Выберите формат экспорта в настройках');
             }
         } catch (error) {
             this._handleSaveExportError(error);
