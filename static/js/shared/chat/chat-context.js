@@ -277,7 +277,7 @@ export const ChatContext = {
     /**
      * Возвращает выбранный режим агента ОАРБ.
      * Читает из localStorage['assistant_oarb_mode'];
-     * если значение отсутствует или невалидно — возвращает 'off'.
+     * если значение отсутствует или невалидно — возвращает 'always'.
      *
      * @returns {'off'|'adaptive'|'always'}
      */
@@ -285,9 +285,9 @@ export const ChatContext = {
         const valid = ['off', 'adaptive', 'always'];
         try {
             const val = localStorage.getItem('assistant_oarb_mode');
-            return valid.includes(val) ? val : 'off';
+            return valid.includes(val) ? val : 'always';
         } catch {
-            return 'off';
+            return 'always';
         }
     },
 

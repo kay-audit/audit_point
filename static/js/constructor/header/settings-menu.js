@@ -186,7 +186,7 @@ export class SettingsMenuManager {
      */
     static _getOarbMode() {
         const val = localStorage.getItem(this._oarbModeKey);
-        return this._validOarbModes.includes(val) ? val : 'off';
+        return this._validOarbModes.includes(val) ? val : 'always';
     }
 
     /**
