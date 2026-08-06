@@ -137,6 +137,17 @@ export class SettingsMenuManager {
     }
 
     /**
+     * Возвращает копию текущих настроек приложения.
+     *
+     * Копия, а не сам `_state`: внешний код (предпросмотр) только читает флаги
+     * и не должен мутировать приватное состояние в обход `_saveSettings`.
+     * @returns {{showActHeader: boolean}}
+     */
+    static getSettings() {
+        return {...this._state};
+    }
+
+    /**
      * Сохраняет текущие настройки в localStorage
      * @private
      */
