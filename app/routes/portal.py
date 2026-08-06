@@ -53,7 +53,7 @@ async def show_landing(request: Request):
         "portal/landing/landing.html",
         {
             "active_page": "landing",
-            "topbar_title": "Рабочее пространство",
+            "topbar_title": "Единое рабочее место",
             "nav_groups": nav_groups,
             "is_admin": is_admin,
             "chat_domains": None,
