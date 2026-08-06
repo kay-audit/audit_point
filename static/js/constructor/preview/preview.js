@@ -275,6 +275,10 @@ export class PreviewManager {
         // на перерендере наблюдаем ту же #preview и просто перепланируем расчёт.
         if (!this._fitScaler) this._fitScaler = new PreviewFitScaler();
         this._fitScaler.attach(preview);
+        // Масштаб применяем синхронно, в этом же кадре: лист только что пересобран
+        // и до применения не имеет ни transform'а, ни размеров sizer'а. Отложенный
+        // на кадр расчёт отрисовал бы промежуточное состояние — пустую панель.
+        this._fitScaler.applyNow();
     }
 
     /**

@@ -46,9 +46,10 @@
     flex-shrink: 0;
 }
 
-/* Прокручиваемые области внутри панелей */
-.tree-container,
-.preview {
+/* Прокручиваемая область внутри панели дерева. Панель предпросмотра (.preview)
+   сюда не входит: она overflow:clip (см. preview-page.css) и не прокручивается —
+   её лист целиком отдан на прокрутку колонке .column. */
+.tree-container {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
@@ -57,24 +58,20 @@
 }
 
 /* Стилизация scrollbar для WebKit */
-.tree-container::-webkit-scrollbar,
-.preview::-webkit-scrollbar {
+.tree-container::-webkit-scrollbar {
     width: var(--scrollbar-width);
 }
 
-.tree-container::-webkit-scrollbar-track,
-.preview::-webkit-scrollbar-track {
+.tree-container::-webkit-scrollbar-track {
     background: var(--scrollbar-bg);
     border-radius: var(--radius);
 }
 
-.tree-container::-webkit-scrollbar-thumb,
-.preview::-webkit-scrollbar-thumb {
+.tree-container::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb);
     border-radius: var(--radius);
 }
 
-.tree-container::-webkit-scrollbar-thumb:hover,
-.preview::-webkit-scrollbar-thumb:hover {
+.tree-container::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
 }

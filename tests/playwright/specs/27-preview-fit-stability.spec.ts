@@ -81,4 +81,81 @@ test.describe('Предпросмотр: стабильность fit-масшт
         `${worst.states} смен состояния за ~40 кадров (петля «скроллбар ↔ масштаб»)`
     ).toBeLessThanOrEqual(2);
   });
+
+  test('перерендер не роняет масштаб и не схлопывает панель', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.waitForTimeout(400);
+
+    const before = await page.evaluate(
+      () => (document.querySelector('#preview .preview-sheet') as HTMLElement).style.transform
+    );
+    expect(before, 'масштаб не применился при первичном рендере').toMatch(/^scale\(/);
+
+    // Полная пересборка листа тем же контентом. Лист и sizer создаются заново,
+    // без inline-стилей: если масштаб применяется отложенно (следующим кадром),
+    // в отрисовку попадает кадр с нулевой высотой панели, а замер ширины в этом
+    // состоянии даёт ещё и промежуточный неверный масштаб.
+    const trace = await page.evaluate(async () => {
+      const seen: string[] = [];
+      let minHeight = Infinity;
+      const t0 = performance.now();
+      (window as any).PreviewManager.update();
+      await new Promise<void>((done) => {
+        const tick = () => {
+          const pane = document.querySelector('#preview') as HTMLElement;
+          const sheet = pane.querySelector('.preview-sheet') as HTMLElement | null;
+          minHeight = Math.min(minHeight, pane.clientHeight);
+          const tr = sheet ? sheet.style.transform || 'NONE' : 'NONE';
+          if (seen[seen.length - 1] !== tr) seen.push(tr);
+          if (performance.now() - t0 < 700) requestAnimationFrame(tick);
+          else done();
+        };
+        requestAnimationFrame(tick);
+      });
+      return { seen, minHeight };
+    });
+
+    expect(
+      trace.minHeight,
+      'панель предпросмотра схлопнулась в нулевую высоту — кадр пустого превью'
+    ).toBeGreaterThan(0);
+    expect(
+      trace.seen,
+      `масштаб менялся во время перерендера: ${trace.seen.join(' -> ')}`
+    ).toEqual([before]);
+  });
+
+  test('модалка предпросмотра: forceUpdate при открытом меню не гасит лист', async ({
+    page,
+  }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.evaluate(() => (window as any).previewMenuManager.open());
+    await page.waitForTimeout(600);
+
+    const before = await page.evaluate(
+      () =>
+        (document.querySelector('#previewMenuBody .preview-sheet') as HTMLElement | null)?.style
+          .transform ?? 'NONE'
+    );
+    expect(before, 'масштаб не применился при открытии меню').toMatch(/^scale\(/);
+
+    // Ширина модалки задана явными пикселями и не меняется от высоты листа,
+    // поэтому пересчёт даёт тот же k. Память о применённом расчёте относится к
+    // прежнему листу — без её сброса новый лист остаётся без стилей навсегда.
+    await page.evaluate(() => (window as any).previewMenuManager.forceUpdate());
+    await page.waitForTimeout(900);
+
+    const after = await page.evaluate(() => {
+      const pane = document.querySelector('#previewMenuBody') as HTMLElement;
+      const sheet = pane.querySelector('.preview-sheet') as HTMLElement | null;
+      return {
+        transform: sheet ? sheet.style.transform || 'NONE' : 'NONE',
+        height: pane.clientHeight,
+      };
+    });
+
+    expect(after.transform, 'лист модалки остался немасштабированным').toMatch(/^scale\(/);
+    expect(after.height, 'тело модалки схлопнулось в нулевую высоту').toBeGreaterThan(0);
+  });
 });

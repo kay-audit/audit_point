@@ -76,11 +76,14 @@ test.describe('Preview как лист A4 (Word-геометрия)', () => {
     await expect(zoom).toBeVisible();
     expect((await zoom.textContent())?.trim()).toMatch(/^\d+%$/);
 
-    // (a+++) Холст вокруг листа — светлый #f0f0f2 = rgb(240, 240, 242).
+    // (a+++) Inline-подложка #preview — белая (--bg-primary), единая по стилю с
+    // подложкой дерева: лист занимает её целиком, границу рисуют рамка и тень
+    // самой подложки. Серый холст #f0f0f2 остался только у модалки
+    // (#previewMenuBody) — см. preview-page.css / preview-menu.css.
     const canvasBg = await page.evaluate(
       () => getComputedStyle(document.getElementById('preview')!).backgroundColor
     );
-    expect(canvasBg).toBe('rgb(240, 240, 242)');
+    expect(canvasBg).toBe('rgb(255, 255, 255)');
 
     const table = page.locator('#preview .preview-sheet table.preview-table').first();
     await expect(table).toBeVisible();
