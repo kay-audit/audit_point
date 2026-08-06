@@ -19,7 +19,6 @@ export class LandingPage {
         console.log('LandingPage: инициализация');
 
         this._setupNavigation();
-        this._setupPlaceholderInteractions();
         LandingSettingsManager.init();
         ChatManager.init();
 
@@ -61,25 +60,6 @@ export class LandingPage {
                 console.log('Фильтры проектов (функция в разработке)');
             });
         }
-    }
-
-    /**
-     * Настраивает взаимодействия с заглушками
-     * @private
-     */
-    static _setupPlaceholderInteractions() {
-        // Клики по карточкам проектов (заглушка)
-        const projectCards = document.querySelectorAll('.project-card');
-        projectCards.forEach((card, index) => {
-            card.addEventListener('click', () => {
-                const title = card.querySelector('.project-card-title').textContent;
-                console.log(`Открытие проекта: ${title} (функция в разработке)`);
-            });
-
-            // Добавляем hover эффект
-            card.style.cursor = 'pointer';
-        });
-
     }
 
     /**
