@@ -13,7 +13,6 @@
     border: var(--border-width-thin) solid var(--border);
     font-size: var(--font-size-sm);
     line-height: var(--line-height-relaxed);
-    overflow-y: auto;
     box-shadow: var(--shadow-sm);
     color: var(--text-primary);
     transition: box-shadow var(--transition-base);
@@ -50,21 +49,5 @@
     border: none;
 }
 
-/* Скроллбар для предпросмотра */
-.preview::-webkit-scrollbar {
-    width: var(--scrollbar-width);
-}
-
-.preview::-webkit-scrollbar-track {
-    background: var(--scrollbar-bg);
-    border-radius: var(--radius);
-}
-
-.preview::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: var(--radius);
-}
-
-.preview::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover);
-}
+/* Скроллбара у .preview нет: панель — overflow:clip (см. preview-page.css),
+   прокрутку ведёт колонка .column. */

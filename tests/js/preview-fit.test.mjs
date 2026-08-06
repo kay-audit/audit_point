@@ -13,7 +13,38 @@ import assert from 'node:assert/strict';
 import {
   computeFitScale,
   isNegligibleRefit,
+  PreviewFitScaler,
 } from '../../static/js/constructor/preview/preview-fit.js';
+
+// Минимальные браузерные глобалы для _apply: реального DOM в node:test нет,
+// панель/лист/sizer подменяются объектами с нужными полями (см. makePane).
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {};
+globalThis.getComputedStyle = () => ({ paddingLeft: '0px', paddingRight: '0px' });
+
+/**
+ * Панель-заглушка с методом render(), который пересоздаёт лист и sizer —
+ * ровно как PreviewManager._performUpdate: новые узлы без inline-стилей.
+ */
+function makePane(clientWidth) {
+  const pane = {
+    isConnected: true,
+    clientWidth,
+    sheet: null,
+    sizer: null,
+    querySelector(sel) {
+      if (sel === '.preview-sheet') return pane.sheet;
+      if (sel === '.preview-sheet-sizer') return pane.sizer;
+      return null;
+    },
+    render() {
+      pane.sheet = { offsetWidth: 794, offsetHeight: 1123, style: {} };
+      pane.sizer = { style: {} };
+    },
+  };
+  return pane;
+}
 
 test('узкая панель: масштаб = доля ширины (<1)', () => {
   assert.equal(computeFitScale(400, 800), 0.5);
@@ -86,4 +117,40 @@ test('refit: изменение натуральной ширины листа �
 test('refit: полное совпадение пропускается', () => {
   const applied = { natW: 794, natH: 1123, k: 1.0281 };
   assert.equal(isNegligibleRefit(applied, 794, 1123, 1.0281), true);
+});
+
+// --- Сброс памяти о применённом расчёте при смене листа ---
+
+test('пересозданный лист получает стили даже при полностью совпадающем расчёте', () => {
+  const k = 835 / 794;
+  const scaler = new PreviewFitScaler();
+  const pane = makePane(835);
+
+  pane.render();
+  scaler.attach(pane);
+  scaler.applyNow();
+  assert.equal(pane.sheet.style.transform, `scale(${k})`);
+
+  // Перерендер тем же контентом: натуральные размеры и масштаб совпадают,
+  // но узлы новые и пустые. Гейт isNegligibleRefit не должен их пропустить —
+  // иначе лист остаётся немасштабированным, а панель схлопывается в ноль.
+  pane.render();
+  scaler.applyNow();
+  assert.equal(pane.sheet.style.transform, `scale(${k})`);
+  assert.equal(pane.sizer.style.width, `${794 * k}px`);
+  assert.equal(pane.sizer.style.height, `${1123 * k}px`);
+});
+
+test('тот же лист при неизменной ширине повторно не переприменяется', () => {
+  const scaler = new PreviewFitScaler();
+  const pane = makePane(835);
+
+  pane.render();
+  scaler.attach(pane);
+  scaler.applyNow();
+
+  // Лист не пересоздавали — стили на месте, гейт обязан сработать.
+  pane.sheet.style.transform = 'СТОРОЖ';
+  scaler.applyNow();
+  assert.equal(pane.sheet.style.transform, 'СТОРОЖ');
 });

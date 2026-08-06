@@ -51,6 +51,7 @@ export class PreviewFitScaler {
         this._applied = null;
         this._ro = null;
         this._rafScheduled = false;
+        this._rafHandle = 0;
         this._apply = this._apply.bind(this);
         this._schedule = this._schedule.bind(this);
     }
@@ -73,9 +74,27 @@ export class PreviewFitScaler {
     /** Принудительный пересчёт (после перерисовки контента — меняется высота). */
     refresh() { this._schedule(); }
 
+    /**
+     * Немедленный пересчёт в ТЕКУЩЕМ кадре, без ожидания RAF.
+     *
+     * Нужен сразу после пересборки листа: до применения масштаба sizer не имеет
+     * размеров, а лист (position:absolute) выпадает из потока — панель схлопнута
+     * в нулевую высоту, лист не отмасштабирован. Отложенный на кадр расчёт даёт
+     * этому состоянию попасть в отрисовку: превью моргает пустотой, а замер
+     * ширины в схлопнутом состоянии ещё и даёт промежуточный неверный масштаб.
+     */
+    applyNow() {
+        if (this._rafScheduled) {
+            cancelAnimationFrame(this._rafHandle);
+            this._rafScheduled = false;
+        }
+        this._apply();
+    }
+
     /** Отвязывает observer. */
     detach() {
         if (this._ro) { this._ro.disconnect(); this._ro = null; }
+        if (this._rafScheduled) cancelAnimationFrame(this._rafHandle);
         this._pane = null;
         this._sheet = null;
         this._applied = null;
@@ -86,7 +105,7 @@ export class PreviewFitScaler {
     _schedule() {
         if (this._rafScheduled) return;
         this._rafScheduled = true;
-        requestAnimationFrame(this._apply);
+        this._rafHandle = requestAnimationFrame(this._apply);
     }
 
     /** @private Пересчёт и применение масштаба. */
@@ -115,6 +134,11 @@ export class PreviewFitScaler {
             if (this._sheet && this._ro) this._ro.unobserve(this._sheet);
             if (this._ro) this._ro.observe(sheet);
             this._sheet = sheet;
+            // Память о применённом расчёте относится к ПРЕЖНЕМУ листу. Перерендер
+            // пересоздаёт sizer и лист с нуля, без inline-стилей: без сброса гейт
+            // isNegligibleRefit счёл бы совпадающий расчёт лишним и оставил лист
+            // немасштабированным, а панель — схлопнутой в нулевую высоту.
+            this._applied = null;
         }
 
         // Натуральные размеры — layout-метрики offsetWidth/offsetHeight: они не
