@@ -93,7 +93,7 @@ class AgentMessageRepository(BaseRepository):
             chat_id,
             user_id,
             content,
-            json.dumps(media, ensure_ascii=False) if media is not None else None,
+            json.dumps(media or {}, ensure_ascii=False),
             json.dumps(metadata or {}, ensure_ascii=False),
         )
         return self._parse_row(row)
