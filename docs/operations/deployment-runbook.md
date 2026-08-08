@@ -1,6 +1,6 @@
 # Deployment Runbook — Audit Workstation
 
-> Closed-network deploy. SDP-кластер (доступ по IP:порту, без proxy-путей) + Greenplum 6.x для прода; PostgreSQL — для dev. Авторизация — ОТП/JWT (`developer-guide.md` §9.3a) либо тест-режим (`AUTH__ENABLED=false`). Исторически деплоилось на JupyterHub Datalab — см. пометки ниже.
+> Closed-network deploy. SDP-кластер (доступ по IP:порту, без proxy-путей; прод-адрес — `http://10.110.10.38:<port>`, обычный HTTP, TLS-терминирующего прокси перед приложением нет) + Greenplum 6.x для прода; PostgreSQL — для dev. Авторизация — ОТП/JWT (`developer-guide.md` §9.3a) либо тест-режим (`AUTH__ENABLED=false`). Раз соединение HTTP — `AUTH__COOKIE_SECURE` обязан быть `false` (`true` без HTTPS тихо ломает вход — см. §9.3a dev-guide). Исторически деплоилось на JupyterHub Datalab — см. пометки ниже.
 > Single-tenant per process: один Python-процесс, защита через singleton-lock в БД.
 
 Документ — пошаговый чек-лист «как развернуть» / «как обновить» / «как проверить, что взлетело». Глубокая архитектура — [`developer-guide.md`](../guides/developer-guide.md). Симптомы и фиксы — [`troubleshooting.md`](troubleshooting.md). Что делать когда сломалось — [`operations-recovery.md`](operations-recovery.md).
