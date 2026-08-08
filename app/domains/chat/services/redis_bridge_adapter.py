@@ -135,7 +135,18 @@ def _handle_terminal(fields: dict, *, wire_format: str):
         raise _status_error(
             code, fields.get("message") or "redis-bridge: ошибка воркера",
         )
-    completion = ChatCompletion.model_validate(json.loads(fields["body"]))
+    raw = json.loads(fields["body"])
+    if wire_format == "gigachat":
+        # Нормализация: GigaChat отдаёт function_call.arguments как dict,
+        # но SDK ожидает строку. Преобразуем dict в JSON-строку ДО model_validate,
+        # затем _translate_response получит строку (он умеет обе).
+        for choice in raw.get("choices") or []:
+            fc = (choice.get("message") or {}).get("function_call")
+            if fc and not isinstance(fc.get("arguments"), str):
+                fc["arguments"] = json.dumps(
+                    fc.get("arguments") or {}, ensure_ascii=False,
+                )
+    completion = ChatCompletion.model_validate(raw)
     if wire_format == "gigachat":
         from app.domains.chat.services.gigachat_adapter import (
             _translate_response,
@@ -243,4 +254,20 @@ class RedisBridgeClient:
 
 
 def _build_gigachat_body(clean: dict, messages: list, tools) -> dict:
-    raise NotImplementedError  # Task 5
+    """Native GigaChat-тело: messages через трансляцию, tools → functions.
+
+    Переиспользует оттестированные функции gigachat_adapter — все quirks
+    (arguments-DICT в запросе, content="" при function_call, 1 вызов за
+    раунд, mapping tool→function по имени) остаются в одном месте.
+    """
+    from app.domains.chat.services.gigachat_adapter import (
+        _is_tools_provided,
+        _tools_to_functions,
+        _translate_messages,
+    )
+
+    body = dict(clean)
+    body["messages"] = _translate_messages(messages)
+    if _is_tools_provided(tools):
+        body["functions"] = _tools_to_functions(tools)
+    return body

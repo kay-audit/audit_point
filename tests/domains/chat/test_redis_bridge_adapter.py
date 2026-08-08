@@ -179,3 +179,97 @@ class TestCreateOpenAI:
                 temperature=0.1, timeout=0.4,
             )
         assert asyncio.get_event_loop().time() - started < 5.0
+
+
+GIGACHAT_RESPONSE_BODY = {
+    "id": "chatcmpl-2",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "GigaChat-3-Ultra",
+    "choices": [{
+        "index": 0,
+        "finish_reason": "function_call",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "function_call": {
+                "name": "search_acts",
+                "arguments": {"query": "КМ-25"},
+            },
+        },
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+}
+
+
+class TestCreateGigachat:
+    async def test_body_translated_to_native_format(self, fake_redis):
+        await put_heartbeat(fake_redis, ["gigachat"])
+        client = make_client("gigachat", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="GigaChat-3-Ultra",
+            messages=[
+                {"role": "user", "content": "найди акт"},
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "search_acts",
+                                 "arguments": '{"query": "КМ-25"}'},
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "нашёл"},
+            ],
+            tools=[{"type": "function", "function": {
+                "name": "search_acts", "description": "Поиск актов",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+            temperature=0.1,
+        ))
+        fields = await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200",
+                   "body": json.dumps(GIGACHAT_RESPONSE_BODY)},
+        )
+        await task
+        body = json.loads(fields["body"])
+        assert fields["target"] == "gigachat"
+        # tools → плоские functions (native GigaChat)
+        assert body["functions"] == [{
+            "name": "search_acts", "description": "Поиск актов",
+            "parameters": {"type": "object", "properties": {}},
+        }]
+        assert "tools" not in body
+        # assistant tool_calls → function_call c arguments-DICT
+        assistant = body["messages"][1]
+        assert assistant["function_call"] == {
+            "name": "search_acts", "arguments": {"query": "КМ-25"},
+        }
+        assert assistant["content"] == ""          # не None (422 у GigaChat)
+        # tool → role=function c name по mapping
+        assert body["messages"][2] == {
+            "role": "function", "name": "search_acts", "content": "нашёл",
+        }
+
+    async def test_response_function_call_translated_to_tool_calls(
+        self, fake_redis,
+    ):
+        await put_heartbeat(fake_redis, ["gigachat"])
+        client = make_client("gigachat", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="GigaChat-3-Ultra",
+            messages=[{"role": "user", "content": "найди"}],
+            tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200",
+                   "body": json.dumps(GIGACHAT_RESPONSE_BODY)},
+        )
+        result = await task
+        msg = result.choices[0].message
+        assert msg.function_call is None
+        assert len(msg.tool_calls) == 1
+        assert msg.tool_calls[0].function.name == "search_acts"
+        # arguments dict → JSON-строка (контракт OpenAI SDK)
+        assert json.loads(msg.tool_calls[0].function.arguments) == {
+            "query": "КМ-25",
+        }
+        assert result.choices[0].finish_reason == "tool_calls"
