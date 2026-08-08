@@ -64,7 +64,7 @@
   - [6.9 Добавление UA-справочника](#69-добавление-ua-справочника)
 - [7. AI-ассистент](#7-ai-ассистент)
   - [7.1 Архитектура: chat domain](#71-архитектура-chat-domain)
-  - [7.1a Профили LLM-провайдера (sglang/openrouter/openai/gigachat)](#71a-профили-llm-провайдера)
+  - [7.1a Маршруты LLM-провайдера (gigachat/openai/redis-bridge)](#71a-маршруты-llm-провайдера)
   - [7.2 ChatTool и ChatToolParam](#72-chattool-и-chattoolparam)
   - [7.3 Реестр chat tools](#73-реестр-chat-tools)
   - [7.4 Agent loop](#74-agent-loop)
@@ -86,7 +86,7 @@
   - [9.3 За reverse proxy (HTTPS)](#93-за-reverse-proxy-https)
   - [9.3a Авторизация (ОТП/JWT)](#93a-авторизация-отпjwt)
   - [9.4 Конфигурация: .env и Pydantic Settings](#94-конфигурация-env-и-pydantic-settings)
-    - [9.4.1 Примеры .env для LLM-профилей](#941-примеры-env-для-llm-профилей)
+    - [9.4.1 Примеры .env для LLM-маршрутов](#941-примеры-env-для-llm-маршрутов)
     - [9.4.2 MIME-типы файлов чата (дефолт)](#942-mime-типы-файлов-чата-дефолт)
     - [9.4.3 Settings-архитектура по доменам](#943-settings-архитектура-по-доменам)
   - [9.5 Полная таблица переменных окружения](#95-полная-таблица-переменных-окружения)
@@ -1829,7 +1829,7 @@ forward (always / adaptive-решение):
 Browser: GET /messages/{message_id} (polling до терминального статуса) → рендер целиком
 ```
 
-AI-ассистент реализован как доменный плагин `app/domains/chat/`. Транспорта SSE нет: POST `/messages` отдаёт `{message_id}`, фронт поллит `GET /messages/{message_id}` до терминального статуса и рендерит ответ целиком с декоративным «эффектом печати» (токен-стриминга нет). Локальная LLM (профиль `sglang` для прода / `openrouter` для dev — см. `app/domains/chat/services/llm_client.py`) в режимах `off`/`adaptive` исполняется синхронно в POST через `Orchestrator.run(...)`: для **запросов на действие в интерфейсе** вызывает локальный action-tool, возвращающий `ClientActionBlock` (см. [7.9](#79-action-handlers-и-clientactionblock)); в режиме `adaptive` может форвардить **информационный запрос** во внешнего ИИ-агента через ChatTool `chat.forward_to_knowledge_agent` (см. [7.8](#78-внешний-ии-агент-через-таблицы-бд)). В режиме `always` запрос форвардится напрямую, без локального LLM-раунда.
+AI-ассистент реализован как доменный плагин `app/domains/chat/`. Транспорта SSE нет: POST `/messages` отдаёт `{message_id}`, фронт поллит `GET /messages/{message_id}` до терминального статуса и рендерит ответ целиком с декоративным «эффектом печати» (токен-стриминга нет). Локальная LLM (маршрут `redis-bridge,gigachat` на ПРОМе, `openai` напрямую в dev — см. `app/domains/chat/services/llm_client.py`) в режимах `off`/`adaptive` исполняется синхронно в POST через `Orchestrator.run(...)`: для **запросов на действие в интерфейсе** вызывает локальный action-tool, возвращающий `ClientActionBlock` (см. [7.9](#79-action-handlers-и-clientactionblock)); в режиме `adaptive` может форвардить **информационный запрос** во внешнего ИИ-агента через ChatTool `chat.forward_to_knowledge_agent` (см. [7.8](#78-внешний-ии-агент-через-таблицы-бд)). В режиме `always` запрос форвардится напрямую, без локального LLM-раунда.
 
 ```
 Клиент → POST /api/v1/chat/conversations/{id}/messages (FormData, agent_mode)
@@ -1894,24 +1894,26 @@ always / forward: submit вопроса в шину + черновик (status='
 **Доменные исключения** (`app/domains/chat/exceptions.py`):
 `ConversationNotFoundError`, `ChatMessageNotFoundError`, `ChatFileNotFoundError`, `ChatLimitError`, `ChatFileValidationError`, `ChatToolValidationError`, `ConversationLockedError`, `OptimisticLockFailed`, `ChatRateLimitError`.
 
-#### 7.1a Профили LLM-провайдера
+#### 7.1a Маршруты LLM-провайдера
 
-`CHAT__PROFILE` (Literal в `app/domains/chat/settings.py`) переключает поведение LLM-клиента. Все профили внешне совместимы с OpenAI SDK, но имеют отличия в формате tool-calling и поддержке streaming.
+`CHAT__PROFILE` / `CHAT__FALLBACK_PROFILE` (строка, валидируется `parse_route` в `app/domains/chat/settings.py`) задают **маршрут** — ровно одно из четырёх значений: `gigachat`, `openai`, `redis-bridge,gigachat`, `redis-bridge,openai`. `parse_route(route)` разбирает строку в пару `(transport, wire_format)`: `transport` — `"http"` (напрямую) или `"redis"` (через мост); `wire_format` — `"openai"` или `"gigachat"` (проводной формат тела запроса). Имя цели после запятой в `redis-bridge`-маршрутах **совпадает** с проводным форматом — отдельной карты «цель → формат» в приложении нет; какой реальный сервер стоит за целью `openai` на стороне воркера (sglang, vLLM, ...), знает только сам воркер.
 
-| Профиль | Транспорт | Streaming | Tool-calling | Где |
+До версии 14.0.0 профилей было больше (`sglang`, `openrouter` — обе метки одного и того же OpenAI-совместимого клиента, различий в коде между ними не было) — они упразднены без обратной совместимости, схема маршрутов схлопнула их в `openai`.
+
+| Маршрут | Транспорт | Streaming | Tool-calling | Где |
 |---|---|---|---|---|
-| `sglang` | OpenAI-совместимый REST | Да (SSE) | OpenAI `tools[]` + `tool_calls[]` | Прод (локальный inference) |
-| `openrouter` | OpenAI-совместимый REST | Да (SSE) | OpenAI `tools[]` + `tool_calls[]` | Dev (внешний marketplace) |
-| `openai` | Native OpenAI API | Да (SSE) | OpenAI `tools[]` + `tool_calls[]` | Опционально |
-| `gigachat` | Корпоративный proxy `http://liveaccess/v1/gc` | **Нет** (422 EventException) | Native `functions[]` + singular `function_call` с dict-args | Корпоративный inference |
+| `gigachat` | HTTP напрямую в корп. proxy `http://liveaccess/v1/gc` | **Нет** (422 EventException) | Native `functions[]` + singular `function_call` с dict-args | Корпоративный inference (когда есть прямой сетевой доступ) |
+| `openai` | HTTP напрямую в OpenAI-совместимый сервер (sglang, vLLM, openrouter и т.п.) | Да (SSE) | OpenAI `tools[]` + `tool_calls[]` | Dev / любая площадка с прямым доступом |
+| `redis-bridge,gigachat` | Через Redis-воркер на DataLab к GigaChat (`docs/integrations/redis-llm-bridge.md`) | Нет (мост v1 не стримит) | Native `functions[]`, те же GigaChat-quirks ниже | ПРОМ SDP (прямого доступа к DataLab нет) |
+| `redis-bridge,openai` | Через Redis-воркер на DataLab к OpenAI-совместимому серверу | Нет (мост v1 не стримит) | OpenAI `tools[]` + `tool_calls[]` | ПРОМ SDP, fallback-маршрут |
 
-**Фабрика клиента** — `app/domains/chat/services/llm_client.py::build_llm_client(profile)`. Для `gigachat` возвращает `GigaChatAdapterClient` (duck-typed обёртка над `AsyncOpenAI`), все остальные — обычный `AsyncOpenAI`.
+**Фабрика клиента** — `app/domains/chat/services/llm_client.py::build_llm_client(route)`. Ветвится по разобранному маршруту: `("http", "gigachat")` → `GigaChatAdapterClient` (duck-typed обёртка над `AsyncOpenAI`); `("http", "openai")` → обычный `AsyncOpenAI`; `transport == "redis"` → `RedisBridgeClient` (`redis_bridge_adapter.py`), с `target = wire_format`. `wire_is_gigachat(route)` — общий хелпер (`True`, если `parse_route(route)[1] == "gigachat"`): GigaChat-режимы (см. ниже) включаются по проводному формату маршрута, а не по транспорту, поэтому `redis-bridge,gigachat` подчиняется тем же quirks, что и прямой `gigachat` — «1 tool_call за раунд», трансляция `messages`/`tools`, `dict`-args и т.д. Используется и в `agent_loop.py`, и в `orchestrator.py` (`_fallback_is_gigachat`) — отдельно для primary и fallback, так что маршруты допустимо комбинировать (например, primary `gigachat`, fallback `redis-bridge,openai`).
 
-**Имена инструментов: каноническое ≠ проводное (все профили).** Имена ChatTool доменные, с точкой (`acts.open_act_page`). Спека OpenAI ограничивает имя function шаблоном `^[a-zA-Z0-9_-]{1,128}$`; sglang и GigaChat его не проверяют, а Anthropic-модели (в т.ч. через `openrouter`) проверяют строго и отвечают `400 invalid_request_error: tools.0.custom.name: String should match pattern`. Поэтому:
+**Имена инструментов: каноническое ≠ проводное (все маршруты).** Имена ChatTool доменные, с точкой (`acts.open_act_page`). Спека OpenAI ограничивает имя function шаблоном `^[a-zA-Z0-9_-]{1,128}$`; серверы за маршрутом `openai` (sglang, vLLM) и GigaChat его не проверяют, а Anthropic-совместимые серверы за тем же маршрутом `openai` (например, openrouter) проверяют строго и отвечают `400 invalid_request_error: tools.0.custom.name: String should match pattern`. Поэтому:
 
 - на провод (схема `tools[]`, эхо `tool_calls` в истории, упоминания инструментов в system-промпте и в `description` тулов) уходит **проводное** имя — точка заменена подчёркиванием (`acts_open_act_page`), см. `to_wire_name` в `app/core/chat/tools.py`;
 - внутри приложения имя остаётся **каноническим**: ключ реестра, `tool_name` в метриках/аудите и `action_id` кнопок внешнего агента не меняются. Ответ провайдера переводится обратно через `resolve_wire_name` в `agent_loop` (каноническое имя, если модель списала его из прозы, тоже принимается);
-- преобразование безусловное для всех профилей — подчёркивание принимают все, развилки по профилю нет;
+- преобразование безусловное для всех маршрутов — подчёркивание принимают все, развилки по маршруту нет;
 - два инструмента, схлопывающихся в одно проводное имя, — `RuntimeError` при регистрации (`register_tools`).
 
 Промпты и описания тулов **не хардкодят** имена: подставляют `to_wire_name(TOOL_*)`, иначе модель зовёт имя из прозы, которого нет в схеме. Регрессия — `tests/domains/chat/test_llm_tool_name_compat.py`.
@@ -1935,17 +1937,18 @@ always / forward: submit вопроса в шину + черновик (status='
 | `422 RequestInputValidationException` на 2-м LLM-вызове после tool_call | В echo-сообщении `content=null` или `arguments` как JSON-string (а не dict) | Проверить, что код собирает assistant_msg вручную через `safe_args(...)` (из `orchestrator_helpers.py`) и не делает `messages.append(raw_msg)`; в адаптере — что `_translate_messages` использует `_args_to_dict(...)` |
 | SGLang/Qwen `400 "Input is a zero-length, empty document"` на 2-м вызове после no-args tool_call | `arguments=""` уходит в эхо, Qwen chat-template падает на `json.loads("")` | Те же `safe_args(...)` в `orchestrator_helpers.py` — нормализует пустые args в `"{}"` |
 | Tool вызвался с `arguments={}` | Сломанный JSON / dict с non-serializable | Логи содержат raw args; `default=str` гарантирует, что fall-через сработает |
-| Пустой ответ | Профиль `gigachat` (non-streaming) | Это by design: ответ собирается целиком и сохраняется финальным; фронт получает его через polling |
+| Пустой ответ | Маршрут `gigachat` / `redis-bridge,gigachat` (non-streaming) | Это by design: ответ собирается целиком и сохраняется финальным; фронт получает его через polling |
 | `unknown_function` в логах адаптера | tool_call_id в истории не имеет mapping (мост-сценарий) | Проверить, что history содержит assistant-сообщение с `tool_calls[]` перед tool-message |
 | `400 invalid_request_error: tools.N.custom.name: String should match pattern` (Anthropic/OpenRouter) | В `tools[]` уехало имя с точкой мимо `to_wire_name` | Проверить, что схему строит `ChatTool.to_openai_tool()`, а эхо `tool_calls` — `to_wire_name(...)`; см. «Имена инструментов» выше |
 
-**Как добавить новый профиль:**
+**Как добавить новый маршрут/цель:**
 
-1. Расширить Literal в `app/domains/chat/settings.py::profile`.
-2. Добавить ветку в `build_llm_client()` (`llm_client.py`). Если API не OpenAI-совместим — написать адаптер по образцу `gigachat_adapter.py`.
-3. `run_agent_loop` делает non-streaming LLM-вызов, поэтому отдельный streaming-guard для нового профиля не нужен.
-4. Документировать в `.env.example` (блок с примером URL и quirks) и в этой таблице.
-5. Покрыть тестами: трансляция request/response, retry на 5xx, edge cases (битый JSON args, non-serializable, multi-round roundtrip).
+1. Расширить `parse_route()` в `app/domains/chat/settings.py` — новая допустимая строка маршрута (или новая цель `redis-bridge,<цель>`, если добавляется не транспорт, а очередной проводной формат/бэкенд моста).
+2. Добавить ветку в `build_llm_client()` (`llm_client.py`). Если проводной формат не OpenAI-совместим — написать адаптер по образцу `gigachat_adapter.py` (для `redis-bridge` — расширить `redis_bridge_adapter.py`, переиспользуя трансляцию из существующего адаптера формата, не копируя её).
+3. Если у нового формата есть свои quirks (как у GigaChat) — завести их за хелпером `wire_is_gigachat`-подобного вида, а не проверкой конкретного маршрута строкой: quirks должны включаться по проводному формату, а не по транспорту (иначе `redis-bridge,<формат>` не унаследует поведение прямого HTTP-маршрута того же формата).
+4. `run_agent_loop` делает non-streaming LLM-вызов, поэтому отдельный streaming-guard для нового маршрута не нужен.
+5. Документировать в `.env.example` (блок с примером URL/маршрута и quirks) и в этой таблице; для нового транспорта — отдельно в `docs/integrations/redis-llm-bridge.md` (или аналогичном протокольном документе).
+6. Покрыть тестами: разбор маршрута (`test_settings_profiles.py`), трансляция request/response, retry на 5xx, edge cases (битый JSON args, non-serializable, multi-round roundtrip).
 
 ### 7.2 ChatTool и ChatToolParam
 
@@ -2089,7 +2092,7 @@ await orchestrator.run(
 
 Настройки: `CHAT__CIRCUIT_BREAKER_FAILURE_THRESHOLD` (2 ошибки подряд), `CHAT__CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SEC` (60 сек). Состояние — process-local (нет общей памяти между воркерами; для проекта single-worker этого достаточно).
 
-**3. Fallback-провайдер.** Если в `.env` заполнена группа `CHAT__FALLBACK_*` (профиль, base URL, ключ, модель) — при `open`-состоянии circuit breaker оркестратор переключается на него. Поддерживаются все профили (`sglang`/`openrouter`/`openai`/`gigachat`) — fallback может быть другого типа, чем primary. Если fallback не настроен, при `open` запрос падает с явной ошибкой пользователю.
+**3. Fallback-провайдер.** Если в `.env` заполнена группа `CHAT__FALLBACK_*` (маршрут, base URL, ключ, модель) — при `open`-состоянии circuit breaker оркестратор переключается на него. Поддерживаются все маршруты (`gigachat`/`openai`/`redis-bridge,gigachat`/`redis-bridge,openai`) в любой комбинации с primary — fallback может быть другого маршрута, чем primary. Если fallback не настроен, при `open` запрос падает с явной ошибкой пользователю.
 
 ```
 LLM call
@@ -3069,31 +3072,21 @@ ACTS__RESOURCE__MAX_TREE_DEPTH=50
 ACTS__AUDIT_LOG__RETENTION_DAYS=365
 ```
 
-#### 9.4.1 Примеры .env для LLM-профилей
+#### 9.4.1 Примеры .env для LLM-маршрутов
 
-Все три профиля используют один и тот же оркестратор; различия инкапсулированы в фабрике клиента и адаптере GigaChat (см. §7.1a). Ниже — минимальные блоки, которые достаточно дописать в `.env` поверх дефолтов.
+Все четыре маршрута используют один и тот же оркестратор; различия инкапсулированы в фабрике клиента, адаптере GigaChat и (для `redis-bridge,*`) в `redis_bridge_adapter.py` (см. §7.1a). Ниже — минимальные блоки, которые достаточно дописать в `.env` поверх дефолтов.
 
-**SGLang (прод, локальный inference):**
+**`openai` — напрямую в OpenAI-совместимый сервер (sglang, vLLM, openrouter и т.п., dev/площадка с прямым доступом):**
 
 ```env
-CHAT__PROFILE=sglang
-CHAT__API_BASE=http://127.0.0.1:30000/v1            # БЕЗ /chat/completions
+CHAT__PROFILE=openai
+CHAT__API_BASE=http://127.0.0.1:30000/v1            # БЕЗ /chat/completions; для openrouter — https://openrouter.ai/api/v1
 CHAT__API_KEY=local-test-key
 CHAT__MODEL=/home/datalab/nfs/llm/Qwen-8B
-CHAT__RETRY__ON_429=false                           # локальный SGLang не rate-limit'ит
+CHAT__RETRY__ON_429=false                           # локальный sglang не rate-limit'ит; для openrouter — true
 ```
 
-**OpenRouter (dev, бесплатные модели):**
-
-```env
-CHAT__PROFILE=openrouter
-CHAT__API_BASE=https://openrouter.ai/api/v1         # БЕЗ /chat/completions
-CHAT__API_KEY=sk-or-v1-...
-CHAT__MODEL=nvidia/nemotron-3-super-120b-a12b:free  # или minimax/minimax-m2.5:free
-CHAT__EXTRA_HEADERS={"HTTP-Referer":"https://aw.local","X-Title":"AuditWorkstation"}
-```
-
-**GigaChat (jupyter proxy):**
+**`gigachat` — напрямую в корпоративный proxy (когда есть прямой сетевой доступ, например запуск с DataLab):**
 
 ```env
 CHAT__PROFILE=gigachat
@@ -3104,13 +3097,24 @@ CHAT__MODEL=GigaChat-3-Ultra
 
 GigaChat-proxy частично OpenAI-совместим. Различия (`tools[]`↔`functions[]`, `tool_calls[]`↔singular `function_call`, dict-args↔JSON-args, отсутствие streaming) изолированы в `app/domains/chat/services/gigachat_adapter.py`. Ограничение: 1 function_call за раунд (оркестратор и так работает по одному tool за итерацию). Подробности и матрица «симптом → причина → решение» — §7.1a.
 
+**`redis-bridge,gigachat` / `redis-bridge,openai` — через Redis-воркер на DataLab (ПРОМ SDP, без прямого сетевого доступа к DataLab):**
+
+```env
+CHAT__PROFILE=redis-bridge,gigachat                 # или redis-bridge,openai
+CHAT__MODEL=GigaChat-3-Ultra
+CHAT__REQUEST_TIMEOUT=180                           # дедлайн общий для очереди в Redis + вызова LLM
+CHAT__REDIS_BRIDGE__KEY_PREFIX=llm:bridge:          # дефолт, менять не нужно
+```
+
+`CHAT__API_BASE`/`CHAT__API_KEY` для `redis-bridge,*` не нужны — реальный URL и токен цели знает только воркер (`scripts/datalab/llm_redis_worker.ipynb`, переменные `GIGACHAT_API_URL`/`JPY_API_TOKEN` или `OPENAI_API_URL`/`OPENAI_API_KEY` на стороне DataLab). Протокол, запуск воркера и smoke-чеклист — `docs/integrations/redis-llm-bridge.md`.
+
 **Ссылка на переменную окружения вместо ключа (`${VAR}`).** В примере GigaChat выше `CHAT__API_KEY=${JPY_API_TOKEN}` — это не литерал, а **ссылка**: `.env` читается через python-dotenv (под `pydantic-settings`), у которого интерполяция `${VAR}` включена по умолчанию и резолвится из переменных окружения процесса (в JupyterHub `JPY_API_TOKEN` уже экспортирован). Так секрет не попадает в файл — в `.env` лежит только имя переменной. Приём работает для любого `CHAT__*`-поля, в т.ч. `CHAT__FALLBACK_API_KEY`. Если переменной в окружении нет — подставится пустая строка (чат уйдёт в заглушку); чтобы это было явно, можно дать дефолт: `${JPY_API_TOKEN:-}`.
 
 **Типичные ошибки:**
 
 - `CHAT__API_BASE` с хвостом `/chat/completions` → 404 (SDK добавляет путь сам).
-- Пустые `API_BASE`/`API_KEY`/`MODEL` → чат уходит в режим заглушки (`/api/v1/chat/health` вернёт `ok: false`).
-- `${JPY_API_TOKEN}` подставился пустым → переменной нет в окружении процесса (а не в `.env`-файле): проверь `echo $JPY_API_TOKEN` в той же сессии, откуда стартует AW.
+- Пустые `API_BASE`/`API_KEY`/`MODEL` для маршрутов `gigachat`/`openai` → чат уходит в режим заглушки (`/api/v1/chat/health` вернёт `ok: false`). Для `redis-bridge,*` это норма — гард на пустые поля для redis-транспорта не срабатывает.
+- `${JPY_API_TOKEN}` подставился пустым → переменной нет в окружении процесса (а не в `.env`-файле): проверь `echo $JPY_API_TOKEN` в той же сессии, откуда стартует AW (или воркер, если токен нужен ему).
 
 #### 9.4.2 MIME-типы файлов чата (дефолт)
 
@@ -3158,9 +3162,9 @@ CHAT__ALLOWED_MIME_TYPES=["application/pdf","image/png"]
 
 - **`DATABASE__TABLE_PREFIX`** — общий для всех доменов префикс таблиц приложения (acts, chat, admin). Поле в `DatabaseSettings`, **не** в `GreenplumSettings` — действует и в PG, и в GP, чтобы имена таблиц совпадали. Дефолт — `t_db_oarb_audit_act_`.
 
-##### Профили LLM
+##### Маршруты LLM
 
-Профили `sglang` / `openrouter` / `openai` / `gigachat` управляются через `CHAT__PROFILE` и связанные `CHAT__API_BASE` / `CHAT__API_KEY` / `CHAT__MODEL`. Детальные различия (streaming, tool-calling форматы, quirks) — §7.1a. Примеры `.env` — §9.4.1.
+Маршруты `gigachat` / `openai` / `redis-bridge,gigachat` / `redis-bridge,openai` управляются через `CHAT__PROFILE` и связанные `CHAT__API_BASE` / `CHAT__API_KEY` / `CHAT__MODEL` (для `redis-bridge,*` два первых не нужны — транспорт на Redis, ключи моста — `CHAT__REDIS_BRIDGE__KEY_PREFIX`). Детальные различия (транспорт, streaming, tool-calling форматы, quirks) — §7.1a. Примеры `.env` — §9.4.1. Протокол моста — `docs/integrations/redis-llm-bridge.md`.
 
 ##### Тесты доменных Settings
 
@@ -3274,9 +3278,9 @@ def test_chat_settings_defaults():
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `CHAT__SCHEMA_NAME` | str | `""` | Схема БД для собственных таблиц чата (conversations, messages, files, tool_metrics, audit_log). Пусто → основная схема GP / без квалификатора PG. Учитывается при создании (миграции через `{CHAT_SCHEMA_Q}`) и доступе (`get_table_name(schema=…)`). Bus-таблица — отдельным `CHAT__AGENT_CHANNEL__SCHEMA_NAME` |
-| `CHAT__PROFILE` | str | `sglang` | Профиль LLM: `sglang` (прод), `openrouter`/`openai` (dev), `gigachat` (corp proxy, non-streaming). См. §7.1a |
-| `CHAT__API_BASE` | str | (пусто) | Базовый URL LLM API (без `/chat/completions` — SDK добавит сам) |
-| `CHAT__API_KEY` | SecretStr | (пусто) | API-ключ |
+| `CHAT__PROFILE` | str | `openai` | Маршрут LLM: `gigachat` \| `openai` \| `redis-bridge,gigachat` \| `redis-bridge,openai` (валидируется `parse_route`). ПРОМ — `redis-bridge,gigachat`. См. §7.1a |
+| `CHAT__API_BASE` | str | (пусто) | Базовый URL LLM API (без `/chat/completions` — SDK добавит сам). Не нужен для маршрутов `redis-bridge,*` |
+| `CHAT__API_KEY` | SecretStr | (пусто) | API-ключ. Не нужен для маршрутов `redis-bridge,*` |
 | `CHAT__MODEL` | str | `gpt-4o` | Модель |
 | `CHAT__TEMPERATURE` | float | `0.1` | Температура (0-2) |
 | `CHAT__MAX_TOOL_ROUNDS` | int | `5` | Макс. раундов tool-calling |
@@ -3299,13 +3303,21 @@ def test_chat_settings_defaults():
 | `CHAT__RETRY__ON_5XX` | bool | `True` | Повторять при 5xx |
 | `CHAT__RETRY__MAX_ATTEMPTS` | int | `5` | Макс. попыток |
 | `CHAT__RETRY__BACKOFF_BASE_SEC` | float | `2.0` | База экспоненциального backoff (сек) |
-| `CHAT__FALLBACK_PROFILE` | str | (пусто) | Профиль fallback-провайдера; пусто = отключено |
-| `CHAT__FALLBACK_API_BASE` | str | (пусто) | Base URL fallback-провайдера |
-| `CHAT__FALLBACK_API_KEY` | SecretStr | (пусто) | API-ключ fallback-провайдера |
+| `CHAT__FALLBACK_PROFILE` | str | (пусто) | Маршрут fallback-провайдера (тот же формат, что `CHAT__PROFILE`); пусто = отключено. ПРОМ — `redis-bridge,openai` |
+| `CHAT__FALLBACK_API_BASE` | str | (пусто) | Base URL fallback-провайдера. Не нужен для маршрутов `redis-bridge,*` |
+| `CHAT__FALLBACK_API_KEY` | SecretStr | (пусто) | API-ключ fallback-провайдера. Не нужен для маршрутов `redis-bridge,*` |
 | `CHAT__FALLBACK_MODEL` | str | (пусто) | Модель fallback |
 | `CHAT__FALLBACK_EXTRA_HEADERS` | JSON | `{}` | Доп. заголовки для fallback |
 | `CHAT__CIRCUIT_BREAKER_FAILURE_THRESHOLD` | int | `2` | Подряд ошибок primary до размыкания circuit |
 | `CHAT__CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SEC` | int | `60` | Сек до пробного запроса в primary (half-open) |
+
+#### Chat: Redis-мост LLM (redis-bridge-маршруты)
+
+Транспорт для `CHAT__PROFILE`/`CHAT__FALLBACK_PROFILE` вида `redis-bridge,<цель>`. Протокол, запуск воркера на DataLab и smoke-чеклист — `docs/integrations/redis-llm-bridge.md`. Таймаут заявки — общий `CHAT__REQUEST_TIMEOUT` (fallback — свой `CHAT__REQUEST_TIMEOUT`, отдельного таймаута для моста нет), отдельной переменной под мост не заводилось.
+
+| Переменная | Тип | По умолчанию | Описание |
+|-----------|-----|-------------|----------|
+| `CHAT__REDIS_BRIDGE__KEY_PREFIX` | str | `llm:bridge:` | Префикс ключей LLM-моста в Redis (`{prefix}requests`, `{prefix}resp:{id}`, `{prefix}worker:alive`). Общая инфраструктура Redis — раздел «Redis» ниже в этой таблице переменных, менять не нужно |
 
 #### Chat: agent_channel (внешний ИИ-агент)
 

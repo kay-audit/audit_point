@@ -20,9 +20,9 @@
    - Должна появиться таблица `chat_agent_messages_bus` (без app-префикса — имя из `CHAT__AGENT_CHANNEL__TABLE_NAME`).
    - В `chat_messages` должна быть колонка `agent_ref VARCHAR(36)`.
 
-2. Заполнить `.env.local` (dev на OpenRouter):
+2. Заполнить `.env.local` (dev, маршрут `openai` напрямую в OpenRouter — детали маршрутов см. developer-guide §7.1a):
    ```
-   CHAT__PROFILE=openrouter
+   CHAT__PROFILE=openai
    CHAT__API_BASE=https://openrouter.ai/api/v1
    CHAT__API_KEY=<твой ключ>
    CHAT__MODEL=minimax/minimax-m2:free
@@ -84,7 +84,7 @@
 - Следующий форвард: `AgentMessageRepository.count_active_for_user` возвращает `>= max`, бросается `ChatLimitError` ДО записей → HTTP 422 с дружелюбным сообщением.
 - Завершить один из активных форвардов — лимит освобождается, новый запрос проходит.
 
-### 9. Profile-switch на SGLang
-- Сменить `.env` на профиль `sglang` (внутренний адрес), перезапустить.
+### 9. Смена маршрута LLM-провайдера
+- Сменить `.env` на другой маршрут (например `redis-bridge,gigachat` — см. `docs/integrations/redis-llm-bridge.md`; внутренний адрес прямого сервера — маршрут `openai`), перезапустить.
 - Повторить сценарии 1–3.
 - Ожидаемо: всё работает без правки кода.
