@@ -114,6 +114,11 @@ class GigaChatAdapterClient:
         """Проксируем base_url, чтобы тесты могли его проверять."""
         return self._underlying.base_url
 
+    @property
+    def models(self):
+        """Прокси models для health probe — ping через GET /models на underlying-клиенте."""
+        return self._underlying.models
+
 
 def _args_to_dict(raw: Any) -> dict:
     """Приводит arguments к dict для native GigaChat request-формата.

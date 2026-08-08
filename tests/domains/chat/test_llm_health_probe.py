@@ -214,3 +214,27 @@ class TestProbeClientViaFactory:
         client = probe._get_client()
 
         assert isinstance(client, RedisBridgeClient)
+
+    def test_probe_builds_gigachat_client_with_models_proxy(self):
+        """Probe для маршрута gigachat получает GigaChatAdapterClient с
+        рабочим client.models (иначе _ping падает AttributeError и breaker
+        никогда не закрывается)."""
+        from app.domains.chat.services.llm_client import _clients_cache
+        from app.domains.chat.services.gigachat_adapter import (
+            GigaChatAdapterClient,
+        )
+
+        _clients_cache.clear()
+
+        settings = ChatDomainSettings(
+            profile="gigachat",
+            api_base="https://gigachat.local",
+            api_key="test-key",
+        )
+
+        probe = LLMHealthProbe(settings)
+        client = probe._get_client()
+
+        assert isinstance(client, GigaChatAdapterClient)
+        assert hasattr(client, "models")
+        assert hasattr(client.models, "list")

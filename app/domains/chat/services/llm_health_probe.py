@@ -55,8 +55,9 @@ class LLMHealthProbe:
         settings       — ChatDomainSettings (берёт .health_probe и breaker-параметры).
         clock          — провайдер монотонного времени (для тестов).
         sleep          — корутина-усыпитель (для тестов — AsyncMock без ожидания).
-        client_factory — фабрика HTTP-клиента; если None, лениво строит реальный
-                         AsyncOpenAI с коротким таймаутом (см. _get_client).
+        client_factory — фабрика клиента; если None, лениво строит клиента по
+                         маршруту профиля через build_llm_client с коротким
+                         таймаутом (см. _get_client).
         """
         self._settings = settings
         self._clock = clock
@@ -86,9 +87,9 @@ class LLMHealthProbe:
         )
 
     def _get_client(self):
-        """Лениво строит и кэширует HTTP-клиент с коротким таймаутом.
+        """Лениво строит и кэширует клиента с коротким таймаутом.
 
-        Probe нужен только для primary (в проде — sglang/openai-совместимый).
+        Probe нужен только для primary (в проде — redis-bridge,gigachat).
         Если задан client_factory — используем его (тесты). Иначе строим
         клиента через общую фабрику build_llm_client с probe-таймаутом.
         """

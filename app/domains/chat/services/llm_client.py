@@ -76,6 +76,8 @@ def build_llm_client(settings: ChatDomainSettings):
     Для большинства профилей — AsyncOpenAI.
     Для profile=gigachat — GigaChatAdapterClient, который проксирует
     AsyncOpenAI с переводом форматов tools↔functions (см. gigachat_adapter.py).
+    Для redis-маршрутов (profile=redis-bridge,*) — RedisBridgeClient поверх
+    Redis Streams (см. redis_bridge_adapter.py).
     """
     headers_key = tuple(sorted(settings.extra_headers.items()))
     cache_key: tuple[Any, ...] = (

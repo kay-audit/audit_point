@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 import uuid
 from typing import Any
@@ -24,10 +23,6 @@ from typing import Any
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 from openai.types.chat import ChatCompletion
-
-logger = logging.getLogger(
-    "audit_workstation.domains.chat.services.redis_bridge_adapter",
-)
 
 # Версия конверта. v2 зарезервирована под по-кусочный стриминг (kind=chunk).
 ENVELOPE_VERSION = "1"
@@ -95,7 +90,7 @@ def _build_wire_body(kwargs: dict, *, wire_format: str) -> dict:
     """Собирает проводное тело запроса из OpenAI-style kwargs.
 
     NOT_GIVEN/None-значения отбрасываются. Для формата gigachat — трансляция
-    существующими функциями gigachat_adapter (Task 5).
+    существующими функциями gigachat_adapter (см. _build_gigachat_body).
     """
     from openai import NOT_GIVEN
 
@@ -107,7 +102,7 @@ def _build_wire_body(kwargs: dict, *, wire_format: str) -> dict:
     tools = clean.pop("tools", None)
 
     if wire_format == "gigachat":
-        return _build_gigachat_body(clean, messages, tools)  # Task 5
+        return _build_gigachat_body(clean, messages, tools)
 
     body = dict(clean)
     body["messages"] = list(messages)
