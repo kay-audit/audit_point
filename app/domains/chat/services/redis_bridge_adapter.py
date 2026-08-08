@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError
+from openai.types.chat import ChatCompletion
 
 logger = logging.getLogger(
     "audit_workstation.domains.chat.services.redis_bridge_adapter",
@@ -90,14 +91,111 @@ async def _ensure_worker_available(target: str, key_prefix: str) -> None:
         )
 
 
+def _build_wire_body(kwargs: dict, *, wire_format: str) -> dict:
+    """Собирает проводное тело запроса из OpenAI-style kwargs.
+
+    NOT_GIVEN/None-значения отбрасываются. Для формата gigachat — трансляция
+    существующими функциями gigachat_adapter (Task 5).
+    """
+    from openai import NOT_GIVEN
+
+    clean = {
+        k: v for k, v in kwargs.items()
+        if v is not NOT_GIVEN and v is not None
+    }
+    messages = clean.pop("messages", [])
+    tools = clean.pop("tools", None)
+
+    if wire_format == "gigachat":
+        return _build_gigachat_body(clean, messages, tools)  # Task 5
+
+    body = dict(clean)
+    body["messages"] = list(messages)
+    from app.domains.chat.services.gigachat_adapter import _is_tools_provided
+    if _is_tools_provided(tools):
+        body["tools"] = tools
+    return body
+
+
+def _find_terminal(entries: list[tuple[str, dict]]) -> dict | None:
+    """Первый терминальный кусок (final|error) в ленте ответа, иначе None."""
+    for _entry_id, fields in entries:
+        if fields.get("kind") in ("final", "error"):
+            return fields
+    return None
+
+
+def _handle_terminal(fields: dict, *, wire_format: str):
+    """Терминальный кусок → ChatCompletion либо APIStatusError."""
+    if fields.get("kind") == "error":
+        try:
+            code = int(fields.get("status_code") or 502)
+        except (TypeError, ValueError):
+            code = 502
+        raise _status_error(
+            code, fields.get("message") or "redis-bridge: ошибка воркера",
+        )
+    completion = ChatCompletion.model_validate(json.loads(fields["body"]))
+    if wire_format == "gigachat":
+        from app.domains.chat.services.gigachat_adapter import (
+            _translate_response,
+        )
+        completion = _translate_response(completion)
+    return completion
+
+
 class _Completions:
-    """Прокси ``chat.completions``; ``create`` реализуется в Task 4-5."""
+    """Прокси ``chat.completions``; ``create`` — заявка в stream + поллинг ответа."""
 
     def __init__(self, client: "RedisBridgeClient") -> None:
         self._client = client
 
     async def create(self, **kwargs: Any):
-        raise NotImplementedError  # Task 4
+        """Отправляет заявку в stream и поллит ленту ответа до дедлайна."""
+        from app.core.redis import get_redis
+
+        client = self._client
+        await _ensure_worker_available(client._target, client._key_prefix)
+
+        kwargs.pop("stream", None)      # стриминга в v1 нет
+        kwargs.pop("tool_choice", None)  # как в gigachat_adapter
+        explicit_timeout = kwargs.pop("timeout", None)
+        timeout = float(explicit_timeout or client._timeout)
+
+        body = _build_wire_body(kwargs, wire_format=client._target)
+        request_id = str(uuid.uuid4())
+        deadline = time.monotonic() + timeout
+        resp_key = client._key_prefix + RESP_KEY_SUFFIX + request_id
+        redis = get_redis()
+        try:
+            await redis.xadd(
+                client._key_prefix + REQUESTS_STREAM_SUFFIX,
+                {
+                    "v": ENVELOPE_VERSION,
+                    "id": request_id,
+                    "target": client._target,
+                    "path": "/chat/completions",
+                    "body": json.dumps(body, ensure_ascii=False),
+                    "deadline_ts": str(time.time() + timeout),
+                },
+                maxlen=REQUEST_STREAM_MAXLEN,
+            )
+            while time.monotonic() < deadline:
+                entries = await redis.xrange(resp_key)
+                terminal = _find_terminal(entries)
+                if terminal is not None:
+                    return _handle_terminal(
+                        terminal, wire_format=client._target,
+                    )
+                await asyncio.sleep(POLL_INTERVAL_SEC)
+        except (APIStatusError, APITimeoutError, APIConnectionError):
+            raise
+        except Exception as exc:  # ошибки redis-py — connect-класс
+            raise APIConnectionError(
+                message="redis-bridge: сбой Redis при обмене",
+                request=_make_request(),
+            ) from exc
+        raise APITimeoutError(request=_make_request())
 
 
 class _Chat:
@@ -142,3 +240,7 @@ class RedisBridgeClient:
     async def aclose(self) -> None:
         """Соединений нет; метод существует для close_cached_clients()."""
         return None
+
+
+def _build_gigachat_body(clean: dict, messages: list, tools) -> dict:
+    raise NotImplementedError  # Task 5
