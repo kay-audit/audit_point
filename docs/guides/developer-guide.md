@@ -3041,7 +3041,7 @@ chat_settings.api_key.get_secret_value()  # безопасное получен�
 
 ```env
 APP_TITLE=Audit Workstation
-APP_VERSION=13.0.10
+APP_VERSION=13.0.11
 JUPYTERHUB_USER=00000000_omega-sbrf-ru
 
 SERVER__HOST=0.0.0.0
@@ -3192,7 +3192,7 @@ def test_chat_settings_defaults():
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `APP_TITLE` | str | `Audit Workstation` | Название приложения |
-| `APP_VERSION` | str | `13.0.10` | Версия |
+| `APP_VERSION` | str | `13.0.11` | Версия |
 | `JUPYTERHUB_USER` | str | `unknown_user` | Username (цифры): тест-режим авторизации (`AUTH__ENABLED=false`, §9.3a) и/или Kerberos-логин для Greenplum (`app/db/connection.py`). Имя — историческое, к JupyterHub/DataLab деплою больше не привязано |
 
 #### Server
