@@ -343,17 +343,30 @@ class Orchestrator:
         return build_fallback_client(self.settings)
 
     def _has_fallback(self) -> bool:
-        """True если все необходимые fallback-настройки заданы."""
+        """True если fallback-маршрут задан и достаточен.
+
+        redis-bridge-маршруту api_base/api_key не нужны (транспорт — Redis);
+        HTTP-маршрутам по-прежнему обязательны fallback_api_base/api_key.
+        """
+        from app.domains.chat.settings import parse_route
+
+        route = self.settings.fallback_profile
+        if not route:
+            return False
+        transport, _ = parse_route(route)
+        if transport == "redis":
+            return True
         return (
-            self.settings.fallback_profile is not None
-            and bool(self.settings.fallback_api_base)
+            bool(self.settings.fallback_api_base)
             and self.settings.fallback_api_key is not None
             and bool(self.settings.fallback_api_key.get_secret_value())
         )
 
     def _fallback_is_gigachat(self) -> bool:
-        """True если fallback-профиль — gigachat (нельзя streaming)."""
-        return self.settings.fallback_profile == "gigachat"
+        """True если проводной формат fallback-маршрута — gigachat."""
+        from app.domains.chat.settings import wire_is_gigachat
+
+        return wire_is_gigachat(self.settings.fallback_profile)
 
     @staticmethod
     def _is_provider_failure(exc: BaseException) -> bool:
