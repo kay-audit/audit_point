@@ -3,7 +3,12 @@ import pytest
 from pydantic import SecretStr
 
 from app.domains.chat.services import llm_client
-from app.domains.chat.services.llm_client import build_llm_client
+from app.domains.chat.services.llm_client import (
+    _clients_cache,
+    build_fallback_client,
+    build_llm_client,
+)
+from app.domains.chat.services.redis_bridge_adapter import RedisBridgeClient
 from app.domains.chat.settings import ChatDomainSettings
 
 
@@ -108,3 +113,41 @@ async def test_close_cached_clients_clears_cache_and_closes_underlying():
 
     # Повторный вызов — нечего закрывать
     assert await llm_client.close_cached_clients() == 0
+
+
+class TestRedisBridgeFactory:
+    def setup_method(self):
+        _clients_cache.clear()
+
+    def test_bridge_profile_builds_bridge_client(self):
+        s = ChatDomainSettings(profile="redis-bridge,gigachat")
+        client = build_llm_client(s)
+        assert isinstance(client, RedisBridgeClient)
+        assert client._target == "gigachat"
+        assert client._key_prefix == "llm:bridge:"
+
+    def test_bridge_client_cached_and_prefix_in_key(self):
+        s1 = ChatDomainSettings(profile="redis-bridge,openai")
+        s2 = ChatDomainSettings(profile="redis-bridge,openai")
+        assert build_llm_client(s1) is build_llm_client(s2)
+        s3 = ChatDomainSettings(
+            profile="redis-bridge,openai",
+            redis_bridge={"key_prefix": "test:bridge:"},
+        )
+        assert build_llm_client(s3) is not build_llm_client(s1)
+
+    def test_fallback_bridge_needs_no_api_base(self):
+        s = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="redis-bridge,openai",
+        )
+        client = build_fallback_client(s)
+        assert isinstance(client, RedisBridgeClient)
+        assert client._target == "openai"
+
+    def test_fallback_http_still_needs_api_base(self):
+        s = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="gigachat",  # HTTP-маршрут без base/key
+        )
+        assert build_fallback_client(s) is None
