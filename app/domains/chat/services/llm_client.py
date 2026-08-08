@@ -69,9 +69,9 @@ def _make_client(settings: ChatDomainSettings):
 def build_llm_client(settings: ChatDomainSettings):
     """Возвращает LLM-клиент из кэша или создаёт нового.
 
-    Один клиент на (profile, api_base, api_key, headers, timeout)
-    держится в памяти на всё время жизни процесса; закрывается через
-    :func:`close_cached_clients` в on_shutdown.
+    Один клиент на (profile, api_base, api_key, headers, timeout,
+    redis_bridge.key_prefix) держится в памяти на всё время жизни процесса;
+    закрывается через :func:`close_cached_clients` в on_shutdown.
 
     Для большинства профилей — AsyncOpenAI.
     Для profile=gigachat — GigaChatAdapterClient, который проксирует
@@ -103,10 +103,13 @@ def build_llm_client(settings: ChatDomainSettings):
 def build_fallback_client(settings: ChatDomainSettings):
     """Возвращает LLM-клиент для fallback-провайдера.
 
-    Требует чтобы ``settings.fallback_profile`` и ``fallback_api_base``,
-    ``fallback_api_key`` были заданы. Кэшируется отдельным ключом, как
-    primary. При несоответствии настроек — возвращает None (caller сам
-    решает, что делать).
+    Требует чтобы ``settings.fallback_profile`` был задан. Дальше маршрут
+    определяет требования: для ``redis-bridge,*`` этого достаточно —
+    ``fallback_api_base``/``fallback_api_key`` не нужны (мост не ходит
+    напрямую в HTTP); для HTTP-маршрута (``gigachat``/``openai``) оба поля
+    обязательны. Кэшируется отдельным ключом, как primary. При
+    несоответствии настроек — возвращает None (caller сам решает, что
+    делать).
 
     Использовать ТОЛЬКО когда primary недоступен (circuit open).
     Для GigaChat-fallback ВАЖНО: streaming не поддерживается; вызывающий
