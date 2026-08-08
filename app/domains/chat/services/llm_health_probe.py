@@ -90,20 +90,27 @@ class LLMHealthProbe:
 
         Probe нужен только для primary (в проде — sglang/openai-совместимый).
         Если задан client_factory — используем его (тесты). Иначе строим
-        реальный AsyncOpenAI с таймаутом health_probe.timeout_sec.
+        клиента через общую фабрику build_llm_client с probe-таймаутом.
         """
         if self._client is not None:
             return self._client
         if self._client_factory is not None:
             self._client = self._client_factory()
             return self._client
-        from openai import AsyncOpenAI
+        # Клиент по маршруту primary через общую фабрику (redis-bridge
+        # получает heartbeat-ping, HTTP-маршруты — обычный models.list).
+        # Короткий probe-таймаут — копией настроек: другой timeout даёт
+        # отдельный кэш-ключ, основной клиент не затрагивается.
+        from app.domains.chat.services.llm_client import build_llm_client
 
-        self._client = AsyncOpenAI(
-            base_url=self._settings.api_base,
-            api_key=self._settings.api_key.get_secret_value(),
-            timeout=self._settings.health_probe.timeout_sec,
+        probe_settings = self._settings.model_copy(
+            update={
+                "request_timeout": max(
+                    1, int(self._settings.health_probe.timeout_sec),
+                ),
+            },
         )
+        self._client = build_llm_client(probe_settings)
         return self._client
 
     # ── Проба ───────────────────────────────────────────────────────────────────
