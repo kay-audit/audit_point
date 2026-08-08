@@ -155,7 +155,7 @@ async def test_non_gigachat_executes_all_tool_calls_in_single_round():
     orch = Orchestrator(
         msg_service=AsyncMock(load_history_for_llm=AsyncMock(return_value=[])),
         conv_service=AsyncMock(),
-        settings=_gigachat_settings(profile="sglang"),
+        settings=_gigachat_settings(profile="openai"),
     )
     orch._save_assistant_message = AsyncMock()
 
@@ -216,7 +216,7 @@ async def test_tool_client_action_block_reaches_final_message():
     orch = Orchestrator(
         msg_service=AsyncMock(load_history_for_llm=AsyncMock(return_value=[])),
         conv_service=AsyncMock(),
-        settings=_gigachat_settings(profile="sglang"),
+        settings=_gigachat_settings(profile="openai"),
     )
     orch._save_assistant_message = AsyncMock()
 
@@ -261,7 +261,7 @@ async def test_tool_blocks_list_reaches_final_message_with_buttons():
     orch = Orchestrator(
         msg_service=AsyncMock(load_history_for_llm=AsyncMock(return_value=[])),
         conv_service=AsyncMock(),
-        settings=_gigachat_settings(profile="sglang"),
+        settings=_gigachat_settings(profile="openai"),
     )
     orch._save_assistant_message = AsyncMock()
 
@@ -309,7 +309,7 @@ async def test_tool_block_feeds_summary_to_llm_not_raw_json():
     orch = Orchestrator(
         msg_service=AsyncMock(load_history_for_llm=AsyncMock(return_value=[])),
         conv_service=AsyncMock(),
-        settings=_gigachat_settings(profile="sglang"),
+        settings=_gigachat_settings(profile="openai"),
     )
     orch._save_assistant_message = AsyncMock()
 
