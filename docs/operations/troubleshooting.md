@@ -77,7 +77,7 @@
 1. Уменьшить файл / разбить на несколько сообщений.
 2. Если требование легитимное — увеличить лимит в `.env` и рестарт сервера. Помнить про `SECURITY__MAX_REQUEST_SIZE` (10 МБ дефолт) — он независимо ограничивает body запроса.
 
-**См. также:** `.env.example` секция `# --- Файлы ---`, `app/domains/chat/exceptions.py::ChatFileValidationError`.
+**См. также:** `.env.prod` секция `# --- Файлы ---`, `app/domains/chat/exceptions.py::ChatFileValidationError`.
 
 ---
 
@@ -148,7 +148,7 @@
 2. Перезапусти сервер.
 3. После запроса подожди ~5 секунд (один flush) — записи появятся.
 
-**См. также:** `.env.example` секция Observability, `app/domains/admin/`.
+**См. также:** `.env.prod` секция Observability, `app/domains/admin/`.
 
 ---
 

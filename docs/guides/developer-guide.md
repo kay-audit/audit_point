@@ -183,14 +183,14 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 
 # 4. Создать .env (скопировать из шаблона)
-cp .env.example .env
+cp .env.dev .env
 # Отредактировать .env — указать параметры БД
 
 # 5. Запустить
 python -m app.main
 ```
 
-Приложение будет доступно по адресу `http://localhost:8005` (порт берётся из `SERVER__PORT`; в `.env.example` задан `8005`).
+Приложение будет доступно по адресу `http://localhost:8005` (порт берётся из `SERVER__PORT`; в `.env.prod` задан `8005`).
 
 **DataLab / JupyterHub (Greenplum):**
 
@@ -232,7 +232,8 @@ Audit Workstation/
 ├── docs/                         — документация
 ├── scripts/                      — вспомогательные скрипты
 ├── acts_storage/                 — файловое хранилище актов (StorageService)
-├── .env.example                  — шаблон конфигурации
+├── .env.dev                       — шаблон конфигурации (DEV)
+├── .env.prod                      — шаблон конфигурации (ПРОМ)
 ├── requirements.txt              — зависимости
 ├── requirements-dev.txt          — dev-зависимости (pytest и т.д.)
 └── pytest.ini                    — конфигурация pytest
@@ -1470,7 +1471,7 @@ patch-точки `patch.multiple("app.db.connection", get_db=..., get_adapter=..
 - `DATABASE__STRICT_ACQUIRE_GUARD=true` — `RuntimeError`. В тестах включён
   БЕЗУСЛОВНО через autouse-фикстуру `strict_acquire_guard`
   (`tests/conftest.py`), независимо от `.env`.
-- `false` (дефолт, `.env.example`, ПРОМ) — WARNING со стеком, запрос не падает.
+- `false` (дефолт, `.env.prod`, ПРОМ) — WARNING со стеком, запрос не падает.
 
 Глубина хранится вместе с task-владельцем (`_AcquireDepth`): contextvar
 копируется в `create_task`, дочерний task наследует значение родителя — но его
@@ -1701,7 +1702,7 @@ class ActOut(BaseModel):
 - Тесты сервиса/репозитория, использующие `mock_conn.fetch.return_value = [...]`, обновить — добавить ключ `"priority"` в моки строк, иначе KeyError при маппинге.
 - E2E-тесты API, проверяющие сериализацию `ActOut`, — обновить ожидаемые ответы.
 
-**Шаг 8. Документировать** в `.env.example`, если поле управляется конфигом (новая `ACTS__*`-настройка). См. §9.4.3.
+**Шаг 8. Документировать** в `.env.dev` и `.env.prod`, если поле управляется конфигом (новая `ACTS__*`-настройка). См. §9.4.3.
 
 ### 6.8 Пример: добавление новой таблицы
 
@@ -1761,7 +1762,7 @@ violation_risk_type_dict: str = "t_db_oarb_ua_violation_risk_type_dict"
 - добавить ключ в `_DICT_DISPATCH` сервиса домена-потребителя (например, `app/domains/ck_fin_res/services/fr_validation_service.py`);
 - расширить `Literal` в `app/domains/<domain>/api/dictionaries.py`.
 
-**Шаг 5. `.env` и `.env.example`.** Добавить переменную `UA_DATA__<NAME>=t_db_oarb_…` в оба файла рядом с остальными `UA_DATA__*` — позволяет переопределить имя таблицы без релиза кода.
+**Шаг 5. `.env`, `.env.dev`, `.env.prod`.** Добавить переменную `UA_DATA__<NAME>=t_db_oarb_…` во все файлы рядом с остальными `UA_DATA__*` — позволяет переопределить имя таблицы без релиза кода.
 
 **Шаг 6. Фронтенд.** На странице, где справочник используется:
 - добавить ключ справочника в `static dictNames = [...]` конфига (например, `ck-fin-res-config.js`);
@@ -1947,7 +1948,7 @@ always / forward: submit вопроса в шину + черновик (status='
 2. Добавить ветку в `build_llm_client()` (`llm_client.py`). Если проводной формат не OpenAI-совместим — написать адаптер по образцу `gigachat_adapter.py` (для `redis-bridge` — расширить `redis_bridge_adapter.py`, переиспользуя трансляцию из существующего адаптера формата, не копируя её).
 3. Если у нового формата есть свои quirks (как у GigaChat) — завести их за хелпером `wire_is_gigachat`-подобного вида, а не проверкой конкретного маршрута строкой: quirks должны включаться по проводному формату, а не по транспорту (иначе `redis-bridge,<формат>` не унаследует поведение прямого HTTP-маршрута того же формата).
 4. `run_agent_loop` делает non-streaming LLM-вызов, поэтому отдельный streaming-guard для нового маршрута не нужен.
-5. Документировать в `.env.example` (блок с примером URL/маршрута и quirks) и в этой таблице; для нового транспорта — отдельно в `docs/integrations/redis-llm-bridge.md` (или аналогичном протокольном документе).
+5. Документировать в `.env.dev` и `.env.prod` (блок с примером URL/маршрута и quirks) и в этой таблице; для нового транспорта — отдельно в `docs/integrations/redis-llm-bridge.md` (или аналогичном протокольном документе).
 6. Покрыть тестами: разбор маршрута (`test_settings_profiles.py`), трансляция request/response, retry на 5xx, edge cases (битый JSON args, non-serializable, multi-round roundtrip).
 
 ### 7.2 ChatTool и ChatToolParam
@@ -2965,7 +2966,7 @@ server {
 
 **Лимиты безопасности (Redis):** `otp_att:{user}` — счётчик неверных попыток ввода кода; по достижении `AUTH__OTP_MAX_ATTEMPTS` код инвалидируется досрочно (нужен новый запрос). `otp_req:{email}` — счётчик запросов кода на email за минуту; при превышении `AUTH__OTP_REQUEST_MAX_PER_MINUTE` — 429 ещё до похода в БД (защита и от перебора email, и от флуда SMTP). При `AUTH__ENABLED=true` пустой, дефолтный (`your-secret-key`) либо короче 32 символов `AUTH__JWT_SECRET` — фатальная ошибка валидации настроек при старте (см. `AuthSettings.validate_jwt_secret`; 32 — минимум HMAC-ключа HS256 по RFC 7518).
 
-**Env-переменные** (`AUTH__*`; полный список с дефолтами — `.env.example`, машиночитаемая таблица — §9.5 «Auth»):
+**Env-переменные** (`AUTH__*`; полный список с дефолтами — `.env.prod`, машиночитаемая таблица — §9.5 «Auth»):
 
 | Переменная | Дефолт | Назначение |
 |---|---|---|
@@ -2989,7 +2990,7 @@ server {
 2. `NOTIFICATIONS__EMAIL__ENABLED=false` — почту не поднимаем, ОТП-код забираем из лога сервера (строка `DEV-режим: ОТП-код для ... = ...`).
 3. `AUTH__JWT_SECRET` — строка не короче 32 символов: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
-**Деплой SDP:** приложение переехало с JupyterHub DataLab на SDP-кластер — доступ по IP:порту напрямую (пример: `http://10.110.10.38:<port>`), `root_path`/proxy-путей больше нет (`app/main.py` их не вычисляет, в отличие от §9.2 ниже). Соединение — **обычный HTTP, не HTTPS** (нет TLS-терминирующего reverse proxy перед приложением) → `AUTH__COOKIE_SECURE` должен быть `false`. `true` без HTTPS — не «более безопасный дефолт», а тихая поломка входа: браузер отбрасывает `Secure`-cookie на HTTP-соединении, `verify-otp` отвечает 200, но токены не сохраняются, и следующий же запрос уходит редиректом обратно на `/auth/login` без единой ошибки в логах (наступали на это на актуализации `.env.example` под ПРОМ). Если перед приложением всё же появится TLS-терминирующий прокси — см. §9.3 выше и переключить на `true`.
+**Деплой SDP:** приложение переехало с JupyterHub DataLab на SDP-кластер — доступ по IP:порту напрямую (пример: `http://10.110.10.38:<port>`), `root_path`/proxy-путей больше нет (`app/main.py` их не вычисляет, в отличие от §9.2 ниже). Соединение — **обычный HTTP, не HTTPS** (нет TLS-терминирующего reverse proxy перед приложением) → `AUTH__COOKIE_SECURE` должен быть `false`. `true` без HTTPS — не «более безопасный дефолт», а тихая поломка входа: браузер отбрасывает `Secure`-cookie на HTTP-соединении, `verify-otp` отвечает 200, но токены не сохраняются, и следующий же запрос уходит редиректом обратно на `/auth/login` без единой ошибки в логах (наступали на это на актуализации `.env.prod` под ПРОМ). Если перед приложением всё же появится TLS-терминирующий прокси — см. §9.3 выше и переключить на `true`.
 
 ### 9.4 Конфигурация: .env и Pydantic Settings
 
@@ -3183,7 +3184,7 @@ def test_chat_settings_defaults():
 ##### При добавлении новой переменной
 
 1. Добавить поле в соответствующий `*Settings`-класс.
-2. Дописать в `.env.example` (с комментарием по-русски, дефолтное значение, рамки допустимых).
+2. Дописать в `.env.dev` и `.env.prod` (с комментарием по-русски, дефолтное значение, рамки допустимых).
 3. Если поле управляет именем таблицы / справочника — может потребоваться `migration_substitutions` в `DomainDescriptor` (см. §6.5).
 4. Обновить таблицу в §9.5.
 5. Тесты домена — `_load_from_env` с `monkeypatch.setenv` для проверки парсинга.
@@ -3205,7 +3206,7 @@ def test_chat_settings_defaults():
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `SERVER__HOST` | str | `0.0.0.0` | IP для привязки |
-| `SERVER__PORT` | int | `8005` | TCP порт (1-65535). В `.env.example` задан `8005`; Swagger по адресу `http://localhost:8005/docs` |
+| `SERVER__PORT` | int | `8005` | TCP порт (1-65535). В `.env.prod` задан `8005`; Swagger по адресу `http://localhost:8005/docs` |
 | `SERVER__API_V1_PREFIX` | str | `/api/v1` | Префикс API |
 | `SERVER__LOG_LEVEL` | str | `INFO` | Уровень логирования (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `LOG_FORMAT` | str | `text` | `text` (разработка) или `json` (для агрегаторов) |

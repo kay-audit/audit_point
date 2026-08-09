@@ -107,7 +107,7 @@ class TestResolveEnvUsername:
     def test_empty_env_falls_back_to_settings_default(self, monkeypatch):
         # os.environ без JUPYTERHUB_USER -> резолвится через get_settings().
         # Локальный .env разработчика обычно задаёт JUPYTERHUB_USER (см.
-        # .env.example) — подменяем сам get_settings, чтобы тест не зависел
+        # .env.dev) — подменяем сам get_settings, чтобы тест не зависел
         # от содержимого реального .env.
         monkeypatch.delenv("JUPYTERHUB_USER", raising=False)
         monkeypatch.setattr(
