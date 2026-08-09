@@ -136,7 +136,7 @@ async def test_gigachat_queues_extra_tool_calls_and_drains_without_extra_llm():
 
 
 async def test_non_gigachat_executes_all_tool_calls_in_single_round():
-    """Не-gigachat профиль (sglang) исполняет все tool_calls параллельно
+    """Не-gigachat маршрут (openai) исполняет все tool_calls параллельно
     в одном раунде — очередь не задействуется. Контрольный сценарий,
     показывающий что queue-логика срабатывает только под gigachat."""
 

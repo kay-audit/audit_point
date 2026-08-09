@@ -2122,6 +2122,7 @@ LLM call
 | `openai.APITimeoutError` / `APIConnectionError` | Да | Всегда |
 | `400` / `401` / `403` / `404` / `422` | **Нет** | Это ошибки запроса — повтор не поможет |
 | `ChatLimitError` / `ChatFileValidationError` / `ChatRateLimitError` | **Нет** | Доменные ошибки бизнес-логики |
+| `BridgeDeadlineError` (redis-мост) | **Нет** | Дедлайн моста = полный `CHAT__REQUEST_TIMEOUT`; повтор клал бы дубль-заявку в stream. Fallback при этом срабатывает (подкласс `APITimeoutError`) |
 
 Полные сценарии и edge-case'ы — `docs/testing/retry-test-scenarios.md`.
 

@@ -121,7 +121,7 @@
 
 ### 5. LLM возвращает 4xx (включая GigaChat 422)
 
-**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (Qwen/SGLang) или `422 RequestInputValidationException` (GigaChat). Отдельный случай — падение на **первом же** запросе с `400 invalid_request_error: tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}'` (Anthropic-модели, в т.ч. через профиль `openrouter`).
+**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (Qwen/SGLang) или `422 RequestInputValidationException` (GigaChat). Отдельный случай — падение на **первом же** запросе с `400 invalid_request_error: tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}'` (Anthropic-модели, например через openrouter по маршруту `openai`).
 
 **Причина:** одна из трёх известных проблем:
 - assistant-сообщение в history содержит `content=null` + `tool_calls`.
