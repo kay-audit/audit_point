@@ -6,7 +6,8 @@
     (ConnectError, ReadTimeout, WriteTimeout, RemoteProtocolError, PoolTimeout).
   - НЕ ретраится: HTTP 400/401/403/404/422 и прочие 4xx, доменные исключения
     чата (ChatLimitError, ChatFileValidationError, ChatRateLimitError и т.п.),
-    любые иные исключения.
+    BridgeDeadlineError redis-моста (дедлайн = полный request_timeout,
+    повтор породил бы дубль-заявку в stream), любые иные исключения.
 
 Два класса ретраябельных ошибок с разными лимитами попыток:
   - **connect-class** (сервер недоступен, обрыв соединения) — fast-fail с
@@ -41,6 +42,7 @@ from app.domains.chat.exceptions import (
     ChatLimitError,
     ChatRateLimitError,
 )
+from app.domains.chat.services.redis_bridge_adapter import BridgeDeadlineError
 
 logger = logging.getLogger("audit_workstation.chat.retry")
 
@@ -65,12 +67,19 @@ _TRANSIENT_NETWORK_EXC: tuple[type[BaseException], ...] = (
     httpx.RemoteProtocolError,
 )
 
-# Доменные исключения чата, которые НЕ должны ретраиться — это
-# валидационные/бизнес-ошибки, повтор не поможет.
+# Исключения, которые НЕ должны ретраиться:
+# - доменные исключения чата — валидационные/бизнес-ошибки, повтор не поможет;
+# - BridgeDeadlineError — дедлайн redis-моста уже равен полному
+#   request_timeout; повтор клал бы в stream новую заявку (воркер исполнял
+#   бы дубли против LLM) и умножал бы время ожидания пользователя.
+#   Ловится ЗДЕСЬ, до APITimeoutError (он её подкласс). Fallback при этом
+#   срабатывает как обычно (llm_call._is_provider_failure видит
+#   APITimeoutError-иерархию).
 _NEVER_RETRY_EXC: tuple[type[BaseException], ...] = (
     ChatLimitError,
     ChatFileValidationError,
     ChatRateLimitError,
+    BridgeDeadlineError,
 )
 
 

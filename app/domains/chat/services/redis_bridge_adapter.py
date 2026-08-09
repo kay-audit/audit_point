@@ -9,8 +9,11 @@ docs/integrations/redis-llm-bridge.md.
 Ошибки транслируются в иерархию ``openai.*`` — иначе существующие
 retry (retry.py), circuit breaker и fallback (llm_call.py) их не увидят:
 - воркер мёртв / цель недоступна / Redis лёг → APIConnectionError;
-- дедлайн ожидания истёк → APITimeoutError;
-- error-конверт воркера → APIStatusError с тем же status_code.
+- дедлайн ожидания истёк → BridgeDeadlineError (подкласс APITimeoutError:
+  fallback срабатывает, но retry его НЕ повторяет — см. docstring класса);
+- error-конверт воркера → APIStatusError с тем же status_code;
+- невалидное тело final-конверта → APIStatusError 502 (не маскируется
+  под сбой Redis).
 """
 from __future__ import annotations
 
@@ -43,6 +46,18 @@ def _make_request() -> httpx.Request:
     return httpx.Request("POST", "http://redis-bridge.local/chat/completions")
 
 
+class BridgeDeadlineError(APITimeoutError):
+    """Дедлайн ожидания ответа воркера истёк.
+
+    Подкласс APITimeoutError, поэтому llm_call считает его сбоем провайдера
+    и уходит на fallback. Но retry_on_transient его НЕ повторяет
+    (см. _NEVER_RETRY_EXC в retry.py): дедлайн моста равен полному
+    request_timeout, а каждый повтор клал бы в stream НОВУЮ заявку —
+    воркер исполнял бы дубли против LLM, а пользователь ждал бы кратно
+    дольше (max_attempts × request_timeout).
+    """
+
+
 def _status_error(status_code: int, message: str) -> APIStatusError:
     """APIStatusError с заданным кодом (для error-конвертов воркера)."""
     response = httpx.Response(
@@ -51,11 +66,19 @@ def _status_error(status_code: int, message: str) -> APIStatusError:
     return APIStatusError(message, response=response, body=None)
 
 
-async def _ensure_worker_available(target: str, key_prefix: str) -> None:
+async def _ensure_worker_available(
+    target: str, key_prefix: str, *, require_healthy: bool = False,
+) -> None:
     """Проверяет heartbeat воркера и доступность цели.
 
     Ключа нет / цель не заявлена / Redis недоступен → APIConnectionError
     (connect-класс retry: быстрый отказ, срабатывает fallback).
+
+    require_healthy=True (health probe): дополнительно требует, чтобы воркер
+    не пометил цель нездоровой в ``target_health`` heartbeat'а. Пользовательские
+    запросы (create) этот флаг НЕ используют — ложноотрицательный health-check
+    воркера не должен блокировать реальные вызовы; он лишь мешает probe
+    преждевременно закрыть breaker, пока LLM-бэкенд за воркером лежит.
     """
     from app.core.redis import get_redis
 
@@ -75,6 +98,10 @@ async def _ensure_worker_available(target: str, key_prefix: str) -> None:
         info = json.loads(raw)
     except json.JSONDecodeError:
         info = {}
+    if not isinstance(info, dict):
+        # Валидный JSON, но не объект (массив/строка) — контракт модуля
+        # обязывает остаться в иерархии openai.*, а не упасть AttributeError.
+        info = {}
     targets = info.get("targets") or []
     if target not in targets:
         raise APIConnectionError(
@@ -84,6 +111,17 @@ async def _ensure_worker_available(target: str, key_prefix: str) -> None:
             ),
             request=_make_request(),
         )
+    if require_healthy:
+        health = info.get("target_health")
+        # Отсутствие поля / не-dict = «здорова» (совместимость со старым воркером).
+        if isinstance(health, dict) and health.get(target) is False:
+            raise APIConnectionError(
+                message=(
+                    f"redis-bridge: цель {target!r} нездорова по данным "
+                    "воркера (LLM-бэкенд не отвечает)"
+                ),
+                request=_make_request(),
+            )
 
 
 def _build_wire_body(kwargs: dict, *, wire_format: str) -> dict:
@@ -121,7 +159,13 @@ def _find_terminal(entries: list[tuple[str, dict]]) -> dict | None:
 
 
 def _handle_terminal(fields: dict, *, wire_format: str):
-    """Терминальный кусок → ChatCompletion либо APIStatusError."""
+    """Терминальный кусок → ChatCompletion либо APIStatusError.
+
+    Нечитаемое/несовместимое со схемой тело final-конверта — это ответ
+    LLM-бэкенда, а не сбой транспорта, поэтому APIStatusError 502
+    (server-класс: ретраится по on_5xx, тригерит fallback), а не
+    APIConnectionError с вводящим в заблуждение текстом про Redis.
+    """
     if fields.get("kind") == "error":
         try:
             code = int(fields.get("status_code") or 502)
@@ -130,23 +174,36 @@ def _handle_terminal(fields: dict, *, wire_format: str):
         raise _status_error(
             code, fields.get("message") or "redis-bridge: ошибка воркера",
         )
-    raw = json.loads(fields["body"])
-    if wire_format == "gigachat":
-        # Нормализация: GigaChat отдаёт function_call.arguments как dict,
-        # но SDK ожидает строку. Преобразуем dict в JSON-строку ДО model_validate,
-        # затем _translate_response получит строку (он умеет обе).
-        for choice in raw.get("choices") or []:
-            fc = (choice.get("message") or {}).get("function_call")
-            if fc and not isinstance(fc.get("arguments"), str):
-                fc["arguments"] = json.dumps(
-                    fc.get("arguments") or {}, ensure_ascii=False,
-                )
-    completion = ChatCompletion.model_validate(raw)
-    if wire_format == "gigachat":
-        from app.domains.chat.services.gigachat_adapter import (
-            _translate_response,
-        )
-        completion = _translate_response(completion)
+    try:
+        raw = json.loads(fields["body"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _status_error(
+            502, f"redis-bridge: нечитаемое тело ответа воркера ({exc})",
+        ) from exc
+    try:
+        if wire_format == "gigachat":
+            # Нормализация: GigaChat отдаёт function_call.arguments как dict,
+            # но SDK ожидает строку. Преобразуем dict в JSON-строку ДО
+            # model_validate, затем _translate_response получит строку
+            # (он умеет обе).
+            for choice in raw.get("choices") or []:
+                fc = (choice.get("message") or {}).get("function_call")
+                if fc and not isinstance(fc.get("arguments"), str):
+                    fc["arguments"] = json.dumps(
+                        fc.get("arguments") or {}, ensure_ascii=False,
+                    )
+        completion = ChatCompletion.model_validate(raw)
+        if wire_format == "gigachat":
+            from app.domains.chat.services.gigachat_adapter import (
+                _translate_response,
+            )
+            completion = _translate_response(completion)
+    except Exception as exc:
+        raise _status_error(
+            502,
+            "redis-bridge: тело ответа воркера не соответствует схеме "
+            f"ChatCompletion ({type(exc).__name__})",
+        ) from exc
     return completion
 
 
@@ -173,6 +230,9 @@ class _Completions:
         deadline = time.monotonic() + timeout
         resp_key = client._key_prefix + RESP_KEY_SUFFIX + request_id
         redis = get_redis()
+        terminal: dict | None = None
+        # В try — только обмен с Redis: ошибки разбора терминального куска
+        # не должны маскироваться под сбой Redis (_handle_terminal — снаружи).
         try:
             await redis.xadd(
                 client._key_prefix + REQUESTS_STREAM_SUFFIX,
@@ -190,18 +250,16 @@ class _Completions:
                 entries = await redis.xrange(resp_key)
                 terminal = _find_terminal(entries)
                 if terminal is not None:
-                    return _handle_terminal(
-                        terminal, wire_format=client._target,
-                    )
+                    break
                 await asyncio.sleep(POLL_INTERVAL_SEC)
-        except (APIStatusError, APITimeoutError, APIConnectionError):
-            raise
         except Exception as exc:  # ошибки redis-py — connect-класс
             raise APIConnectionError(
                 message="redis-bridge: сбой Redis при обмене",
                 request=_make_request(),
             ) from exc
-        raise APITimeoutError(request=_make_request())
+        if terminal is None:
+            raise BridgeDeadlineError(request=_make_request())
+        return _handle_terminal(terminal, wire_format=client._target)
 
 
 class _Chat:
@@ -210,7 +268,12 @@ class _Chat:
 
 
 class _Models:
-    """``models.list()`` — проверка heartbeat, используется health probe."""
+    """``models.list()`` — проверка heartbeat, используется health probe.
+
+    require_healthy=True: воркер сам пингует свои LLM-бэкенды и публикует
+    ``target_health`` в heartbeat, поэтому probe закрывает breaker только
+    когда жив не только воркер, но и цель за ним.
+    """
 
     def __init__(self, client: "RedisBridgeClient") -> None:
         self._client = client
@@ -218,6 +281,7 @@ class _Models:
     async def list(self) -> list:
         await _ensure_worker_available(
             self._client._target, self._client._key_prefix,
+            require_healthy=True,
         )
         return []
 

@@ -10,6 +10,7 @@ import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, NOT_GIVEN
 
 from app.domains.chat.services.redis_bridge_adapter import (
+    BridgeDeadlineError,
     RedisBridgeClient,
 )
 
@@ -48,6 +49,65 @@ class TestWorkerAvailability:
         await fake_redis.set(ALIVE_KEY, "не json", ex=45)
         with pytest.raises(APIConnectionError):
             await make_client("openai").models.list()
+
+    async def test_heartbeat_json_not_object_raises_connection_error(
+        self, fake_redis,
+    ):
+        """Валидный JSON, но не объект ('[]', '"ok"') — контракт модуля
+        обязывает APIConnectionError, а не AttributeError мимо retry/fallback."""
+        for raw in ("[]", '"ok"', "42"):
+            await fake_redis.set(ALIVE_KEY, raw, ex=45)
+            with pytest.raises(APIConnectionError):
+                await make_client("openai").models.list()
+
+    async def test_unhealthy_target_fails_probe_but_not_create(
+        self, fake_redis,
+    ):
+        """target_health=false: probe (models.list) видит отказ, а
+        пользовательский create работает — ложноотрицательный health-check
+        воркера не должен блокировать реальные запросы."""
+        await fake_redis.set(
+            ALIVE_KEY,
+            json.dumps({
+                "worker_id": "test",
+                "targets": ["openai"],
+                "target_health": {"openai": False},
+            }),
+            ex=45,
+        )
+        with pytest.raises(APIConnectionError):
+            await make_client("openai").models.list()
+
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "q"}],
+            tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200",
+                   "body": json.dumps(OPENAI_RESPONSE_BODY)},
+        )
+        result = await task
+        assert result.choices[0].message.content == "Привет!"
+
+    async def test_healthy_target_passes_probe(self, fake_redis):
+        await fake_redis.set(
+            ALIVE_KEY,
+            json.dumps({
+                "worker_id": "test",
+                "targets": ["openai"],
+                "target_health": {"openai": True},
+            }),
+            ex=45,
+        )
+        assert await make_client("openai").models.list() == []
+
+    async def test_missing_target_health_treated_as_healthy(self, fake_redis):
+        """Совместимость: heartbeat без target_health (старый воркер) —
+        probe проходит по одному наличию цели в targets."""
+        await put_heartbeat(fake_redis, ["openai"])
+        assert await make_client("openai").models.list() == []
 
     async def test_aclose_is_noop(self, fake_redis):
         await make_client().aclose()  # не бросает
@@ -161,24 +221,86 @@ class TestCreateOpenAI:
             await task
         assert exc_info.value.status_code == 422
 
-    async def test_silence_raises_timeout(self, fake_redis):
+    async def test_silence_raises_deadline_error(self, fake_redis):
+        """Тишина до дедлайна — BridgeDeadlineError (подкласс APITimeoutError,
+        fallback срабатывает), а не голый APITimeoutError (тот бы ретраился)."""
         await put_heartbeat(fake_redis, ["openai"])
         client = make_client("openai", timeout=0.5)  # короткий дедлайн
-        with pytest.raises(APITimeoutError):
+        with pytest.raises(BridgeDeadlineError):
             await client.chat.completions.create(
                 model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
             )
+        assert issubclass(BridgeDeadlineError, APITimeoutError)
 
     async def test_explicit_timeout_kwarg_wins(self, fake_redis):
         await put_heartbeat(fake_redis, ["openai"])
         client = make_client("openai", timeout=30.0)
         started = asyncio.get_event_loop().time()
-        with pytest.raises(APITimeoutError):
+        with pytest.raises(BridgeDeadlineError):
             await client.chat.completions.create(
                 model="m", messages=[], tools=NOT_GIVEN,
                 temperature=0.1, timeout=0.4,
             )
         assert asyncio.get_event_loop().time() - started < 5.0
+
+    async def test_malformed_final_body_maps_to_502_not_redis_error(
+        self, fake_redis,
+    ):
+        """Тело final-конверта не по схеме ChatCompletion → APIStatusError 502
+        с причиной разбора, а НЕ APIConnectionError «сбой Redis»."""
+        await put_heartbeat(fake_redis, ["openai"])
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200", "body": "{это не json"},
+        )
+        with pytest.raises(APIStatusError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 502
+        assert "Redis" not in str(exc_info.value.message)
+
+    async def test_schema_mismatch_final_body_maps_to_502(self, fake_redis):
+        await put_heartbeat(fake_redis, ["openai"])
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200",
+                   "body": json.dumps({"совсем": "не ChatCompletion"})},
+        )
+        with pytest.raises(APIStatusError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 502
+
+
+class TestDeadlineNotRetried:
+    async def test_retry_does_not_repeat_bridge_deadline(self):
+        """retry_on_transient не повторяет BridgeDeadlineError: дедлайн моста
+        равен полному request_timeout, повтор клал бы дубль-заявку в stream."""
+        import httpx
+
+        from app.domains.chat.services.retry import retry_on_transient
+
+        calls = {"n": 0}
+
+        @retry_on_transient(
+            on_429=True, on_5xx=True, max_attempts=5,
+            connect_max_attempts=2, backoff_base=0.0,
+        )
+        async def failing():
+            calls["n"] += 1
+            raise BridgeDeadlineError(
+                request=httpx.Request("POST", "http://x/chat/completions"),
+            )
+
+        with pytest.raises(BridgeDeadlineError):
+            await failing()
+        assert calls["n"] == 1
 
 
 GIGACHAT_RESPONSE_BODY = {
