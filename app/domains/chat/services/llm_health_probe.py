@@ -55,8 +55,9 @@ class LLMHealthProbe:
         settings       — ChatDomainSettings (берёт .health_probe и breaker-параметры).
         clock          — провайдер монотонного времени (для тестов).
         sleep          — корутина-усыпитель (для тестов — AsyncMock без ожидания).
-        client_factory — фабрика HTTP-клиента; если None, лениво строит реальный
-                         AsyncOpenAI с коротким таймаутом (см. _get_client).
+        client_factory — фабрика клиента; если None, лениво строит клиента по
+                         маршруту профиля через build_llm_client с коротким
+                         таймаутом (см. _get_client).
         """
         self._settings = settings
         self._clock = clock
@@ -64,6 +65,10 @@ class LLMHealthProbe:
         self._client_factory = client_factory
 
         self._client: Any = None  # лениво строится в _get_client()
+        # True только для клиента из client_factory (тесты): клиент из
+        # build_llm_client живёт в общем кэше llm_client._clients_cache,
+        # закрывать его — не право probe (это делает close_cached_clients).
+        self._owns_client = False
         self._stop = False
         self._task: asyncio.Task | None = None
         # Текущий интервал backoff'а — стартует с min.
@@ -86,24 +91,32 @@ class LLMHealthProbe:
         )
 
     def _get_client(self):
-        """Лениво строит и кэширует HTTP-клиент с коротким таймаутом.
+        """Лениво строит и кэширует клиента с коротким таймаутом.
 
-        Probe нужен только для primary (в проде — sglang/openai-совместимый).
+        Probe нужен только для primary (в проде — redis-bridge,gigachat).
         Если задан client_factory — используем его (тесты). Иначе строим
-        реальный AsyncOpenAI с таймаутом health_probe.timeout_sec.
+        клиента через общую фабрику build_llm_client с probe-таймаутом.
         """
         if self._client is not None:
             return self._client
         if self._client_factory is not None:
             self._client = self._client_factory()
+            self._owns_client = True
             return self._client
-        from openai import AsyncOpenAI
+        # Клиент по маршруту primary через общую фабрику (redis-bridge
+        # получает heartbeat-ping, HTTP-маршруты — обычный models.list).
+        # Короткий probe-таймаут — копией настроек: другой timeout даёт
+        # отдельный кэш-ключ, основной клиент не затрагивается.
+        from app.domains.chat.services.llm_client import build_llm_client
 
-        self._client = AsyncOpenAI(
-            base_url=self._settings.api_base,
-            api_key=self._settings.api_key.get_secret_value(),
-            timeout=self._settings.health_probe.timeout_sec,
+        probe_settings = self._settings.model_copy(
+            update={
+                "request_timeout": max(
+                    1, int(self._settings.health_probe.timeout_sec),
+                ),
+            },
         )
+        self._client = build_llm_client(probe_settings)
         return self._client
 
     # ── Проба ───────────────────────────────────────────────────────────────────
@@ -201,7 +214,13 @@ class LLMHealthProbe:
         logger.info("llm_health_probe: запущен")
 
     async def stop(self) -> None:
-        """Останавливает фоновый цикл, ждёт завершения и закрывает клиент."""
+        """Останавливает фоновый цикл и ждёт завершения.
+
+        Закрывает клиента ТОЛЬКО если он пришёл из client_factory (probe
+        владеет им). Клиент из build_llm_client лежит в общем кэше
+        llm_client._clients_cache и мог достаться primary-пути (совпавший
+        кэш-ключ) — его закрывает close_cached_clients на shutdown.
+        """
         self._stop = True
         if self._task is not None:
             self._task.cancel()
@@ -211,7 +230,7 @@ class LLMHealthProbe:
                 pass
             self._task = None
 
-        if self._client is not None:
+        if self._client is not None and self._owns_client:
             close = getattr(self._client, "aclose", None) or getattr(
                 self._client, "close", None,
             )
@@ -222,5 +241,6 @@ class LLMHealthProbe:
                     logger.exception(
                         "llm_health_probe: ошибка при закрытии клиента",
                     )
-            self._client = None
+        self._client = None
+        self._owns_client = False
         logger.info("llm_health_probe: остановлен")

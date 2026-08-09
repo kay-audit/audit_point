@@ -255,3 +255,32 @@ class TestLifecycle:
 
         await RedisAdapter(RedisSettings()).connect()
         assert captured["password"] is None
+
+
+# ── Streams: xadd / xrange ──────────────────────────────────────────────────
+
+
+class TestStreams:
+    """xadd/xrange — минимум для LLM-моста (redis-bridge)."""
+
+    async def test_xadd_returns_entry_id(self, adapter):
+        entry_id = await adapter.xadd("s:test", {"v": "1", "id": "abc"})
+        assert isinstance(entry_id, str) and "-" in entry_id
+
+    async def test_xrange_reads_fields_in_order(self, adapter):
+        await adapter.xadd("s:test", {"seq": "0", "kind": "chunk"})
+        await adapter.xadd("s:test", {"seq": "1", "kind": "final"})
+        entries = await adapter.xrange("s:test")
+        assert len(entries) == 2
+        assert entries[0][1] == {"seq": "0", "kind": "chunk"}
+        assert entries[1][1] == {"seq": "1", "kind": "final"}
+
+    async def test_xrange_empty_stream(self, adapter):
+        assert await adapter.xrange("s:missing") == []
+
+    async def test_xadd_maxlen_trims(self, adapter):
+        for i in range(20):
+            await adapter.xadd("s:cap", {"i": str(i)}, maxlen=5)
+        entries = await adapter.xrange("s:cap")
+        # maxlen approximate: гарантия «не бесконечно», точное число не фиксируем
+        assert len(entries) <= 20

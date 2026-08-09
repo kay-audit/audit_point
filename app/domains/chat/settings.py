@@ -81,11 +81,52 @@ class TextActionsSettings(BaseModel):
     max_input_chars: int = Field(default=20000, ge=1)
 
 
+def parse_route(route: str) -> tuple[str, str]:
+    """Разбирает маршрут LLM-профиля.
+
+    Возвращает ``(transport, wire_format)``:
+    transport — "http" (напрямую) | "redis" (через redis-bridge);
+    wire_format — "openai" | "gigachat" (проводной формат тела запроса).
+
+    Валидные маршруты: "gigachat", "openai",
+    "redis-bridge,gigachat", "redis-bridge,openai".
+    Имя цели после запятой совпадает с проводным форматом; какой сервер
+    стоит за целью openai (sglang/vLLM/...), знает только воркер.
+    """
+    parts = [p.strip() for p in (route or "").split(",")]
+    if len(parts) == 1 and parts[0] in ("gigachat", "openai"):
+        return ("http", parts[0])
+    if (
+        len(parts) == 2
+        and parts[0] == "redis-bridge"
+        and parts[1] in ("gigachat", "openai")
+    ):
+        return ("redis", parts[1])
+    raise ValueError(
+        f"Неизвестный маршрут LLM-профиля: {route!r}. Допустимо: "
+        "'gigachat', 'openai', 'redis-bridge,gigachat', 'redis-bridge,openai'."
+    )
+
+
+def wire_is_gigachat(route: str | None) -> bool:
+    """True, если проводной формат маршрута — gigachat (нужны GigaChat-режимы)."""
+    if not route:
+        return False
+    return parse_route(route)[1] == "gigachat"
+
+
+class RedisBridgeSettings(BaseModel):
+    """Настройки LLM-транспорта redis-bridge (env CHAT__REDIS_BRIDGE__*)."""
+
+    key_prefix: str = "llm:bridge:"
+
+
 class ChatDomainSettings(BaseModel):
     """Настройки AI-ассистента и чата."""
 
-    # Профиль провайдера LLM
-    profile: Literal["openrouter", "sglang", "openai", "gigachat"] = "sglang"
+    # Маршрут LLM-провайдера: "gigachat" | "openai" |
+    # "redis-bridge,gigachat" | "redis-bridge,openai" (см. parse_route).
+    profile: str = "openai"
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     # LLM
@@ -105,11 +146,11 @@ class ChatDomainSettings(BaseModel):
     # пропускает поля с default=None при подъёме .env-loader'а, и они
     # становятся required (вместо желаемых Optional). default_factory
     # обходит эту особенность.
-    fallback_profile: Literal["openrouter", "sglang", "openai", "gigachat"] | None = Field(
+    fallback_profile: str | None = Field(
         default_factory=lambda: None,
         description=(
-            "Профиль провайдера для fallback при сбое primary. "
-            "None = fallback отключён."
+            "Маршрут провайдера для fallback при сбое primary "
+            "(тот же формат, что profile). None = fallback отключён."
         ),
     )
     fallback_api_base: str | None = Field(default_factory=lambda: None)
@@ -144,10 +185,27 @@ class ChatDomainSettings(BaseModel):
     # Retry-политика и канал к внешнему агенту через bus-таблицу
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     agent_channel: AgentChannelSettings = Field(default_factory=AgentChannelSettings)
+    redis_bridge: RedisBridgeSettings = Field(default_factory=RedisBridgeSettings)
     health_probe: LLMHealthProbeSettings = Field(
         default_factory=LLMHealthProbeSettings,
     )
     text_actions: TextActionsSettings = Field(default_factory=TextActionsSettings)
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, v: str) -> str:
+        parse_route(v)  # ValueError с понятным сообщением при мусоре
+        return v
+
+    @field_validator("fallback_profile")
+    @classmethod
+    def _validate_fallback_profile(cls, v: str | None) -> str | None:
+        # Пустое значение ("CHAT__FALLBACK_PROFILE=" в .env) — документированный
+        # способ отключить fallback: pydantic-settings передаёт "", не None.
+        if v is None or not v.strip():
+            return None
+        parse_route(v)
+        return v
 
     # Оркестрация
     system_prompt: str = (

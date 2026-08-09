@@ -61,7 +61,7 @@ def _clean_state():
 
 def _settings(**overrides) -> ChatDomainSettings:
     base = dict(
-        profile="openrouter",
+        profile="openai",
         api_base="http://llm/v1",
         api_key=SecretStr("k"),
         model="anthropic/claude-sonnet-4.6",

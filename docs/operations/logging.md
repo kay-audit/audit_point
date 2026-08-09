@@ -43,7 +43,7 @@ HTTP-запроса.
 возвращает уже сконфигурированный логгер, если у него есть handler'ы
 (`app/core/logging.py:92-93`).
 
-Пример `.env` (см. `.env.example:25-26`):
+Пример `.env` (см. `.env.prod:25-26`):
 
 ```
 SERVER__LOG_LEVEL=INFO

@@ -185,3 +185,94 @@ class TestGetStatus:
             == settings.health_probe.poll_min_interval_sec
         )
         assert status["last_ping_ok"] is None
+
+
+# ── Фабрика клиентов ───────────────────────────────────────────────────────
+
+
+class TestProbeClientViaFactory:
+    """Probe строит клиента через фабрику build_llm_client, получая правильный
+    тип по маршруту профиля (RedisBridgeClient для redis-bridge маршрута)."""
+
+    def test_probe_builds_bridge_client_for_bridge_route(self, fake_redis):
+        """Probe без client_factory использует build_llm_client → RedisBridgeClient."""
+        from app.domains.chat.services.llm_client import _clients_cache
+        from app.domains.chat.services.redis_bridge_adapter import (
+            RedisBridgeClient,
+        )
+
+        # Чистим кэш для свежего теста
+        _clients_cache.clear()
+
+        # Создаём settings с redis-bridge маршрутом
+        settings = ChatDomainSettings(profile="redis-bridge,gigachat")
+
+        # Создаём probe БЕЗ client_factory — должен использовать build_llm_client
+        probe = LLMHealthProbe(settings)
+
+        # Вызываем _get_client() — должен вернуть RedisBridgeClient
+        client = probe._get_client()
+
+        assert isinstance(client, RedisBridgeClient)
+
+    def test_probe_builds_gigachat_client_with_models_proxy(self):
+        """Probe для маршрута gigachat получает GigaChatAdapterClient с
+        рабочим client.models (иначе _ping падает AttributeError и breaker
+        никогда не закрывается)."""
+        from app.domains.chat.services.llm_client import _clients_cache
+        from app.domains.chat.services.gigachat_adapter import (
+            GigaChatAdapterClient,
+        )
+
+        _clients_cache.clear()
+
+        settings = ChatDomainSettings(
+            profile="gigachat",
+            api_base="https://gigachat.local",
+            api_key="test-key",
+        )
+
+        probe = LLMHealthProbe(settings)
+        client = probe._get_client()
+
+        assert isinstance(client, GigaChatAdapterClient)
+        assert hasattr(client, "models")
+        assert hasattr(client.models, "list")
+
+
+class TestStopClientOwnership:
+    """stop() закрывает только клиента из client_factory (probe им владеет);
+    клиент из build_llm_client живёт в общем кэше llm_client._clients_cache
+    и при совпавшем кэш-ключе может быть primary-клиентом — закрывать его
+    имеет право только close_cached_clients."""
+
+    async def test_stop_closes_factory_owned_client(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = MagicMock()
+        client.aclose = AsyncMock()
+        settings = ChatDomainSettings()
+        probe = LLMHealthProbe(settings, client_factory=lambda: client)
+        probe._get_client()
+
+        await probe.stop()
+
+        client.aclose.assert_awaited_once()
+        assert probe._client is None
+
+    async def test_stop_does_not_close_cache_owned_client(self, fake_redis):
+        from unittest.mock import AsyncMock
+
+        from app.domains.chat.services.llm_client import _clients_cache
+
+        _clients_cache.clear()
+        settings = ChatDomainSettings(profile="redis-bridge,gigachat")
+        probe = LLMHealthProbe(settings)
+        client = probe._get_client()
+        client.aclose = AsyncMock()
+
+        await probe.stop()
+
+        client.aclose.assert_not_awaited()
+        assert probe._client is None  # ссылка сброшена, клиент остался жив
+        _clients_cache.clear()

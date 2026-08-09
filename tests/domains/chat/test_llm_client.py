@@ -3,7 +3,12 @@ import pytest
 from pydantic import SecretStr
 
 from app.domains.chat.services import llm_client
-from app.domains.chat.services.llm_client import build_llm_client
+from app.domains.chat.services.llm_client import (
+    _clients_cache,
+    build_fallback_client,
+    build_llm_client,
+)
+from app.domains.chat.services.redis_bridge_adapter import RedisBridgeClient
 from app.domains.chat.settings import ChatDomainSettings
 
 
@@ -17,7 +22,7 @@ def _reset_clients_cache():
 
 def _settings(**overrides) -> ChatDomainSettings:
     base = dict(
-        profile="sglang",
+        profile="openai",
         api_base="http://localhost:30000/v1",
         api_key=SecretStr("dummy"),
         model="m",
@@ -30,7 +35,7 @@ def _settings(**overrides) -> ChatDomainSettings:
 def test_client_uses_api_base_from_settings():
     s = _settings(
         api_base="https://openrouter.ai/api/v1",
-        profile="openrouter",
+        profile="openai",
         api_key=SecretStr("sk-or-x"),
     )
     client = build_llm_client(s)
@@ -39,7 +44,7 @@ def test_client_uses_api_base_from_settings():
 
 def test_extra_headers_propagated():
     s = _settings(
-        profile="openrouter",
+        profile="openai",
         extra_headers={"HTTP-Referer": "https://aw.local", "X-Title": "AW"},
     )
     client = build_llm_client(s)
@@ -72,27 +77,25 @@ def test_gigachat_profile_returns_adapter():
 
 
 def test_non_gigachat_profile_returns_asyncopenai():
-    """Для остальных профилей — обычный AsyncOpenAI."""
+    """Для маршрута openai — обычный AsyncOpenAI."""
     from openai import AsyncOpenAI
 
-    for profile in ("openrouter", "sglang", "openai"):
-        s = _settings(profile=profile)
-        client = build_llm_client(s)
-        assert isinstance(client, AsyncOpenAI), \
-            f"profile={profile} должен возвращать AsyncOpenAI"
+    s = _settings(profile="openai")
+    client = build_llm_client(s)
+    assert isinstance(client, AsyncOpenAI)
 
 
 def test_clients_cached_by_settings_key():
     """Повторный вызов с теми же настройками возвращает тот же объект
     (один httpx.AsyncClient на (profile, base, key, headers, timeout)).
     """
-    s = _settings(profile="openrouter")
+    s = _settings(profile="openai")
     c1 = build_llm_client(s)
     c2 = build_llm_client(s)
     assert c1 is c2
 
     # Разные api_base → разные клиенты
-    s2 = _settings(profile="openrouter", api_base="https://other/v1")
+    s2 = _settings(profile="openai", api_base="https://other/v1")
     c3 = build_llm_client(s2)
     assert c3 is not c1
 
@@ -100,7 +103,7 @@ def test_clients_cached_by_settings_key():
 @pytest.mark.asyncio
 async def test_close_cached_clients_clears_cache_and_closes_underlying():
     """close_cached_clients() закрывает httpx-клиенты и очищает кэш."""
-    s = _settings(profile="openrouter")
+    s = _settings(profile="openai")
     client = build_llm_client(s)
     assert len(llm_client._clients_cache) == 1
 
@@ -110,3 +113,41 @@ async def test_close_cached_clients_clears_cache_and_closes_underlying():
 
     # Повторный вызов — нечего закрывать
     assert await llm_client.close_cached_clients() == 0
+
+
+class TestRedisBridgeFactory:
+    def setup_method(self):
+        _clients_cache.clear()
+
+    def test_bridge_profile_builds_bridge_client(self):
+        s = ChatDomainSettings(profile="redis-bridge,gigachat")
+        client = build_llm_client(s)
+        assert isinstance(client, RedisBridgeClient)
+        assert client._target == "gigachat"
+        assert client._key_prefix == "llm:bridge:"
+
+    def test_bridge_client_cached_and_prefix_in_key(self):
+        s1 = ChatDomainSettings(profile="redis-bridge,openai")
+        s2 = ChatDomainSettings(profile="redis-bridge,openai")
+        assert build_llm_client(s1) is build_llm_client(s2)
+        s3 = ChatDomainSettings(
+            profile="redis-bridge,openai",
+            redis_bridge={"key_prefix": "test:bridge:"},
+        )
+        assert build_llm_client(s3) is not build_llm_client(s1)
+
+    def test_fallback_bridge_needs_no_api_base(self):
+        s = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="redis-bridge,openai",
+        )
+        client = build_fallback_client(s)
+        assert isinstance(client, RedisBridgeClient)
+        assert client._target == "openai"
+
+    def test_fallback_http_still_needs_api_base(self):
+        s = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="gigachat",  # HTTP-маршрут без base/key
+        )
+        assert build_fallback_client(s) is None

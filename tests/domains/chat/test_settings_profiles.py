@@ -2,7 +2,7 @@
 import pytest
 
 from app.core.settings_registry import _load_from_env, reset
-from app.domains.chat.settings import ChatDomainSettings
+from app.domains.chat.settings import ChatDomainSettings, parse_route, wire_is_gigachat
 
 
 def _env(monkeypatch, **vars):
@@ -23,14 +23,14 @@ def _load(monkeypatch, **env_vars) -> ChatDomainSettings:
     return _load_from_env("chat", ChatDomainSettings)
 
 
-def test_default_profile_is_sglang():
+def test_default_profile_is_openai():
     # Прямое инстанцирование, чтобы тест документировал ДЕФОЛТЫ КЛАССА,
     # а не текущее содержимое пользовательского .env (где у разработчика
-    # может стоять CHAT__PROFILE=openrouter).
+    # может стоять другой маршрут).
     s = ChatDomainSettings(
         api_base="http://localhost:30000/v1", api_key="dummy", model="m",
     )
-    assert s.profile == "sglang"
+    assert s.profile == "openai"
     assert s.retry.on_429 is True
     assert s.retry.on_5xx is True
     assert s.smalltalk_mode == "local"
@@ -39,17 +39,17 @@ def test_default_profile_is_sglang():
     assert s.agent_channel.poll_backoff_multiplier == 1.5
 
 
-def test_openrouter_profile_with_extra_headers():
+def test_openai_profile_with_extra_headers():
     # Прямое инстанцирование, чтобы headers из пользовательского .env
     # (X-Title и т.п.) не вмешивались в проверку парсинга dict.
     s = ChatDomainSettings(
-        profile="openrouter",
+        profile="openai",
         api_base="https://openrouter.ai/api/v1",
         api_key="sk-or-x",
         model="minimax/minimax-m2:free",
         extra_headers={"HTTP-Referer": "https://aw.local"},
     )
-    assert s.profile == "openrouter"
+    assert s.profile == "openai"
     assert s.extra_headers == {"HTTP-Referer": "https://aw.local"}
 
 
@@ -130,3 +130,79 @@ def test_agent_channel_claim_timeout_must_be_positive():
     from app.domains.chat.settings import AgentChannelSettings
     with pytest.raises(pydantic.ValidationError):
         AgentChannelSettings(claim_timeout_sec=0)
+
+
+class TestParseRoute:
+    @pytest.mark.parametrize("route,expected", [
+        ("gigachat", ("http", "gigachat")),
+        ("openai", ("http", "openai")),
+        ("redis-bridge,gigachat", ("redis", "gigachat")),
+        ("redis-bridge,openai", ("redis", "openai")),
+        ("redis-bridge, openai", ("redis", "openai")),  # пробел после запятой
+    ])
+    def test_valid_routes(self, route, expected):
+        assert parse_route(route) == expected
+
+    @pytest.mark.parametrize("route", [
+        "sglang",            # упразднён
+        "openrouter",        # упразднён
+        "redis-bridge",      # без цели
+        "redis-bridge,sglang",  # неизвестная цель
+        "",                  # пусто
+        "gigachat,openai",   # цель у HTTP-маршрута
+    ])
+    def test_invalid_routes_raise(self, route):
+        with pytest.raises(ValueError):
+            parse_route(route)
+
+
+class TestWireIsGigachat:
+    def test_direct_gigachat(self):
+        assert wire_is_gigachat("gigachat") is True
+
+    def test_bridge_gigachat(self):
+        assert wire_is_gigachat("redis-bridge,gigachat") is True
+
+    def test_openai_routes(self):
+        assert wire_is_gigachat("openai") is False
+        assert wire_is_gigachat("redis-bridge,openai") is False
+
+    def test_none_and_empty(self):
+        assert wire_is_gigachat(None) is False
+        assert wire_is_gigachat("") is False
+
+
+class TestProfileValidation:
+    def test_default_profile_is_openai(self):
+        s = ChatDomainSettings()
+        assert s.profile == "openai"
+
+    def test_bridge_profile_accepted(self):
+        s = ChatDomainSettings(profile="redis-bridge,gigachat")
+        assert s.profile == "redis-bridge,gigachat"
+
+    def test_legacy_profile_rejected(self):
+        with pytest.raises(ValueError):
+            ChatDomainSettings(profile="sglang")
+
+    def test_fallback_route_validated(self):
+        with pytest.raises(ValueError):
+            ChatDomainSettings(fallback_profile="redis-bridge")
+
+    def test_fallback_none_ok(self):
+        s = ChatDomainSettings()
+        assert s.fallback_profile is None
+
+    def test_fallback_empty_string_normalized_to_none(self):
+        """CHAT__FALLBACK_PROFILE= (пусто) — документированное «отключено»:
+        pydantic-settings передаёт "", а не None; старт не должен падать."""
+        s = ChatDomainSettings(fallback_profile="")
+        assert s.fallback_profile is None
+
+    def test_fallback_whitespace_normalized_to_none(self):
+        s = ChatDomainSettings(fallback_profile="   ")
+        assert s.fallback_profile is None
+
+    def test_redis_bridge_settings_default_prefix(self):
+        s = ChatDomainSettings()
+        assert s.redis_bridge.key_prefix == "llm:bridge:"

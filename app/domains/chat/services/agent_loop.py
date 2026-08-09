@@ -216,8 +216,12 @@ async def run_agent_loop(
     - "adaptive" — forward-тул включён (LLM может его вызвать);
     - "off" и любое другое — forward-тул скрыт от LLM.
     """
-    # Fallback при отсутствии настроек API
-    if (
+    # Fallback при отсутствии настроек API. redis-bridge-маршрутам
+    # api_base/api_key не нужны — их транспорт живёт на общем Redis.
+    from app.domains.chat.settings import parse_route, wire_is_gigachat
+
+    transport, _wire = parse_route(orch.settings.profile)
+    if transport == "http" and (
         not orch.settings.api_base
         or not orch.settings.api_key.get_secret_value()
     ):
@@ -261,7 +265,7 @@ async def run_agent_loop(
     # GigaChat поддерживает только 1 function_call за раунд. Если LLM
     # вернул >1 tool_call, первый исполняем сейчас, остальные — в очередь.
     pending_tool_calls: list[Any] = []
-    is_gigachat = orch.settings.profile == "gigachat"
+    is_gigachat = wire_is_gigachat(orch.settings.profile)
     validation_tracker = ToolValidationTracker()
     # Презентационные блоки (client_action / buttons / список), эмитнутые
     # tool'ами по ходу цикла — попадут в финальное сообщение ассистента.

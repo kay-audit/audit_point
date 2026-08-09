@@ -126,6 +126,34 @@ class RedisAdapter:
         client = await self._get_client()
         return await client.eval(script, len(keys), *keys, *args)
 
+    async def xadd(
+        self,
+        stream: str,
+        fields: dict[str, str],
+        *,
+        maxlen: int | None = None,
+    ) -> str:
+        """Добавляет запись в stream; возвращает id записи.
+
+        ``maxlen`` — мягкое (approximate) ограничение длины стрима.
+        Используется LLM-мостом (redis-bridge) для очереди заявок.
+        """
+        client = await self._get_client()
+        if maxlen is not None:
+            return await client.xadd(stream, fields, maxlen=maxlen, approximate=True)
+        return await client.xadd(stream, fields)
+
+    async def xrange(
+        self,
+        stream: str,
+        start: str = "-",
+        end: str = "+",
+        count: int | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Читает записи stream в порядке добавления: [(id, {поле: значение})]."""
+        client = await self._get_client()
+        return await client.xrange(stream, min=start, max=end, count=count)
+
     async def get_json(self, key: str) -> Any | None:
         """Читает значение, записанное ``set_json``; отсутствующий ключ — None."""
         raw = await self.get(key)

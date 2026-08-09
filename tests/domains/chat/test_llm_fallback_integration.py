@@ -49,7 +49,7 @@ def _settings_with_fallback(
     failure_threshold: int = 2,
 ) -> ChatDomainSettings:
     return ChatDomainSettings(
-        profile="sglang",
+        profile="openai",
         api_base="http://primary:8000/v1",
         api_key=SecretStr("primary-key"),
         model="primary-model",
@@ -67,7 +67,7 @@ def _settings_with_fallback(
 
 def _settings_no_fallback() -> ChatDomainSettings:
     return ChatDomainSettings(
-        profile="sglang",
+        profile="openai",
         api_base="http://primary:8000/v1",
         api_key=SecretStr("primary-key"),
         model="primary-model",
@@ -295,7 +295,7 @@ def test_adjust_kwargs_for_fallback_strips_stream_for_gigachat():
 
 
 def test_adjust_kwargs_for_fallback_keeps_stream_for_non_gigachat():
-    settings = _settings_with_fallback(fallback_profile="openrouter")
+    settings = _settings_with_fallback(fallback_profile="openai")
     orch = _make_orchestrator(settings)
     kwargs = {
         "model": "primary-model",

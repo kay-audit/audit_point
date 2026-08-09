@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.domains.chat.services.llm_call import call_llm_with_fallback
+from app.domains.chat.services.orchestrator import Orchestrator
+from app.domains.chat.settings import ChatDomainSettings
 
 
 def _make_orch_stub(
@@ -300,3 +302,51 @@ async def test_default_force_non_streaming_is_false():
         orch._adjust_kwargs_for_fallback.call_args.kwargs["force_non_streaming"]
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# _has_fallback / _fallback_is_gigachat: маршруто-зависимая логика
+# ---------------------------------------------------------------------------
+
+
+def make_orchestrator(settings: ChatDomainSettings) -> Orchestrator:
+    """Реальный Orchestrator с мок-сервисами — для тестов его собственных
+    методов (``_has_fallback``, ``_fallback_is_gigachat``), а не pure-функции."""
+    return Orchestrator(
+        msg_service=AsyncMock(load_history_for_llm=AsyncMock(return_value=[])),
+        conv_service=AsyncMock(),
+        settings=settings,
+    )
+
+
+class TestRouteAwareFallback:
+    def test_has_fallback_true_for_redis_route_without_api_base(self):
+        settings = ChatDomainSettings(
+            profile="redis-bridge,gigachat",
+            fallback_profile="redis-bridge,openai",
+        )
+        orch = make_orchestrator(settings)
+        assert orch._has_fallback() is True
+
+    def test_has_fallback_false_for_http_route_without_api_base(self):
+        settings = ChatDomainSettings(
+            profile="openai", fallback_profile="gigachat",
+        )
+        orch = make_orchestrator(settings)
+        assert orch._has_fallback() is False
+
+    def test_fallback_is_gigachat_for_bridge_gigachat(self):
+        settings = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="redis-bridge,gigachat",
+        )
+        orch = make_orchestrator(settings)
+        assert orch._fallback_is_gigachat() is True
+
+    def test_fallback_is_gigachat_false_for_bridge_openai(self):
+        settings = ChatDomainSettings(
+            profile="openai", api_base="http://x", api_key="k",
+            fallback_profile="redis-bridge,openai",
+        )
+        orch = make_orchestrator(settings)
+        assert orch._fallback_is_gigachat() is False

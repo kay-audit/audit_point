@@ -32,7 +32,7 @@ pip install -r requirements-dev.txt
 Скопируйте файл конфигурации и заполните значения:
 
 ```bash
-cp .env.example .env
+cp .env.dev .env
 ```
 
 Минимальная конфигурация (PostgreSQL):
@@ -75,7 +75,7 @@ python -m app.main
 uvicorn app.main:app --host 0.0.0.0 --port 8005
 ```
 
-Приложение будет доступно по адресу `http://localhost:8005` (порт берётся из `SERVER__PORT` в `.env`; в `.env.example` задан `8005`).
+Приложение будет доступно по адресу `http://localhost:8005` (порт берётся из `SERVER__PORT` в `.env`; в `.env.prod` задан `8005`).
 
 Схема базы данных создается автоматически при первом запуске.
 
@@ -149,12 +149,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005
 | Аудит-лог | `ACTS__AUDIT_LOG__RETENTION_DAYS`, `ACTS__AUDIT_LOG__MAX_DIFF_ELEMENTS` | Хранение логов и лимиты diff |
 | Фактуры | `ACTS__INVOICE__HIVE_SCHEMA`, `ACTS__INVOICE__GP_SCHEMA` | Схемы для привязки фактур |
 | Администрирование | `ADMIN__USER_DIRECTORY__*` | Справочник пользователей |
-| Канал к внешнему ИИ-агенту | `CHAT__AGENT_CHANNEL__TABLE_NAME`, `CHAT__MAX_PARALLEL_STREAMS_PER_USER` | Имя bus-таблицы (без app-префикса) и лимит параллельных запросов к агенту. Полный список — в `.env.example`. |
+| Канал к внешнему ИИ-агенту | `CHAT__AGENT_CHANNEL__TABLE_NAME`, `CHAT__MAX_PARALLEL_STREAMS_PER_USER` | Имя bus-таблицы (без app-префикса) и лимит параллельных запросов к агенту. Полный список — в `.env.prod`. |
 | ЦК Фин.Рез. | `CK_FIN_RES__SCHEMA_NAME`, `CK_FIN_RES__*` | Таблицы и VIEW верификации FR |
 | ЦК Клиентский опыт | `CK_CLIENT_EXP__SCHEMA_NAME`, `CK_CLIENT_EXP__*` | Таблицы и VIEW верификации CS |
 | Справочные данные | `UA_DATA__*` | Словари процессов, ТБ, подразделений |
 
-Полный список переменных — в файле [.env.example](.env.example).
+Полный список переменных — в файле [.env.prod](.env.prod) (для локальной разработки — [.env.dev](.env.dev)).
 
 ## Архитектура
 

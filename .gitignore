@@ -88,6 +88,7 @@ coverage.xml
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+!scripts/datalab/llm_redis_worker.ipynb
 
 # Documentation
 DEVELOPER_GUIDE.md

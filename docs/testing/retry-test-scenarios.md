@@ -14,6 +14,10 @@
 
 > Колонка «Класс» указывает лимит попыток: **transient** → `max_attempts`, **connect** → `connect_max_attempts`.
 > `APITimeoutError` — подкласс `APIConnectionError`, но является transient-классом и перехватывается первым.
+>
+> Исключение: `BridgeDeadlineError` (redis-мост, подкласс `APITimeoutError`) НЕ ретраится —
+> дедлайн моста равен полному `CHAT__REQUEST_TIMEOUT`, повтор клал бы дубль-заявку в stream;
+> fallback при этом срабатывает как обычно. Тест — `tests/domains/chat/test_redis_bridge_adapter.py::TestDeadlineNotRetried`.
 
 | # | Сценарий | Исключение / HTTP | Класс | Ожидание |
 |---|----------|-------------------|-------|----------|
