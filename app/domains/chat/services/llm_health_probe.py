@@ -65,6 +65,10 @@ class LLMHealthProbe:
         self._client_factory = client_factory
 
         self._client: Any = None  # лениво строится в _get_client()
+        # True только для клиента из client_factory (тесты): клиент из
+        # build_llm_client живёт в общем кэше llm_client._clients_cache,
+        # закрывать его — не право probe (это делает close_cached_clients).
+        self._owns_client = False
         self._stop = False
         self._task: asyncio.Task | None = None
         # Текущий интервал backoff'а — стартует с min.
@@ -97,6 +101,7 @@ class LLMHealthProbe:
             return self._client
         if self._client_factory is not None:
             self._client = self._client_factory()
+            self._owns_client = True
             return self._client
         # Клиент по маршруту primary через общую фабрику (redis-bridge
         # получает heartbeat-ping, HTTP-маршруты — обычный models.list).
@@ -209,7 +214,13 @@ class LLMHealthProbe:
         logger.info("llm_health_probe: запущен")
 
     async def stop(self) -> None:
-        """Останавливает фоновый цикл, ждёт завершения и закрывает клиент."""
+        """Останавливает фоновый цикл и ждёт завершения.
+
+        Закрывает клиента ТОЛЬКО если он пришёл из client_factory (probe
+        владеет им). Клиент из build_llm_client лежит в общем кэше
+        llm_client._clients_cache и мог достаться primary-пути (совпавший
+        кэш-ключ) — его закрывает close_cached_clients на shutdown.
+        """
         self._stop = True
         if self._task is not None:
             self._task.cancel()
@@ -219,7 +230,7 @@ class LLMHealthProbe:
                 pass
             self._task = None
 
-        if self._client is not None:
+        if self._client is not None and self._owns_client:
             close = getattr(self._client, "aclose", None) or getattr(
                 self._client, "close", None,
             )
@@ -230,5 +241,6 @@ class LLMHealthProbe:
                     logger.exception(
                         "llm_health_probe: ошибка при закрытии клиента",
                     )
-            self._client = None
+        self._client = None
+        self._owns_client = False
         logger.info("llm_health_probe: остановлен")

@@ -238,3 +238,41 @@ class TestProbeClientViaFactory:
         assert isinstance(client, GigaChatAdapterClient)
         assert hasattr(client, "models")
         assert hasattr(client.models, "list")
+
+
+class TestStopClientOwnership:
+    """stop() закрывает только клиента из client_factory (probe им владеет);
+    клиент из build_llm_client живёт в общем кэше llm_client._clients_cache
+    и при совпавшем кэш-ключе может быть primary-клиентом — закрывать его
+    имеет право только close_cached_clients."""
+
+    async def test_stop_closes_factory_owned_client(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = MagicMock()
+        client.aclose = AsyncMock()
+        settings = ChatDomainSettings()
+        probe = LLMHealthProbe(settings, client_factory=lambda: client)
+        probe._get_client()
+
+        await probe.stop()
+
+        client.aclose.assert_awaited_once()
+        assert probe._client is None
+
+    async def test_stop_does_not_close_cache_owned_client(self, fake_redis):
+        from unittest.mock import AsyncMock
+
+        from app.domains.chat.services.llm_client import _clients_cache
+
+        _clients_cache.clear()
+        settings = ChatDomainSettings(profile="redis-bridge,gigachat")
+        probe = LLMHealthProbe(settings)
+        client = probe._get_client()
+        client.aclose = AsyncMock()
+
+        await probe.stop()
+
+        client.aclose.assert_not_awaited()
+        assert probe._client is None  # ссылка сброшена, клиент остался жив
+        _clients_cache.clear()
