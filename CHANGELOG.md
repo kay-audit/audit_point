@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**Текущая версия: `13.0.11`.**
+**Текущая версия: `14.0.0`.**
 
 ## Методология
 
@@ -249,5 +249,16 @@ in-memory бэкенд локов удалён); блокировки актов
 
 - 13.0.11 · `03d510aa` — PATCH: возвращён дефолт `AUTH__COOKIE_SECURE=false` для ПРОМ-конфигурации (SDP —
   обычный HTTP без TLS-прокси, `true` тихо ломал вход через отбрасываемую Secure-cookie).
+
+## 14.0.0 · `9bf43b91`
+
+**MAJOR: профили LLM заменены маршрутами, добавлен транспорт redis-bridge.** `CHAT__PROFILE` больше не
+перечисление провайдеров (`sglang`/`openrouter`/`openai`/`gigachat`), а маршрут вида
+`<транспорт>,<проводной формат>`: допустимы `openai`, `gigachat`, `redis-bridge,openai`,
+`redis-bridge,gigachat` (то же для `CHAT__FALLBACK_PROFILE`). Старые значения `sglang` и `openrouter`
+невалидны — конфигурация с ними падает на старте. Появился транспорт `redis-bridge`: запрос к LLM уходит
+не по HTTP, а через Redis-стримы к воркеру в Jupyter DataLab, у которого есть сетевой доступ к моделям
+(`app/domains/chat/services/redis_bridge_adapter.py`, воркер — `scripts/datalab/llm_redis_worker.ipynb`).
+Шаблон окружения разделён: `.env.example` → `.env.prod` плюс отдельный `.env.dev`.
 
 ---

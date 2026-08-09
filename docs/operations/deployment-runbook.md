@@ -62,7 +62,7 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8005
 2. **Базовый health.**
    ```bash
    curl http://localhost:8005/api/v1/health
-   # → {"status": "ok", "service": "Audit Workstation", "version": "13.0.11"}
+   # → {"status": "ok", "service": "Audit Workstation", "version": "14.0.0"}
    ```
    На SDP — тот же путь по IP-адресу хоста: `http://<sdp-host>:8005/api/v1/health` (proxy-путей больше нет; исторический JupyterHub-вариант — `http://<hub>/user/<user>/proxy/8005/api/v1/health`).
 
