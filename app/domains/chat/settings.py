@@ -200,8 +200,11 @@ class ChatDomainSettings(BaseModel):
     @field_validator("fallback_profile")
     @classmethod
     def _validate_fallback_profile(cls, v: str | None) -> str | None:
-        if v is not None:
-            parse_route(v)
+        # Пустое значение ("CHAT__FALLBACK_PROFILE=" в .env) — документированный
+        # способ отключить fallback: pydantic-settings передаёт "", не None.
+        if v is None or not v.strip():
+            return None
+        parse_route(v)
         return v
 
     # Оркестрация

@@ -193,6 +193,16 @@ class TestProfileValidation:
         s = ChatDomainSettings()
         assert s.fallback_profile is None
 
+    def test_fallback_empty_string_normalized_to_none(self):
+        """CHAT__FALLBACK_PROFILE= (пусто) — документированное «отключено»:
+        pydantic-settings передаёт "", а не None; старт не должен падать."""
+        s = ChatDomainSettings(fallback_profile="")
+        assert s.fallback_profile is None
+
+    def test_fallback_whitespace_normalized_to_none(self):
+        s = ChatDomainSettings(fallback_profile="   ")
+        assert s.fallback_profile is None
+
     def test_redis_bridge_settings_default_prefix(self):
         s = ChatDomainSettings()
         assert s.redis_bridge.key_prefix == "llm:bridge:"
