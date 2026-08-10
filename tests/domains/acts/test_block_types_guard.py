@@ -86,7 +86,11 @@ _BLOCK_PAYLOADS = {
     NODE_TYPE_VIOLATION: lambda block_id: {
         "id": block_id,
         "nodeId": "1.1",
-        "violated": MARKER,
+        # Блочная модель: поле — контейнер {enabled, blocks}.
+        "violated": {
+            "enabled": True,
+            "blocks": [{"id": "text_1", "type": "text", "content": MARKER}],
+        },
     },
 }
 
@@ -209,18 +213,22 @@ class TestSanitizerCoversHtmlFields:
         assert MARKER in content, "санитайзер не должен терять легитимный текст"
 
     def test_violation_rich_fields_sanitized(self):
-        """violation.violated/established — rich-поля, sanitize_act_data их чистит."""
+        """text-блоки полей нарушения — rich, sanitize_act_data их чистит."""
         data = _make_act_data(NODE_TYPE_VIOLATION)
         violation = data["violations"][f"{NODE_TYPE_VIOLATION}_1"]
-        violation["violated"] = self.DIRTY
-        violation["established"] = self.DIRTY
+        dirty_container = {
+            "enabled": True,
+            "blocks": [{"id": "text_d", "type": "text", "content": self.DIRTY}],
+        }
+        violation["violated"] = dict(dirty_container, blocks=[dict(dirty_container["blocks"][0])])
+        violation["established"] = dict(dirty_container, blocks=[dict(dirty_container["blocks"][0])])
         model = ActDataSchema.model_validate(data)
 
         sanitize_act_data(model)
 
         result = model.violations[f"{NODE_TYPE_VIOLATION}_1"]
         for field_name in ("violated", "established"):
-            value = getattr(result, field_name)
+            value = getattr(result, field_name).blocks[0].content
             assert "<script>" not in value, (
                 f"violation.{field_name} не прошёл санитизацию"
             )

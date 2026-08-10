@@ -16,6 +16,7 @@
 """
 
 import asyncio
+import html
 import logging
 
 from pydantic import BaseModel, Field
@@ -67,17 +68,26 @@ class RecommendationsParsed(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
-def _join(items: list[str]) -> str:
-    """Список D17 → строка поля нарушения: непустые элементы через «; »."""
-    return "; ".join(s.strip() for s in items if s and s.strip())
+def _list_to_html(items: list[str]) -> str:
+    """Список D17 → честный HTML-список поля нарушения (`<ul><li>…</li></ul>`).
+
+    Элементы экранируются (текст от LLM — не HTML). Пустой список (или все
+    элементы пустые) → пустая строка — поле остаётся незаполненным."""
+    cleaned = [s.strip() for s in items if s and s.strip()]
+    if not cleaned:
+        return ""
+    items_html = "".join(f"<li>{html.escape(item)}</li>" for item in cleaned)
+    return f"<ul>{items_html}</ul>"
 
 
 def _established_from(essence: EssenceParsed) -> str:
-    """«Установлено» = суть + метрики (каждый факт с новой строки)."""
+    """«Установлено» = суть (абзац) + метрики (HTML-список, если есть)."""
     parts: list[str] = []
     if essence.essence.strip():
         parts.append(essence.essence.strip())
-    parts.extend(m.strip() for m in essence.metrics if m and m.strip())
+    metrics_html = _list_to_html(essence.metrics)
+    if metrics_html:
+        parts.append(metrics_html)
     return "\n".join(parts)
 
 
@@ -126,10 +136,10 @@ class ViolationFormalizerService:
         return FormalizeResponse(
             violated=essence.norm_doc.strip(),
             established=_established_from(essence),
-            reasons=_join(causes.causes),
-            responsible=_join(causes.persons),
+            reasons=_list_to_html(causes.causes),
+            responsible=_list_to_html(causes.persons),
             consequences=consequences.consequences.strip(),
-            measures=_join(measures.measures),
+            measures=_list_to_html(measures.measures),
             recommendations=recommendations,
         )
 

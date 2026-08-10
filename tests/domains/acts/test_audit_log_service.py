@@ -569,13 +569,10 @@ class TestRestoreVersionPreSnapshot:
         Иначе несанитизированный HTML из текущего контента (записанного
         в обход save_content или до ужесточения) лёг бы в историю и при
         повторном restore такого снимка вернулся бы в БД (stored XSS).
-        Ячейки таблиц и plain-text поле нарушения (дескриптор rich=False —
-        additionalContent.items[].filename/url) при этом НЕ трогаются
-        (инвариант «всё на текст» / «плоские поля хранятся дословно», #3).
-        Rich-поля нарушения (violated/established/reasons/measures/
-        consequences/responsible, descriptionList.items[] — Task 7,
-        additionalContent.items[] типов case/freeText, типа image — caption,
-        Task 6) чистятся так же, как textBlock/tree — см. VIOLATION_FIELDS.rich.
+        Блочная модель: rich-носители блоков (text.content, image.caption)
+        чистятся так же, как textBlock/tree; plain-поля image (url/filename)
+        — дословно; ячейки блок-таблиц и больших таблиц — дословно
+        (инвариант B8, все потребители рендерят их как текст).
         """
         svc, versions_repo = self._make_service()
         versions_repo.get_version.return_value = {
@@ -603,20 +600,31 @@ class TestRestoreVersionPreSnapshot:
             "violations": {
                 "v1": {
                     "id": "v1", "nodeId": "n3",
-                    "violated": '<img src=x onerror="alert(1)">текст',
-                    "established": "",
-                    "descriptionList": {"enabled": True,
-                                        "items": ["<b>важно</b><script>x</script>пункт"]},
-                    "additionalContent": {"enabled": True, "items": [
-                        {"id": "i1", "type": "image", "url": "data:image/png;base64,AAAA",
-                         "content": "", "caption": '<b>подпись</b><img src=x onerror="a">',
+                    "violated": {"enabled": True, "blocks": [
+                        {"id": "text_1", "type": "text",
+                         "content": '<img src=x onerror="alert(1)">текст'},
+                    ]},
+                    "description": {"enabled": True, "blocks": [
+                        {"id": "text_2", "type": "text",
+                         "content": "<b>важно</b><script>x</script>пункт"},
+                    ]},
+                    "additionalContent": {"enabled": True, "blocks": [
+                        {"id": "image_1", "type": "image",
+                         "url": "data:image/png;base64,AAAA",
+                         "caption": '<b>подпись</b><img src=x onerror="a">',
                          "filename": "<script>f</script>имя.png"},
-                        {"id": "i2", "type": "case",
-                         "content": '<p>кейс</p><iframe srcdoc="x"></iframe>'},
-                        {"id": "i3", "type": "freeText",
+                        {"id": "text_3", "type": "text",
                          "content": '<b>текст</b><svg onload="x"></svg>'},
                     ]},
-                    "reasons": {"enabled": True, "content": "<svg onload=x></svg>причина"},
+                    "codeMining": {"enabled": True, "blocks": [
+                        {"id": "table_1", "type": "table", "table": {"grid": [[
+                            {"content": "<script>в ячейке блока — дословно</script>"},
+                        ]], "colWidths": [100]}},
+                    ]},
+                    "reasons": {"enabled": True, "blocks": [
+                        {"id": "text_4", "type": "text",
+                         "content": "<svg onload=x></svg>причина"},
+                    ]},
                 },
             },
         }
@@ -639,31 +647,27 @@ class TestRestoreVersionPreSnapshot:
         tb = pre["textblocks"]["tb1"]
         assert "<iframe" not in tb["content"]
         assert "<b>жирный</b>" in tb["content"]
-        # Нарушение: rich-поля санитизируются, plain — дословно (не чистятся)
+        # Нарушение: rich-носители блоков санитизируются, plain — дословно
         v = pre["violations"]["v1"]
-        assert v["violated"] == "текст"
-        # descriptionList.items[] — rich-поле (Task 7): allowlisted-тег
-        # переживает санитизацию, опасный payload вырезается.
-        desc_item = v["descriptionList"]["items"][0]
-        assert "<b>важно</b>" in desc_item and "пункт" in desc_item
-        assert "<script" not in desc_item
-        # additionalContent image.caption — rich (Task 6): allowlisted-тег
-        # переживает санитизацию, опасный payload вырезается; filename/url
-        # остаются plain (дословно).
-        item = v["additionalContent"]["items"][0]
-        assert "<b>подпись</b>" in item["caption"]
-        assert "<img" not in item["caption"] and "onerror" not in item["caption"]
-        assert item["filename"] == "<script>f</script>имя.png"
-        assert item["url"] == "data:image/png;base64,AAAA"
-        # additionalContent case/freeText — rich, санитизируются по типу item
-        case_item = v["additionalContent"]["items"][1]
-        assert "<iframe" not in case_item["content"] and "srcdoc" not in case_item["content"]
-        assert "<p>кейс</p>" in case_item["content"]
-        freetext_item = v["additionalContent"]["items"][2]
-        assert "<svg" not in freetext_item["content"] and "onload" not in freetext_item["content"]
-        assert "<b>текст</b>" in freetext_item["content"]
-        assert v["reasons"]["content"] == "причина"
-        # Ячейки таблиц — дословно (инвариант B8)
+        assert v["violated"]["blocks"][0]["content"] == "текст"
+        desc_block = v["description"]["blocks"][0]["content"]
+        assert "<b>важно</b>" in desc_block and "пункт" in desc_block
+        assert "<script" not in desc_block
+        # image.caption — rich; filename/url остаются plain (дословно).
+        image = v["additionalContent"]["blocks"][0]
+        assert "<b>подпись</b>" in image["caption"]
+        assert "<img" not in image["caption"] and "onerror" not in image["caption"]
+        assert image["filename"] == "<script>f</script>имя.png"
+        assert image["url"] == "data:image/png;base64,AAAA"
+        # text-блок в additionalContent — rich
+        text_block = v["additionalContent"]["blocks"][1]["content"]
+        assert "<svg" not in text_block and "onload" not in text_block
+        assert "<b>текст</b>" in text_block
+        assert v["reasons"]["blocks"][0]["content"] == "причина"
+        # Ячейки блок-таблицы нарушения — дословно (инвариант B8)
+        block_cell = v["codeMining"]["blocks"][0]["table"]["grid"][0][0]
+        assert block_cell["content"] == "<script>в ячейке блока — дословно</script>"
+        # Ячейки больших таблиц — дословно (инвариант B8)
         cell = pre["tables"]["t1"]["grid"][0][0]
         assert cell["content"] == "<script>в ячейке — дословно</script>"
 
@@ -684,8 +688,8 @@ class TestRestoreVersionPreSnapshot:
             "violations": {
                 "v1": {
                     "id": "v1", "nodeId": "n3",
-                    "additionalContent": {"enabled": True, "items": [
-                        {"id": "i1", "type": "image", "url": "", "content": "",
+                    "additionalContent": {"enabled": True, "blocks": [
+                        {"id": "image_1", "type": "image", "url": "",
                          "caption": None, "filename": "имя.png"},
                     ]},
                 },
@@ -702,8 +706,8 @@ class TestRestoreVersionPreSnapshot:
             await svc.restore_version(act_id=42, version_id=1, username="12345")
 
         pre = versions_repo.create_version.await_args_list[0].kwargs
-        item = pre["violations"]["v1"]["additionalContent"]["items"][0]
-        assert item["caption"] is None
+        block = pre["violations"]["v1"]["additionalContent"]["blocks"][0]
+        assert block["caption"] is None
 
     async def test_pre_snapshot_skipped_when_no_current_content(self):
         """get_content вернул None/{} → pre-snapshot не создаётся."""
@@ -793,59 +797,60 @@ def _make_act_data(violations: dict) -> "ActDataSchema":
 
 
 def _db_violation_row(**overrides) -> dict:
-    """Строка нарушения из БД, как её отдаёт SELECT в compute_field_diffs."""
-    row = {
-        "violation_id": "v1",
-        "violated": "нарушено",
-        "established": "установлено",
-        "reasons": '{"enabled": false, "content": ""}',
-        "consequences": '{"enabled": false, "content": ""}',
-        "responsible": '{"enabled": false, "content": ""}',
-        "description_list": '{"enabled": false, "items": []}',
-        "additional_content": '{"enabled": false, "items": []}',
-    }
+    """Строка нарушения из БД, как её отдаёт SELECT в compute_field_diffs.
+
+    Блочная модель: все полевые колонки — JSONB-контейнеры {enabled, blocks};
+    NULL-колонка разбирается маппером в дефолтный контейнер (mandatory —
+    включённый).
+    """
+    from app.domains.acts.violation_fields import VIOLATION_FIELDS
+    row = {"violation_id": "v1", "node_id": "n1", "field_order": None}
+    for field in VIOLATION_FIELDS:
+        row[field.column] = json.dumps({"enabled": field.mandatory, "blocks": []})
     row.update(overrides)
     return row
 
 
 class TestComputeFieldDiffsViolationCollections:
-    """compute_field_diffs учитывает descriptionList/additionalContent (pbe-10).
+    """compute_field_diffs учитывает все поля-контейнеры (блочная модель).
 
-    В diff пишется только компактная сводка (enabled + число элементов):
-    additionalContent может содержать base64-картинки на мегабайты —
+    В diff пишется только компактная сводка (changed + число блоков):
+    блоки могут содержать base64-картинки на мегабайты —
     их содержимое в аудит-лог попадать не должно.
     """
 
     def _make_violation(self, **kwargs):
         from app.domains.acts.schemas.act_content import ViolationSchema
-        defaults = {
-            "id": "v1", "nodeId": "n1",
-            "violated": "нарушено", "established": "установлено",
-        }
+        defaults = {"id": "v1", "nodeId": "n1"}
         defaults.update(kwargs)
-        return ViolationSchema(**defaults)
+        return ViolationSchema.model_validate(defaults)
 
-    async def test_description_list_change_detected(self, mock_conn):
-        """Изменение items списка описаний попадает в diff нарушения."""
+    async def test_description_change_detected(self, mock_conn):
+        """Добавление блока в поле попадает в diff нарушения со счётчиками."""
         repo = ActAuditLogRepository(mock_conn)
         mock_conn.fetch.side_effect = [
             [],  # таблицы
             [],  # текстблоки
             [_db_violation_row(
-                description_list='{"enabled": true, "items": ["старый пункт"]}',
+                description=json.dumps({"enabled": True, "blocks": [
+                    {"id": "text_1", "type": "text", "content": "старый пункт"},
+                ]}),
             )],
         ]
         data = _make_act_data({"v1": self._make_violation(
-            descriptionList={"enabled": True, "items": ["старый пункт", "новый пункт"]},
+            description={"enabled": True, "blocks": [
+                {"id": "text_1", "type": "text", "content": "старый пункт"},
+                {"id": "text_2", "type": "text", "content": "новый пункт"},
+            ]},
         )})
 
         result = await repo.compute_field_diffs(1, data)
 
         assert "v1" in result
-        diff = result["v1"]["fields"]["descriptionList"]
+        diff = result["v1"]["fields"]["description"]
         assert diff["changed"] is True
-        assert diff["old_items"] == 1
-        assert diff["new_items"] == 2
+        assert diff["old_blocks"] == 1
+        assert diff["new_blocks"] == 2
 
     async def test_additional_content_change_detected_without_base64_leak(self, mock_conn):
         """Изменение доп. контента фиксируется компактно — без base64 в diff."""
@@ -855,8 +860,8 @@ class TestComputeFieldDiffsViolationCollections:
             [_db_violation_row()],
         ]
         data = _make_act_data({"v1": self._make_violation(
-            additionalContent={"enabled": True, "items": [
-                {"id": "c1", "type": "image", "url": _IMG_DATA_URL},
+            additionalContent={"enabled": True, "blocks": [
+                {"id": "image_1", "type": "image", "url": _IMG_DATA_URL},
             ]},
         )})
 
@@ -865,17 +870,17 @@ class TestComputeFieldDiffsViolationCollections:
         assert "v1" in result
         diff = result["v1"]["fields"]["additionalContent"]
         assert diff["changed"] is True
-        assert diff["old_items"] == 0
-        assert diff["new_items"] == 1
+        assert diff["old_blocks"] == 0
+        assert diff["new_blocks"] == 1
         # base64-payload картинки не должен утекать в аудит-лог
         assert _IMG_BASE64_PAYLOAD not in json.dumps(result)
 
-    async def test_unchanged_collections_not_reported(self, mock_conn):
-        """Совпадающие коллекции (включая NULL в БД ↔ схемный дефолт) — не diff."""
+    async def test_unchanged_containers_not_reported(self, mock_conn):
+        """Совпадающие контейнеры (включая NULL в БД ↔ схемный дефолт) — не diff."""
         repo = ActAuditLogRepository(mock_conn)
         mock_conn.fetch.side_effect = [
             [], [],
-            [_db_violation_row(description_list=None, additional_content=None)],
+            [_db_violation_row(description=None, additional_content=None)],
         ]
         data = _make_act_data({"v1": self._make_violation()})
 
@@ -883,15 +888,37 @@ class TestComputeFieldDiffsViolationCollections:
 
         assert result == {}
 
-    async def test_scalar_field_diff_still_works(self, mock_conn):
-        """Регрессия: прежние поля (violated и пр.) diff'ятся как раньше."""
+    async def test_field_order_change_detected(self, mock_conn):
+        """Смена fieldOrder попадает в diff нарушения."""
+        from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
         repo = ActAuditLogRepository(mock_conn)
         mock_conn.fetch.side_effect = [
             [], [],
-            [_db_violation_row(violated="старый текст")],
+            [_db_violation_row(field_order=None)],
         ]
-        data = _make_act_data({"v1": self._make_violation(violated="новый текст")})
+        data = _make_act_data({"v1": self._make_violation(
+            fieldOrder=list(reversed(VIOLATION_FIELD_KEYS)),
+        )})
 
         result = await repo.compute_field_diffs(1, data)
 
-        assert result["v1"]["fields"] == {"violated": {"changed": True}}
+        assert result["v1"]["fields"]["fieldOrder"] == {"changed": True}
+
+    async def test_text_block_content_diff_still_works(self, mock_conn):
+        """Регрессия: правка текста внутри блока даёт diff поля."""
+        repo = ActAuditLogRepository(mock_conn)
+        mock_conn.fetch.side_effect = [
+            [], [],
+            [_db_violation_row(violated=json.dumps({"enabled": True, "blocks": [
+                {"id": "text_1", "type": "text", "content": "старый текст"},
+            ]}))],
+        ]
+        data = _make_act_data({"v1": self._make_violation(
+            violated={"enabled": True, "blocks": [
+                {"id": "text_1", "type": "text", "content": "новый текст"},
+            ]},
+        )})
+
+        result = await repo.compute_field_diffs(1, data)
+
+        assert result["v1"]["fields"]["violated"]["changed"] is True

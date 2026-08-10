@@ -4,19 +4,16 @@ XSS-санитизация content-полей акта на бэкенде.
 Гарантирует, что ActContentService.save_content вычищает опасные
 теги/атрибуты до записи в БД: <script>, <img onerror>, <svg onload>,
 <iframe srcdoc>, javascript:-URL — для textBlock.content, узлов дерева
-(реальный HTML, рендерится через innerHTML) и rich-полей нарушения
-(violated/established, reasons/measures/consequences/responsible.content,
-descriptionList.items[] — Task 7, additionalContent.items[] типов
-case/freeText — по реестру VIOLATION_FIELDS.rich, см.
-TestSaveContentViolationRichFieldsSanitized). Whitelist разрешает
-p/b/i/span/a/... и атрибуты {a:href,title; span:class,style;
-div/p:class,style; *:class}.
+(реальный HTML, рендерится через innerHTML) и блоков полей нарушения
+(text.content, image.caption — по реестру VIOLATION_FIELDS, блочная модель
+{enabled, blocks}, см. TestSaveContentViolationBlocksSanitized). Whitelist
+разрешает p/b/i/span/a/ul/ol/li/... и атрибуты {a:href,title;
+span:class,style; div/p:class,style; *:class}.
 
-Plain-text поле additionalContent.items[].filename/url через санитайзер
-НЕ гоняется — нигде не рендерится как innerHTML, поэтому хранится дословно
-(см. те же тесты). additionalContent.items[].caption (тип image) —
-rich-поле (Task 6, rich-редактор подписи), санитизируется как
-case/freeText.content.
+Plain-text поля image-блока (url/filename) через санитайзер НЕ гоняются —
+нигде не рендерятся как innerHTML, поэтому хранятся дословно (см. те же
+тесты). Ячейки table-блока — тот же инвариант, что у больших таблиц акта
+(B8): рендерятся только как текст, санитайзер их не трогает.
 
 Тесты дополнительно покрывают utils/html_sanitizer.sanitize_html/
 sanitize_rich_html напрямую (быстрые сценарии без поднятия сервиса).
@@ -30,17 +27,19 @@ import pytest
 
 from app.domains.acts.schemas.act_content import (
     ActDataSchema,
+    EmbeddedTableSchema,
     TableCellSchema,
     TableSchema,
     TextBlockSchema,
+    ViolationFieldSchema,
+    ViolationImageBlockSchema,
     ViolationSchema,
-    ViolationOptionalFieldSchema,
-    ViolationAdditionalContentSchema,
-    ViolationContentItemSchema,
+    ViolationTableBlockSchema,
+    ViolationTextBlockSchema,
 )
-from app.domains.acts.schemas.act_content import ViolationDescriptionListSchema
 from app.domains.acts.services.act_content_service import ActContentService
 from app.domains.acts.utils.html_sanitizer import (
+    _sanitize_block,
     _sanitize_violation_dict,
     _sanitize_violation_obj,
     sanitize_html,
@@ -121,7 +120,7 @@ class TestSanitizeHtmlDirect:
 
 
 class TestSanitizeRichHtmlDirect:
-    """sanitize_rich_html: nh3-санитайзер для rich-полей нарушения (1.2.3).
+    """sanitize_rich_html: nh3-санитайзер для rich-блоков полей нарушения.
 
     Тот же allowlist настроек, что у sanitize_html, но на nh3 (allowlist ==
     фронтовый DOMPurify) вместо bleach — см. докстринг sanitize_rich_html.
@@ -174,6 +173,12 @@ class TestSanitizeRichHtmlDirect:
     def test_data_url_scheme_blocked(self):
         out = sanitize_rich_html('<a href="data:text/html,<script>alert(1)</script>">x</a>')
         assert "data:" not in out and "x" in out
+
+    def test_lists_survive_sanitization(self):
+        """ul/ol/li разрешены whitelist'ом — списки переживают санитизацию."""
+        out = sanitize_rich_html("<ul><li>раз</li><li>два</li></ul><ol><li>три</li></ol>")
+        assert "<ul>" in out and "<li>раз</li>" in out and "<li>два</li>" in out
+        assert "<ol>" in out and "<li>три</li>" in out
 
 
 # ── Интеграция: ActContentService.save_content санитизирует все поля ────────
@@ -238,24 +243,18 @@ def _data_with_textblock(html: str) -> ActDataSchema:
     )
 
 
-def _data_with_violation(*, violated="", established="",
-                          add_item_html="", field_html="") -> ActDataSchema:
-    v = ViolationSchema(
-        id="v1",
-        nodeId="n1",
-        violated=violated,
-        established=established,
-        additionalContent=ViolationAdditionalContentSchema(
-            enabled=True,
-            items=[ViolationContentItemSchema(
-                id="i1", type="freeText", content=add_item_html,
-            )],
-        ),
-        reasons=ViolationOptionalFieldSchema(enabled=True, content=field_html),
-        measures=ViolationOptionalFieldSchema(enabled=True, content=field_html),
-        consequences=ViolationOptionalFieldSchema(enabled=True, content=field_html),
-        responsible=ViolationOptionalFieldSchema(enabled=True, content=field_html),
-    )
+def _violation_with_blocks(**field_blocks) -> ActDataSchema:
+    """Нарушение v1 с блоками в указанных полях (остальные — дефолт реестра).
+
+    Каждый kwarg — ключ поля реестра VIOLATION_FIELDS, значение — список
+    готовых блоков (ViolationTextBlockSchema/ViolationImageBlockSchema/
+    ViolationTableBlockSchema) для контейнера {enabled: True, blocks: [...]}.
+    """
+    kwargs = {
+        key: ViolationFieldSchema(enabled=True, blocks=blocks)
+        for key, blocks in field_blocks.items()
+    }
+    v = ViolationSchema(id="v1", nodeId="n1", **kwargs)
     return ActDataSchema(
         tree={"id": "root", "label": "Акт", "children": []},
         violations={"v1": v},
@@ -328,202 +327,246 @@ class TestSaveContentSanitizesTextBlocks:
         assert 'href="https://example.com"' in sanitized
 
 
-class TestSaveContentViolationRichFieldsSanitized:
-    """save_content прогоняет RICH-поля нарушения через sanitize_rich_html.
+class TestSaveContentViolationBlocksSanitized:
+    """save_content прогоняет rich-блоки полей нарушения через sanitize_rich_html.
 
-    Фиксирует НОВУЮ семантику (флип): rich-поля нарушения (violated/
-    established, reasons/measures/consequences/responsible,
-    descriptionList.items[] — Task 7, additionalContent.items[] типов
-    case/freeText) теперь реальный HTML, рендерящийся как innerHTML
-    (rich-редактор, §9 паритет) — санитизируются как любой другой
-    HTML-контент (см. докстринг sanitize_act_data). additionalContent.items[]
-    типа image — caption (Task 6, rich-редактор подписи) санитизируется так
-    же. Plain-поле additionalContent.items[].filename/url остаётся
-    дословным. Старый класс TestSaveContentViolationFieldsStoredVerbatim
-    фиксировал ДО-rich поведение (ВСЕ поля нарушения дословны) — заменён
-    этим классом.
+    Блочная модель: у каждого из 10 полей реестра VIOLATION_FIELDS —
+    единый контейнер {enabled, blocks}. text-блок.content и image-блок.caption
+    несут реальный HTML (rich-редактор, innerHTML) — санитизируются как любой
+    другой HTML-контент (см. докстринг sanitize_act_data). image-блок
+    url/filename — plain, не трогаются. table-блок — ячейки хранятся
+    дословно (тот же инвариант B8, что у больших таблиц акта, см.
+    TestSaveContentTableCellsStoredVerbatim).
     """
 
-    async def test_violated_established_sanitized(self):
+    async def test_violated_established_text_block_sanitized(self):
         svc, _ = _make_service()
-        data = _data_with_violation(violated="<p>ok</p><script>alert(1)</script>",
-                                     established='<img onerror="x" src=y>вред')
+        data = _violation_with_blocks(
+            violated=[ViolationTextBlockSchema(
+                id="b1", type="text", content="<p>ok</p><script>alert(1)</script>",
+            )],
+            established=[ViolationTextBlockSchema(
+                id="b2", type="text", content='<img onerror="x" src=y>вред',
+            )],
+        )
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         v = data.violations["v1"]
-        assert "<script" not in v.violated and "<p>ok</p>" in v.violated
-        assert "onerror" not in v.established and "<img" not in v.established and "вред" in v.established
+        violated_content = v.violated.blocks[0].content
+        established_content = v.established.blocks[0].content
+        assert "<script" not in violated_content and "<p>ok</p>" in violated_content
+        assert "onerror" not in established_content
+        assert "<img" not in established_content and "вред" in established_content
 
-    async def test_optional_fields_sanitized(self):
-        """reasons/measures/consequences/responsible.content санитизируются."""
+    async def test_optional_field_text_blocks_sanitized(self):
+        """reasons/measures/consequences/responsible: text-блок.content санитизируется."""
         svc, _ = _make_service()
         raw = '<b>причина</b><svg onload="x"></svg>'
-        data = _data_with_violation(field_html=raw)
+        keys = ("reasons", "measures", "consequences", "responsible")
+        data = _violation_with_blocks(**{
+            key: [ViolationTextBlockSchema(id=f"b_{key}", type="text", content=raw)]
+            for key in keys
+        })
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         v = data.violations["v1"]
-        for fname in ("reasons", "measures", "consequences", "responsible"):
-            content = getattr(v, fname).content
+        for key in keys:
+            content = getattr(v, key).blocks[0].content
             assert "<svg" not in content and "onload" not in content
             assert "<b>причина</b>" in content
 
-    async def test_case_freetext_content_sanitized(self):
-        """additionalContent item (type=case И type=freeText) — content санитизируется."""
+    async def test_image_caption_sanitized(self):
+        """image-блок.caption — rich, санитизируется."""
         svc, _ = _make_service()
-        raw_case = '<p>кейс</p><iframe srcdoc="x"></iframe>'
-        raw_free = '<b>текст</b><svg onload="x"></svg>'
-        data = _data_with_violation(add_item_html=raw_case)
-        data.violations["v1"].additionalContent.items[0].type = "case"
-        data.violations["v1"].additionalContent.items.append(
-            ViolationContentItemSchema(id="i2", type="freeText", content=raw_free)
-        )
+        raw_caption = '<b>подпись</b><img src=x onerror="a">'
+        data = _violation_with_blocks(additionalContent=[ViolationImageBlockSchema(
+            id="b1", type="image", caption=raw_caption,
+        )])
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        items = data.violations["v1"].additionalContent.items
-        case_item = items[0]
-        assert "<iframe" not in case_item.content and "srcdoc" not in case_item.content
-        assert "<p>кейс</p>" in case_item.content
-        freetext_item = items[1]
-        assert "<svg" not in freetext_item.content and "onload" not in freetext_item.content
-        assert "<b>текст</b>" in freetext_item.content
+        block = data.violations["v1"].additionalContent.blocks[0]
+        assert "<b>подпись</b>" in block.caption
+        assert "<img" not in block.caption and "onerror" not in block.caption
 
-    async def test_allowlisted_formatting_survives(self):
-        """Разрешённые тег/CSS/ссылка нарушения переживают санитизацию."""
+    async def test_image_url_filename_verbatim(self):
+        """url/filename image-блока — plain, дословно (не HTML-контент)."""
         svc, _ = _make_service()
-        raw = '<span style="font-size: 20px">крупно</span><a href="https://e.com">l</a>'
-        data = _data_with_violation(violated=raw)
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        v = data.violations["v1"]
-        assert "font-size" in v.violated and "20px" in v.violated
-        assert 'href="https://e.com"' in v.violated
-
-    async def test_ampersand_html_encoded_not_corruption(self):
-        """"&" → "&amp;" — корректное HTML-хранение rich-поля, не порча текста."""
-        svc, _ = _make_service()
-        data = _data_with_violation(violated="Ромашка & Ко")
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        assert data.violations["v1"].violated == "Ромашка &amp; Ко"
-
-    async def test_description_list_sanitized(self):
-        """descriptionList.items — rich-поле (Task 7), каждый пункт санитизируется."""
-        svc, _ = _make_service()
-        data = _data_with_violation()
-        data.violations["v1"].descriptionList = ViolationDescriptionListSchema(
-            enabled=True,
-            items=[
-                "<p>обычный</p>",
-                "<script>alert(1)</script>опасный",
-                "<b>a</b>d",
-            ],
-        )
-
-        await svc.save_content(act_id=1, data=data, username="12345")
-
-        items = data.violations["v1"].descriptionList.items
-        assert items[0] == "<p>обычный</p>"
-        assert "<script" not in items[1] and "опасный" in items[1]
-        assert items[2] == "<b>a</b>d"
-
-    def test_description_list_sanitized_dict_form(self):
-        """Зеркало обj-теста выше для dict-формы (_sanitize_violation_dict,
-        restore pre-snapshot путь, pbe-6) — items чистятся так же."""
-        v = {
-            "id": "v1", "nodeId": "n1",
-            "descriptionList": {
-                "enabled": True,
-                "items": ["<p>обычный</p>", "<script>alert(1)</script>опасный"],
-            },
-        }
-
-        _sanitize_violation_dict(v)
-
-        items = v["descriptionList"]["items"]
-        assert items[0] == "<p>обычный</p>"
-        assert "<script" not in items[1] and "опасный" in items[1]
-
-    async def test_image_filename_url_verbatim(self):
-        """filename/url элемента additionalContent — plain, дословно."""
-        svc, _ = _make_service()
-        data = _data_with_violation()
         raw_filename = "<script>x</script>ф.png"
         url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
-        item = data.violations["v1"].additionalContent.items[0]
-        item.type = "image"
-        item.filename = raw_filename
-        item.url = url
+        data = _violation_with_blocks(additionalContent=[ViolationImageBlockSchema(
+            id="b1", type="image", url=url, filename=raw_filename,
+        )])
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        item = data.violations["v1"].additionalContent.items[0]
-        assert item.filename == raw_filename
-        assert item.url == url
+        block = data.violations["v1"].additionalContent.blocks[0]
+        assert block.filename == raw_filename
+        assert block.url == url
 
-    async def test_image_caption_sanitized(self):
-        """caption элемента additionalContent (image) — rich, санитизируется (Task 6).
-
-        Allowlisted-тег (<b>) переживает санитизацию, опасный payload
-        (<img onerror>) вырезается — зеркало test_case_freetext_content_sanitized.
-        """
+    async def test_table_block_cells_verbatim(self):
+        """table-блок: ячейки не тронуты — тот же инвариант, что у больших таблиц (B8)."""
         svc, _ = _make_service()
-        data = _data_with_violation()
-        raw_caption = '<b>подпись</b><img src=x onerror="a">'
-        item = data.violations["v1"].additionalContent.items[0]
-        item.type = "image"
-        item.caption = raw_caption
+        payload = "<script>window.__xss=1</script>"
+        table = EmbeddedTableSchema(grid=[[TableCellSchema(content=payload)]], colWidths=[100])
+        data = _violation_with_blocks(additionalContent=[ViolationTableBlockSchema(
+            id="b1", type="table", table=table,
+        )])
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        item = data.violations["v1"].additionalContent.items[0]
-        assert "<b>подпись</b>" in item.caption
-        assert "<img" not in item.caption and "onerror" not in item.caption
+        cell = data.violations["v1"].additionalContent.blocks[0].table.grid[0][0]
+        assert cell.content == payload
 
-    async def test_image_caption_none_stays_none(self):
-        """caption=None (легаси-данные без подписи) — санитайзер не подменяет на ''."""
+    async def test_allowlisted_formatting_survives(self):
+        """Разрешённые тег/CSS/ссылка переживают санитизацию."""
         svc, _ = _make_service()
-        data = _data_with_violation()
-        item = data.violations["v1"].additionalContent.items[0]
-        item.type = "image"
-        item.caption = None
+        raw = '<span style="font-size: 20px">крупно</span><a href="https://e.com">l</a>'
+        data = _violation_with_blocks(violated=[ViolationTextBlockSchema(
+            id="b1", type="text", content=raw,
+        )])
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
-        assert data.violations["v1"].additionalContent.items[0].caption is None
+        content = data.violations["v1"].violated.blocks[0].content
+        assert "font-size" in content and "20px" in content
+        assert 'href="https://e.com"' in content
 
-    def test_case_content_missing_key_dict_form_not_added(self):
-        """V18/#11: ветка case/freeText dict-пути не должна добавлять
-        отсутствующий ключ content — зеркало гарда caption (:438)."""
-        v = {
-            "id": "v1", "nodeId": "n1",
-            "additionalContent": {
-                "enabled": True,
-                "items": [{"id": "i1", "type": "case"}],  # нет ключа content
-            },
-        }
+    async def test_lists_survive_sanitization(self):
+        """ul/ol/li в text-блоке переживают санитизацию (списки разрешены)."""
+        svc, _ = _make_service()
+        html = "<ul><li>раз</li><li>два</li></ul><ol><li>три</li></ol>"
+        data = _violation_with_blocks(reasons=[ViolationTextBlockSchema(
+            id="b1", type="text", content=html,
+        )])
 
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        content = data.violations["v1"].reasons.blocks[0].content
+        assert "<ul>" in content and "<li>раз</li>" in content
+        assert "<ol>" in content and "<li>три</li>" in content
+
+    async def test_ampersand_html_encoded_not_corruption(self):
+        """"&" → "&amp;" — корректное HTML-хранение rich-блока, не порча текста."""
+        svc, _ = _make_service()
+        data = _violation_with_blocks(violated=[ViolationTextBlockSchema(
+            id="b1", type="text", content="Ромашка & Ко",
+        )])
+
+        await svc.save_content(act_id=1, data=data, username="12345")
+
+        assert data.violations["v1"].violated.blocks[0].content == "Ромашка &amp; Ко"
+
+
+class TestSanitizeBlockDispatch:
+    """_sanitize_block: прямые тесты диспетчера по типу (без ViolationSchema)."""
+
+    def test_text_dispatches_to_content(self):
+        block = {"id": "b1", "type": "text", "content": "<script>x</script>ok"}
+        _sanitize_block(block)
+        assert "<script" not in block["content"] and "ok" in block["content"]
+
+    def test_image_dispatches_to_caption(self):
+        block = {"id": "b1", "type": "image", "caption": "<script>x</script>ok"}
+        _sanitize_block(block)
+        assert "<script" not in block["caption"] and "ok" in block["caption"]
+
+    def test_table_left_untouched(self):
+        block = {"id": "b1", "type": "table",
+                  "table": {"grid": [[{"content": "<script>x</script>"}]]}}
+        _sanitize_block(block)
+        assert block["table"]["grid"][0][0]["content"] == "<script>x</script>"
+
+    def test_unknown_type_left_untouched(self):
+        """Неизвестный type — пропуск без изменений (422 на нём отбивает схема раньше)."""
+        block = {"id": "b1", "type": "unknown", "content": "<script>x</script>"}
+        _sanitize_block(block)
+        assert block["content"] == "<script>x</script>"
+
+    def test_missing_type_left_untouched(self):
+        block = {"id": "b1", "content": "<script>x</script>"}
+        _sanitize_block(block)
+        assert block["content"] == "<script>x</script>"
+
+    def test_none_block_does_not_raise(self):
+        _sanitize_block(None)  # не упало — достаточно
+
+
+class TestSanitizeViolationNoneGuards:
+    """Отсутствующее/None-поле, blocks не-список, блок без type — не роняют
+    санитайзер (V18/#11: явный None не подменяется на '', missing-ключ не
+    появляется)."""
+
+    def test_missing_field_key_does_not_raise(self):
+        v = {"id": "v1", "nodeId": "n1"}  # ни одного из 10 полей
+        _sanitize_violation_dict(v)  # не упало — достаточно
+
+    def test_none_field_does_not_raise(self):
+        v = {"id": "v1", "nodeId": "n1", "violated": None}
         _sanitize_violation_dict(v)
 
-        assert "content" not in v["additionalContent"]["items"][0]
-
-    def test_case_content_none_stays_none_dict_form(self):
-        """#11: явный content=None в dict-форме не должен превращаться в ''."""
-        v = {
-            "id": "v1", "nodeId": "n1",
-            "additionalContent": {
-                "enabled": True,
-                "items": [{"id": "i1", "type": "case", "content": None}],
-            },
-        }
-
+    def test_blocks_not_list_skipped(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True, "blocks": "не список"}}
         _sanitize_violation_dict(v)
+        assert v["violated"]["blocks"] == "не список"
 
-        assert v["additionalContent"]["items"][0]["content"] is None
+    def test_none_block_in_list_skipped(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True, "blocks": [None]}}
+        _sanitize_violation_dict(v)
+        assert v["violated"]["blocks"] == [None]
+
+    def test_text_content_missing_key_not_added(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True, "blocks": [{"id": "b1", "type": "text"}]}}
+        _sanitize_violation_dict(v)
+        assert "content" not in v["violated"]["blocks"][0]
+
+    def test_text_content_none_stays_none_dict_form(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True,
+                          "blocks": [{"id": "b1", "type": "text", "content": None}]}}
+        _sanitize_violation_dict(v)
+        assert v["violated"]["blocks"][0]["content"] is None
+
+    def test_image_caption_missing_key_not_added(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True, "blocks": [{"id": "b1", "type": "image"}]}}
+        _sanitize_violation_dict(v)
+        assert "caption" not in v["violated"]["blocks"][0]
+
+    def test_image_caption_none_stays_none_dict_form(self):
+        v = {"id": "v1", "nodeId": "n1",
+             "violated": {"enabled": True,
+                          "blocks": [{"id": "b1", "type": "image", "caption": None}]}}
+        _sanitize_violation_dict(v)
+        assert v["violated"]["blocks"][0]["caption"] is None
+
+    def test_text_content_none_stays_none_obj_form(self):
+        """Зеркало dict-теста для объектной формы (прямая подмена атрибута,
+        имитация легаси/некорректного объекта — Pydantic-конструктор content=None
+        не пропустит)."""
+        block = ViolationTextBlockSchema(id="b1", type="text", content="x")
+        block.content = None
+        v = ViolationSchema(id="v1", nodeId="n1",
+                             violated=ViolationFieldSchema(enabled=True, blocks=[block]))
+
+        _sanitize_violation_obj(v)
+
+        assert v.violated.blocks[0].content is None
+
+    def test_image_caption_none_stays_none_obj_form(self):
+        block = ViolationImageBlockSchema(id="b1", type="image", caption="x")
+        block.caption = None
+        v = ViolationSchema(id="v1", nodeId="n1",
+                             violated=ViolationFieldSchema(enabled=True, blocks=[block]))
+
+        _sanitize_violation_obj(v)
+
+        assert v.violated.blocks[0].caption is None
 
 
 class TestSanitizeViolationParity:
@@ -534,122 +577,84 @@ class TestSanitizeViolationParity:
     def _build_obj(self) -> ViolationSchema:
         return ViolationSchema(
             id="v1", nodeId="n1",
-            violated="<p>v</p><script>x</script>",
-            established="<i>e</i><svg onload=x></svg>",
-            descriptionList=ViolationDescriptionListSchema(
-                enabled=True, items=["<b>d</b><script>x</script>"],
-            ),
-            additionalContent=ViolationAdditionalContentSchema(
-                enabled=True,
-                items=[
-                    ViolationContentItemSchema(
-                        id="i1", type="case", content="<b>кейс</b><script>x</script>",
+            violated=ViolationFieldSchema(enabled=True, blocks=[
+                ViolationTextBlockSchema(id="b1", type="text", content="<p>v</p><script>x</script>"),
+            ]),
+            established=ViolationFieldSchema(enabled=True, blocks=[
+                ViolationTextBlockSchema(id="b2", type="text", content="<i>e</i><svg onload=x></svg>"),
+            ]),
+            reasons=ViolationFieldSchema(enabled=True, blocks=[
+                ViolationImageBlockSchema(id="b3", type="image", caption="<b>капшн</b><script>x</script>"),
+            ]),
+            additionalContent=ViolationFieldSchema(enabled=True, blocks=[
+                ViolationTableBlockSchema(
+                    id="b4", type="table",
+                    table=EmbeddedTableSchema(
+                        grid=[[TableCellSchema(content="<script>x</script>")]], colWidths=[100],
                     ),
-                    ViolationContentItemSchema(
-                        id="i2", type="freeText", content="<b>текст</b><script>x</script>",
-                    ),
-                    ViolationContentItemSchema(
-                        id="i3", type="image", caption="<b>капшн</b><script>x</script>",
-                    ),
-                ],
-            ),
-            reasons=ViolationOptionalFieldSchema(
-                enabled=True, content="<b>причина</b><script>x</script>",
-            ),
-            measures=ViolationOptionalFieldSchema(
-                enabled=True, content="<b>мера</b><script>x</script>",
-            ),
-            consequences=ViolationOptionalFieldSchema(
-                enabled=True, content="<b>последствие</b><script>x</script>",
-            ),
-            responsible=ViolationOptionalFieldSchema(
-                enabled=True, content="<b>отв</b><script>x</script>",
-            ),
+                ),
+            ]),
         )
 
     def _build_dict(self) -> dict:
         return {
             "id": "v1", "nodeId": "n1",
-            "violated": "<p>v</p><script>x</script>",
-            "established": "<i>e</i><svg onload=x></svg>",
-            "descriptionList": {
-                "enabled": True, "items": ["<b>d</b><script>x</script>"],
-            },
-            "additionalContent": {
-                "enabled": True,
-                "items": [
-                    {"id": "i1", "type": "case", "content": "<b>кейс</b><script>x</script>"},
-                    {"id": "i2", "type": "freeText", "content": "<b>текст</b><script>x</script>"},
-                    {"id": "i3", "type": "image", "caption": "<b>капшн</b><script>x</script>"},
-                ],
-            },
-            "reasons": {"enabled": True, "content": "<b>причина</b><script>x</script>"},
-            "measures": {"enabled": True, "content": "<b>мера</b><script>x</script>"},
-            "consequences": {"enabled": True, "content": "<b>последствие</b><script>x</script>"},
-            "responsible": {"enabled": True, "content": "<b>отв</b><script>x</script>"},
+            "violated": {"enabled": True, "blocks": [
+                {"id": "b1", "type": "text", "content": "<p>v</p><script>x</script>"},
+            ]},
+            "established": {"enabled": True, "blocks": [
+                {"id": "b2", "type": "text", "content": "<i>e</i><svg onload=x></svg>"},
+            ]},
+            "reasons": {"enabled": True, "blocks": [
+                {"id": "b3", "type": "image", "caption": "<b>капшн</b><script>x</script>"},
+            ]},
+            "additionalContent": {"enabled": True, "blocks": [
+                {"id": "b4", "type": "table", "table": {
+                    "grid": [[{"content": "<script>x</script>"}]], "colWidths": [100],
+                }},
+            ]},
         }
 
     def test_full_payload_matches_across_paths(self):
-        """6 скалярных полей + descriptionList + additionalContent
-        (case/freeText/image) — идентичный результат санитизации."""
+        """text.content + image.caption — идентичный результат санитизации;
+        table-блок не тронут ни на одном из путей (verbatim)."""
         obj = self._build_obj()
         d = self._build_dict()
 
         _sanitize_violation_obj(obj)
         _sanitize_violation_dict(d)
 
-        assert obj.violated == d["violated"]
-        assert obj.established == d["established"]
-        assert obj.descriptionList.items == d["descriptionList"]["items"]
-        assert obj.reasons.content == d["reasons"]["content"]
-        assert obj.measures.content == d["measures"]["content"]
-        assert obj.consequences.content == d["consequences"]["content"]
-        assert obj.responsible.content == d["responsible"]["content"]
-        items_obj = obj.additionalContent.items
-        items_d = d["additionalContent"]["items"]
-        assert items_obj[0].content == items_d[0]["content"]
-        assert items_obj[1].content == items_d[1]["content"]
-        assert items_obj[2].caption == items_d[2]["caption"]
+        assert obj.violated.blocks[0].content == d["violated"]["blocks"][0]["content"]
+        assert obj.established.blocks[0].content == d["established"]["blocks"][0]["content"]
+        assert obj.reasons.blocks[0].caption == d["reasons"]["blocks"][0]["caption"]
+        assert obj.additionalContent.blocks[0].table.grid[0][0].content == "<script>x</script>"
+        assert d["additionalContent"]["blocks"][0]["table"]["grid"][0][0]["content"] == "<script>x</script>"
         # Санитизация реально сработала (не no-op сравнение пустышек)
-        assert "<script" not in obj.violated and "v" in obj.violated
+        assert "<script" not in obj.violated.blocks[0].content and "v" in obj.violated.blocks[0].content
 
-    def test_case_content_none_stays_none_both_paths(self):
+    def test_text_content_none_stays_none_both_paths(self):
         obj = self._build_obj()
-        obj.additionalContent.items[0].content = None  # легаси-байпас, как caption
+        obj.violated.blocks[0].content = None
         d = self._build_dict()
-        d["additionalContent"]["items"][0]["content"] = None
+        d["violated"]["blocks"][0]["content"] = None
 
         _sanitize_violation_obj(obj)
         _sanitize_violation_dict(d)
 
-        assert obj.additionalContent.items[0].content is None
-        assert d["additionalContent"]["items"][0]["content"] is None
+        assert obj.violated.blocks[0].content is None
+        assert d["violated"]["blocks"][0]["content"] is None
 
-    def test_freetext_content_none_stays_none_both_paths(self):
+    def test_image_caption_none_stays_none_both_paths(self):
         obj = self._build_obj()
-        obj.additionalContent.items[1].content = None
+        obj.reasons.blocks[0].caption = None
         d = self._build_dict()
-        d["additionalContent"]["items"][1]["content"] = None
+        d["reasons"]["blocks"][0]["caption"] = None
 
         _sanitize_violation_obj(obj)
         _sanitize_violation_dict(d)
 
-        assert obj.additionalContent.items[1].content is None
-        assert d["additionalContent"]["items"][1]["content"] is None
-
-    def test_caption_none_stays_none_both_paths(self):
-        """Пара к case/freeText-тестам выше: caption (image) уже был
-        гарантирован на обеих ветках, фиксируем как часть парного контракта."""
-        obj = self._build_obj()
-        obj.additionalContent.items[2].caption = None
-        d = self._build_dict()
-        d["additionalContent"]["items"][2]["caption"] = None
-
-        _sanitize_violation_obj(obj)
-        _sanitize_violation_dict(d)
-
-        assert obj.additionalContent.items[2].caption is None
-        assert d["additionalContent"]["items"][2]["caption"] is None
+        assert obj.reasons.blocks[0].caption is None
+        assert d["reasons"]["blocks"][0]["caption"] is None
 
 
 class TestSaveContentSanitizesTreeNodes:
@@ -735,6 +740,9 @@ class TestSaveContentTableCellsStoredVerbatim:
     Санитизация ячеек была бы вредна: она искажала бы легитимные значения
     (например, «a < b», «<тэг> в кавычках» как данные). Инвариант
     «всё на текст» сильнее, чем точечная санитизация одного из путей.
+
+    Тот же инвариант распространяется на ячейки table-блока внутри полей
+    нарушения — см. TestSaveContentViolationBlocksSanitized.test_table_block_cells_verbatim.
 
     Эти тесты фиксируют, что save_content НЕ трогает ячейки таблицы.
     """

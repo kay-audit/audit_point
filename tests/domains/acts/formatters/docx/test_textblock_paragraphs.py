@@ -112,11 +112,14 @@ def test_split_unclosed_block_not_lost():
     assert split_block_segments("<div>незакрыт") == [BlockSegment(None, "незакрыт")]
 
 
-def test_split_list_markup_stays_anonymous():
-    """<ul>/<li> — не верхнеуровневые div/p: остаются одним сегментом
-    (apply_inline_html рендерит li мягкими переносами, как раньше)."""
-    html = "<ul><li>x</li><li>y</li></ul>"
-    assert split_block_segments(html) == [BlockSegment(None, html)]
+def test_split_list_markup_gives_item_segments():
+    """V14.1: <li> — такая же граница сегмента, как div/p, со стилем своего
+    списка (прежде весь <ul> оставался одним анонимным сегментом с мягкими
+    переносами). Полное покрытие списков — test_rich_lists.py."""
+    assert split_block_segments("<ul><li>x</li><li>y</li></ul>") == [
+        BlockSegment(None, "x", "List Bullet"),
+        BlockSegment(None, "y", "List Bullet"),
+    ]
 
 
 def test_split_empty_and_whitespace_content():

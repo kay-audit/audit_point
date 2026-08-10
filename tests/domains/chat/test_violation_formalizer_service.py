@@ -71,16 +71,62 @@ async def test_formalize_maps_all_fields():
     ):
         out = await ViolationFormalizerService(_settings()).formalize("сырой текст")
 
-    assert out.violated == "П. 3.1 Регламента"
-    assert "Кредит выдан без проверки" in out.established
-    assert "сумма 5 млн руб." in out.established  # metrics подмешаны в established
-    assert out.reasons == "отсутствие проверки; нет контроля лимитов"
-    assert out.responsible == "Иванов И.И., кредитный инспектор; Отдел кредитования"
-    assert out.consequences == "Финансовый ущерб 5 млн руб."
-    assert out.measures == "досоздан контроль; проведён аудит"  # вычислено
+    assert out.violated == "П. 3.1 Регламента"  # скаляр — как есть, без обёртки
+    assert out.established == (
+        "Кредит выдан без проверки\n"
+        "<ul><li>сумма 5 млн руб.</li><li>дата 01.02.2025</li></ul>"
+    )  # суть — абзацем, метрики — честным HTML-списком
+    assert out.reasons == (
+        "<ul><li>отсутствие проверки</li><li>нет контроля лимитов</li></ul>"
+    )
+    assert out.responsible == (
+        "<ul><li>Иванов И.И., кредитный инспектор</li><li>Отдел кредитования</li></ul>"
+    )
+    assert out.consequences == "Финансовый ущерб 5 млн руб."  # скаляр — как есть
+    assert out.measures == (
+        "<ul><li>досоздан контроль</li><li>проведён аудит</li></ul>"
+    )
     assert out.recommendations == [
         "Уточните дату выдачи.", "Укажите ответственных лиц.",
     ]
+
+
+async def test_formalize_list_items_escape_html():
+    """Элемент списка с HTML-разметкой экранируется — текст LLM не HTML."""
+    client = _client_by_prompt({
+        "эксперт по расследованию инцидентов": json.dumps({
+            "causes": ["<b>жирная причина</b>", "вторая причина"],
+            "persons": [],
+        }),
+    })
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
+        return_value=client,
+    ):
+        out = await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert out.reasons == (
+        "<ul><li>&lt;b&gt;жирная причина&lt;/b&gt;</li><li>вторая причина</li></ul>"
+    )
+    assert out.responsible == ""  # пустой список → пустая строка, не <ul></ul>
+
+
+async def test_formalize_established_without_metrics_has_no_list():
+    """Нет метрик → established — просто абзац сути, без `<ul>`."""
+    client = _client_by_prompt({
+        "аналитик нормативных нарушений": json.dumps({
+            "essence": "Кредит выдан без проверки",
+            "norm_doc": "П. 3.1 Регламента",
+            "metrics": [],
+        }),
+    })
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
+        return_value=client,
+    ):
+        out = await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert out.established == "Кредит выдан без проверки"
 
 
 async def test_formalize_temperature_deterministic():

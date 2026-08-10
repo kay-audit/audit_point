@@ -122,7 +122,8 @@ def test_complete_table_no_issues():
     assert issues == []
 
 
-# ── Нарушения (Q1, wave 2): мягкое предупреждение о незаполненных полях ──
+# ── Нарушения (Q1, wave 2 → блочная модель): мягкое предупреждение о
+# незаполненных обязательных полях (violated/established). ──
 
 def _act_with_violation(violation: dict, node_extra: dict | None = None):
     """Валидный акт с одним узлом-нарушением в разделе 1."""
@@ -141,8 +142,14 @@ def _act_with_violation(violation: dict, node_extra: dict | None = None):
     )
 
 
+def _text_field(content: str) -> dict:
+    """Контейнер поля {enabled, blocks} с одним text-блоком (для сценариев)."""
+    return {"enabled": True, "blocks": [{"id": "b1", "type": "text", "content": content}]}
+
+
 def test_violation_empty_fields_is_warning():
-    """Пустые violated/established (дефолты схемы) → мягкое замечание."""
+    """Пустые контейнеры violated/established (дефолты схемы, blocks=[]) →
+    мягкое замечание."""
     data = _act_with_violation({"id": "v1", "nodeId": "vnode1"})
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
@@ -155,46 +162,115 @@ def test_violation_empty_fields_is_warning():
 def test_violation_complete_no_issue():
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("Установлено расхождение"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" not in _codes(issues)
     assert issues == []
 
 
-def test_violation_empty_description_item_is_warning():
+def test_violation_empty_text_block_is_warning():
+    """Text-блок с плейсхолдером `<p><br></p>` — визуально пуст."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
-        "descriptionList": {"enabled": True, "items": ["пункт 1", "  "]},
+        "violated": _text_field("<p><br></p>"),
+        "established": _text_field("Установлено расхождение"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
 
 
-def test_violation_empty_additional_content_case_is_warning():
+def test_violation_image_block_with_url_is_complete():
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
-        "additionalContent": {
+        "violated": {
             "enabled": True,
-            "items": [{"id": "c1", "type": "case", "content": ""}],
+            "blocks": [{
+                "id": "b1", "type": "image",
+                "url": "data:image/png;base64,iVBORw0KGgo=",
+            }],
         },
+        "established": _text_field("Установлено расхождение"),
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" not in _codes(issues)
+
+
+def test_violation_image_block_without_url_is_warning():
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": {"enabled": True, "blocks": [{"id": "b1", "type": "image"}]},
+        "established": _text_field("Установлено расхождение"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_table_block_with_filled_cell_is_complete():
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": {
+            "enabled": True,
+            "blocks": [{
+                "id": "b1", "type": "table",
+                "table": {"grid": [[{"content": "значение"}]], "colWidths": [100]},
+            }],
+        },
+        "established": _text_field("Установлено расхождение"),
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" not in _codes(issues)
+
+
+def test_violation_table_block_all_empty_cells_is_warning():
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": {
+            "enabled": True,
+            "blocks": [{
+                "id": "b1", "type": "table",
+                "table": {
+                    "grid": [[{"content": ""}, {"content": "  "}]],
+                    "colWidths": [100, 100],
+                },
+            }],
+        },
+        "established": _text_field("Установлено расхождение"),
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_multiple_blocks_one_filled_is_complete():
+    """В поле несколько блоков — достаточно, чтобы хоть один был непустым."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": {
+            "enabled": True,
+            "blocks": [
+                {"id": "b1", "type": "text", "content": "<p><br></p>"},
+                {"id": "b2", "type": "text", "content": "текст"},
+            ],
+        },
+        "established": _text_field("Установлено расхождение"),
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" not in _codes(issues)
 
 
 def test_violation_optional_fields_empty_not_counted():
-    """Опциональные поля (причины/принятые меры/последствия/ответственные)
-    пустыми НЕ считаются — вне scope находки о пустых обязательных полях."""
+    """Опциональные поля (причины/принятые меры/последствия/ответственные и
+    др.) с пустыми blocks=[] НЕ считаются — вне scope находки о пустых
+    обязательных полях."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
-        "reasons": {"enabled": True, "content": ""},
-        "consequences": {"enabled": True, "content": ""},
-        "responsible": {"enabled": True, "content": ""},
-        "measures": {"enabled": True, "content": ""},
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("Установлено расхождение"),
+        "reasons": {"enabled": True, "blocks": []},
+        "consequences": {"enabled": True, "blocks": []},
+        "responsible": {"enabled": True, "blocks": []},
+        "measures": {"enabled": True, "blocks": []},
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" not in _codes(issues)
@@ -206,7 +282,8 @@ def test_violation_br_only_is_warning():
     проверка по сырому значению считала поле заполненным."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "<br>", "established": "Установлено расхождение",
+        "violated": _text_field("<br>"),
+        "established": _text_field("Установлено расхождение"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
@@ -216,7 +293,8 @@ def test_violation_div_br_only_is_warning():
     """`<div><br></div>` — плейсхолдер пустой строки contenteditable."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "<div><br></div>", "established": "Установлено расхождение",
+        "violated": _text_field("<div><br></div>"),
+        "established": _text_field("Установлено расхождение"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
@@ -226,7 +304,8 @@ def test_violation_nbsp_paragraph_only_is_warning():
     """`<p>&nbsp;</p>` — неразрывный пробел визуально пуст."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "<p>&nbsp;</p>",
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("<p>&nbsp;</p>"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" in _codes(issues)
@@ -236,36 +315,12 @@ def test_violation_rich_formatted_text_is_complete():
     """Rich-форматирование с реальным текстом (`<b>`/`<div>`) — не пусто."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
-        "violated": "<b>текст</b>", "established": "<div>а</div>",
+        "violated": _text_field("<b>текст</b>"),
+        "established": _text_field("<div>а</div>"),
     })
     issues = collect_validation_issues(data)
     assert "violation_incomplete" not in _codes(issues)
     assert issues == []
-
-
-def test_violation_description_item_br_only_is_warning():
-    """HTML-слепота распространяется на пункты descriptionList."""
-    data = _act_with_violation({
-        "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
-        "descriptionList": {"enabled": True, "items": ["пункт 1", "<div><br></div>"]},
-    })
-    issues = collect_validation_issues(data)
-    assert "violation_incomplete" in _codes(issues)
-
-
-def test_violation_additional_content_case_br_only_is_warning():
-    """HTML-слепота распространяется на content кейса additionalContent."""
-    data = _act_with_violation({
-        "id": "v1", "nodeId": "vnode1",
-        "violated": "Нарушен пункт 1.1", "established": "Установлено расхождение",
-        "additionalContent": {
-            "enabled": True,
-            "items": [{"id": "c1", "type": "case", "content": "<br>"}],
-        },
-    })
-    issues = collect_validation_issues(data)
-    assert "violation_incomplete" in _codes(issues)
 
 
 def test_violation_uses_custom_label_in_message():
@@ -276,6 +331,30 @@ def test_violation_uses_custom_label_in_message():
     issues = collect_validation_issues(data)
     issue = next(i for i in issues if i["code"] == "violation_incomplete")
     assert "Нарушение по кассе" in issue["message"]
+
+
+# ── Юнит-уровень: None-гварды помощников (`_field_is_empty`/`_is_block_empty`)
+# на повреждённых структурах, которые схема ViolationSchema не пропустит, но
+# сами функции обязаны не падать на них (защита в глубину). ──
+
+from types import SimpleNamespace
+
+from app.domains.acts.services.content_validation import (
+    _field_is_empty,
+    _is_block_empty,
+)
+
+
+def test_field_is_empty_none_container_is_empty():
+    assert _field_is_empty(None) is True
+
+
+def test_field_is_empty_blocks_not_a_list_is_empty():
+    assert _field_is_empty(SimpleNamespace(blocks="not-a-list")) is True
+
+
+def test_is_block_empty_unknown_type_is_empty():
+    assert _is_block_empty(SimpleNamespace(type="unknown")) is True
 
 
 # ── Сервисный уровень: статус сохраняется и шлётся уведомление (#8) ──
