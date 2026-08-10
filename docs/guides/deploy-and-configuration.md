@@ -271,8 +271,6 @@ chat_settings.api_key.get_secret_value()  # безопасное получен�
 **Пример .env** (минимальный DEV-набор; полный — `.env.dev`):
 
 ```env
-APP_TITLE=Audit Workstation
-APP_VERSION=14.0.1
 JUPYTERHUB_USER=22494524_omega-sbrf-ru
 
 SERVER__HOST=0.0.0.0
@@ -434,6 +432,30 @@ def test_chat_settings_defaults():
 4. Обновить таблицу в §9.5.
 5. Тесты домена — `_load_from_env` с `monkeypatch.setenv` для проверки парсинга.
 
+#### 9.4.4 Метаданные приложения: название и версия
+
+Название и номер версии живут **в одном месте** — `__title__` и `__version__` в `app/__init__.py`.
+Оттуда их читает `Settings` (`app/core/config.py`, импорт
+`from app import __title__ as APP_TITLE, __version__ as APP_VERSION`), а дальше значения расходятся
+по потребителям сами:
+
+| Потребитель | Что показывает |
+|---|---|
+| `/api/v1/system/health` и остальные health-эндпоинты | поля `service` и `version` |
+| OpenAPI-схема (`app/main.py`) | название и версия API в `/docs` |
+| Jinja-фильтр `versioned` (`app/core/templating.py`) | `?v=<версия>` на всей статике — cache-busting |
+| Глобал шаблонов `app_version` | `<meta name="app-version">`, бейдж версии в интерфейсе |
+
+Переменные окружения `APP_TITLE` и `APP_VERSION` остаются рабочими override'ами (поля обычные,
+pydantic-settings их подхватывает), но в `.env.dev` / `.env.prod` они **закомментированы намеренно**:
+это свойства кода, а не среды. Для версии цена ошибки выше всего: задать её в `.env` и забыть обновить
+при релизе — значит не только отрапортовать старую версию, но и оставить фильтру `versioned` старый
+`?v=`, из-за чего браузеры останутся на закэшированных JS/CSS предыдущего релиза. Отказ молчаливый,
+выглядит как «фронт не обновился».
+
+Порядок бампа и что ещё правится — раздел «Как поднимать версию» в `CHANGELOG.md`; согласованность
+`__version__` ↔ `Settings.app_version` ↔ `CHANGELOG.md` проверяет `tests/test_version_consistency.py`.
+
 ### 9.5 Полная таблица переменных окружения
 
 Разбито на тематические блоки. Все nested-переменные используют делимитер `__` (см. §9.4).
@@ -442,8 +464,8 @@ def test_chat_settings_defaults():
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
-| `APP_TITLE` | str | `Audit Workstation` | Название приложения |
-| `APP_VERSION` | str | `14.0.1` | Версия (`Settings.app_version`, `app/core/config.py:273`) |
+| `APP_TITLE` | str | из `app/__init__.py` | Название приложения (`__title__`). В шаблонах `.env` закомментировано, см. §9.4.4 |
+| `APP_VERSION` | str | из `app/__init__.py` | Версия. В шаблонах `.env` закомментирована: единственный источник — `__version__` в `app/__init__.py`, откуда её берёт `Settings.app_version`. Env-override остался рабочим, но использовать его в норме не нужно (§9.4.4) |
 | `JUPYTERHUB_USER` | str | `unknown_user` | Username (цифры): тест-режим авторизации (`AUTH__ENABLED=false`, §9.3a) и/или Kerberos-логин для Greenplum (`app/db/connection.py:213-218`). Имя — историческое, к JupyterHub/DataLab деплою больше не привязано |
 | `AUDIT_ID_SERVICE_URL` | str | `""` | URL планируемого внешнего сервиса генерации ID для связи актов и фактур. Заглушка — сервис ещё не подключён |
 | `AUDIT_ID_SERVICE_TIMEOUT` | int | `10` | Таймаут обращения к сервису ID (сек). Заглушка |

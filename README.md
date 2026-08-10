@@ -167,7 +167,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8484
 
 | Группа | Переменные | Описание |
 |--------|-----------|----------|
-| Приложение | `APP_TITLE`, `APP_VERSION` | Метаданные (текущая версия — `14.0.1`) |
+| Приложение | `APP_TITLE`, `APP_VERSION` | Метаданные. Задавать не нужно — берутся из `app/__init__.py` (`__title__`, `__version__`); текущая версия — в [`CHANGELOG.md`](CHANGELOG.md) |
 | Сервер | `SERVER__HOST`, `SERVER__PORT`, `SERVER__LOG_LEVEL`, `LOG_FORMAT` | Параметры HTTP-сервера и формат логов (`text` / `json`) |
 | Авторизация | `AUTH__ENABLED`, `AUTH__JWT_SECRET`, `AUTH__JWT_ACCESS_TTL`, `AUTH__COOKIE_SECURE`, `AUTH__OTP_*` | Вход по ОТП-коду на e-mail + JWT. `AUTH__ENABLED=false` — тест-режим (username из `JUPYTERHUB_USER`) |
 | База данных | `DATABASE__TYPE`, `DATABASE__HOST`, `DATABASE__PORT`, `DATABASE__NAME`, `DATABASE__USER`, `DATABASE__PASSWORD` | Подключение к БД |

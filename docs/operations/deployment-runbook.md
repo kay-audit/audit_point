@@ -67,7 +67,7 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8484
 2. **Базовый health.**
    ```bash
    curl http://localhost:8484/api/v1/system/health
-   # → {"status": "ok", "service": "Audit Workstation", "version": "14.0.1"}
+   # → {"status": "ok", "service": "Audit Workstation", "version": "<версия из app/__init__.py>"}
    ```
    Путь — `{SERVER__API_V1_PREFIX}/system/health` (`app/api/v1/routes.py:19`), там же `/system/health/detailed`, `/system/health/detailed/full` (требует авторизации) и `/system/health/{domain_name}` (per-domain `health_check`). Есть ещё облегчённый корневой `GET /health` → `{"status": "ok"}` (`app/main.py:363`) — не ходит в БД и отфильтрован из HTTP-метрик.
 

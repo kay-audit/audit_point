@@ -13,6 +13,9 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Единственное место, где живут метаданные приложения, — app/__init__.py.
+from app import __title__ as APP_TITLE, __version__ as APP_VERSION
+
 # Реэкспорт для обратной совместимости: исторически request_id_var,
 # RequestIdFilter и setup_logging жили в этом модуле.
 from app.core.logging import RequestIdFilter, request_id_var, setup_logging  # noqa: F401
@@ -269,8 +272,10 @@ class Settings(BaseSettings):
     """
 
     # Метаданные приложения
-    app_title: str = "Audit Workstation"
-    app_version: str = "14.0.1"
+    # Значения берутся из app/__init__.py; переменные окружения APP_TITLE и
+    # APP_VERSION остаются рабочими override'ами, но в шаблонах .env их не задают.
+    app_title: str = APP_TITLE
+    app_version: str = APP_VERSION
 
     # Аутентификация
     jupyterhub_user: str = Field(default="unknown_user")
