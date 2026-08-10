@@ -213,6 +213,11 @@ COMMENT ON TABLE {SCHEMA}.{PREFIX}act_textblocks IS 'Текстовые блок
 -- ТАБЛИЦА НАРУШЕНИЙ
 -- ============================================================================
 
+-- Блочная модель: каждое полевое поле — JSONB-контейнер {enabled, blocks};
+-- состав и порядок полевых колонок == реестр VIOLATION_FIELD_COLUMNS
+-- (app/domains/acts/violation_fields.py, страж —
+-- tests/domains/acts/test_violation_schema_columns_guard.py);
+-- field_order — пользовательский порядок полей (JSONB-массив ключей или NULL).
 CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
     id BIGSERIAL PRIMARY KEY,
     act_id INTEGER NOT NULL REFERENCES {SCHEMA}.{PREFIX}acts(id) ON DELETE CASCADE,
@@ -221,26 +226,41 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
     violation_id VARCHAR(100) NOT NULL,
     node_id VARCHAR(100) NOT NULL,
     node_number VARCHAR(50),
-    violated TEXT,
-    established TEXT,
-    description_list JSONB,
+    violated JSONB,
+    established JSONB,
+    description JSONB,
+    code_mining JSONB,
+    process_mining JSONB,
     additional_content JSONB,
     reasons JSONB,
     measures JSONB,
     consequences JSONB,
     responsible JSONB,
+    field_order JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT check_description_list_is_object_or_null
-        CHECK (description_list IS NULL OR jsonb_typeof(description_list) = 'object'),
+    -- Проверяем только тип (object|null), как в GP-схеме: оператор '?' на GP
+    -- недоступен, а форму {enabled, blocks} гарантирует Pydantic
+    -- (ViolationFieldSchema). «Прод = контракт» — dev не строже прода.
+    CONSTRAINT check_violated_is_object_or_null
+        CHECK (violated IS NULL OR jsonb_typeof(violated) = 'object'),
+
+    CONSTRAINT check_established_is_object_or_null
+        CHECK (established IS NULL OR jsonb_typeof(established) = 'object'),
+
+    CONSTRAINT check_description_is_object_or_null
+        CHECK (description IS NULL OR jsonb_typeof(description) = 'object'),
+
+    CONSTRAINT check_code_mining_is_object_or_null
+        CHECK (code_mining IS NULL OR jsonb_typeof(code_mining) = 'object'),
+
+    CONSTRAINT check_process_mining_is_object_or_null
+        CHECK (process_mining IS NULL OR jsonb_typeof(process_mining) = 'object'),
 
     CONSTRAINT check_additional_content_is_object_or_null
         CHECK (additional_content IS NULL OR jsonb_typeof(additional_content) = 'object'),
 
-    -- Проверяем только тип (object|null), как в GP-схеме: оператор '?' на GP
-    -- недоступен, а форму {enabled, content} гарантирует Pydantic
-    -- (ViolationOptionalFieldSchema). «Прод = контракт» — dev не строже прода.
     CONSTRAINT check_reasons_is_object_or_null
         CHECK (reasons IS NULL OR jsonb_typeof(reasons) = 'object'),
 
@@ -252,6 +272,9 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
 
     CONSTRAINT check_responsible_is_object_or_null
         CHECK (responsible IS NULL OR jsonb_typeof(responsible) = 'object'),
+
+    CONSTRAINT check_field_order_is_array_or_null
+        CHECK (field_order IS NULL OR jsonb_typeof(field_order) = 'array'),
 
     UNIQUE(act_id, violation_id)
 );
