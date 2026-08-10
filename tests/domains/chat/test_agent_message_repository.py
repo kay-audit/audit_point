@@ -87,6 +87,9 @@ async def test_insert_question_returns_parsed_row(mock_conn):
     # Таблица чужая, DEFAULT'ы не гарантированы — таймстемпы передаются явно
     assert "created_at" in sql
     assert "updated_at" in sql
+    # buttons в списке колонок — иначе владелец подставит DEFAULT (NULL) и
+    # уронит INSERT на NOT NULL без DEFAULT
+    assert "buttons" in sql
 
     # Позиционные параметры
     assert params[0] == "msg-1"       # id (uid сообщения)
@@ -130,19 +133,46 @@ async def test_insert_question_media_serialized(mock_conn):
     assert json.loads(params[4]) == media
 
 
-async def test_insert_question_no_media_passes_none(mock_conn):
-    """Если media не передан, в параметр идёт None."""
+async def test_insert_question_no_media_passes_empty_object(mock_conn):
+    """Если media не передан, в параметр идёт пустой JSON-объект, не NULL.
+
+    Владелец шины держит media/buttons NOT NULL без DEFAULT — SQL NULL
+    в этих колонках роняет INSERT. Пустой объект (не массив) — потому что
+    колонка media на стороне владельца хранит и объект, и массив вперемешку
+    (map_answer_to_blocks разворачивает единичный объект в список).
+    """
     mock_conn.fetchrow.return_value = {
         "id": "m", "chat_id": "c", "user_id": "u",
         "role": "user", "content": "x",
-        "media": None, "metadata": "{}", "buttons": None, "status": "pending",
+        "media": "{}", "metadata": "{}", "buttons": "[]", "status": "pending",
     }
     repo = AgentMessageRepository(mock_conn)
     await repo.insert_question(
         id="m", chat_id="c", user_id="u", content="x",
     )
     _, *params = mock_conn.fetchrow.call_args.args
-    assert params[4] is None  # media
+    assert params[4] is not None
+    assert json.loads(params[4]) == {}  # media
+
+
+async def test_insert_question_buttons_always_empty_list(mock_conn):
+    """buttons не параметризуется вызывающим кодом — всегда пустой JSON-массив.
+
+    Кнопки бывают только в ответе агента, вопрос от AW их никогда не несёт;
+    важно лишь не отправлять NULL в NOT NULL колонку владельца.
+    """
+    mock_conn.fetchrow.return_value = {
+        "id": "m", "chat_id": "c", "user_id": "u",
+        "role": "user", "content": "x",
+        "media": "[]", "metadata": "{}", "buttons": "[]", "status": "pending",
+    }
+    repo = AgentMessageRepository(mock_conn)
+    await repo.insert_question(
+        id="m", chat_id="c", user_id="u", content="x",
+    )
+    _, *params = mock_conn.fetchrow.call_args.args
+    # buttons — седьмой параметр (0-based: 6)
+    assert json.loads(params[6]) == []
 
 
 # ── get_by_uid ───────────────────────────────────────────────────────────

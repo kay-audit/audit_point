@@ -76,16 +76,24 @@ class AgentMessageRepository(BaseRepository):
 
         ``id`` — uid сообщения-вопроса (его же хранит ``chat_messages.agent_ref``).
         created_at/updated_at передаются явно: таблица чужая, DEFAULT'ы на её
-        стороне не гарантированы, а колонки NOT NULL.
+        стороне не гарантированы, а колонки NOT NULL. media/buttons на
+        стороне владельца тоже NOT NULL без DEFAULT — вместо SQL NULL
+        передаём пустой JSON-объект. Для ``media`` это ещё и соответствие
+        формату колонки: ``map_answer_to_blocks`` (agent_channel.py) уже умеет
+        разворачивать единичный JSON-объект в список — колонка на стороне
+        владельца хранит и объект, и массив вперемешку, не строго массив
+        (``buttons`` у вопроса всегда пуст, кнопки бывают только в ответе
+        агента, и там колонка строго массив — но пустой объект тоже валиден
+        для NOT NULL).
 
         Возвращает вставленную запись со всеми колонками.
         """
         row = await self.conn.fetchrow(
             f"""
             INSERT INTO {self.table}
-                (id, chat_id, user_id, role, content, media, metadata,
+                (id, chat_id, user_id, role, content, media, metadata, buttons,
                  status, created_at, updated_at)
-            VALUES ($1, $2, $3, 'user', $4, $5::jsonb, $6::jsonb,
+            VALUES ($1, $2, $3, 'user', $4, $5::jsonb, $6::jsonb, $7::jsonb,
                     'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING *
             """,
@@ -93,8 +101,9 @@ class AgentMessageRepository(BaseRepository):
             chat_id,
             user_id,
             content,
-            json.dumps(media, ensure_ascii=False) if media is not None else None,
+            json.dumps(media or {}, ensure_ascii=False),
             json.dumps(metadata or {}, ensure_ascii=False),
+            json.dumps([], ensure_ascii=False),
         )
         return self._parse_row(row)
 
