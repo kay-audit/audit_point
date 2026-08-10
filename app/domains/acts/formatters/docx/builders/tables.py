@@ -17,7 +17,7 @@ from app.domains.acts.formatters.docx.styles import (
     Palette,
     Sizes,
 )
-from app.domains.acts.schemas.act_content import TableSchema
+from app.domains.acts.schemas.act_content import TableGridSchema, TableSchema
 
 # Рабочая ширина листа = ширина страницы − левое поле − правое поле (в твипах).
 # Используется как основа пропорций колонок (w:gridCol). Сама таблица тянется
@@ -33,8 +33,12 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
-def build_table(doc: Document, schema: TableSchema) -> None:
-    """Создаёт docx-таблицу по схеме TableSchema (учитывает colSpan / rowSpan)."""
+def build_table(doc: Document, schema: TableGridSchema) -> None:
+    """Создаёт docx-таблицу по сетке (учитывает colSpan / rowSpan).
+
+    Принимает и TableSchema (таблица-узел дерева), и EmbeddedTableSchema
+    (блок-таблица нарушения) — используется только сетка grid/colWidths.
+    """
     rows = len(schema.grid)
     cols = len(schema.grid[0]) if rows else 0
     if rows == 0 or cols == 0:
