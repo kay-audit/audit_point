@@ -10,6 +10,7 @@ import { ValidationCore } from '../validation/validation-core.js';
 import { ValidationTree } from '../validation/validation-tree.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { KIND_REGULAR, getTableKind } from '../table/table-kind.js';
+import { VIOLATION_FIELD_KEYS, MANDATORY_FIELD_KEYS } from '../violation/violation-fields.js';
 
 export const AppState = {
     /** @type {number} Текущий шаг приложения (1 или 2) */
@@ -695,7 +696,12 @@ export const AppState = {
     },
 
     /**
-     * Сериализует нарушения
+     * Сериализует нарушения (блочная модель).
+     *
+     * Состав полей ГЕНЕРИРУЕТСЯ из реестра VIOLATION_FIELD_KEYS — новое поле
+     * реестра попадает в payload автоматически (раньше здесь жил ручной
+     * белый список литералами: поле вне списка молча терялось при
+     * сохранении — топ-риск №1 карты сцеплений).
      * @private
      * @returns {Object} Сериализованные нарушения
      */
@@ -703,36 +709,21 @@ export const AppState = {
         const serialized = {};
 
         for (const [violationId, violation] of Object.entries(_unwrap(this.violations))) {
-            serialized[violationId] = {
+            const out = {
                 id: violation.id,
                 nodeId: violation.nodeId,
-                violated: violation.violated || '',
-                established: violation.established || '',
-                descriptionList: {
-                    enabled: violation.descriptionList?.enabled || false,
-                    items: violation.descriptionList?.items || []
-                },
-                additionalContent: {
-                    enabled: violation.additionalContent?.enabled || false,
-                    items: violation.additionalContent?.items || []
-                },
-                reasons: {
-                    enabled: violation.reasons?.enabled || false,
-                    content: violation.reasons?.content || ''
-                },
-                measures: {
-                    enabled: violation.measures?.enabled || false,
-                    content: violation.measures?.content || ''
-                },
-                consequences: {
-                    enabled: violation.consequences?.enabled || false,
-                    content: violation.consequences?.content || ''
-                },
-                responsible: {
-                    enabled: violation.responsible?.enabled || false,
-                    content: violation.responsible?.content || ''
-                }
+                fieldOrder: Array.isArray(violation.fieldOrder)
+                    ? [...violation.fieldOrder]
+                    : null,
             };
+            for (const key of VIOLATION_FIELD_KEYS) {
+                const container = violation[key];
+                out[key] = {
+                    enabled: container?.enabled ?? MANDATORY_FIELD_KEYS.includes(key),
+                    blocks: Array.isArray(container?.blocks) ? container.blocks : [],
+                };
+            }
+            serialized[violationId] = out;
         }
 
         return serialized;

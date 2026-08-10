@@ -1,12 +1,12 @@
 /**
- * Тесты единого мутатора полей нарушения (violation-mutations.js, #33 + #1).
+ * Тесты единого мутатора нарушения (violation-mutations.js) — блочная модель.
  *
  * Мутатор — единственная точка записи в объект violation из формы: каждый
  * метод сперва зовёт ValidationCore.requireWrite('cannotEdit'); в режиме
  * просмотра запись НЕ происходит и возвращается false. Здесь проверяется
  * ЛОГИКА мутатора без DOM: запись в правильное место, тип превью-вызова
  * (scheduleTypingBlock для печатного ввода / updateBlock для дискретных
- * действий) и read-only-guard.
+ * действий), read-only-guard, адресация блоков по id и валидация fieldOrder.
  *
  * Реальные модули (ValidationCore читает AppConfig, PreviewManager) грузятся
  * под node:test через _browser-stub; превью-статики подменяются шпионами.
@@ -16,7 +16,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AppConfig } from '../../static/js/shared/app-config.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
-import { violationMutations as mutations, parseFieldPath } from '../../static/js/constructor/violation/violation-mutations.js';
+import { violationMutations as mutations, findBlock } from '../../static/js/constructor/violation/violation-mutations.js';
+import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
+import { createTextBlock, createImageBlock, createTableBlock } from '../../static/js/constructor/violation/violation-block-types.js';
+import { VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 
 // Шпионы превью: записываем какой статик и с какими аргументами был вызван.
 let previewCalls = [];
@@ -29,235 +32,183 @@ function reset(readOnly = false) {
 }
 
 function makeViolation() {
-    return {
-        id: 'v1',
-        violated: '',
-        established: '',
-        descriptionList: { enabled: false, items: [] },
-        additionalContent: { enabled: false, items: [] },
-        reasons: { enabled: false, content: '' },
-        consequences: { enabled: false, content: '' },
-        responsible: { enabled: false, content: '' },
-        measures: { enabled: false, content: '' },
-    };
+    return { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() };
 }
 
-// --- parseFieldPath (V23): общий разбор пути для read (_readViolationField, ---
-// violation-field-surface.js) и write (setViolationField ниже) -------------
+// --- setFieldEnabled ---
 
-test('parseFieldPath: плоский путь → key, subKey=null', () => {
-    assert.deepEqual(parseFieldPath('violated'), { key: 'violated', subKey: null });
-});
-
-test('parseFieldPath: точечный путь → key + subKey', () => {
-    assert.deepEqual(parseFieldPath('reasons.content'), { key: 'reasons', subKey: 'content' });
-    assert.deepEqual(parseFieldPath('descriptionList.enabled'), { key: 'descriptionList', subKey: 'enabled' });
-});
-
-// --- setViolationField: плоские пути (печатный ввод → scheduleTypingBlock) ---
-
-test('setViolationField пишет плоское поле violated и планирует typing-превью', () => {
+test('setFieldEnabled включает поле и планирует discrete-превью', () => {
     reset();
     const v = makeViolation();
-    const ok = mutations.setViolationField.call({}, v, 'violated', 'текст нарушения');
+    const ok = mutations.setFieldEnabled.call({}, v, 'reasons', true);
     assert.equal(ok, true);
-    assert.equal(v.violated, 'текст нарушения');
-    assert.deepEqual(previewCalls, [{ fn: 'scheduleTypingBlock', type: 'violation', id: 'v1' }]);
-});
-
-test('setViolationField пишет established', () => {
-    reset();
-    const v = makeViolation();
-    mutations.setViolationField.call({}, v, 'established', 'что установлено');
-    assert.equal(v.established, 'что установлено');
-    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
-});
-
-// --- setViolationField: точечные пути *.content (typing) и *.enabled (discrete) ---
-
-test('setViolationField пишет reasons.content и планирует typing-превью', () => {
-    reset();
-    const v = makeViolation();
-    const ok = mutations.setViolationField.call({}, v, 'reasons.content', 'причина');
-    assert.equal(ok, true);
-    assert.equal(v.reasons.content, 'причина');
-    assert.equal(v.reasons.enabled, false, 'соседний флаг не тронут');
-    assert.deepEqual(previewCalls, [{ fn: 'scheduleTypingBlock', type: 'violation', id: 'v1' }]);
-});
-
-test('setViolationField пишет descriptionList.enabled и делает discrete-превью (updateBlock)', () => {
-    reset();
-    const v = makeViolation();
-    const ok = mutations.setViolationField.call({}, v, 'descriptionList.enabled', true);
-    assert.equal(ok, true);
-    assert.equal(v.descriptionList.enabled, true);
+    assert.equal(v.reasons.enabled, true);
     assert.deepEqual(previewCalls, [{ fn: 'updateBlock', type: 'violation', id: 'v1' }]);
 });
 
-test('setViolationField: consequences.enabled → updateBlock, responsible.content → typing', () => {
+test('setFieldEnabled не выключает mandatory-поля (Нарушено/Установлено)', () => {
     reset();
     const v = makeViolation();
-    mutations.setViolationField.call({}, v, 'consequences.enabled', true);
-    assert.equal(v.consequences.enabled, true);
-    assert.equal(previewCalls[0].fn, 'updateBlock');
-
-    reset();
-    mutations.setViolationField.call({}, v, 'responsible.content', 'ответственный');
-    assert.equal(v.responsible.content, 'ответственный');
-    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
+    assert.equal(mutations.setFieldEnabled.call({}, v, 'violated', false), false);
+    assert.equal(v.violated.enabled, true, 'violated остался включён');
+    assert.equal(mutations.setFieldEnabled.call({}, v, 'established', false), false);
+    assert.equal(previewCalls.length, 0);
 });
 
-test('setViolationField пишет additionalContent.enabled → updateBlock', () => {
-    reset();
+test('setFieldEnabled блокируется в read-only', () => {
+    reset(true);
     const v = makeViolation();
-    mutations.setViolationField.call({}, v, 'additionalContent.enabled', true);
-    assert.equal(v.additionalContent.enabled, true);
-    assert.equal(previewCalls[0].fn, 'updateBlock');
+    assert.equal(mutations.setFieldEnabled.call({}, v, 'reasons', true), false);
+    assert.equal(v.reasons.enabled, false);
 });
 
-// --- list-мутаторы descriptionList ---
+// --- setFieldOrder ---
 
-test('addViolationListItem пушит пустой пункт и делает updateBlock', () => {
+test('setFieldOrder принимает валидную перестановку и копирует массив', () => {
     reset();
     const v = makeViolation();
-    const ok = mutations.addViolationListItem.call({}, v, 'descriptionList');
+    const order = [...VIOLATION_FIELD_KEYS].reverse();
+    const ok = mutations.setFieldOrder.call({}, v, order);
     assert.equal(ok, true);
-    assert.deepEqual(v.descriptionList.items, ['']);
-    assert.equal(previewCalls[0].fn, 'updateBlock');
-});
-
-test('setViolationListItem пишет пункт по индексу и делает typing-превью', () => {
-    reset();
-    const v = makeViolation();
-    v.descriptionList.items = ['a', 'b'];
-    const ok = mutations.setViolationListItem.call({}, v, 'descriptionList', 1, 'новый');
-    assert.equal(ok, true);
-    assert.deepEqual(v.descriptionList.items, ['a', 'новый']);
-    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
-});
-
-test('removeViolationListItem удаляет пункт и делает updateBlock', () => {
-    reset();
-    const v = makeViolation();
-    v.descriptionList.items = ['a', 'b', 'c'];
-    const ok = mutations.removeViolationListItem.call({}, v, 'descriptionList', 1);
-    assert.equal(ok, true);
-    assert.deepEqual(v.descriptionList.items, ['a', 'c']);
-    assert.equal(previewCalls[0].fn, 'updateBlock');
-});
-
-// --- setContentItemField (элемент additionalContent.items[]) ---
-
-test('setContentItemField пишет content → typing, caption → typing, width → updateBlock', () => {
-    reset();
-    const v = makeViolation();
-    const item = { content: '', caption: '', width: 0 };
-
-    let ok = mutations.setContentItemField.call({}, v, item, 'content', 'описание');
-    assert.equal(ok, true);
-    assert.equal(item.content, 'описание');
-    assert.equal(previewCalls.at(-1).fn, 'scheduleTypingBlock');
-
-    ok = mutations.setContentItemField.call({}, v, item, 'caption', 'подпись');
-    assert.equal(item.caption, 'подпись');
-    assert.equal(previewCalls.at(-1).fn, 'scheduleTypingBlock');
-
-    ok = mutations.setContentItemField.call({}, v, item, 'width', 50);
-    assert.equal(item.width, 50);
-    assert.equal(previewCalls.at(-1).fn, 'updateBlock');
-});
-
-// --- moveContentItem (§5.10a): перестановка элементов доп. контента ---
-
-/** Нарушение с items из массива id. */
-function makeViolationWithItems(ids) {
-    const v = makeViolation();
-    v.additionalContent.items = ids.map((id) => ({ id, type: 'freeText', content: id }));
-    return v;
-}
-
-test('moveContentItem переставляет вниз (поправка на удаление исходной позиции)', () => {
-    reset();
-    const v = makeViolationWithItems(['A', 'B', 'C', 'D']);
-    const ok = mutations.moveContentItem.call({}, v, 0, 3);
-    assert.equal(ok, true);
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'C', 'A', 'D']);
+    assert.deepEqual(v.fieldOrder, order);
+    assert.notEqual(v.fieldOrder, order, 'хранится копия, не ссылка');
     assert.deepEqual(previewCalls, [{ fn: 'updateBlock', type: 'violation', id: 'v1' }]);
 });
 
-test('moveContentItem переставляет вверх (поправки нет)', () => {
+test('setFieldOrder(null) возвращает стандартный порядок', () => {
     reset();
-    const v = makeViolationWithItems(['A', 'B', 'C', 'D']);
-    assert.equal(mutations.moveContentItem.call({}, v, 3, 1), true);
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'D', 'B', 'C']);
+    const v = makeViolation();
+    v.fieldOrder = [...VIOLATION_FIELD_KEYS].reverse();
+    assert.equal(mutations.setFieldOrder.call({}, v, null), true);
+    assert.equal(v.fieldOrder, null);
 });
 
-test('moveContentItem: toIndex за границами массива — clamp, элемент не теряется', () => {
+test('setFieldOrder отклоняет неполный/дублирующий/чужой порядок', () => {
     reset();
-    const v = makeViolationWithItems(['A', 'B', 'C']);
-    assert.equal(mutations.moveContentItem.call({}, v, 0, 99), true);
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'C', 'A']);
-
-    const v2 = makeViolationWithItems(['A', 'B', 'C']);
-    assert.equal(mutations.moveContentItem.call({}, v2, 2, -5), true);
-    assert.deepEqual(v2.additionalContent.items.map((i) => i.id), ['C', 'A', 'B']);
+    const v = makeViolation();
+    assert.equal(mutations.setFieldOrder.call({}, v, VIOLATION_FIELD_KEYS.slice(1)), false);
+    assert.equal(mutations.setFieldOrder.call({}, v, [...VIOLATION_FIELD_KEYS.slice(0, 9), 'violated']), false);
+    assert.equal(mutations.setFieldOrder.call({}, v, [...VIOLATION_FIELD_KEYS.slice(0, 9), 'alien']), false);
+    assert.equal(v.fieldOrder, null);
+    assert.equal(previewCalls.length, 0);
 });
 
-test('moveContentItem: fromIndex вне границ → false, массив не тронут', () => {
+// --- addBlock / removeBlock / findBlock ---
+
+test('addBlock вставляет блок в конец и по индексу', () => {
     reset();
-    const v = makeViolationWithItems(['A', 'B']);
-    assert.equal(mutations.moveContentItem.call({}, v, 5, 0), false);
-    assert.equal(mutations.moveContentItem.call({}, v, -1, 0), false);
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B']);
-    assert.deepEqual(previewCalls, [], 'превью при отказе не планируется');
+    const v = makeViolation();
+    const b1 = createTextBlock('первый');
+    const b2 = createTextBlock('второй');
+    const b3 = createTextBlock('между');
+    assert.equal(mutations.addBlock.call({}, v, 'violated', b1), true);
+    assert.equal(mutations.addBlock.call({}, v, 'violated', b2), true);
+    assert.equal(mutations.addBlock.call({}, v, 'violated', b3, 1), true);
+    assert.deepEqual(v.violated.blocks.map(b => b.content), ['первый', 'между', 'второй']);
+    assert.equal(previewCalls.length, 3);
+    assert.ok(previewCalls.every(c => c.fn === 'updateBlock'));
 });
 
-// --- read-only guard: запись НЕ происходит, возвращается false, превью не зовётся ---
+test('removeBlock удаляет блок по id; несуществующий id → false', () => {
+    reset();
+    const v = makeViolation();
+    const b = createImageBlock({ url: 'data:image/png;base64,AAAA' });
+    mutations.addBlock.call({}, v, 'additionalContent', b);
+    assert.equal(mutations.removeBlock.call({}, v, 'additionalContent', b.id), true);
+    assert.deepEqual(v.additionalContent.blocks, []);
+    assert.equal(mutations.removeBlock.call({}, v, 'additionalContent', 'нет-такого'), false);
+});
 
-test('read-only: setViolationField не пишет и возвращает false', () => {
+test('findBlock находит блок по id и не падает на повреждённом контейнере', () => {
+    const v = makeViolation();
+    const b = createTableBlock();
+    v.codeMining.blocks.push(b);
+    assert.equal(findBlock(v, 'codeMining', b.id), b);
+    assert.equal(findBlock(v, 'codeMining', 'нет'), null);
+    assert.equal(findBlock(v, 'нет-поля', b.id), null);
+    assert.equal(findBlock({ codeMining: { blocks: 'мусор' } }, 'codeMining', b.id), null);
+});
+
+// --- setBlockField ---
+
+test('setBlockField пишет content с typing-превью, width — с discrete', () => {
+    reset();
+    const v = makeViolation();
+    const text = createTextBlock('');
+    const image = createImageBlock({});
+    mutations.addBlock.call({}, v, 'violated', text);
+    mutations.addBlock.call({}, v, 'additionalContent', image);
+    previewCalls = [];
+
+    assert.equal(mutations.setBlockField.call({}, v, 'violated', text.id, 'content', '<p>x</p>'), true);
+    assert.equal(text.content, '<p>x</p>');
+    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
+
+    assert.equal(mutations.setBlockField.call({}, v, 'additionalContent', image.id, 'caption', 'подпись'), true);
+    assert.equal(previewCalls[1].fn, 'scheduleTypingBlock');
+
+    assert.equal(mutations.setBlockField.call({}, v, 'additionalContent', image.id, 'width', 50), true);
+    assert.equal(image.width, 50);
+    assert.equal(previewCalls[2].fn, 'updateBlock');
+});
+
+test('setBlockField на несуществующем блоке → false без превью', () => {
+    reset();
+    const v = makeViolation();
+    assert.equal(mutations.setBlockField.call({}, v, 'violated', 'нет', 'content', 'x'), false);
+    assert.equal(previewCalls.length, 0);
+});
+
+// --- setTableCell (ввод в ячейку блока-таблицы) ---
+
+test('setTableCell пишет ячейку с typing-превью; вне сетки → false', () => {
+    reset();
+    const v = makeViolation();
+    const table = createTableBlock({ grid: [[{ content: '' }]], colWidths: [100] });
+    v.codeMining.blocks.push(table);
+    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', table.id, 0, 0, 'значение'), true);
+    assert.equal(table.table.grid[0][0].content, 'значение');
+    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
+    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', table.id, 5, 0, 'x'), false);
+    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', 'нет', 0, 0, 'x'), false);
+});
+
+// --- moveBlock (DnD внутри поля) ---
+
+test('moveBlock переставляет блок вниз с поправкой toIndex', () => {
+    reset();
+    const v = makeViolation();
+    const [a, b, c] = [createTextBlock('A'), createTextBlock('B'), createTextBlock('C')];
+    v.reasons.blocks.push(a, b, c);
+    // Тащим A (index 0) на позицию 2 (перед C в исходном массиве).
+    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 2), true);
+    assert.deepEqual(v.reasons.blocks.map(x => x.content), ['B', 'A', 'C']);
+});
+
+test('moveBlock: fromIndex вне границ → false', () => {
+    reset();
+    const v = makeViolation();
+    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 1), false);
+});
+
+test('moveBlock блокируется в read-only', () => {
     reset(true);
     const v = makeViolation();
-    const ok = mutations.setViolationField.call({}, v, 'violated', 'нельзя');
-    assert.equal(ok, false);
-    assert.equal(v.violated, '');
-    assert.deepEqual(previewCalls, []);
+    v.reasons.blocks.push(createTextBlock('A'), createTextBlock('B'));
+    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 2), false);
+    assert.deepEqual(v.reasons.blocks.map(x => x.content), ['A', 'B']);
 });
 
-test('read-only: точечный путь reasons.content не пишет', () => {
+// --- Read-only guard на всём API ---
+
+test('в read-only все мутации возвращают false и не трогают данные', () => {
     reset(true);
     const v = makeViolation();
-    const ok = mutations.setViolationField.call({}, v, 'reasons.content', 'нельзя');
-    assert.equal(ok, false);
-    assert.equal(v.reasons.content, '');
-    assert.deepEqual(previewCalls, []);
-});
-
-test('read-only: list-мутаторы ничего не меняют и возвращают false', () => {
-    reset(true);
-    const v = makeViolation();
-    v.descriptionList.items = ['a'];
-    assert.equal(mutations.addViolationListItem.call({}, v, 'descriptionList'), false);
-    assert.equal(mutations.setViolationListItem.call({}, v, 'descriptionList', 0, 'x'), false);
-    assert.equal(mutations.removeViolationListItem.call({}, v, 'descriptionList', 0), false);
-    assert.deepEqual(v.descriptionList.items, ['a']);
-    assert.deepEqual(previewCalls, []);
-});
-
-test('read-only: moveContentItem не переставляет и возвращает false', () => {
-    reset(true);
-    const v = makeViolationWithItems(['A', 'B', 'C']);
-    const ok = mutations.moveContentItem.call({}, v, 0, 2);
-    assert.equal(ok, false);
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B', 'C']);
-    assert.deepEqual(previewCalls, []);
-});
-
-test('read-only: setContentItemField не пишет и возвращает false', () => {
-    reset(true);
-    const v = makeViolation();
-    const item = { content: '', caption: '', width: 0 };
-    const ok = mutations.setContentItemField.call({}, v, item, 'content', 'нельзя');
-    assert.equal(ok, false);
-    assert.equal(item.content, '');
-    assert.deepEqual(previewCalls, []);
+    const block = createTextBlock('x');
+    assert.equal(mutations.addBlock.call({}, v, 'violated', block), false);
+    assert.equal(mutations.removeBlock.call({}, v, 'violated', 'id'), false);
+    assert.equal(mutations.setBlockField.call({}, v, 'violated', 'id', 'content', 'y'), false);
+    assert.equal(mutations.setFieldOrder.call({}, v, null), false);
+    assert.deepEqual(v.violated.blocks, []);
+    assert.equal(previewCalls.length, 0);
 });

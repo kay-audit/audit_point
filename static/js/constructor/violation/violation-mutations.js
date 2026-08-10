@@ -1,17 +1,19 @@
 /**
- * Единый мутатор полей нарушения с read-only-guard (#33 + #1).
+ * Единый мутатор нарушения с read-only-guard (#33 + #1) — блочная модель.
  *
- * Единственная точка записи в объект violation из формы: раньше каждое поле
- * писалось своим inline-обработчиком напрямую в объект, а read-only-guard
- * стоял только у «Нарушено»/«Установлено». Теперь все записи формы проходят
- * через эти методы, и каждый в НАЧАЛЕ зовёт ValidationCore.requireWrite:
- * в режиме просмотра запись не выполняется и возвращается false (обойти нельзя,
- * defense-in-depth для программных путей paste/DnD).
+ * Единственная точка записи в объект violation из формы: каждый метод в
+ * НАЧАЛЕ зовёт ValidationCore.requireWrite — в режиме просмотра запись не
+ * выполняется и возвращается false (defense-in-depth для программных путей
+ * paste/DnD).
+ *
+ * Модель: каждое поле реестра — контейнер {enabled, blocks}; блок адресуется
+ * стабильным id (не индексом — индексы плывут при DnD). Порядок блоков —
+ * позиция в массиве; порядок полей — violation.fieldOrder (null = стандарт).
  *
  * Каждый метод отвечает за три вещи: (1) requireWrite-guard, (2) запись
- * значения, (3) обновление превью. Тип превью-вызова сохранён из исходных
- * обработчиков: scheduleTypingBlock — для печатного ввода (текст/подпись),
- * updateBlock — для дискретных действий (тумблеры, add/remove пункта, ширина).
+ * значения, (3) обновление превью: scheduleTypingBlock — печатный ввод
+ * (текст/подпись), updateBlock — дискретные действия (тумблеры, add/remove/
+ * move блока, ширина картинки, порядок полей).
  *
  * Changelog (аудит правок) здесь НЕ трогается: правки нарушений фиксируются
  * diff-ом при сохранении (violation-audit.js, pre-flush hook), а не per-keystroke.
@@ -19,19 +21,7 @@
 import { PreviewManager } from '../preview/preview.js';
 import { ViolationManager } from './violation-core.js';
 import { ValidationCore } from '../validation/validation-core.js';
-
-/**
- * Разбирает путь поля нарушения (до 2 уровней): плоский 'violated' либо
- * точечный 'reasons.content'/'reasons.enabled'. Общая точка для write
- * (setViolationField ниже) и read (_readViolationField, violation-field-surface.js)
- * — раньше их разбор пути расходился (read защищён `?.`, write — нет), V23.
- * @param {string} path - Путь поля
- * @returns {{key: string, subKey: (string|null)}}
- */
-export function parseFieldPath(path) {
-    const parts = path.split('.');
-    return { key: parts[0], subKey: parts.length > 1 ? parts[1] : null };
-}
+import { VIOLATION_FIELD_KEYS, MANDATORY_FIELD_KEYS } from './violation-fields.js';
 
 /**
  * Планирует превью для нарушения: typing (декоративный debounce печати) либо
@@ -47,131 +37,183 @@ function _schedulePreview(violationId, discrete) {
     }
 }
 
+/**
+ * Находит блок поля по id. Общая точка чтения для мутатора и поверхностей.
+ * @param {Object} violation - Объект нарушения
+ * @param {string} fieldKey - Ключ поля реестра
+ * @param {string} blockId - ID блока
+ * @returns {Object|null}
+ */
+export function findBlock(violation, fieldKey, blockId) {
+    const blocks = violation?.[fieldKey]?.blocks;
+    if (!Array.isArray(blocks)) return null;
+    return blocks.find(b => b && b.id === blockId) || null;
+}
+
 export const violationMutations = {
     /**
-     * Точечная запись поля нарушения по пути (до 2 уровней).
-     * Плоские пути: 'violated', 'established'. Точечные: '<key>.content'
-     * (текст → typing-превью) и '<key>.enabled' (тумблер → discrete-превью).
+     * Тумблер поля (дискретное действие). Mandatory-поля (Нарушено/
+     * Установлено) выключить нельзя — запись игнорируется.
      * @param {Object} violation - Объект нарушения
-     * @param {string} path - Путь поля ('violated' | 'reasons.content' | ...)
-     * @param {*} value - Записываемое значение
-     * @returns {boolean} true — записано; false — заблокировано read-only
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {boolean} enabled - Новое состояние
+     * @returns {boolean} true — записано; false — read-only/mandatory
      */
-    setViolationField(violation, path, value) {
+    setFieldEnabled(violation, fieldKey, enabled) {
         if (ValidationCore.requireWrite('cannotEdit')) return false;
+        if (!enabled && MANDATORY_FIELD_KEYS.includes(fieldKey)) return false;
+        if (!violation[fieldKey]) return false;
 
-        const { key, subKey } = parseFieldPath(path);
-        let discrete;
-        if (subKey === null) {
-            // violated/established — печатный ввод текста.
-            violation[key] = value;
-            discrete = false;
-        } else {
-            violation[key][subKey] = value;
-            // *.enabled — дискретный тумблер; *.content — печатный ввод.
-            discrete = subKey === 'enabled';
-        }
-
-        _schedulePreview(violation.id, discrete);
+        violation[fieldKey].enabled = !!enabled;
+        _schedulePreview(violation.id, true);
         return true;
     },
 
     /**
-     * Пишет пункт маркированного списка по индексу (печатный ввод).
-     * Поле списка задаётся именем (как в renderList), а не прибито к
-     * descriptionList — убирает латентную связанность мутатора с одним полем.
+     * Пользовательский порядок полей (модалка «Порядок полей»).
+     * null — вернуть стандартное расположение (данные полей не трогаются).
+     * Невалидная перестановка (не все ключи реестра ровно по разу) отклоняется.
      * @param {Object} violation - Объект нарушения
-     * @param {string} fieldName - Имя поля-списка ('descriptionList' | ...)
-     * @param {number} index - Индекс пункта
-     * @param {string} value - Новое значение пункта
-     * @returns {boolean} true — записано; false — заблокировано read-only
+     * @param {string[]|null} orderOrNull - Порядок ключей либо null
+     * @returns {boolean} true — записано; false — read-only/невалидный порядок
      */
-    setViolationListItem(violation, fieldName, index, value) {
+    setFieldOrder(violation, orderOrNull) {
         if (ValidationCore.requireWrite('cannotEdit')) return false;
 
-        violation[fieldName].items[index] = value;
+        if (orderOrNull !== null) {
+            if (!Array.isArray(orderOrNull)) return false;
+            if (orderOrNull.length !== VIOLATION_FIELD_KEYS.length) return false;
+            const known = new Set(VIOLATION_FIELD_KEYS);
+            const seen = new Set();
+            for (const key of orderOrNull) {
+                if (!known.has(key) || seen.has(key)) return false;
+                seen.add(key);
+            }
+        }
+
+        violation.fieldOrder = orderOrNull === null ? null : [...orderOrNull];
+        _schedulePreview(violation.id, true);
+        return true;
+    },
+
+    /**
+     * Пишет атрибут блока по id (content/caption — печатный ввод; width и
+     * прочее — дискретное действие).
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {string} blockId - ID блока
+     * @param {string} attr - Имя атрибута блока ('content'|'caption'|'width'|...)
+     * @param {*} value - Записываемое значение
+     * @returns {boolean} true — записано; false — read-only/блок не найден
+     */
+    setBlockField(violation, fieldKey, blockId, attr, value) {
+        if (ValidationCore.requireWrite('cannotEdit')) return false;
+
+        const block = findBlock(violation, fieldKey, blockId);
+        if (!block) return false;
+
+        block[attr] = value;
+        _schedulePreview(violation.id, attr !== 'content' && attr !== 'caption');
+        return true;
+    },
+
+    /**
+     * Вставляет готовый блок (фабрики violation-block-types.js) в поле.
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {Object} block - Готовый блок
+     * @param {number} [index] - Позиция вставки (по умолчанию — в конец)
+     * @returns {boolean} true — вставлено; false — read-only/нет контейнера
+     */
+    addBlock(violation, fieldKey, block, index = undefined) {
+        if (ValidationCore.requireWrite('cannotEdit')) return false;
+
+        const container = violation[fieldKey];
+        if (!container || !Array.isArray(container.blocks)) return false;
+
+        const at = index === undefined
+            ? container.blocks.length
+            : Math.max(0, Math.min(index, container.blocks.length));
+        container.blocks.splice(at, 0, block);
+        _schedulePreview(violation.id, true);
+        return true;
+    },
+
+    /**
+     * Удаляет блок поля по id (дискретное действие).
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {string} blockId - ID блока
+     * @returns {boolean} true — удалено; false — read-only/блок не найден
+     */
+    removeBlock(violation, fieldKey, blockId) {
+        if (ValidationCore.requireWrite('cannotEdit')) return false;
+
+        const blocks = violation?.[fieldKey]?.blocks;
+        if (!Array.isArray(blocks)) return false;
+        const idx = blocks.findIndex(b => b && b.id === blockId);
+        if (idx === -1) return false;
+
+        blocks.splice(idx, 1);
+        _schedulePreview(violation.id, true);
+        return true;
+    },
+
+    /**
+     * Пишет содержимое ячейки блока-таблицы (печатный ввод → typing-превью).
+     * Отдельный метод (а не setBlockField('table', ...)): ввод в ячейку —
+     * per-keystroke, дискретный updateBlock на каждый символ был бы дорог.
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {string} blockId - ID блока-таблицы
+     * @param {number} row - Строка ячейки
+     * @param {number} col - Колонка ячейки
+     * @param {string} value - Новое содержимое (plain-текст)
+     * @returns {boolean} true — записано; false — read-only/ячейка не найдена
+     */
+    setTableCell(violation, fieldKey, blockId, row, col, value) {
+        if (ValidationCore.requireWrite('cannotEdit')) return false;
+
+        const block = findBlock(violation, fieldKey, blockId);
+        const cell = block?.table?.grid?.[row]?.[col];
+        if (!cell) return false;
+
+        cell.content = value;
         _schedulePreview(violation.id, false);
         return true;
     },
 
     /**
-     * Добавляет пустой пункт в список (дискретное действие).
-     * @param {Object} violation - Объект нарушения
-     * @param {string} fieldName - Имя поля-списка ('descriptionList' | ...)
-     * @returns {boolean} true — добавлено; false — заблокировано read-only
-     */
-    addViolationListItem(violation, fieldName) {
-        if (ValidationCore.requireWrite('cannotEdit')) return false;
-
-        violation[fieldName].items.push('');
-        _schedulePreview(violation.id, true);
-        return true;
-    },
-
-    /**
-     * Удаляет пункт списка по индексу (дискретное действие).
-     * @param {Object} violation - Объект нарушения
-     * @param {string} fieldName - Имя поля-списка ('descriptionList' | ...)
-     * @param {number} index - Индекс пункта
-     * @returns {boolean} true — удалено; false — заблокировано read-only
-     */
-    removeViolationListItem(violation, fieldName, index) {
-        if (ValidationCore.requireWrite('cannotEdit')) return false;
-
-        violation[fieldName].items.splice(index, 1);
-        _schedulePreview(violation.id, true);
-        return true;
-    },
-
-    /**
-     * Пишет поле элемента дополнительного контента (кейс/картинка/текст).
-     * content/caption — печатный ввод (typing-превью); width — дискретное
-     * действие (discrete-превью).
-     * @param {Object} violation - Объект нарушения
-     * @param {Object} item - Элемент additionalContent.items[]
-     * @param {'content'|'caption'|'width'} field - Имя поля элемента
-     * @param {*} value - Записываемое значение
-     * @returns {boolean} true — записано; false — заблокировано read-only
-     */
-    setContentItemField(violation, item, field, value) {
-        if (ValidationCore.requireWrite('cannotEdit')) return false;
-
-        item[field] = value;
-        _schedulePreview(violation.id, field === 'width');
-        return true;
-    },
-
-    /**
-     * Переставляет элемент дополнительного контента (drag-and-drop, §5.10a).
-     * Раньше handleDrop сплайсил items напрямую, мимо мутаторного слоя:
-     * read-only держался только на том, что draggable не выставляется в режиме
-     * просмотра, — программный путь гейта не имел.
+     * Переставляет блок внутри поля (drag-and-drop, §5.10a).
      *
      * toIndex — позиция вставки В ИСХОДНОМ массиве (как её считает dragover),
      * поэтому при движении вниз она уменьшается на 1: удаление элемента с
      * fromIndex сдвигает всё, что правее, влево.
      *
-     * DOM не трогаем (в этом модуле его нет вовсе): перерисовку контейнера
-     * делает вызывающая сторона, превью — мутатор, как у соседей.
+     * DOM не трогаем: перерисовку контейнера делает вызывающая сторона,
+     * превью — мутатор, как у соседей. Перенос блока МЕЖДУ полями —
+     * сознательный non-goal первой итерации (см. спеку §7).
      *
      * @param {Object} violation - Объект нарушения
-     * @param {number} fromIndex - Индекс перетаскиваемого элемента
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {number} fromIndex - Индекс перетаскиваемого блока
      * @param {number} toIndex - Позиция вставки в исходном массиве
      * @returns {boolean} true — переставлено; false — read-only либо
      *          fromIndex вне границ массива
      */
-    moveContentItem(violation, fromIndex, toIndex) {
+    moveBlock(violation, fieldKey, fromIndex, toIndex) {
         if (ValidationCore.requireWrite('cannotEdit')) return false;
 
-        const items = violation.additionalContent.items;
-        if (fromIndex < 0 || fromIndex >= items.length) return false;
+        const blocks = violation?.[fieldKey]?.blocks;
+        if (!Array.isArray(blocks)) return false;
+        if (fromIndex < 0 || fromIndex >= blocks.length) return false;
 
-        const [moved] = items.splice(fromIndex, 1);
+        const [moved] = blocks.splice(fromIndex, 1);
         if (fromIndex < toIndex) toIndex -= 1;
-        toIndex = Math.max(0, Math.min(toIndex, items.length));
-        items.splice(toIndex, 0, moved);
+        toIndex = Math.max(0, Math.min(toIndex, blocks.length));
+        blocks.splice(toIndex, 0, moved);
 
-        // Порядок элементов — позиция в массиве, отдельного поля order нет (#24).
+        // Порядок блоков — позиция в массиве, отдельного поля order нет (#24).
         _schedulePreview(violation.id, true);
         return true;
     },
@@ -183,4 +225,5 @@ Object.assign(ViolationManager.prototype, violationMutations);
 // Window-globals для совместимости с inline-скриптами в шаблонах.
 if (typeof window !== 'undefined') {
     window.violationMutations = violationMutations;
+    window.findViolationBlock = findBlock;
 }

@@ -1,27 +1,25 @@
 /**
- * Рендерер нарушений для предпросмотра
+ * Рендерер нарушений для предпросмотра — блочная модель.
  *
- * Паритет ПОЛНОТЫ данных с DOCX (build_violation): полные тексты всех полей
- * без обрезки, полный список описаний (descriptionList), полные кейсы и
- * свободные тексты, реальные картинки с подписью (H4/M.3/M.5). ВСЕ подписи
- * полей — из контракта violation-fields.js (VIOLATION_LABELS/CASE_LABEL_TEMPLATE/
- * FREE_TEXT_LABEL, №10): ни одного захардкоженного литерала метки в рендерере.
- * Q1: пустые поля рендерятся как «метка + пустое тело», без «—» и без
- * фильтрации по trim() (ядро/кейсы/пункты списка — у них есть метка/маркер).
- * Исключение — свободный текст (freeText): у него нет метки, поэтому пустой
- * freeText — буквально нечего рендерить; паритет с DOCX/MD/TXT, которые его
- * пропускают (см. collectViolationLines).
+ * Паритет ПОЛНОТЫ данных с DOCX (build_violation): поля в порядке fieldOrder
+ * нарушения (или стандартном), у включённого поля метка + блоки по порядку.
+ * Первый text-блок инлайнится с меткой («Метка: текст», как в DOCX);
+ * mandatory-поля (Нарушено/Установлено) выводят метку даже при пустом
+ * контейнере (Q1/#14). ВСЕ подписи полей — из контракта violation-fields.js
+ * (VIOLATION_LABELS, №10): ни одного захардкоженного литерала метки.
+ * Блок-таблица — через общий PreviewTableRenderer (та же графика, что у
+ * таблиц-узлов); картинка — реальный <img> с подписью (H4/M.3/M.5).
  */
 import { renderActContent } from '../../shared/sanitize.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
+import { BLOCK_TYPES } from '../violation/violation-block-types.js';
 import {
-    CONTENT_TYPE_CASE,
-    CONTENT_TYPE_FREE_TEXT,
-    CONTENT_TYPE_IMAGE,
-} from '../violation/violation-content-item.js';
-import { VIOLATION_LABELS, CASE_LABEL_TEMPLATE, FREE_TEXT_LABEL } from '../violation/violation-fields.js';
-import { computeAdditionalContentNumbers } from '../violation/violation-numbering.js';
+    VIOLATION_FIELDS,
+    VIOLATION_LABELS,
+    getOrderedFieldKeys,
+} from '../violation/violation-fields.js';
 import { buildImagePlaceholder, renderImageWithFallback } from '../violation/violation-image-render.js';
+import { PreviewTableRenderer } from './preview-table-renderer.js';
 
 /** Высота листа A4 в мм (Б-1.6). */
 const SHEET_HEIGHT_MM = 297;
@@ -37,62 +35,50 @@ const PAGE_MARGIN_VERTICAL_MM = 10;
  */
 const USABLE_HEIGHT_MM = SHEET_HEIGHT_MM - 2 * PAGE_MARGIN_VERTICAL_MM;
 
+const _FIELD_BY_KEY = Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f]));
+
 /**
  * Чистая модель строк нарушения — полные тексты, как в DOCX.
- * Нумерация кейсов и сброс счётчика — через computeAdditionalContentNumbers
- * (Task 2, violation-numbering.js): нумеруются ВСЕ кейсы, включая пустые.
  *
  * Флаг `small` помечает поля, которые в Word рендерятся 9pt-курсивом
- * (Нарушено/Установлено/descriptionList/additionalContent — см. styles.Sizes.
- * violation_pt). Поля «Причины/Последствия/Ответственный» — обычный
- * текст листа (12pt, без курсива), поэтому `small: false`.
+ * (small в реестре: Нарушено/Установлено/Дополнительный контент); остальные —
+ * обычный текст листа (12pt, без курсива).
  *
  * @param {Object} violation - Данные нарушения
  * @returns {Array<Object>} Строки: {type:'line', label, text, small} |
- *          {type:'list', label, items, small} | {type:'image', item}
+ *          {type:'image', item, small} | {type:'table', table, small}
  */
 export function collectViolationLines(violation) {
     const lines = [];
 
-    lines.push({ type: 'line', label: VIOLATION_LABELS.violated, text: violation.violated || '', small: true });
-    lines.push({ type: 'line', label: VIOLATION_LABELS.established, text: violation.established || '', small: true });
+    for (const key of getOrderedFieldKeys(violation)) {
+        const field = _FIELD_BY_KEY[key];
+        const container = violation?.[key] || {};
+        const blocks = Array.isArray(container.blocks) ? [...container.blocks] : [];
 
-    if (violation.descriptionList?.enabled) {
-        const items = violation.descriptionList.items || [];
-        if (items.length > 0) {
-            lines.push({ type: 'list', label: VIOLATION_LABELS.descriptionList, items, small: true });
+        if (!field.mandatory && (!container.enabled || blocks.length === 0)) {
+            continue;
         }
-    }
 
-    if (violation.additionalContent?.enabled) {
-        const items = violation.additionalContent.items || [];
-        const numbering = computeAdditionalContentNumbers(items);
-        items.forEach((item, i) => {
-            if (item.type === CONTENT_TYPE_CASE) {
-                const label = CASE_LABEL_TEMPLATE.replace('{n}', numbering[i].number);
-                lines.push({ type: 'line', label, text: item.content || '', small: true });
-            } else if (item.type === CONTENT_TYPE_IMAGE) {
-                lines.push({ type: 'image', item });
-            } else if (item.type === CONTENT_TYPE_FREE_TEXT) {
-                // Пустой freeText не имеет метки — у него нет что рендерить
-                // (паритет с DOCX/MD/TXT, которые пустой freeText пропускают).
-                if (item.content?.trim()) {
-                    lines.push({ type: 'line', label: FREE_TEXT_LABEL, text: item.content, small: true });
-                }
+        const label = VIOLATION_LABELS[key];
+        // Первый text-блок инлайнится с меткой (паритет с DOCX); иначе метка
+        // отдельной строкой, блоки следом.
+        if (blocks.length && blocks[0].type === BLOCK_TYPES.TEXT) {
+            const first = blocks.shift();
+            lines.push({ type: 'line', label, text: first.content || '', small: field.small });
+        } else {
+            lines.push({ type: 'line', label, text: '', small: field.small });
+        }
+
+        for (const block of blocks) {
+            if (!block) continue;
+            if (block.type === BLOCK_TYPES.TEXT) {
+                lines.push({ type: 'line', label: '', text: block.content || '', small: field.small });
+            } else if (block.type === BLOCK_TYPES.IMAGE) {
+                lines.push({ type: 'image', item: block, small: field.small });
+            } else if (block.type === BLOCK_TYPES.TABLE) {
+                lines.push({ type: 'table', table: block.table || { grid: [], colWidths: [] }, small: field.small });
             }
-        });
-    }
-
-    const optionalFields = [
-        ['reasons', VIOLATION_LABELS.reasons],
-        ['measures', VIOLATION_LABELS.measures],
-        ['consequences', VIOLATION_LABELS.consequences],
-        ['responsible', VIOLATION_LABELS.responsible],
-    ];
-    for (const [key, label] of optionalFields) {
-        const field = violation[key];
-        if (field?.enabled && field?.content) {
-            lines.push({ type: 'line', label, text: field.content, small: false });
         }
     }
 
@@ -177,7 +163,7 @@ export function splitTopLevelBlocks(html) {
 /**
  * Чистый маппинг item.width / лимита высоты → inline-стиль картинки превью.
  *
- * @param {Object} item - Элемент типа image (поле width: 0 — авто)
+ * @param {Object} item - Блок типа image (поле width: 0 — авто)
  * @param {number} imageMaxHeightPercent - Лимит высоты, % высоты листа
  * @returns {{width: string, maxHeight: string}} Значения CSS-свойств
  */
@@ -203,10 +189,10 @@ export class PreviewViolationRenderer {
         for (const line of collectViolationLines(violation)) {
             if (line.type === 'line') {
                 this._addLine(container, line.label, line.text, line.small);
-            } else if (line.type === 'list') {
-                this._addList(container, line.label, line.items, line.small);
             } else if (line.type === 'image') {
                 this._addImage(container, line.item);
+            } else if (line.type === 'table') {
+                this._addTable(container, line.table);
             }
         }
 
@@ -249,8 +235,8 @@ export class PreviewViolationRenderer {
             labelEl.textContent = `${label}: `;
             line.appendChild(labelEl);
         }
-        // first.html — rich-HTML первого абзаца поля (Task 1.1); рендерим
-        // через renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
+        // first.html — rich-HTML первого абзаца поля; рендерим через
+        // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT), не
         // текст-нодой — иначе сырой HTML показался бы буквально.
         const bodyEl = document.createElement('span');
         renderActContent(bodyEl, first.html);
@@ -271,34 +257,15 @@ export class PreviewViolationRenderer {
     }
 
     /**
-     * Добавляет полный список описаний (паритет с буллетами DOCX)
+     * Добавляет блок-таблицу через общий PreviewTableRenderer (та же графика,
+     * что у таблиц-узлов дерева; ширины колонок — из colWidths сетки).
      * @private
      */
-    static _addList(container, label, items, small) {
-        const line = document.createElement('div');
-        line.className = small ? 'preview-violation-line preview-violation-line--small'
-                               : 'preview-violation-line';
-        if (label) {
-            const labelEl = document.createElement('span');
-            labelEl.className = 'preview-violation-label';
-            labelEl.textContent = `${label}:`;
-            line.appendChild(labelEl);
-        }
-        container.appendChild(line);
-
-        const list = document.createElement('ul');
-        list.className = small ? 'preview-violation-desclist preview-violation-desclist--small'
-                               : 'preview-violation-desclist';
-        for (const item of items) {
-            const li = document.createElement('li');
-            // Task 7: пункт — rich-HTML поле нарушения; рендерим через
-            // renderActContent (профиль 'acts', паритет с DOCX/MD/TXT и
-            // _addLine выше), не текст-нодой — иначе сырой HTML показался бы
-            // буквально.
-            renderActContent(li, item);
-            list.appendChild(li);
-        }
-        container.appendChild(list);
+    static _addTable(container, table) {
+        const wrap = document.createElement('div');
+        wrap.className = 'preview-violation-table-wrap';
+        wrap.appendChild(PreviewTableRenderer.create(table || { grid: [], colWidths: [] }));
+        container.appendChild(wrap);
     }
 
     /**
@@ -352,7 +319,7 @@ export class PreviewViolationRenderer {
         if (!item.caption) return;
         const caption = document.createElement('div');
         caption.className = 'preview-violation-caption';
-        // Task 6: подпись — rich-HTML (rich-редактор), рендерим через
+        // Подпись — rich-HTML (rich-редактор), рендерим через
         // renderActContent (профиль 'acts'), а не textContent — иначе
         // форматирование показалось бы буквальными тегами.
         renderActContent(caption, item.caption);
