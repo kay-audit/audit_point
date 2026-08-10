@@ -1,9 +1,10 @@
 /**
  * Тесты нормализации формы нарушения на загрузке акта (находка аудита #20).
  *
- * normalizeViolations до-заполняет ТОЛЬКО отсутствующие под-объекты/скаляры
- * эталонной формой (createDefaultViolationShape), не перезатирая валидные
- * данные. Модуль без DOM — импортируется напрямую под node:test.
+ * Блочная модель: normalizeViolations до-заполняет ТОЛЬКО отсутствующие
+ * контейнеры {enabled, blocks} и скаляр fieldOrder эталонной формой
+ * (createDefaultViolationShape), не перезатирая валидные данные.
+ * Модуль без DOM — импортируется напрямую под node:test.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,6 +12,7 @@ import {
     createDefaultViolationShape,
     normalizeViolations,
 } from '../../static/js/constructor/violation/violation-normalize.js';
+import { VIOLATION_FIELD_KEYS, MANDATORY_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 
 test('violations undefined → ранний return, changed=false/count=0', () => {
     assert.deepEqual(normalizeViolations(undefined), { changed: false, count: 0 });
@@ -20,19 +22,28 @@ test('пустой словарь нарушений → changed=false/count=0',
     assert.deepEqual(normalizeViolations({}), { changed: false, count: 0 });
 });
 
+test('createDefaultViolationShape: все 10 полей реестра + fieldOrder=null', () => {
+    const shape = createDefaultViolationShape();
+    assert.equal(shape.fieldOrder, null);
+    for (const key of VIOLATION_FIELD_KEYS) {
+        assert.deepEqual(
+            shape[key],
+            { enabled: MANDATORY_FIELD_KEYS.includes(key), blocks: [] },
+            `поле '${key}' — единый контейнер, mandatory-поля включены`
+        );
+    }
+    const extraKeys = Object.keys(shape).filter(
+        k => k !== 'fieldOrder' && !VIOLATION_FIELD_KEYS.includes(k)
+    );
+    assert.deepEqual(extraKeys, [], 'нет полей вне реестра');
+});
+
 test('нарушение без measures → до-заполнено эталоном, форма не падает', () => {
     const violations = {
         v1: {
             id: 'v1',
             nodeId: 'n1',
-            violated: 'текст',
-            established: 'установлено',
-            descriptionList: { enabled: false, items: [] },
-            additionalContent: { enabled: false, items: [] },
-            reasons: { enabled: false, content: '' },
-            consequences: { enabled: false, content: '' },
-            responsible: { enabled: false, content: '' },
-            // measures отсутствует целиком (старый/повреждённый акт)
+            // measures отсутствует целиком (повреждённый акт)
         },
     };
 
@@ -40,10 +51,10 @@ test('нарушение без measures → до-заполнено этало�
 
     assert.equal(result.changed, true);
     assert.equal(result.count, 1);
-    assert.deepEqual(violations.v1.measures, { enabled: false, content: '' });
+    assert.deepEqual(violations.v1.measures, { enabled: false, blocks: [] });
 });
 
-test('нарушение без ЛЮБОГО под-объекта (полностью старый формат) → все поля дозаполнены', () => {
+test('нарушение без ЛЮБОГО контейнера (только id/nodeId) → все поля дозаполнены', () => {
     const violations = {
         v1: { id: 'v1', nodeId: 'n1' },
     };
@@ -56,35 +67,32 @@ test('нарушение без ЛЮБОГО под-объекта (полнос
     assert.deepEqual(rest, createDefaultViolationShape());
 });
 
-test('под-объект присутствует, но без части ключей → дозаполняются только отсутствующие', () => {
+test('контейнер присутствует, но без части ключей → дозаполняются только отсутствующие', () => {
     const violations = {
         v1: {
             id: 'v1',
             nodeId: 'n1',
-            reasons: { enabled: true }, // content отсутствует
+            reasons: { enabled: true }, // blocks отсутствует
         },
     };
 
     normalizeViolations(violations);
 
-    assert.deepEqual(violations.v1.reasons, { enabled: true, content: '' });
+    assert.deepEqual(violations.v1.reasons, { enabled: true, blocks: [] });
 });
 
 test('валидные данные НЕ перезатираются (значения сохранены как есть)', () => {
-    const violations = {
-        v1: {
-            id: 'v1',
-            nodeId: 'n1',
-            violated: 'уже заполнено',
-            established: 'тоже заполнено',
-            descriptionList: { enabled: true, items: ['п1', 'п2'] },
-            additionalContent: { enabled: true, items: [{ id: 'i1', type: 'case', content: 'x' }] },
-            reasons: { enabled: true, content: 'причина' },
-            consequences: { enabled: true, content: 'последствие' },
-            responsible: { enabled: true, content: 'иванов' },
-            measures: { enabled: true, content: 'меры' },
-        },
+    const full = createDefaultViolationShape();
+    full.violated = {
+        enabled: true,
+        blocks: [{ id: 'text_1_a', type: 'text', content: '<p>уже заполнено</p>' }],
     };
+    full.codeMining = {
+        enabled: true,
+        blocks: [{ id: 'table_1_b', type: 'table', table: { grid: [], colWidths: [] } }],
+    };
+    full.fieldOrder = [...VIOLATION_FIELD_KEYS].reverse();
+    const violations = { v1: { id: 'v1', nodeId: 'n1', ...full } };
     const snapshot = JSON.parse(JSON.stringify(violations.v1));
 
     const result = normalizeViolations(violations);
@@ -96,19 +104,8 @@ test('валидные данные НЕ перезатираются (знач�
 
 test('несколько нарушений: count считает только реально изменённые', () => {
     const violations = {
-        v1: {
-            id: 'v1',
-            nodeId: 'n1',
-            violated: '',
-            established: '',
-            descriptionList: { enabled: false, items: [] },
-            additionalContent: { enabled: false, items: [] },
-            reasons: { enabled: false, content: '' },
-            consequences: { enabled: false, content: '' },
-            responsible: { enabled: false, content: '' },
-            measures: { enabled: false, content: '' },
-        },
-        v2: { id: 'v2', nodeId: 'n2' }, // старый формат — потребует дозаполнения
+        v1: { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() },
+        v2: { id: 'v2', nodeId: 'n2' }, // пустой — потребует дозаполнения
     };
 
     const result = normalizeViolations(violations);
@@ -120,6 +117,7 @@ test('несколько нарушений: count считает только �
 test('createDefaultViolationShape: каждый вызов возвращает независимый объект (без общих ссылок)', () => {
     const a = createDefaultViolationShape();
     const b = createDefaultViolationShape();
-    a.reasons.content = 'мутация a';
-    assert.equal(b.reasons.content, '', 'b не затронут мутацией a');
+    a.reasons.blocks.push({ id: 'x', type: 'text', content: 'мутация a' });
+    a.reasons.enabled = true;
+    assert.deepEqual(b.reasons, { enabled: false, blocks: [] }, 'b не затронут мутацией a');
 });
