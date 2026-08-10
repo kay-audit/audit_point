@@ -9,6 +9,7 @@ from app.domains.acts.exceptions import ActNotFoundError, ActValidationError
 from app.db.repositories.base import BaseRepository
 from app.db.types import DbConn
 from app.db.utils.json_db_utils import JSONDBUtils
+from app.domains.acts.repositories import violation_row_mapper
 from app.domains.acts.utils import KMUtils, ActDirectivesValidator
 from app.domains.acts.schemas.act_metadata import (
     ActAttentionItem,
@@ -434,21 +435,14 @@ class ActCrudRepository(BaseRepository):
         )
 
     async def copy_violations(self, from_id: int, to_id: int) -> None:
-        """Копирует нарушения из одного акта в другой (1 запрос)."""
+        """Копирует нарушения из одного акта в другой (1 запрос).
+
+        Список колонок генерируется маппером по реестру полей — ручное
+        перечисление колонок нарушения здесь было источником ошибок
+        «забыли колонку в INSERT…SELECT».
+        """
         await self.conn.execute(
-            f"""
-            INSERT INTO {self.violations} (
-                act_id, violation_id, node_id, node_number, violated, established,
-                description_list, additional_content, reasons, consequences,
-                responsible, measures
-            )
-            SELECT
-                $2, violation_id, node_id, node_number, violated, established,
-                description_list, additional_content, reasons, consequences,
-                responsible, measures
-            FROM {self.violations}
-            WHERE act_id = $1
-            """,
+            violation_row_mapper.copy_sql(self.violations),
             from_id,
             to_id,
         )

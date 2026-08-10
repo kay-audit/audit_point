@@ -86,24 +86,39 @@ CHECK_CONSTRAINT_MESSAGES: dict[str, str] = {
     "check_acts_validation_status_values": (
         "Недопустимое состояние валидации акта. Допустимые значения: ok, warning, error"
     ),
-    # ── acts: act_violations ─────────────────────────────────────────────────
-    "check_description_list_is_object_or_null": (
-        "Поле description_list должно быть объектом JSON или отсутствовать"
+    # ── acts: act_violations (блочная модель: контейнеры {enabled, blocks}) ──
+    "check_violated_is_object_or_null": (
+        "Поле violated должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
+    ),
+    "check_established_is_object_or_null": (
+        "Поле established должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
+    ),
+    "check_description_is_object_or_null": (
+        "Поле description должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
+    ),
+    "check_code_mining_is_object_or_null": (
+        "Поле code_mining должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
+    ),
+    "check_process_mining_is_object_or_null": (
+        "Поле process_mining должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
     ),
     "check_additional_content_is_object_or_null": (
-        "Поле additional_content должно быть объектом JSON или отсутствовать"
+        "Поле additional_content должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
     ),
     "check_reasons_is_object_or_null": (
-        "Поле reasons должно быть объектом JSON с полями enabled и content, или отсутствовать"
+        "Поле reasons должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
     ),
     "check_measures_is_object_or_null": (
-        "Поле measures должно быть объектом JSON с полями enabled и content, или отсутствовать"
+        "Поле measures должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
     ),
     "check_consequences_is_object_or_null": (
-        "Поле consequences должно быть объектом JSON с полями enabled и content, или отсутствовать"
+        "Поле consequences должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
     ),
     "check_responsible_is_object_or_null": (
-        "Поле responsible должно быть объектом JSON с полями enabled и content, или отсутствовать"
+        "Поле responsible должно быть объектом JSON с полями enabled и blocks, или отсутствовать"
+    ),
+    "check_field_order_is_array_or_null": (
+        "Порядок полей нарушения (field_order) должен быть массивом JSON или отсутствовать"
     ),
     # ── acts: act_invoices ───────────────────────────────────────────────────
     # PG-имена (явные, добавлены при заполнении)

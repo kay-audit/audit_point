@@ -540,8 +540,8 @@ CREATE INDEX IF NOT EXISTS idx_{PREFIX}act_tables_grid_data
 
 CREATE INDEX IF NOT EXISTS idx_{PREFIX}violations_content
     ON {SCHEMA}.{PREFIX}act_violations USING GIN(
-        description_list, additional_content, reasons,
-        measures, consequences, responsible
+        violated, established, description, code_mining, process_mining,
+        additional_content, reasons, measures, consequences, responsible
     );
 
 -- ============================================================================

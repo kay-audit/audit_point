@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
 from app.domains.acts.repositories.act_content import ActContentRepository
+from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
 
 
 @pytest.fixture(autouse=True)
@@ -98,15 +99,13 @@ class TestSaveContentUsesTransaction:
         tb_data.nodeId = "n2"
         tb_data.content = "текст"
 
-        # Нарушение
+        # Нарушение (блочная модель: 10 полей-контейнеров + fieldOrder)
         v_data = MagicMock()
         v_data.nodeId = "n3"
-        v_data.violated = "нарушено"
-        v_data.established = "установлено"
-        for attr in ("descriptionList", "additionalContent", "reasons",
-                     "measures", "consequences", "responsible"):
+        v_data.fieldOrder = None
+        for attr in VIOLATION_FIELD_KEYS:
             m = MagicMock()
-            m.model_dump.return_value = {}
+            m.model_dump.return_value = {"enabled": False, "blocks": []}
             setattr(v_data, attr, m)
 
         data = _make_act_data(
@@ -334,12 +333,10 @@ def _make_textblock(node_id: str) -> MagicMock:
 def _make_violation(node_id: str) -> MagicMock:
     v = MagicMock()
     v.nodeId = node_id
-    v.violated = "нарушено"
-    v.established = "установлено"
-    for attr in ("descriptionList", "additionalContent", "reasons",
-                 "measures", "consequences", "responsible"):
+    v.fieldOrder = None
+    for attr in VIOLATION_FIELD_KEYS:
         m = MagicMock()
-        m.model_dump.return_value = {}
+        m.model_dump.return_value = {"enabled": False, "blocks": []}
         setattr(v, attr, m)
     return v
 

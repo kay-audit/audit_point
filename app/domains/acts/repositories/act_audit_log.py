@@ -13,6 +13,8 @@ from datetime import date, datetime
 from app.db.repositories.base import BaseRepository
 from app.db.types import DbConn
 from app.db.utils.json_db_utils import JSONDBUtils
+from app.domains.acts.repositories import violation_row_mapper
+from app.domains.acts.violation_fields import VIOLATION_FIELDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +273,7 @@ class ActAuditLogRepository(BaseRepository):
                 FROM {self._textblocks} WHERE act_id = $1
                 UNION ALL
                 SELECT 'violation' AS kind, violation_id AS id,
-                       md5(COALESCE(violated, '') || COALESCE(established, '')) AS hash
+                       md5(COALESCE(violated::text, '') || COALESCE(established::text, '')) AS hash
                 FROM {self._violations} WHERE act_id = $1
                 """,
                 act_id,
@@ -449,26 +451,20 @@ class ActAuditLogRepository(BaseRepository):
                     processed += 1
 
             # --- Нарушения ---
+            # Блочная модель: все 10 полей — контейнеры {enabled, blocks};
+            # SELECT и разбор строки — через маппер по реестру. В аудит-лог
+            # уходит компактная сводка (факт изменения + число блоков), а не
+            # содержимое: блоки могут нести base64-картинки на мегабайты.
             db_viols = await self.conn.fetch(
-                f"SELECT violation_id, "
-                f"COALESCE(violated, '') AS violated, "
-                f"COALESCE(established, '') AS established, "
-                f"reasons, measures, consequences, responsible, "
-                f"description_list, additional_content "
+                f"SELECT {violation_row_mapper.select_columns_sql()} "
                 f"FROM {self._violations} WHERE act_id = $1",
                 act_id,
             )
-            db_viol_map = {r["violation_id"]: dict(r) for r in db_viols}
+            db_viol_map = {
+                r["violation_id"]: violation_row_mapper.row_to_violation_dict(r)
+                for r in db_viols
+            }
 
-            viol_fields = ("violated", "established", "reasons", "measures", "consequences", "responsible")
-            # Поля-коллекции diff'ятся отдельно компактной сводкой (см. ниже):
-            # additional_content может содержать base64-картинки на мегабайты —
-            # их содержимое в аудит-лог попадать не должно.
-            collection_fields = (
-                ("descriptionList", "description_list"),
-                ("additionalContent", "additional_content"),
-            )
-            empty_collection = {"enabled": False, "items": []}
             for viol_id, new_viol in data.violations.items():
                 if processed >= max_elements:
                     break
@@ -476,32 +472,19 @@ class ActAuditLogRepository(BaseRepository):
                 if old is None:
                     continue
                 changed_fields: dict[str, dict] = {}
-                for field in viol_fields:
-                    old_val = old.get(field)
-                    new_attr = getattr(new_viol, field, None)
-                    if hasattr(new_attr, "content"):
-                        new_val = new_attr.content or ""
-                        # JSONB-поля asyncpg отдаёт строкой — приводим к dict
-                        # и извлекаем content для сравнения
-                        old_dict = JSONDBUtils.ensure_dict(old_val)
-                        old_val = (old_dict or {}).get("content", "") or ""
-                    else:
-                        new_val = new_attr or ""
-                        old_val = old_val or ""
-                    if old_val != new_val:
-                        changed_fields[field] = {"changed": True}
-                for attr_name, col_name in collection_fields:
-                    old_coll = JSONDBUtils.ensure_dict(old.get(col_name)) or empty_collection
-                    new_obj = getattr(new_viol, attr_name, None)
-                    new_coll = new_obj.model_dump() if new_obj is not None else empty_collection
-                    if old_coll != new_coll:
-                        # Компактное представление: факт изменения + число
-                        # элементов до/после, без содержимого элементов
-                        changed_fields[attr_name] = {
+                for field in VIOLATION_FIELDS:
+                    empty = {"enabled": field.mandatory, "blocks": []}
+                    old_container = old.get(field.key) or empty
+                    new_obj = getattr(new_viol, field.key, None)
+                    new_container = new_obj.model_dump() if new_obj is not None else empty
+                    if old_container != new_container:
+                        changed_fields[field.key] = {
                             "changed": True,
-                            "old_items": len(old_coll.get("items") or []),
-                            "new_items": len(new_coll.get("items") or []),
+                            "old_blocks": len(old_container.get("blocks") or []),
+                            "new_blocks": len(new_container.get("blocks") or []),
                         }
+                if (old.get("fieldOrder") or None) != (new_viol.fieldOrder or None):
+                    changed_fields["fieldOrder"] = {"changed": True}
                 if changed_fields:
                     result[viol_id] = {
                         "type": "violation",
