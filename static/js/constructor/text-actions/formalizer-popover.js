@@ -31,6 +31,36 @@ import { makeDraggablePanel } from '../../shared/draggable-panel.js';
 import { serializeVisibleText } from '../../shared/rich-text.js';
 import { SafeHTML } from '../../shared/sanitize.js';
 import { formalizeViolation } from './text-actions-client.js';
+import { getOrderedFieldKeys } from '../violation/violation-fields.js';
+import { BLOCK_TYPES } from '../violation/violation-block-types.js';
+
+/**
+ * Сериализует сетку блока-таблицы в компактную markdown-сетку для LLM:
+ * `| a | b |` построчно, разделитель после первой строки (шапки). Ячейки —
+ * plain-текст (инвариант B8), pipe экранируется, переносы схлопываются в
+ * пробел. Пустая/вырожденная сетка → ''. Чистая функция — тест-шов.
+ * @param {Object} table - Сетка блока ({grid, colWidths})
+ * @returns {string}
+ */
+export function tableToMarkdown(table) {
+    const grid = table?.grid;
+    if (!Array.isArray(grid) || grid.length === 0) return '';
+    const rows = [];
+    for (const row of grid) {
+        if (!Array.isArray(row) || row.length === 0) continue;
+        const cells = row.map((cell) => String(cell?.content ?? '')
+            .replace(/\|/g, '\\|')
+            .replace(/\s+/g, ' ')
+            .trim());
+        rows.push(`| ${cells.join(' | ')} |`);
+        if (rows.length === 1) {
+            rows.push(`|${' --- |'.repeat(row.length)}`);
+        }
+    }
+    // Таблица без единого непустого символа в ячейках — не шлём LLM рамку.
+    const hasContent = rows.some((line) => /[^|\s\\-]/.test(line));
+    return hasContent ? rows.join('\n') : '';
+}
 
 // Поля превью в порядке карточки (Принятые меры — под Причинами, как в форме).
 const _PREVIEW_FIELDS = [
@@ -77,24 +107,35 @@ export const FormalizerPopover = {
 
     /**
      * Собирает свободный текст нарушения из уже заполненных полей карточки для
-     * (пере)формализации. Порядок — как в карточке; плоский текст без ярлыков
-     * полей (формализатор раскладывает сам). Опциональные блоки берём только
-     * включёнными и непустыми; «Нарушено»/«Установлено» — если непусты. Поля
-     * модели — rich HTML: каждое значение перед сборкой проходит через
-     * `this._richToPlain` (адаптер чтения rich→plain), иначе в тексте для LLM
-     * оказались бы HTML-теги. Чтение: карточку НЕ меняет.
+     * (пере)формализации — блочная модель. Порядок — как в карточке
+     * (getOrderedFieldKeys: fieldOrder нарушения либо стандартный); поля берём
+     * только включённые. Внутри поля: text-блок — видимый текст content;
+     * image-блок — видимый текст caption (base64-картинка LLM бесполезна);
+     * table-блок — компактная markdown-сетка (tableToMarkdown). Rich HTML
+     * проходит через `this._richToPlain` (адаптер чтения rich→plain), иначе в
+     * тексте для LLM оказались бы HTML-теги. Плоский текст без ярлыков полей
+     * (формализатор раскладывает сам). Чтение: карточку НЕ меняет.
      * @param {Object} violation
      * @returns {string}
      */
     _gatherSource(violation) {
         if (!violation) return '';
         const parts = [];
-        const push = (html) => { const t = this._richToPlain(html || '').trim(); if (t) parts.push(t); };
-        push(violation.violated);
-        push(violation.established);
-        for (const key of ['reasons', 'measures', 'consequences', 'responsible']) {
-            const f = violation[key];
-            if (f && f.enabled) push(f.content);
+        const pushText = (html) => { const t = this._richToPlain(html || '').trim(); if (t) parts.push(t); };
+        for (const key of getOrderedFieldKeys(violation)) {
+            const field = violation[key];
+            if (!field || !field.enabled || !Array.isArray(field.blocks)) continue;
+            for (const block of field.blocks) {
+                if (!block) continue;
+                if (block.type === BLOCK_TYPES.TEXT) {
+                    pushText(block.content);
+                } else if (block.type === BLOCK_TYPES.IMAGE) {
+                    pushText(block.caption);
+                } else if (block.type === BLOCK_TYPES.TABLE) {
+                    const md = tableToMarkdown(block.table);
+                    if (md) parts.push(md);
+                }
+            }
         }
         return parts.join('\n\n');
     },

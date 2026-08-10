@@ -22,20 +22,26 @@ import { FormalizerPopover } from '../../static/js/constructor/text-actions/form
 
 // --- _gatherSource / _richToPlain: адаптер чтения (Task 1.4.3) ---
 
-test('_gatherSource: прогоняет каждое читаемое поле через _richToPlain', () => {
+test('_gatherSource: прогоняет каждый читаемый rich-носитель через _richToPlain', () => {
     const original = FormalizerPopover._richToPlain;
     FormalizerPopover._richToPlain = (html) => 'PLAIN[' + html + ']';
     try {
+        // Блочная модель: text.content и image.caption идут через адаптер,
+        // выключенные поля пропускаются.
         const violation = {
-            violated: 'Нарушено', established: 'Установлено',
-            reasons: { enabled: true, content: 'Причины' },
-            measures: { enabled: false, content: 'скрыто' },
-            consequences: { enabled: true, content: 'Последствия' },
-            responsible: { enabled: true, content: 'Иванов' },
+            id: 'v1', fieldOrder: null,
+            violated: { enabled: true, blocks: [{ id: 't1', type: 'text', content: 'Нарушено' }] },
+            established: { enabled: true, blocks: [{ id: 't2', type: 'text', content: 'Установлено' }] },
+            reasons: { enabled: true, blocks: [{ id: 't3', type: 'text', content: 'Причины' }] },
+            measures: { enabled: false, blocks: [{ id: 't4', type: 'text', content: 'скрыто' }] },
+            responsible: {
+                enabled: true,
+                blocks: [{ id: 'i1', type: 'image', url: 'data:image/png;base64,AAAA', caption: 'Подпись', filename: '', width: 0 }],
+            },
         };
         assert.equal(
             FormalizerPopover._gatherSource(violation),
-            'PLAIN[Нарушено]\n\nPLAIN[Установлено]\n\nPLAIN[Причины]\n\nPLAIN[Последствия]\n\nPLAIN[Иванов]',
+            'PLAIN[Нарушено]\n\nPLAIN[Установлено]\n\nPLAIN[Причины]\n\nPLAIN[Подпись]',
         );
     } finally {
         FormalizerPopover._richToPlain = original;
