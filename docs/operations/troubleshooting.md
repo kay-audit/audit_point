@@ -165,13 +165,13 @@
 **Причина:** локальная LLM исполняется не из приложения, а воркером в Jupyter DataLab: заявка уходит в Redis Stream `llm:bridge:requests`, ответ читается из `llm:bridge:resp:{id}` (префикс — `CHAT__REDIS_BRIDGE__KEY_PREFIX`, дефолт `llm:bridge:`). Перед `XADD` клиент читает heartbeat `llm:bridge:worker:alive` (воркер обновляет каждые 15 сек, TTL 45 сек) и проверяет, что цель маршрута есть в его `targets`; если нет — мгновенный `APIConnectionError` без ожидания. Дедлайн ожидания ответа равен `CHAT__REQUEST_TIMEOUT`; по нему поднимается `BridgeDeadlineError` (подкласс `APITimeoutError`), который **сознательно не ретраится**, но включает circuit breaker и fallback-маршрут.
 
 **Решение:**
-1. Проверить heartbeat: `redis-cli -h <REDIS__HOST> -p <REDIS__PORT> GET llm:bridge:worker:alive`. Ключа нет → воркер не запущен либо heartbeat протух: открыть `scripts/datalab/llm_redis_worker.ipynb` в DataLab и сделать Run All.
+1. Проверить heartbeat: `redis-cli -h <REDIS__HOST> -p <REDIS__PORT> GET llm:bridge:worker:alive`. Ключа нет → воркер не запущен либо heartbeat протух: открыть `scripts/llm_redis_worker.ipynb` в DataLab и сделать Run All.
 2. Ключ есть, но в `targets` нет нужной цели (`gigachat` / `openai`) — у цели не задан URL в окружении ноутбука (`GIGACHAT_API_URL` / `OPENAI_API_URL`); токен для локального бэкенда опционален.
 3. `XLEN llm:bridge:requests` устойчиво растёт — воркер не вычитывает stream (упал, завис на rate limit цели, нет сети до бэкенда).
 4. Поле `target_health` в heartbeat — карта живости бэкендов по `GET /models`. Её читает только фоновая задача `chat.llm_health_probe`; пользовательский путь на неё не смотрит, поэтому «воркер жив, а LLM за ним лежит» выглядит как обычные 5xx от провайдера.
 5. Проверить fallback: `CHAT__FALLBACK_PROFILE` (пустое значение = fallback выключен). Типовая прод-конфигурация — primary `redis-bridge,gigachat`, fallback `redis-bridge,openai` на том же воркере.
 
-**См. также:** [`docs/integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md) (протокол, конверты, smoke-чеклист), `app/domains/chat/services/redis_bridge_adapter.py`, `scripts/datalab/llm_redis_worker.ipynb`.
+**См. также:** [`docs/integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md) (протокол, конверты, smoke-чеклист), `app/domains/chat/services/redis_bridge_adapter.py`, `scripts/llm_redis_worker.ipynb`.
 
 ---
 

@@ -436,7 +436,7 @@ stdout печатает в текущий терминал, файл — `<repo>
 
 ### Логи воркера LLM-моста
 
-Воркер `scripts/datalab/llm_redis_worker.ipynb` живёт **вне** этого приложения —
+Воркер `scripts/llm_redis_worker.ipynb` живёт **вне** этого приложения —
 в Jupyter DataLab, и в `logs/app.log` не пишет. Его вывод виден только в
 ячейке ноутбука; со стороны приложения о его состоянии судят по heartbeat
 `llm:bridge:worker:alive` в Redis (troubleshooting №7).

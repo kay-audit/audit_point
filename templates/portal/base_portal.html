@@ -6,7 +6,7 @@
     <meta name="chat-domains" content="{{ chat_domains | tojson if chat_domains is defined else 'null' }}">
     <meta name="chat-knowledge-bases" content="{{ knowledge_bases | tojson if knowledge_bases is defined else '[]' }}">
     <meta name="app-version" content="{{ app_version }}">
-    <title>{% block title %}Портал{% endblock %}</title>
+    <title>{% block title %}Единое рабочее место{% endblock %}</title>
 
     <!-- Основные стили -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/entry/portal.css') | versioned }}">

@@ -27,7 +27,7 @@ text actions) — шина `chat_agent_messages_bus` этим документо
 - приложение — `app/domains/chat/services/redis_bridge_adapter.py`
   (клиент `RedisBridgeClient`) и `app/domains/chat/settings.py`
   (`parse_route`, `RedisBridgeSettings`);
-- воркер — `scripts/datalab/llm_redis_worker.ipynb`, запускается вручную на
+- воркер — `scripts/llm_redis_worker.ipynb`, запускается вручную на
   DataLab.
 
 Раздельного версионирования протокола на два репозитория нет: правка формата
@@ -171,7 +171,7 @@ WSL) — требование выполнено на обеих площадк�
 
 Запуск:
 
-1. Открыть `scripts/datalab/llm_redis_worker.ipynb` в Jupyter DataLab.
+1. Открыть `scripts/llm_redis_worker.ipynb` в Jupyter DataLab.
 2. Проверить переменные окружения перед запуском:
    - `GIGACHAT_API_URL`, `JPY_API_TOKEN` — для цели `gigachat` (обычно уже
      инжектированы окружением DataLab);

@@ -2,7 +2,7 @@
 
 Запрос сериализуется в проводной формат цели (openai | gigachat, имя цели
 совпадает с форматом) и кладётся в stream заявок; асинхронный ipynb-воркер на
-Jupyter DataLab (scripts/datalab/llm_redis_worker.ipynb) исполняет его против
+Jupyter DataLab (scripts/llm_redis_worker.ipynb) исполняет его против
 целевого LLM-бэкенда и пишет ответ в stream ответа. Протокол —
 docs/integrations/redis-llm-bridge.md.
 

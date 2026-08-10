@@ -340,7 +340,7 @@ CHAT__REQUEST_TIMEOUT=180                           # дедлайн общий 
 CHAT__REDIS_BRIDGE__KEY_PREFIX=llm:bridge:          # дефолт, менять не нужно
 ```
 
-`CHAT__API_BASE`/`CHAT__API_KEY` для `redis-bridge,*` не нужны — реальный URL и токен цели знает только воркер (`scripts/datalab/llm_redis_worker.ipynb`, переменные `GIGACHAT_API_URL`/`JPY_API_TOKEN` или `OPENAI_API_URL`/`OPENAI_API_KEY` на стороне DataLab). Подключение к Redis у моста — общий блок `REDIS__*` приложения, отдельного адреса у моста нет; `CHAT__REDIS_BRIDGE__KEY_PREFIX` задаёт только префикс ключей (`{prefix}requests`, `{prefix}resp:{id}`, `{prefix}worker:alive`). Протокол, запуск воркера и smoke-чеклист — [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md).
+`CHAT__API_BASE`/`CHAT__API_KEY` для `redis-bridge,*` не нужны — реальный URL и токен цели знает только воркер (`scripts/llm_redis_worker.ipynb`, переменные `GIGACHAT_API_URL`/`JPY_API_TOKEN` или `OPENAI_API_URL`/`OPENAI_API_KEY` на стороне DataLab). Подключение к Redis у моста — общий блок `REDIS__*` приложения, отдельного адреса у моста нет; `CHAT__REDIS_BRIDGE__KEY_PREFIX` задаёт только префикс ключей (`{prefix}requests`, `{prefix}resp:{id}`, `{prefix}worker:alive`). Протокол, запуск воркера и smoke-чеклист — [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md).
 
 **Fallback-маршрут.** `CHAT__FALLBACK_PROFILE` принимает те же четыре значения; **пустое значение (или отсутствие переменной) = fallback выключен** — валидатор `_validate_fallback_profile` приводит `""` к `None` (`app/domains/chat/settings.py:200-208`). Fallback-маршрут может отличаться от primary по транспорту и по формату — на ПРОМе primary `redis-bridge,gigachat`, fallback `redis-bridge,openai`:
 

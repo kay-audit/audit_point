@@ -244,7 +244,7 @@ redis-cli -h <REDIS__HOST> -p <REDIS__PORT> XLEN llm:bridge:requests      # гл
 
 **Recovery.**
 
-1. Запустить/перезапустить воркер: `scripts/datalab/llm_redis_worker.ipynb` в DataLab, Run All. Рестарт приложения при этом **не нужен** — клиент моста не кеширует «воркер мёртв».
+1. Запустить/перезапустить воркер: `scripts/llm_redis_worker.ipynb` в DataLab, Run All. Рестарт приложения при этом **не нужен** — клиент моста не кеширует «воркер мёртв».
 2. Если heartbeat есть, а нужной цели нет в `targets` — в окружении ноутбука не задан URL цели (`GIGACHAT_API_URL` / `OPENAI_API_URL`).
 3. Если очередь `llm:bridge:requests` растёт, а ответов нет — воркер завис; Kernel → Interrupt и повторный Run All. Незаконченные заявки подхватит `XAUTOCLAIM` следующего запуска (min-idle 10 мин), просроченные по `deadline_ts` будут пропущены.
 4. Временная мера — переключить `CHAT__PROFILE` на прямой маршрут (`gigachat` / `openai`) с рестартом приложения; **работает только там, где у площадки есть прямой сетевой доступ к бэкенду LLM** — с SDP его нет.

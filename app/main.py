@@ -275,7 +275,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_title,
         version=settings.app_version,
-        description="Рабочая станция аудитора — акты, AI-ассистент, аналитика, интеграции",
+        description="Audit Workstation — акты, AI-ассистент, аналитика, интеграции",
         lifespan=lifespan,
     )
 
