@@ -1,20 +1,19 @@
 """
-Общий рендеринг нарушений для Markdown/TXT форматтеров (#12 code review).
+Общий рендеринг нарушений для Markdown/TXT форматтеров (блочная модель).
 
-Тела ``_format_violation``/``_add_free_text``/диспетчера ``_add_additional_content``
-были байт-в-байт одинаковы в ``MarkdownFormatter`` и ``TextFormatter``, а
-``_add_required_pair``/``_add_labeled_section``/``_add_description_list``/``_add_case``
-отличались одним токеном оформления (жирный текст, буллит). Это дублирование
-вынесено сюда как параметризованные stateless-функции — обычная композиция
-(как ``formatters/utils/``), БЕЗ базового класса: каждый форматтер держит свои
-тонкие методы-обёртки с собственными токенами/колбэками.
+Единый цикл: поля в порядке ``fieldOrder`` нарушения (или стандартном, см.
+``violation_fields.ordered_fields``) → у включённого поля метка + блоки по
+порядку. Формат-специфичны только четыре точки, передаваемые колбэками:
+оформление метки (жирный MD / plain TXT), конвертер rich-HTML текста
+(HTML→Markdown / HTML→plain), рендер картинки (#16) и рендер таблицы
+(pipe-table MD / ASCII TXT) — их держат сами форматтеры.
 
-``_add_image`` — единственный метод с реально разной логикой (MD — markdown
-``![]()`` с экранированием, TXT — обычная строка) — сюда не выносится.
+Прежний зоопарк per-kind функций (add_required_pair / add_description_list /
+add_case / add_additional_content / ...) умер вместе со старой моделью полей.
 """
 from typing import Callable
 
-from app.domains.acts.violation_fields import CASE_LABEL_TEMPLATE, LABELS
+from app.domains.acts.violation_fields import ordered_fields
 
 
 def wrap_bold(text: str) -> str:
@@ -30,188 +29,55 @@ def wrap_plain(text: str) -> str:
 def format_violation(
     violation_data: dict,
     *,
-    add_required_pair: Callable[[list[str], str, str], None],
-    add_description_list: Callable[[list[str], dict], None],
-    add_additional_content: Callable[[list[str], dict], None],
-    add_labeled_section: Callable[[list[str], str, dict], None],
+    bold_wrap: Callable[[str], str],
+    text_conv: Callable[[str], str],
+    add_image: Callable[[list[str], dict], None],
+    add_table: Callable[[list[str], dict], None],
 ) -> str:
     """
-    Форматирует нарушение, используя переданные обработчики полей формата.
+    Форматирует нарушение: цикл по полям реестра в порядке отображения.
+
+    Правила видимости:
+    - mandatory-поля (Нарушено/Установлено): метка выводится всегда, даже
+      при пустом контейнере (#14 — паритет с DOCX «метка + пустое тело»);
+    - остальные поля — только при enabled и хотя бы одном блоке.
 
     Args:
-        violation_data: Данные нарушения
-        add_required_pair: Обработчик обязательного поля (Нарушено/Установлено)
-        add_description_list: Обработчик списка описаний
-        add_additional_content: Обработчик доп. контента (кейсы/картинки/текст)
-        add_labeled_section: Обработчик опциональной секции с меткой
+        violation_data: Документ нарушения (10 контейнеров + fieldOrder)
+        bold_wrap: Токен оформления метки (жирный MD / как есть TXT)
+        text_conv: Конвертер rich-HTML текст-блока под формат
+        add_image: Рендер блока-картинки (реально разная логика MD/TXT, #16)
+        add_table: Рендер блока-таблицы (pipe-table MD / ASCII TXT)
 
     Returns:
         Текстовое представление нарушения в формате вызывающего форматтера
     """
     lines: list[str] = []
 
-    # #14: обязательные поля — метка выводится всегда, даже при пустом
-    # content (паритет с DOCX-эталоном «метка + пустое тело»).
-    add_required_pair(lines, LABELS['violated'], violation_data.get('violated', ''))
-    add_required_pair(lines, LABELS['established'], violation_data.get('established', ''))
-    add_description_list(lines, violation_data.get('descriptionList', {}))
-    add_additional_content(lines, violation_data.get('additionalContent', {}))
-    add_labeled_section(lines, LABELS['reasons'], violation_data.get('reasons', {}))
-    add_labeled_section(lines, LABELS['measures'], violation_data.get('measures', {}))
-    add_labeled_section(lines, LABELS['consequences'], violation_data.get('consequences', {}))
-    add_labeled_section(lines, LABELS['responsible'], violation_data.get('responsible', {}))
+    for field in ordered_fields(violation_data):
+        container = violation_data.get(field.key) or {}
+        blocks = container.get('blocks') or []
+
+        if field.mandatory:
+            # Метка обязательного поля — всегда (#14).
+            lines.append(bold_wrap(f"{field.label}:"))
+            lines.append("")
+        else:
+            if not container.get('enabled', False) or not blocks:
+                continue
+            lines.append(bold_wrap(f"{field.label}:"))
+            lines.append("")
+
+        for block in blocks:
+            block_type = block.get('type')
+            if block_type == 'text':
+                content = block.get('content') or ''
+                if content:
+                    lines.append(text_conv(content))
+                    lines.append("")
+            elif block_type == 'image':
+                add_image(lines, block)
+            elif block_type == 'table':
+                add_table(lines, block.get('table') or {})
 
     return "\n".join(lines)
-
-
-def add_required_pair(
-    lines: list[str], label: str, content: str, bold_wrap: Callable[[str], str],
-    text_conv: Callable[[str], str] = lambda s: s,
-) -> None:
-    """
-    Добавляет обязательное поле (Нарушено/Установлено): метка выводится
-    всегда, даже при пустом content (#14).
-
-    Args:
-        lines: Список строк для добавления
-        label: Текст метки
-        content: Текст поля (может быть пустым)
-        bold_wrap: Токен оформления метки (жирный MD / как есть TXT)
-        text_conv: Конвертер content под формат (HTML→Markdown / HTML→plain);
-            дефолт identity — для колбэков без rich-конвертации
-    """
-    lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}".rstrip())
-    lines.append("")
-
-
-def add_labeled_section(
-    lines: list[str], label: str, data: dict, bold_wrap: Callable[[str], str],
-    text_conv: Callable[[str], str] = lambda s: s,
-) -> None:
-    """
-    Добавляет опциональную секцию с меткой (Причины/Принятые меры/
-    Последствия/Ответственные) — только при enabled и непустом content.
-
-    Args:
-        lines: Список строк для добавления
-        label: Текст метки
-        data: Данные секции (dict с enabled/content)
-        bold_wrap: Токен оформления метки
-        text_conv: Конвертер content под формат; дефолт identity
-    """
-    if not data.get('enabled', False):
-        return
-    content = data.get('content', '')
-
-    if content:
-        lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}")
-        lines.append("")
-
-
-def add_description_list(
-    lines: list[str], desc_list: dict, bullet: str,
-    text_conv: Callable[[str], str] = lambda s: s,
-) -> None:
-    """
-    Добавляет список описаний.
-
-    Args:
-        lines: Список строк для добавления
-        desc_list: Данные списка с items
-        bullet: Префикс буллита под формат (MD «- », TXT «  • »)
-        text_conv: Конвертер пункта под формат (HTML→Markdown / HTML→plain,
-            Task 7 — пункты стали rich-полем); дефолт identity — для
-            колбэков без rich-конвертации
-    """
-    if not desc_list.get('enabled', False):
-        return
-
-    items = desc_list.get('items', [])
-    if not items:
-        return
-
-    # #12: заголовок «Описание» убран — только маркированный список.
-    # #15/Q1: рендерятся ВСЕ пункты, включая пустые (пустой → пустой буллит),
-    # единообразно с превью и DOCX (пользователь выбрал не прятать).
-    for item in items:
-        lines.append(f"{bullet}{text_conv(item)}")
-    lines.append("")
-
-
-def add_case(
-    lines: list[str], item: dict, case_number: int, bold_wrap: Callable[[str], str],
-    text_conv: Callable[[str], str] = lambda s: s,
-) -> int:
-    """
-    Добавляет кейс с нумерацией.
-
-    Args:
-        lines: Список строк для добавления
-        item: Данные кейса
-        case_number: Текущий номер кейса
-        bold_wrap: Токен оформления метки
-        text_conv: Конвертер content под формат; дефолт identity
-
-    Returns:
-        Следующий номер кейса
-    """
-    # #9/Q1: нумеруются ВСЕ кейсы, включая пустые (метка + пустое тело);
-    # счётчик всегда двигается вперёд.
-    content = item.get('content', '')
-    label = CASE_LABEL_TEMPLATE.format(n=case_number)
-    lines.append(f"{bold_wrap(f'{label}:')} {text_conv(content)}".rstrip())
-    lines.append("")
-    return case_number + 1
-
-
-def add_free_text(
-    lines: list[str], item: dict, text_conv: Callable[[str], str] = lambda s: s,
-) -> None:
-    """
-    Добавляет свободный текст.
-
-    Args:
-        lines: Список строк для добавления
-        item: Данные с текстом
-        text_conv: Конвертер content под формат; дефолт identity
-    """
-    content = item.get('content', '')
-    if content:
-        lines.append(text_conv(content))
-        lines.append("")
-
-
-def add_additional_content(
-    lines: list[str],
-    additional_content: dict,
-    add_case: Callable[[list[str], dict, int], int],
-    add_image: Callable[[list[str], dict], None],
-    add_free_text: Callable[[list[str], dict], None],
-) -> None:
-    """
-    Добавляет дополнительный контент (кейсы, изображения, свободный текст).
-
-    Args:
-        lines: Список строк для добавления
-        additional_content: Данные с items разных типов
-        add_case: Обработчик кейса (свой bold_wrap у каждого форматтера)
-        add_image: Обработчик изображения (реально разная логика MD/TXT, #16)
-        add_free_text: Обработчик свободного текста
-    """
-    if not additional_content.get('enabled', False):
-        return
-
-    items = additional_content.get('items', [])
-    case_number = 1
-
-    for item in items:
-        item_type = item.get('type')
-
-        if item_type == 'case':
-            case_number = add_case(lines, item, case_number)
-        elif item_type == 'image':
-            add_image(lines, item)
-            case_number = 1
-        elif item_type == 'freeText':
-            add_free_text(lines, item)
-            case_number = 1

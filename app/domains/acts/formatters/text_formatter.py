@@ -10,16 +10,7 @@ from app.domains.acts.settings import ActsSettings
 from .base_formatter import BaseFormatter
 from .tree_walker import WalkContext, collect_blocks, walk
 from .utils import HTMLUtils, TableUtils
-from .violation_render import (
-    add_additional_content,
-    add_case,
-    add_description_list,
-    add_free_text,
-    add_labeled_section,
-    add_required_pair,
-    format_violation,
-    wrap_plain,
-)
+from .violation_render import format_violation, wrap_plain
 
 
 class TextFormatter(BaseFormatter):
@@ -169,7 +160,7 @@ class TextFormatter(BaseFormatter):
 
     def _format_violation(self, violation_data: dict) -> str:
         """
-        Форматирует нарушение.
+        Форматирует нарушение (блочная модель: цикл по полям реестра).
 
         Args:
             violation_data: Данные нарушения
@@ -179,74 +170,22 @@ class TextFormatter(BaseFormatter):
         """
         return format_violation(
             violation_data,
-            add_required_pair=self._add_required_pair,
-            add_description_list=self._add_description_list,
-            add_additional_content=self._add_additional_content,
-            add_labeled_section=self._add_labeled_section,
+            bold_wrap=wrap_plain,
+            text_conv=HTMLUtils.clean_html,
+            add_image=self._add_image,
+            add_table=self._add_violation_table,
         )
 
-    def _add_required_pair(self, lines: list[str], label: str, content: str):
+    def _add_violation_table(self, lines: list[str], table_data: dict):
         """
-        Добавляет обязательное поле (Нарушено/Установлено): метка выводится
-        всегда, даже при пустом content (#14).
+        Добавляет блок-таблицу нарушения (та же ASCII-графика, что у таблиц-узлов).
 
         Args:
             lines: Список строк для добавления
-            label: Текст метки
-            content: Текст поля (может быть пустым)
+            table_data: Сетка встроенной таблицы ({grid, colWidths})
         """
-        add_required_pair(lines, label, content, wrap_plain, text_conv=HTMLUtils.clean_html)
-
-    def _add_labeled_section(self, lines: list[str], label: str, data: dict):
-        """
-        Добавляет опциональную секцию с меткой (Причины/Принятые меры/
-        Последствия/Ответственные) — только при enabled и непустом content.
-
-        Args:
-            lines: Список строк для добавления
-            label: Текст метки
-            data: Данные секции (dict с enabled/content)
-        """
-        add_labeled_section(lines, label, data, wrap_plain, text_conv=HTMLUtils.clean_html)
-
-    def _add_description_list(self, lines: list[str], desc_list: dict):
-        """
-        Добавляет список описаний.
-
-        Пункты — rich-поле (Task 7, rich-редактор): HTML конвертируется в
-        видимый текст через HTMLUtils.clean_html (как кейс/свободный текст).
-
-        Args:
-            lines: Список строк для добавления
-            desc_list: Данные списка с items
-        """
-        add_description_list(lines, desc_list, "  • ", text_conv=HTMLUtils.clean_html)
-
-    def _add_additional_content(self, lines: list[str], additional_content: dict):
-        """
-        Добавляет дополнительный контент (кейсы, изображения, свободный текст).
-
-        Args:
-            lines: Список строк для добавления
-            additional_content: Данные с items разных типов
-        """
-        add_additional_content(
-            lines, additional_content, self._add_case, self._add_image, self._add_free_text,
-        )
-
-    def _add_case(self, lines: list[str], item: dict, case_number: int) -> int:
-        """
-        Добавляет кейс с нумерацией.
-
-        Args:
-            lines: Список строк для добавления
-            item: Данные кейса
-            case_number: Текущий номер кейса
-
-        Returns:
-            Следующий номер кейса
-        """
-        return add_case(lines, item, case_number, wrap_plain, text_conv=HTMLUtils.clean_html)
+        lines.append(self._format_table(table_data))
+        lines.append("")
 
     def _add_image(self, lines: list[str], item: dict):
         """
@@ -269,17 +208,6 @@ class TextFormatter(BaseFormatter):
         else:
             lines.append(f"Изображение: {filename}")
         lines.append("")
-
-    def _add_free_text(self, lines: list[str], item: dict):
-        """
-        Добавляет свободный текст.
-
-        Args:
-            lines: Список строк для добавления
-            item: Данные с текстом
-        """
-        add_free_text(lines, item, text_conv=HTMLUtils.clean_html)
-
 
 class _TextTreeVisitor:
     """Визитор tree-walker'а для plain text: представление узлов дерева.

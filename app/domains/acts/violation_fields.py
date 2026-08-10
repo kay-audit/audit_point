@@ -99,3 +99,22 @@ FIELD_BY_KEY: dict[str, ViolationFieldDescriptor] = {
 }
 
 LABELS: dict[str, str] = {field.key: field.label for field in VIOLATION_FIELDS}
+
+
+def ordered_fields(violation_data: dict | None) -> tuple[ViolationFieldDescriptor, ...]:
+    """Дескрипторы полей в порядке отображения конкретного нарушения.
+
+    fieldOrder нарушения применяется, если он — перестановка ВСЕХ ключей
+    реестра; иначе (None, повреждён, устарел после смены состава) молча
+    возвращается стандартный порядок — зеркало фронтового
+    getOrderedFieldKeys (violation-fields.js). Единая точка для DOCX/MD/TXT-
+    рендеров: порядок полей в экспорте == порядок в форме.
+    """
+    order = (violation_data or {}).get("fieldOrder")
+    if (
+        isinstance(order, list)
+        and len(order) == len(VIOLATION_FIELD_KEYS)
+        and set(order) == set(VIOLATION_FIELD_KEYS)
+    ):
+        return tuple(FIELD_BY_KEY[key] for key in order)
+    return VIOLATION_FIELDS

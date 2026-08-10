@@ -1,16 +1,18 @@
-"""Тест-фиксация семантики нарушений в MD/TXT (M.3-хвост + Wave 2 #9/#12/#14/#16).
+"""Тест-фиксация семантики нарушений в MD/TXT (блочная модель).
 
-descriptionList — ПОЛНЫЙ список пунктов (не сводка «N метрик»), БЕЗ заголовка
-«Описание» (#12): только маркированный список (MD «- …», TXT «  • …»).
-Пустые пункты списка тоже рендерятся — пустым буллитом (#15/Q1), единообразно
-с превью и DOCX. Обязательные Нарушено/Установлено выводят метку даже при пустом теле (#14);
-кейсы нумеруются сквозняком включая пустые, сброс на не-кейсе (#9/Q1); в MD
-картинка встраивается markdown-разметкой (#16). Если кто-то «оптимизирует»
-вывод — эти тесты укажут на дрейф.
+Единый цикл по полям реестра в порядке fieldOrder (или стандартном):
+метка включённого поля + блоки по порядку. Правила: mandatory-поля
+(Нарушено/Установлено) выводят метку даже при пустом контейнере (#14);
+выключенное или пустое опциональное поле не рендерится; text-блок идёт
+через rich-конвертер (HTML→MD / HTML→plain); картинка — формат-специфично
+(#16, MD — markdown-разметка, TXT — строка «Изображение: …»); таблица —
+pipe-table в MD и ASCII в TXT (та же графика, что у таблиц-узлов).
+Если кто-то «оптимизирует» вывод — эти тесты укажут на дрейф.
 """
 from app.domains.acts.formatters.markdown_formatter import MarkdownFormatter
 from app.domains.acts.formatters.text_formatter import TextFormatter
 from app.domains.acts.settings import ActsSettings
+from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
 
 
 def _md() -> MarkdownFormatter:
@@ -21,280 +23,234 @@ def _txt() -> TextFormatter:
     return TextFormatter(settings=None, acts_settings=ActsSettings())
 
 
-_VIOLATION = {
-    "violated": "Нарушено-X",
-    "established": "Установлено-Y",
-    "descriptionList": {
-        "enabled": True,
-        "items": ["Метрика один", "Метрика два", "Метрика три"],
-    },
-    "additionalContent": {"enabled": False, "items": []},
-    "reasons": {"enabled": False, "content": ""},
-    "consequences": {"enabled": False, "content": ""},
-    "responsible": {"enabled": False, "content": ""},
-}
+def _text_block(content: str, bid: str = "text_1_a") -> dict:
+    return {"id": bid, "type": "text", "content": content}
 
 
-def test_markdown_renders_full_description_list():
-    out = _md()._format_violation(_VIOLATION)
-    # #12: заголовок «Описание» убран — остаются только буллиты.
-    assert "**Описание:**" not in out
-    for item in _VIOLATION["descriptionList"]["items"]:
-        assert f"- {item}" in out
-    # Сводки-счётчика нет.
-    assert "метрик" not in out
+def _image_block(**kw) -> dict:
+    return {"id": "image_1_b", "type": "image",
+            "url": kw.get("url", ""), "caption": kw.get("caption", ""),
+            "filename": kw.get("filename", ""), "width": kw.get("width", 0)}
 
 
-def test_text_renders_full_description_list():
-    out = _txt()._format_violation(_VIOLATION)
-    # #12: заголовок «Описание» убран — остаются только буллиты.
-    assert "Описание:" not in out
-    for item in _VIOLATION["descriptionList"]["items"]:
-        assert f"• {item}" in out
-    assert "метрик" not in out
+def _table_block(grid_texts: list[list[str]]) -> dict:
+    return {
+        "id": "table_1_c", "type": "table",
+        "table": {
+            "grid": [[{"content": c} for c in row] for row in grid_texts],
+            "colWidths": [],
+        },
+    }
 
 
-def test_disabled_description_list_not_rendered():
-    violation = dict(_VIOLATION, descriptionList={"enabled": False, "items": ["скрытая"]})
-    assert "скрытая" not in _md()._format_violation(violation)
-    assert "скрытая" not in _txt()._format_violation(violation)
+def _violation(**field_overrides) -> dict:
+    """Нарушение с дефолтными контейнерами; поля переопределяются kwargs."""
+    v = {"id": "v1", "nodeId": "n1", "fieldOrder": None}
+    for key in VIOLATION_FIELD_KEYS:
+        v[key] = {"enabled": key in ("violated", "established"), "blocks": []}
+    v["violated"]["blocks"] = [_text_block("Нарушено-X")]
+    v["established"]["blocks"] = [_text_block("Установлено-Y")]
+    v.update(field_overrides)
+    return v
 
 
-def test_measures_rendered_between_reasons_and_consequences():
-    """«Принятые меры» стоят под «Причинами» (директива владельца) — до «Последствий»."""
-    violation = dict(
-        _VIOLATION,
-        reasons={"enabled": True, "content": "ПРИЧИНА-X"},
-        measures={"enabled": True, "content": "МЕРА-Y"},
-        consequences={"enabled": True, "content": "ПОСЛЕДСТВИЕ-Z"},
+# --- Базовый рендер и правила видимости ---
+
+
+def test_markdown_renders_labels_and_text_blocks():
+    out = _md()._format_violation(_violation())
+    assert "**Нарушено:**" in out
+    assert "Нарушено-X" in out
+    assert "**Установлено:**" in out
+    assert "Установлено-Y" in out
+
+
+def test_disabled_field_not_rendered():
+    v = _violation(reasons={"enabled": False, "blocks": [_text_block("скрытая")]})
+    assert "скрытая" not in _md()._format_violation(v)
+    assert "скрытая" not in _txt()._format_violation(v)
+
+
+def test_enabled_empty_field_not_rendered():
+    """Включённое, но пустое опциональное поле не даёт метки."""
+    v = _violation(reasons={"enabled": True, "blocks": []})
+    assert "Причины" not in _md()._format_violation(v)
+    assert "Причины" not in _txt()._format_violation(v)
+
+
+def test_required_labels_shown_when_empty():
+    """#14: Нарушено/Установлено — метка даже при пустом контейнере."""
+    v = _violation()
+    v["violated"]["blocks"] = []
+    v["established"]["blocks"] = []
+    md = _md()._format_violation(v)
+    assert "**Нарушено:**" in md and "**Установлено:**" in md
+    txt = _txt()._format_violation(v)
+    assert "Нарушено:" in txt and "Установлено:" in txt
+
+
+def test_default_field_order_reasons_before_consequences():
+    """Стандартный порядок: Причины < Принятые меры < Последствия."""
+    v = _violation(
+        reasons={"enabled": True, "blocks": [_text_block("ПРИЧИНА-X")]},
+        measures={"enabled": True, "blocks": [_text_block("МЕРА-Y")]},
+        consequences={"enabled": True, "blocks": [_text_block("ПОСЛЕДСТВИЕ-Z")]},
     )
-    for out in (_md()._format_violation(violation), _txt()._format_violation(violation)):
-        assert "МЕРА-Y" in out
+    for out in (_md()._format_violation(v), _txt()._format_violation(v)):
         assert out.index("ПРИЧИНА-X") < out.index("МЕРА-Y") < out.index("ПОСЛЕДСТВИЕ-Z")
 
 
-def test_disabled_measures_not_rendered():
-    violation = dict(_VIOLATION, measures={"enabled": False, "content": "скрытая-мера"})
-    assert "скрытая-мера" not in _md()._format_violation(violation)
-    assert "скрытая-мера" not in _txt()._format_violation(violation)
-
-
-# --- #15/Q1: пустые пункты списка описаний рендерятся (единообразие с превью/DOCX) ---
-
-
-def test_markdown_renders_empty_description_bullets():
-    """Пустой пункт descriptionList → пустой буллит «- » (не отфильтровывается)."""
-    violation = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["A", "", "B"]})
-    lines = _md()._format_violation(violation).split("\n")
-    bullets = [ln for ln in lines if ln.startswith("- ")]
-    assert bullets == ["- A", "- ", "- B"]
-
-
-def test_text_renders_empty_description_bullets():
-    """Пустой пункт descriptionList → пустой буллит «  • » (не отфильтровывается)."""
-    violation = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["A", "", "B"]})
-    lines = _txt()._format_violation(violation).split("\n")
-    bullets = [ln for ln in lines if ln.lstrip().startswith("•")]
-    assert bullets == ["  • A", "  • ", "  • B"]
-
-
-# --- #9/Q1: нумерация всех кейсов, сброс на не-кейсе (паритет с DOCX/превью) ---
-
-
-def _violation_with_items(items):
-    return dict(
-        _VIOLATION,
-        descriptionList={"enabled": False, "items": []},
-        additionalContent={"enabled": True, "items": items},
+def test_field_order_respected():
+    """fieldOrder меняет порядок секций в экспорте."""
+    order = list(VIOLATION_FIELD_KEYS)
+    order.remove("consequences")
+    order.insert(0, "consequences")
+    v = _violation(
+        fieldOrder=order,
+        consequences={"enabled": True, "blocks": [_text_block("ПОСЛЕДСТВИЕ-Z")]},
     )
-
-
-def test_markdown_empty_first_case_shifts_next_to_case_2():
-    """Пустой первый кейс занимает «Кейс 1», следующий непустой → «Кейс 2»."""
-    v = _violation_with_items([
-        {"type": "case", "content": ""},
-        {"type": "case", "content": "Второй"},
-    ])
     out = _md()._format_violation(v)
-    assert "**Кейс 1:**" in out
-    assert "**Кейс 2:** Второй" in out
+    assert out.index("ПОСЛЕДСТВИЕ-Z") < out.index("Нарушено-X")
 
 
-def test_markdown_case_numbering_resets_after_non_case():
-    """Не-кейс (freeText) сбрасывает нумерацию кейсов."""
-    v = _violation_with_items([
-        {"type": "case", "content": "A"},
-        {"type": "freeText", "content": "текст"},
-        {"type": "case", "content": "B"},
-    ])
+def test_invalid_field_order_falls_back_to_default():
+    """Повреждённый fieldOrder молча игнорируется (стандартный порядок)."""
+    v = _violation(fieldOrder=["violated"])
     out = _md()._format_violation(v)
-    assert "**Кейс 1:** A" in out
-    assert "**Кейс 1:** B" in out
-    assert "**Кейс 2:**" not in out
+    assert out.index("Нарушено-X") < out.index("Установлено-Y")
 
 
-# --- #14: обязательные Нарушено/Установлено выводят метку даже при пустом ---
-
-
-def test_markdown_required_labels_shown_when_empty():
-    v = dict(_VIOLATION, violated="", established="")
+def test_new_fields_render_with_labels():
+    """CodeMining/ProcessMining/Описание — обычные поля с метками."""
+    v = _violation(
+        codeMining={"enabled": True, "blocks": [_text_block("CM-контент")]},
+        processMining={"enabled": True, "blocks": [_text_block("PM-контент")]},
+        description={"enabled": True, "blocks": [_text_block("Опис-контент")]},
+    )
     out = _md()._format_violation(v)
-    assert "**Нарушено:**" in out
-    assert "**Установлено:**" in out
+    assert "**CodeMining:**" in out and "CM-контент" in out
+    assert "**ProcessMining:**" in out and "PM-контент" in out
+    assert "**Описание:**" in out and "Опис-контент" in out
 
 
-# --- #16: картинка встраивается markdown-разметкой, имя файла — в title ---
+def test_multiple_blocks_render_in_order():
+    v = _violation(
+        reasons={"enabled": True, "blocks": [_text_block("Первый", "text_1"), _text_block("Второй", "text_2")]},
+    )
+    out = _md()._format_violation(v)
+    assert out.index("Первый") < out.index("Второй")
+
+
+# --- Rich-конвертация text-блоков ---
+
+
+def test_markdown_text_block_converts_html():
+    v = _violation()
+    v["violated"]["blocks"] = [_text_block("это <b>жирное</b> и Ромашка &amp; Ко")]
+    out = _md()._format_violation(v)
+    assert "**жирное**" in out and "Ромашка & Ко" in out and "&amp;" not in out
+
+
+def test_text_text_block_strips_html():
+    v = _violation()
+    v["violated"]["blocks"] = [_text_block("это <b>жирное</b> и Ромашка &amp; Ко")]
+    out = _txt()._format_violation(v)
+    assert "жирное" in out and "<b>" not in out and "Ромашка & Ко" in out
+
+
+# --- #16: картинка (MD — markdown-разметка, TXT — строка) ---
 
 
 def test_markdown_image_embedded_with_filename_in_title():
-    v = _violation_with_items([{
-        "type": "image",
-        "url": "data:image/png;base64,AAAA",
-        "caption": "Подпись",
-        "filename": "pic.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="data:image/png;base64,AAAA", caption="Подпись", filename="pic.png"),
+    ]})
     out = _md()._format_violation(v)
     assert '![Подпись](data:image/png;base64,AAAA "pic.png")' in out
 
 
 def test_markdown_image_empty_url_falls_back_to_filename():
-    v = _violation_with_items([{
-        "type": "image", "url": "", "caption": "", "filename": "draft.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="", caption="", filename="draft.png"),
+    ]})
     out = _md()._format_violation(v)
     assert "*draft.png*" in out
     assert "![" not in out
 
 
 def test_markdown_image_filename_with_quote_escaped_in_title():
-    """Дословный (без bleach, T4) filename с `"` не должен разрывать title."""
-    v = _violation_with_items([{
-        "type": "image",
-        "url": "data:image/png;base64,AAAA",
-        "caption": "Подпись",
-        "filename": 'pic "one".png',
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="data:image/png;base64,AAAA", caption="Подпись", filename='pic "one".png'),
+    ]})
     out = _md()._format_violation(v)
     assert '![Подпись](data:image/png;base64,AAAA "pic \\"one\\".png")' in out
 
 
 def test_markdown_image_caption_with_bracket_escaped_in_alt():
-    """Дословная caption с `]` не должна преждевременно закрывать alt-текст."""
-    v = _violation_with_items([{
-        "type": "image",
-        "url": "data:image/png;base64,AAAA",
-        "caption": "рост] на 10%",
-        "filename": "pic.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="data:image/png;base64,AAAA", caption="рост] на 10%", filename="pic.png"),
+    ]})
     out = _md()._format_violation(v)
     assert '![рост\\] на 10%](data:image/png;base64,AAAA "pic.png")' in out
 
 
-# --- Task 6: caption — rich-поле (rich-редактор подписи), паритет MD/TXT ---
-
-
 def test_markdown_image_caption_is_rich():
-    """<b> в caption → **bold** в alt (html_to_markdown, как кейс/свободный текст)."""
-    v = _violation_with_items([{
-        "type": "image",
-        "url": "data:image/png;base64,AAAA",
-        "caption": "<b>важно</b>",
-        "filename": "pic.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="data:image/png;base64,AAAA", caption="<b>важно</b>", filename="pic.png"),
+    ]})
     out = _md()._format_violation(v)
     assert '![**важно**](data:image/png;base64,AAAA "pic.png")' in out
 
 
 def test_markdown_image_caption_none_falls_back_to_filename():
-    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
-    v = _violation_with_items([{
-        "type": "image", "url": "", "caption": None, "filename": "draft.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        {"id": "image_1_b", "type": "image", "url": "", "caption": None, "filename": "draft.png"},
+    ]})
     out = _md()._format_violation(v)
     assert "*draft.png*" in out
 
 
-# --- TXT: те же правила #9/#14 (картинка #16 — caption теперь rich, Task 6) ---
-
-
-def test_text_empty_first_case_shifts_next_to_case_2():
-    v = _violation_with_items([
-        {"type": "case", "content": ""},
-        {"type": "case", "content": "Второй"},
-    ])
-    out = _txt()._format_violation(v)
-    assert "Кейс 1:" in out
-    assert "Кейс 2: Второй" in out
-
-
-def test_text_case_numbering_resets_after_non_case():
-    v = _violation_with_items([
-        {"type": "case", "content": "A"},
-        {"type": "freeText", "content": "текст"},
-        {"type": "case", "content": "B"},
-    ])
-    out = _txt()._format_violation(v)
-    assert "Кейс 1: A" in out
-    assert "Кейс 1: B" in out
-    assert "Кейс 2:" not in out
-
-
-def test_text_required_labels_shown_when_empty():
-    v = dict(_VIOLATION, violated="", established="")
-    out = _txt()._format_violation(v)
-    assert "Нарушено:" in out
-    assert "Установлено:" in out
-
-
 def test_text_image_caption_is_rich():
-    """<b> в caption → видимый текст без тегов (clean_html, как кейс/свободный текст)."""
-    v = _violation_with_items([{
-        "type": "image", "url": "", "caption": "<b>важно</b>", "filename": "pic.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        _image_block(url="", caption="<b>важно</b>", filename="pic.png"),
+    ]})
     out = _txt()._format_violation(v)
     assert "Изображение: pic.png - важно" in out
     assert "<b>" not in out
 
 
 def test_text_image_caption_none_falls_back_to_filename_only():
-    """caption=None (легаси-данные без подписи) — не должно ронять экспорт."""
-    v = _violation_with_items([{
-        "type": "image", "url": "", "caption": None, "filename": "draft.png",
-    }])
+    v = _violation(additionalContent={"enabled": True, "blocks": [
+        {"id": "image_1_b", "type": "image", "url": "", "caption": None, "filename": "draft.png"},
+    ]})
     out = _txt()._format_violation(v)
     assert "Изображение: draft.png" in out
 
 
-# --- Task 1.1.3: rich-поля нарушения — HTML→Markdown / HTML→plain через text_conv ---
+# --- Блок-таблица: та же графика, что у таблиц-узлов ---
 
 
-def test_markdown_rich_field_converts_html():
-    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+def test_markdown_table_block_renders_pipe_table():
+    v = _violation(codeMining={"enabled": True, "blocks": [
+        _table_block([["Запрос", "Результат"], ["SELECT 1", "OK"]]),
+    ]})
     out = _md()._format_violation(v)
-    assert "**жирное**" in out and "Ромашка & Ко" in out and "&amp;" not in out
+    assert "| Запрос | Результат |" in out
+    assert "| SELECT 1 | OK |" in out
 
 
-def test_text_rich_field_strips_html():
-    v = dict(_VIOLATION, violated="это <b>жирное</b> и Ромашка &amp; Ко")
+def test_text_table_block_renders_ascii_table():
+    v = _violation(codeMining={"enabled": True, "blocks": [
+        _table_block([["Запрос", "Результат"], ["SELECT 1", "OK"]]),
+    ]})
     out = _txt()._format_violation(v)
-    assert "жирное" in out and "<b>" not in out and "Ромашка & Ко" in out
+    assert "| Запрос" in out and "| SELECT 1" in out
+    assert "+---" in out  # ASCII-рамка
 
 
-def test_measures_and_case_are_rich():
-    v = dict(_VIOLATION, measures={"enabled": True, "content": "<i>мера</i>"},
-             additionalContent={"enabled": True, "items": [{"type": "case", "content": "<b>кейс</b>"}]})
-    md = _md()._format_violation(v)
-    assert "*мера*" in md and "**кейс**" in md
-
-
-def test_markdown_description_list_is_rich():
-    """Task 7: <b> в пункте → **bold** в markdown (html_to_markdown, как кейс/свободный текст)."""
-    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
-    assert "**пункт**" in _md()._format_violation(v)
-
-
-def test_text_description_list_is_rich():
-    """Task 7: <b> в пункте → видимый текст без тегов (clean_html)."""
-    v = dict(_VIOLATION, descriptionList={"enabled": True, "items": ["<b>пункт</b>"]})
-    out = _txt()._format_violation(v)
-    assert "пункт" in out and "<b>" not in out
+def test_empty_table_block_renders_placeholder():
+    v = _violation(codeMining={"enabled": True, "blocks": [
+        {"id": "table_1_c", "type": "table", "table": {"grid": [], "colWidths": []}},
+    ]})
+    assert "*[Пустая таблица]*" in _md()._format_violation(v)
+    assert "[Пустая таблица]" in _txt()._format_violation(v)
