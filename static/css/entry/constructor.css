@@ -34,8 +34,7 @@
 /* Violation */
 @import '../constructor/violation/violation-base.css';
 @import '../constructor/violation/violation-fields.css';
-@import '../constructor/violation/violation-list.css';
-@import '../constructor/violation/violation-additional-content.css';
+@import '../constructor/violation/violation-blocks.css';
 
 /* Preview */
 @import '../constructor/preview/preview-base.css';

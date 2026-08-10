@@ -1,5 +1,5 @@
 /**
- * Тесты focus-модели вставки в дополнительный контент и contenteditable-guard
+ * Тесты focus-модели вставки в контейнер блоков поля и contenteditable-guard
  * (находка аудита #19).
  *
  * Раньше целевая зона paste бралась из hover-состояния (currentActiveContainer):
@@ -8,7 +8,8 @@
  *  - вставку в поля ввода и contenteditable-редактор не перехватываем
  *    (isEditableTarget);
  *  - целевую зону определяем по фокусу (document.activeElement.closest(
- *    '.additional-content-wrapper')), вставляем в КОНЕЦ зоны.
+ *    '.violation-blocks-wrapper')), вставляем в КОНЕЦ поля; ключ поля берём
+ *    из dataset контейнера блоков.
  *
  * Плюс §5.8: узкое исключение из contenteditable-guard'а — картинки при каретке
  * в rich-поле САМОЙ зоны (shouldInterceptImagesFromEditable).
@@ -26,11 +27,11 @@ import {
     isEditableTarget,
 } from '../../static/js/constructor/violation/violation-core.js';
 import {
-    parseClipboardText,
     shouldInterceptImagesFromEditable,
     classifyClipboardPayload,
     clipboardHasText,
 } from '../../static/js/constructor/violation/violation-paste.js';
+import { BLOCK_TYPES } from '../../static/js/constructor/violation/violation-block-types.js';
 import { DialogManager } from '../../static/js/shared/dialog/dialog-confirm.js';
 import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 
@@ -61,7 +62,7 @@ function editableTarget({ inZone, zone = { id: 'zone' }, field = {} } = { inZone
         tagName: 'SPAN',
         closest: (s) => {
             if (s === '[contenteditable="true"]') return field;
-            if (s === '.additional-content-wrapper') return inZone ? zone : null;
+            if (s === '.violation-blocks-wrapper') return inZone ? zone : null;
             return null;
         },
     };
@@ -91,10 +92,13 @@ test('§5.8: не-editable target — не путь этого предикат�
 
 // --- Интеграция через захваченный paste-обработчик ---
 
+/** Поле, в которое ведётся вставка (зона paste адресуется ключом поля). */
+const FIELD = 'additionalContent';
+
 function makeViolation(count) {
-    const items = [];
-    for (let i = 0; i < count; i++) items.push({ id: `x${i}`, type: 'freeText', content: '' });
-    return { id: 'v1', additionalContent: { enabled: true, items } };
+    const blocks = [];
+    for (let i = 0; i < count; i++) blocks.push({ id: `x${i}`, type: BLOCK_TYPES.TEXT, content: '' });
+    return { id: 'v1', [FIELD]: { enabled: true, blocks } };
 }
 
 function capturePasteHandler(vm) {
@@ -106,9 +110,9 @@ function capturePasteHandler(vm) {
     return handler;
 }
 
-function makeZone(violationId = 'v1') {
-    const itemsContainer = { dataset: { violationId } };
-    return { querySelector: (s) => (s === '.additional-content-items' ? itemsContainer : null) };
+function makeZone(violationId = 'v1', fieldKey = FIELD) {
+    const itemsContainer = { dataset: { violationId, fieldKey } };
+    return { querySelector: (s) => (s === '.violation-blocks-items' ? itemsContainer : null) };
 }
 
 function textPasteEvent(text, target) {
@@ -121,18 +125,18 @@ function textPasteEvent(text, target) {
     };
 }
 
-test('#19: зона берётся по фокусу, текст вставляется в КОНЕЦ зоны', async () => {
+test('#19: зона берётся по фокусу, текст вставляется текст-блоком в КОНЕЦ поля', async () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
-    const violation = makeViolation(2); // уже 2 элемента
+    const violation = makeViolation(2); // уже 2 блока
     vm.activeViolations.set('v1', violation);
 
     const zone = makeZone('v1');
-    document.activeElement = { closest: (s) => (s === '.additional-content-wrapper' ? zone : null) };
+    document.activeElement = { closest: (s) => (s === '.violation-blocks-wrapper' ? zone : null) };
 
     let captured = null;
-    vm.addContentItemAtPosition = (v, type, container, insertIndex, extra) => {
-        captured = { type, container, insertIndex, content: extra.content };
+    vm.addBlockAtPosition = (v, fieldKey, type, container, insertIndex, extra) => {
+        captured = { fieldKey, type, container, insertIndex, content: extra.content };
         return true;
     };
 
@@ -140,9 +144,11 @@ test('#19: зона берётся по фокусу, текст вставля�
     await handler(textPasteEvent('Кейс 3. описание'));
 
     assert.ok(captured, 'вставка выполнена по фокусу');
-    assert.equal(captured.type, 'case');
-    assert.equal(captured.content, 'описание', 'парсер #5 применён');
-    assert.equal(captured.insertIndex, 2, 'вставка в конец зоны (после 2 существующих)');
+    assert.equal(captured.fieldKey, FIELD, 'ключ поля взят из dataset зоны');
+    assert.equal(captured.type, BLOCK_TYPES.TEXT, 'любой текст буфера — текст-блок');
+    assert.equal(captured.content, 'Кейс 3. описание',
+        'префикс «Кейс N» больше не разбирается — текст уходит как есть');
+    assert.equal(captured.insertIndex, 2, 'вставка в конец поля (после 2 существующих)');
     assert.equal(captured.container, zone, 'контейнер = зона по фокусу');
 });
 
@@ -153,10 +159,10 @@ test('#19-Б: Ctrl+V в contenteditable не перехватывается да
     vm.activeViolations.set('v1', violation);
 
     const zone = makeZone('v1');
-    document.activeElement = { closest: (s) => (s === '.additional-content-wrapper' ? zone : null) };
+    document.activeElement = { closest: (s) => (s === '.violation-blocks-wrapper' ? zone : null) };
 
     let called = false;
-    vm.addContentItemAtPosition = () => { called = true; return true; };
+    vm.addBlockAtPosition = () => { called = true; return true; };
 
     const target = { tagName: 'DIV', closest: (s) => (s === '[contenteditable="true"]' ? {} : null) };
     const e = textPasteEvent('hello', target);
@@ -178,7 +184,7 @@ test('#19: без сфокусированной зоны вставка не п
     document.activeElement = { closest: () => null };
 
     let called = false;
-    vm.addContentItemAtPosition = () => { called = true; return true; };
+    vm.addBlockAtPosition = () => { called = true; return true; };
 
     const e = textPasteEvent('hello');
     const handler = capturePasteHandler(vm);
@@ -220,8 +226,8 @@ test('§5.8: Ctrl+V картинкой при каретке в rich-поле з
     const target = editableTarget({ inZone: true, zone });
 
     let captured = null;
-    vm.promptQualityThenInsertImages = (v, container, insertIndex, files) => {
-        captured = { v, container, insertIndex, files };
+    vm.promptQualityThenInsertImages = (v, fieldKey, container, insertIndex, files) => {
+        captured = { v, fieldKey, container, insertIndex, files };
     };
 
     const file = { name: 'a.png', type: 'image/png', size: 100 };
@@ -232,7 +238,8 @@ test('§5.8: Ctrl+V картинкой при каретке в rich-поле з
 
     assert.ok(captured, 'конвейер картинок запущен из rich-поля зоны');
     assert.equal(captured.container, zone, 'контейнер = зона от каретки (e.target)');
-    assert.equal(captured.insertIndex, 2, 'вставка в конец зоны');
+    assert.equal(captured.fieldKey, FIELD, 'ключ поля взят из dataset зоны');
+    assert.equal(captured.insertIndex, 2, 'вставка в конец поля');
     assert.deepEqual(captured.files, [file]);
     assert.equal(e._prevented(), true, 'вставку картинки перехватили');
 });
@@ -248,7 +255,7 @@ test('§5.8: текстовая ветка НЕ исполняется для к
     const target = editableTarget({ inZone: true, zone });
 
     let added = false;
-    vm.addContentItemAtPosition = () => { added = true; return true; };
+    vm.addBlockAtPosition = () => { added = true; return true; };
     vm.promptQualityThenInsertImages = () => {};
 
     // Картинка в буфере есть (перехват включён), но getAsFile отдаёт null —
@@ -273,7 +280,7 @@ test('§5.8: rich-поле нарушения ВНЕ зоны (нарушено/
 
     // Мышь/фокус рядом с зоной, но каретка — в поле вне неё (#19).
     const zone = makeZone('v1');
-    document.activeElement = { closest: (s) => (s === '.additional-content-wrapper' ? zone : null) };
+    document.activeElement = { closest: (s) => (s === '.violation-blocks-wrapper' ? zone : null) };
 
     let called = false;
     vm.promptQualityThenInsertImages = () => { called = true; };
@@ -286,12 +293,6 @@ test('§5.8: rich-поле нарушения ВНЕ зоны (нарушено/
 
     assert.equal(called, false, 'картинка не уходит в зону из поля вне неё');
     assert.equal(e._prevented(), false, 'вставка редактора не перехвачена');
-});
-
-// parseClipboardText задействован в интеграционном тесте выше — здесь просто
-// фиксируем экспорт как публичный контракт модуля.
-test('parseClipboardText экспортируется из модуля вставки', () => {
-    assert.equal(typeof parseClipboardText, 'function');
 });
 
 // --- №5: классификация буфера (чисто картинка / комбо / чисто текст) ---
@@ -374,8 +375,8 @@ function stubPasteRoutes(vm, choice) {
     textBlockManager.pasteClipboardPayload = (editor, html, plain) => {
         calls.push({ route: 'text', editor, html, plain });
     };
-    vm.promptQualityThenInsertImages = (v, container, insertIndex, files) => {
-        calls.push({ route: 'image', container, insertIndex, files });
+    vm.promptQualityThenInsertImages = (v, fieldKey, container, insertIndex, files) => {
+        calls.push({ route: 'image', fieldKey, container, insertIndex, files });
     };
     return calls;
 }
@@ -417,7 +418,8 @@ test('№5: «Только изображение» — конвейер зон�
 
     assert.deepEqual(calls.map(c => c.route), ['image']);
     assert.equal(calls[0].container, zone);
-    assert.equal(calls[0].insertIndex, 2, 'вставка в конец зоны');
+    assert.equal(calls[0].fieldKey, FIELD);
+    assert.equal(calls[0].insertIndex, 2, 'вставка в конец поля');
     assert.deepEqual(calls[0].files, [imageFile]);
 });
 
@@ -429,7 +431,7 @@ test('№5: «Текст и изображение» — сначала текс
     await handler(e);
 
     assert.deepEqual(calls.map(c => c.route), ['text', 'image'],
-        'порядок важен: вставка картинок перерисовывает зону');
+        'порядок важен: вставка картинок перерисовывает блоки поля');
 });
 
 test('№5: отмена диалога (Escape/крестик) не вставляет ничего', async () => {
@@ -452,7 +454,7 @@ test('№5: чисто картиночный буфер в rich-поле идё
     );
     DialogManager.show = async () => assert.fail('диалог выбора не нужен: текста в буфере нет');
     let inserted = null;
-    vm.promptQualityThenInsertImages = (v, container, insertIndex, files) => {
+    vm.promptQualityThenInsertImages = (v, fieldKey, container, insertIndex, files) => {
         inserted = { container, insertIndex, files };
     };
 

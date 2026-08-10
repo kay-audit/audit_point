@@ -926,7 +926,10 @@ Object.assign(TextBlockManager.prototype, {
         // _reconstructPastedCapsules). Хуки allowlist не мутируем.
         const clean = SafeHTML.sanitize(html, {
             USE_PROFILES: false,
-            ALLOWED_TAGS: ['b', 'i', 'u', 's', 'strike', 'span', 'a', 'br', 'p', 'div', 'li'],
+            // ul/ol рядом с li: свой буфер обязан пережить round-trip списка,
+            // который умеет тулбар (insertUnorderedList/insertOrderedList) —
+            // без контейнера Ctrl+C→Ctrl+V своего же списка отдавал бы голые li.
+            ALLOWED_TAGS: ['b', 'i', 'u', 's', 'strike', 'span', 'a', 'br', 'p', 'div', 'ul', 'ol', 'li'],
             ALLOWED_ATTR: ['style', 'class', 'href',
                 'data-link-id', 'data-link-url', 'data-footnote-id', 'data-footnote-text'],
             // Round-trip живёт в том же контракте словаря форматирования, что
@@ -998,10 +1001,14 @@ Object.assign(TextBlockManager.prototype, {
     /**
      * Вставка из Microsoft Word: сохраняем РОВНО тот формат, что умеет выставить
      * тулбар редактора — bold/italic/underline/strikethrough + font-size (инлайн),
-     * плюс ссылки-капсулы. Цвет, фон, выравнивание, списки и всё прочее сознательно
-     * отбрасываются (симметрия «вставка ⊆ возможности UI»). Блоки (p/div/li)
-     * расплющиваются в инлайн + <br> — структура абзацев из Word в v1 не
-     * переносится (известное ограничение).
+     * ссылки-капсулы и списки ul/ol (тулбар их умеет с Task 4.1). Цвет, фон,
+     * выравнивание и всё прочее сознательно отбрасываются (симметрия «вставка ⊆
+     * возможности UI»). Блоки (p/div/li) расплющиваются в инлайн + <br> —
+     * структура абзацев из Word в v1 не переносится (известное ограничение).
+     * ОГРАНИЧЕНИЕ списков: переживает только РАЗМЕТКУ ul/ol/li. Десктопный Word
+     * отдаёт список абзацами `<p style="mso-list:...">` с маркером в
+     * `<![if !supportLists]>`-спане — они идут общим путём абзацев (строки + <br>,
+     * видимый маркер остаётся текстом). Конвертация mso-list → ul/ol не сделана.
      * @private
      */
     _buildWordPasteFragment(html) {
@@ -1064,7 +1071,7 @@ Object.assign(TextBlockManager.prototype, {
      * уронит его тоже (не «замороженный снимок»); шире набора Word'а не расширяет.
      */
     _wordAllowedTags() {
-        const WORD = ['b', 'strong', 'i', 'em', 'u', 's', 'strike', 'span', 'a', 'br', 'p', 'div', 'li'];
+        const WORD = ['b', 'strong', 'i', 'em', 'u', 's', 'strike', 'span', 'a', 'br', 'p', 'div', 'ul', 'ol', 'li'];
         const profile = (SAFE_HTML_PROFILES.acts && SAFE_HTML_PROFILES.acts.ALLOWED_TAGS) || [];
         return WORD.filter(t => profile.includes(t));
     },
@@ -1162,6 +1169,9 @@ Object.assign(TextBlockManager.prototype, {
      * <br>-разделители, ПЕРЕНОСЯ инлайн-детей целиком (в отличие от external-пути,
      * который берёт только textContent — тут формат сохраняем). Соседство блоков
      * считаем по снапшоту детей (узлы переезжают во фрагмент по ходу обхода).
+     * ul/ol в BLOCK намеренно НЕ входят: контейнер списка переезжает во фрагмент
+     * целиком (ветка инлайн-элемента), вместе со своими li — иначе тулбарный
+     * список из Word рассыпался бы в строки с <br>.
      * @param {HTMLElement} root
      * @param {DocumentFragment} fragment
      */
@@ -1213,7 +1223,10 @@ Object.assign(TextBlockManager.prototype, {
         // и без атрибутов (ALLOWED_ATTR=['href']) — XSS-вектора не несут.
         const clean = SafeHTML.sanitize(html, {
             USE_PROFILES: false,
-            ALLOWED_TAGS: ['a', 'br', 'p', 'div', 'li'],
+            // ul/ol держим рядом с li ради единообразия трёх paste-конфигов, но
+            // на СТРУКТУРУ они здесь не влияют: _collectPasteNodes расплющивает
+            // списки в строки с <br>, как и абзацы (режим «только ссылки»).
+            ALLOWED_TAGS: ['a', 'br', 'p', 'div', 'ul', 'ol', 'li'],
             ALLOWED_ATTR: ['href'],
             ALLOWED_URI_REGEXP: /^(?:(?:https?|ftp|file|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
         });

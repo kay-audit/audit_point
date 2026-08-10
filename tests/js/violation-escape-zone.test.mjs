@@ -87,10 +87,10 @@ test('destroy() снимает хэндлер зоны со стека', () => {
 
 // ── removeViolation: сброс активной зоны при удалении нарушения (#23) ──────────
 
-/** Контейнер с рабочим querySelector('.additional-content-items').dataset.violationId. */
+/** Контейнер с рабочим querySelector('.violation-blocks-items').dataset.violationId. */
 function makeZone(violationId) {
     const itemsContainer = { dataset: { violationId } };
-    return { querySelector: (s) => (s === '.additional-content-items' ? itemsContainer : null) };
+    return { querySelector: (s) => (s === '.violation-blocks-items' ? itemsContainer : null) };
 }
 
 test('#23: removeViolation сбрасывает активную зону, если она принадлежала удаляемому нарушению', () => {

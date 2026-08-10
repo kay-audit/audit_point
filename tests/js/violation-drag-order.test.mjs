@@ -1,16 +1,15 @@
 /**
- * Тесты перестановки элементов дополнительного контента drag-and-drop'ом
- * (находка аудита #6).
+ * Тесты перестановки блоков поля нарушения drag-and-drop'ом (находка аудита #6).
  *
- * Раньше handleDragOver физически двигал элемент в DOM (insertBefore), а
- * handleDrop реконструировал массив ИЗ порядка DOM. При Esc/промахе фантомный
- * сдвиг оставался. Теперь:
- *  - порядок вычисляется index-based splice'ом (перенос item.id к целевому
- *    индексу с поправкой на удаление исходной позиции при движении вниз);
- *  - handleDragEnd без коммита восстанавливает DOM из данных (renderContentItems).
+ * Порядок вычисляется index-based splice'ом в мутаторе moveBlock (перенос
+ * блока по id к целевому индексу с поправкой на удаление исходной позиции при
+ * движении вниз); handleDragEnd без коммита восстанавливает DOM из данных
+ * (renderBlocks). Блочная модель добавила гейт поля: полезная нагрузка несёт
+ * {violationId, fieldKey, blockId}, и drop в контейнер ДРУГОГО поля
+ * игнорируется — перенос между полями не поддержан (спека §7).
  *
  * Реальные модули импортируются под node:test через _browser-stub; DOM-эффекты
- * (renderContentItems / PreviewManager.updateBlock) застабены.
+ * (renderBlocks / PreviewManager.updateBlock) застабены.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -24,90 +23,125 @@ import { ViolationManager } from '../../static/js/constructor/violation/violatio
 let previewCalls = 0;
 PreviewManager.updateBlock = () => { previewCalls += 1; };
 
-/** Нарушение с items из массива id (тип неважен для перестановки). */
-function makeViolation(ids) {
+const FIELD = 'additionalContent';
+
+/** Нарушение с блоками из массива id (тип неважен для перестановки). */
+function makeViolation(ids, fieldKey = FIELD) {
     return {
         id: 'v1',
-        additionalContent: {
-            items: ids.map((id) => ({ id, type: 'freeText', content: id })),
+        [fieldKey]: {
+            enabled: true,
+            blocks: ids.map((id) => ({ id, type: 'text', content: id })),
         },
     };
 }
 
-/** Ставит фейковый перетаскиваемый элемент с нужным itemId. */
-function setDragging(itemId) {
-    document.querySelector = (sel) => (sel === '.dragging' ? { dataset: { itemId } } : null);
+/** Событие drop с полезной нагрузкой перетаскивания. */
+function dropEvent(payload) {
+    return {
+        preventDefault() {},
+        stopPropagation() {},
+        dataTransfer: {
+            getData: (type) => (type === 'application/x-violation-block' ? JSON.stringify(payload) : ''),
+        },
+    };
 }
 
-/** VM с застабленным render (без DOM) и контейнер-заглушка. */
+/** VM с застабленным render (без DOM). */
 function makeVm() {
     const vm = new ViolationManager();
     let renderCount = 0;
-    vm.renderContentItems = () => { renderCount += 1; };
+    vm.renderBlocks = () => { renderCount += 1; };
     vm._renderCount = () => renderCount;
     return vm;
 }
 
-const noopEvent = () => ({ preventDefault() {}, stopPropagation() {} });
 const container = { querySelectorAll: () => [] };
+const blockIds = (v, fieldKey = FIELD) => v[fieldKey].blocks.map((b) => b.id);
 
-test('drop переставляет элемент вниз (поправка на удаление исходной позиции)', () => {
+test('drop переставляет блок вниз (поправка на удаление исходной позиции)', () => {
     previewCalls = 0;
-    setDragging('A');
     const vm = makeVm();
     const v = makeViolation(['A', 'B', 'C', 'D']);
     vm.lastDragOverIndex = 3; // вставка после C
 
-    vm.handleDrop(noopEvent(), v, 2, container);
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
 
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'C', 'A', 'D']);
-    assert.equal(vm._renderCount(), 1, 'один renderContentItems');
+    assert.deepEqual(blockIds(v), ['B', 'C', 'A', 'D']);
+    assert.equal(vm._renderCount(), 1, 'один renderBlocks');
     assert.equal(previewCalls, 1, 'один updateBlock');
     assert.equal(vm._dropCommitted, true, 'коммит зафиксирован');
 });
 
-test('drop переставляет элемент вверх', () => {
-    setDragging('D');
+test('drop переставляет блок вверх', () => {
     const vm = makeVm();
     const v = makeViolation(['A', 'B', 'C', 'D']);
     vm.lastDragOverIndex = 1; // перед B
 
-    vm.handleDrop(noopEvent(), v, 1, container);
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'D' }), v, FIELD, 1, container);
 
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'D', 'B', 'C']);
+    assert.deepEqual(blockIds(v), ['A', 'D', 'B', 'C']);
 });
 
 test('drop на исходную позицию — массив не меняется (no-op обе половины)', () => {
-    setDragging('A');
     const vmTop = makeVm();
     const vTop = makeViolation(['A', 'B', 'C']);
     vmTop.lastDragOverIndex = 0; // перед собой
-    vmTop.handleDrop(noopEvent(), vTop, 0, container);
-    assert.deepEqual(vTop.additionalContent.items.map((i) => i.id), ['A', 'B', 'C']);
+    vmTop.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), vTop, FIELD, 0, container);
+    assert.deepEqual(blockIds(vTop), ['A', 'B', 'C']);
 
     const vmBottom = makeVm();
     const vBottom = makeViolation(['A', 'B', 'C']);
     vmBottom.lastDragOverIndex = 1; // после себя
-    vmBottom.handleDrop(noopEvent(), vBottom, 0, container);
-    assert.deepEqual(vBottom.additionalContent.items.map((i) => i.id), ['A', 'B', 'C']);
+    vmBottom.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), vBottom, FIELD, 0, container);
+    assert.deepEqual(blockIds(vBottom), ['A', 'B', 'C']);
 });
 
-test('drop без lastDragOverIndex использует targetIndex элемента под курсором', () => {
-    setDragging('A');
+test('drop без lastDragOverIndex использует targetIndex блока под курсором', () => {
     const vm = makeVm();
     const v = makeViolation(['A', 'B', 'C']);
     vm.lastDragOverIndex = null; // dragover не отработал
 
-    // Курсор на элементе с индексом 2 (C) → вставка на его позицию.
-    vm.handleDrop(noopEvent(), v, 2, container);
+    // Курсор на блоке с индексом 2 (C) → вставка на его позицию.
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
 
     // A удалён (from=0), to=2, поправка from<to → to=1 → [B,A,C].
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['B', 'A', 'C']);
+    assert.deepEqual(blockIds(v), ['B', 'A', 'C']);
+});
+
+test('drop блока ЧУЖОГО поля игнорируется (перенос между полями — non-goal)', () => {
+    previewCalls = 0;
+    const vm = makeVm();
+    const v = makeViolation(['A', 'B', 'C']);
+    v.reasons = { enabled: true, blocks: [{ id: 'R1', type: 'text', content: '' }] };
+    vm.lastDragOverIndex = 0;
+
+    vm.handleDrop(
+        dropEvent({ violationId: 'v1', fieldKey: 'reasons', blockId: 'R1' }),
+        v, FIELD, 0, container,
+    );
+
+    assert.deepEqual(blockIds(v), ['A', 'B', 'C'], 'целевое поле не тронуто');
+    assert.deepEqual(blockIds(v, 'reasons'), ['R1'], 'исходное поле не тронуто');
+    assert.equal(vm._renderCount(), 0, 'перерисовки нет');
+    assert.equal(previewCalls, 0, 'превью не планируется');
+});
+
+test('drop блока ДРУГОГО нарушения игнорируется', () => {
+    const vm = makeVm();
+    const v = makeViolation(['A', 'B']);
+
+    vm.handleDrop(
+        dropEvent({ violationId: 'v2', fieldKey: FIELD, blockId: 'A' }),
+        v, FIELD, 0, container,
+    );
+
+    assert.deepEqual(blockIds(v), ['A', 'B']);
+    assert.equal(vm._renderCount(), 0);
 });
 
 test('§5.10a: в режиме просмотра drop не переставляет и не коммитит (гейт мутатора)', () => {
     previewCalls = 0;
-    setDragging('A');
     const vm = makeVm();
     const v = makeViolation(['A', 'B', 'C']);
     vm.lastDragOverIndex = 2;
@@ -115,31 +149,34 @@ test('§5.10a: в режиме просмотра drop не переставля
 
     AppConfig.readOnlyMode.isReadOnly = true;
     try {
-        vm.handleDrop(noopEvent(), v, 2, container);
+        vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
     } finally {
         AppConfig.readOnlyMode.isReadOnly = false;
     }
 
-    assert.deepEqual(v.additionalContent.items.map((i) => i.id), ['A', 'B', 'C'], 'порядок не тронут');
+    assert.deepEqual(blockIds(v), ['A', 'B', 'C'], 'порядок не тронут');
     assert.equal(vm._renderCount(), 0, 'перерисовки нет');
     assert.equal(previewCalls, 0, 'превью не планируется');
     assert.equal(vm._dropCommitted, false, 'коммит не фиксируется — dragEnd восстановит DOM');
 });
 
-test('dragEnd без коммита восстанавливает порядок из данных (renderContentItems)', () => {
+test('dragEnd без коммита восстанавливает порядок из данных (renderBlocks)', () => {
     const vm = makeVm();
     const v = makeViolation(['A', 'B']);
     vm._dropCommitted = false;
+    vm._dragPayload = { violationId: 'v1', fieldKey: FIELD, blockId: 'A' };
 
     vm.handleDragEnd(
         { target: { classList: { remove() {} } } },
         v,
+        FIELD,
         container,
     );
 
     assert.equal(vm._renderCount(), 1, 'восстановление из данных выполнено');
     assert.equal(vm._dropCommitted, false, 'флаг сброшен');
     assert.equal(vm.lastDragOverIndex, null);
+    assert.equal(vm._dragPayload, null, 'снимок перетаскивания снят');
 });
 
 test('dragEnd после коммита не перерисовывает повторно', () => {
@@ -150,6 +187,7 @@ test('dragEnd после коммита не перерисовывает пов
     vm.handleDragEnd(
         { target: { classList: { remove() {} } } },
         v,
+        FIELD,
         container,
     );
 

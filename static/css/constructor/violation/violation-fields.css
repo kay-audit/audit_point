@@ -1,37 +1,20 @@
 /*
- * Опциональные поля нарушений
- * Дополнительные поля с возможностью включения через чекбоксы
+ * Секция ОДНОГО поля нарушения
+ * Заголовок (чекбокс либо метка у обязательных полей) + контейнер блоков
  */
 
-/* Секция опциональных полей */
-.violation-optional-fields {
-    border-top: var(--border-width-thin) solid var(--border);
-    padding-top: var(--spacing-sm);
-    margin-top: var(--spacing-sm);
-}
-
-/* Заголовок секции опциональных полей */
-.violation-optional-fields-header {
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-    color: var(--text-secondary);
-    margin-bottom: var(--spacing-md);
-    text-transform: uppercase;
-    letter-spacing: var(--letter-spacing-wide);
-}
-
-/* Контейнер опционального поля */
-.violation-optional-field {
+/* Контейнер секции поля */
+.violation-field-section {
     margin-bottom: var(--spacing-sm);
     border-radius: var(--radius);
     transition: background var(--transition-base);
 }
 
-.violation-optional-field:hover {
+.violation-field-section:hover {
     background: var(--bg-hover);
 }
 
-/* Переключатель видимости поля */
+/* Заголовок поля: переключатель видимости либо просто метка */
 .violation-field-toggle {
     display: flex;
     align-items: center;
@@ -58,7 +41,15 @@
     flex-shrink: 0;
 }
 
-/* Метка опционального поля */
+/* Обязательные поля (Нарушено/Установлено) чекбокса не имеют — метка
+   выравнивается по левому краю без отступа под флажок. */
+.violation-field-toggle--mandatory .violation-field-label {
+    color: var(--text-primary);
+    font-weight: var(--font-weight-semibold);
+    cursor: default;
+}
+
+/* Метка поля */
 .violation-field-label {
     font-weight: var(--font-weight-medium);
     color: var(--text-secondary);

@@ -4,12 +4,31 @@
  */
 import { SafeHTML, renderActContent } from '../../shared/sanitize.js';
 import { iterateVisibleCells } from '../../constructor/table/grid-merges.js';
-import { VIOLATION_LABELS, VIOLATION_SCALAR_RICH_KEYS, CASE_LABEL_TEMPLATE, FREE_TEXT_LABEL } from '../../constructor/violation/violation-fields.js';
+import { VIOLATION_LABELS } from '../../constructor/violation/violation-fields.js';
+import { BLOCK_TYPES } from '../../constructor/violation/violation-block-types.js';
 import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
-import { computeAdditionalContentNumbers } from '../../constructor/violation/violation-numbering.js';
-import { CONTENT_TYPE_CASE, CONTENT_TYPE_IMAGE } from '../../constructor/violation/violation-content-item.js';
 import { renderImageWithFallback, buildImagePlaceholder } from '../../constructor/violation/violation-image-render.js';
+
+// Подписи блоков в дифе нарушения: заголовок секции блока.
+const BLOCK_TYPE_LABELS = Object.freeze({
+    [BLOCK_TYPES.TEXT]: 'Текст',
+    [BLOCK_TYPES.IMAGE]: 'Картинка',
+    [BLOCK_TYPES.TABLE]: 'Таблица',
+});
+
+// Подписи изменённых атрибутов блоков (картинка и таблица). url в списке нет
+// намеренно — смена картинки показывается превью «Было/Стало», а не текстом.
+const BLOCK_ATTR_LABELS = Object.freeze({
+    caption: 'Подпись',
+    filename: 'Файл',
+    width: 'Ширина',
+    gridResized: 'Размер сетки',
+    cells: 'Изменено ячеек',
+});
+
+// Обрезка длинных значений в текстовых сводках (ячейки таблиц, атрибуты).
+const MAX_INLINE_TEXT = 120;
 
 export class DiffRenderer {
     /**
@@ -187,8 +206,8 @@ export class DiffRenderer {
 
     /**
      * Бейдж «Изменено форматирование» — общий для word-diff всех rich-полей
-     * (текстблок, поле нарушения, пункт списка, case/freeText, подпись под
-     * фото). Показывается при formattingOnly: видимый текст совпал, word-diff
+     * (текстблок, text-блок нарушения, подпись под картинкой). Показывается
+     * при formattingOnly: видимый текст совпал, word-diff
      * без вставок/удалений выглядел бы «пустым» без явного сигнала.
      * @param {HTMLElement} parent - куда добавить бейдж
      * @param {string} [tag='span'] - тег элемента (текстблок использует div)
@@ -366,83 +385,83 @@ export class DiffRenderer {
     }
 
     /**
-     * Рендер нарушения с подсветкой изменённых полей. Изменённое rich-поле —
-     * word-diff-разметка по видимому тексту (зеркало _renderDiffTextBlock),
-     * бейдж «Изменено форматирование» при formattingOnly.
+     * Рендер диффа нарушения (блочная модель): секции изменившихся полей в
+     * порядке отображения новой версии, внутри каждой — изменения блоков.
+     * Читается ТОЛЬКО структура диффа: движок уже канонизировал выключенные
+     * поля и развернул порядок, разбирать сырые oldData/newData здесь нечего.
      */
     static _renderDiffViolation(container, violDiff) {
         const div = document.createElement('div');
         div.className = `diff-violation diff-${violDiff.status}`;
 
-        const data = violDiff.newData || violDiff.oldData;
-        if (!data) return;
+        // Целиком добавленное/удалённое нарушение помечено цветом полностью —
+        // служебные изменения (порядок полей, включение поля) в этом случае не
+        // детализируем (зеркало _appendNodeChangeBadges для узлов дерева).
+        const detailed = violDiff.status !== 'added' && violDiff.status !== 'removed';
 
-        const fields = VIOLATION_SCALAR_RICH_KEYS;
-
-        for (const field of fields) {
-            const val = this._getViolFieldValue(data, field);
-            if (!val && !violDiff.fieldDiffs?.[field]) continue;
-
-            const fieldDiv = document.createElement('div');
-            fieldDiv.className = 'diff-violation-field';
-
-            const labelEl = document.createElement('strong');
-            labelEl.textContent = `${VIOLATION_LABELS[field] || field}: `;
-            fieldDiv.appendChild(labelEl);
-
-            const fieldDiff = violDiff.fieldDiffs?.[field];
-            if (fieldDiff?.changed) {
-                fieldDiv.classList.add('diff-field-changed');
-                // Правка только форматирования (видимый текст совпал) —
-                // бейдж, иначе word-diff без вставок/удалений выглядел бы
-                // «пустым» (зеркало _renderDiffTextBlock).
-                if (fieldDiff.formattingOnly) {
-                    this._appendFormatBadge(fieldDiv);
-                }
-                const wordDiffEl = document.createElement('span');
-                SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fieldDiff.wordDiff));
-                fieldDiv.appendChild(wordDiffEl);
-            } else {
-                // Поле без изменений (внутри modified-нарушения) ИЛИ нарушение
-                // целиком added/removed (движок не кладёт скаляры в fieldDiffs
-                // для этих статусов, см. _diffViolations) — val сырой HTML,
-                // показываем видимый текст (зеркало соседних веток списка/
-                // доп.контента, которые уже стрипают через DiffEngine._stripHtml).
-                fieldDiv.appendChild(document.createTextNode(DiffEngine._stripHtml(val)));
-            }
-
-            div.appendChild(fieldDiv);
+        if (detailed && violDiff.fieldOrder) {
+            this._appendFieldOrderChange(div, violDiff.fieldOrder);
         }
 
-        // Список описаний (descriptionList) — структурный под-дифф движка.
-        const dlDiff = violDiff.fieldDiffs?.descriptionList;
-        if (dlDiff?.changed) {
-            this._renderDescriptionListDiff(div, dlDiff);
-        }
-
-        // Доп.контент (additionalContent) — структурный под-дифф движка.
-        const acDiff = violDiff.fieldDiffs?.additionalContent;
-        if (acDiff?.changed) {
-            this._renderAdditionalContentDiff(
-                div, acDiff,
-                violDiff.oldData?.additionalContent?.items || [],
-                violDiff.newData?.additionalContent?.items || [],
-            );
+        // Ключи уже в порядке отображения — движок вставляет их в `fields`
+        // через getOrderedFieldKeys (см. DiffEngine._diffViolations).
+        for (const [key, fieldDiff] of Object.entries(violDiff.fields || {})) {
+            this._renderViolationField(div, key, fieldDiff, detailed);
         }
 
         container.appendChild(div);
     }
 
-    static _getViolFieldValue(viol, field) {
-        const val = viol[field];
-        if (!val) return '';
-        if (typeof val === 'string') return val;
-        if (typeof val === 'object' && 'content' in val) {
-            // Мируем движок: выключенное опц.поле не показываем (пропало из акта).
-            if ('enabled' in val && !val.enabled) return '';
-            return val.content || '';
+    /** Строка «Порядок полей изменён: <старые метки> → <новые метки>». */
+    static _appendFieldOrderChange(container, fieldOrder) {
+        const line = document.createElement('div');
+        line.className = 'diff-violation-field diff-field-changed';
+        const strong = document.createElement('strong');
+        strong.textContent = 'Порядок полей изменён: ';
+        line.appendChild(strong);
+        this.appendOldNewPair(line, this._fieldOrderText(fieldOrder.old), this._fieldOrderText(fieldOrder.new));
+        container.appendChild(line);
+    }
+
+    /** Порядок полей человеческими метками через запятую. */
+    static _fieldOrderText(keys) {
+        return (keys || []).map(key => VIOLATION_LABELS[key] || key).join(', ');
+    }
+
+    /**
+     * Секция одного изменившегося поля: метка из реестра, бейджи
+     * включения/перестановки блоков, затем изменения блоков.
+     * @param {boolean} detailed - детализировать служебные изменения (см. _renderDiffViolation)
+     */
+    static _renderViolationField(container, key, fieldDiff, detailed) {
+        const showEnabled = detailed && !!fieldDiff.enabled;
+        const entries = fieldDiff.blocks?.entries || [];
+        if (!showEnabled && !entries.length) return;
+
+        const fieldDiv = document.createElement('div');
+        fieldDiv.className = 'diff-violation-field diff-field-changed';
+
+        const labelEl = document.createElement('strong');
+        labelEl.textContent = `${VIOLATION_LABELS[key] || key}: `;
+        fieldDiv.appendChild(labelEl);
+
+        if (showEnabled) {
+            const badge = document.createElement('span');
+            badge.className = 'diff-node-attr-change';
+            badge.textContent = fieldDiff.enabled.new ? 'Поле включено' : 'Поле выключено';
+            fieldDiv.appendChild(badge);
         }
-        return '';
+        if (detailed && fieldDiff.blocks?.reordered) {
+            const badge = document.createElement('span');
+            badge.className = 'diff-node-moved-badge';
+            badge.textContent = 'порядок блоков изменён';
+            fieldDiv.appendChild(badge);
+        }
+
+        for (const entry of entries) {
+            this._renderBlockEntry(fieldDiv, entry);
+        }
+        container.appendChild(fieldDiv);
     }
 
     /**
@@ -532,122 +551,26 @@ export class DiffRenderer {
     }
 
     /**
-     * Рендер диффа списка описаний: <ul> с пер-элементной подсветкой
-     * added/removed/modified. Заголовка нет (паритет с collectViolationLines —
-     * descriptionList без метки, решение #12).
-     *
-     * Пункт — rich-поле (Task 7): added/removed/unchanged показывают ВИДИМЫЙ
-     * текст (_stripHtml) — raw HTML показал бы теги буквально (зеркало
-     * _renderContentEntry для case/freeText). modified — word-diff по видимому
-     * тексту + бейдж «Изменено форматирование» при formattingOnly (зеркало
-     * скалярных rich-полей нарушения, _renderDiffViolation).
+     * Рендер изменения одного блока поля. Общая рамка (метка типа + маркер
+     * added/removed/порядка) и диспетчер по типу блока.
      */
-    static _renderDescriptionListDiff(container, dlDiff) {
-        const ul = document.createElement('ul');
-        ul.className = 'diff-desclist';
-        for (const item of dlDiff.items || []) {
-            const li = document.createElement('li');
-            li.className = `diff-desclist-item diff-${item.status}`;
-            if (item.status === 'added') {
-                const ins = document.createElement('ins');
-                ins.textContent = DiffEngine._stripHtml(item.new || '');
-                li.appendChild(ins);
-            } else if (item.status === 'removed') {
-                const del = document.createElement('del');
-                del.textContent = DiffEngine._stripHtml(item.old || '');
-                li.appendChild(del);
-            } else if (item.status === 'modified') {
-                if (item.formattingOnly) {
-                    this._appendFormatBadge(li);
-                }
-                const wordDiffEl = document.createElement('span');
-                SafeHTML.set(wordDiffEl, this._wordDiffToHtml(item.wordDiff));
-                li.appendChild(wordDiffEl);
-            } else {
-                li.textContent = DiffEngine._stripHtml(item.new ?? item.old ?? '');
-            }
-            ul.appendChild(li);
-        }
-        container.appendChild(ul);
-    }
-
-    /**
-     * Рендер диффа доп.контента. Метки/нумерация — зеркало collectViolationLines:
-     * «Кейс N» через computeAdditionalContentNumbers, свободный текст без метки,
-     * картинки — превью с подписью. Номер кейса берётся из новой версии (для
-     * удалённых — из старой).
-     */
-    static _renderAdditionalContentDiff(container, acDiff, oldItems, newItems) {
-        const newNums = computeAdditionalContentNumbers(newItems);
-        const oldNums = computeAdditionalContentNumbers(oldItems);
-        const newNumById = new Map();
-        newItems.forEach((it, i) => { if (it && it.id != null) newNumById.set(it.id, newNums[i]?.number); });
-        const oldNumById = new Map();
-        oldItems.forEach((it, i) => { if (it && it.id != null) oldNumById.set(it.id, oldNums[i]?.number); });
-
-        for (const entry of acDiff.entries || []) {
-            const caseNumber = entry.newItem
-                ? newNumById.get(entry.newItem.id)
-                : oldNumById.get(entry.oldItem?.id);
-            this._renderContentEntry(container, entry, caseNumber);
-        }
-    }
-
-    /**
-     * Рендер одного элемента доп.контента (кейс / свободный текст / картинка).
-     * unchanged/added/removed показывают ВИДИМЫЙ текст (_stripHtml) — контент
-     * планируется rich-HTML, raw-текст показал бы теги буквально. modified при
-     * formattingOnly — бейдж «Изменено форматирование» (паритет со скалярными
-     * полями нарушения, см. _renderDiffViolation).
-     */
-    static _renderContentEntry(container, entry, caseNumber) {
-        const item = entry.newItem || entry.oldItem;
-        if (!item) return;
-
+    static _renderBlockEntry(container, entry) {
         const itemDiv = document.createElement('div');
         itemDiv.className = `diff-violation-item diff-${entry.status}`;
+        this._appendBlockHeader(itemDiv, BLOCK_TYPE_LABELS[entry.type] || BLOCK_TYPE_LABELS[BLOCK_TYPES.TEXT], entry);
 
-        if (item.type === CONTENT_TYPE_IMAGE) {
-            this._appendContentHeader(itemDiv, '', entry);
+        if (entry.type === BLOCK_TYPES.IMAGE) {
             this._renderImageEntry(itemDiv, entry);
-            container.appendChild(itemDiv);
-            return;
-        }
-
-        const baseLabel = item.type === CONTENT_TYPE_CASE
-            ? CASE_LABEL_TEMPLATE.replace('{n}', caseNumber != null ? caseNumber : '')
-            : FREE_TEXT_LABEL;
-        this._appendContentHeader(itemDiv, baseLabel, entry);
-
-        const body = document.createElement('div');
-        body.className = 'diff-violation-item-body';
-        if (entry.status === 'added') {
-            const ins = document.createElement('ins');
-            ins.textContent = DiffEngine._stripHtml(entry.newItem?.content || '');
-            body.appendChild(ins);
-        } else if (entry.status === 'removed') {
-            const del = document.createElement('del');
-            del.textContent = DiffEngine._stripHtml(entry.oldItem?.content || '');
-            body.appendChild(del);
-        } else if (entry.status === 'modified' && entry.wordDiff) {
-            // Правка только форматирования (видимый текст совпал) — бейдж,
-            // иначе word-diff без вставок/удалений выглядел бы «пустым»
-            // (зеркало _renderDiffViolation). Бейдж — сосед body (ДО неё), а
-            // не её потомок: SafeHTML.set(body, ...) заменил бы innerHTML и
-            // стёр бы бейдж, будь он внутри.
-            if (entry.formattingOnly) {
-                this._appendFormatBadge(itemDiv);
-            }
-            SafeHTML.set(body, this._wordDiffToHtml(entry.wordDiff));
+        } else if (entry.type === BLOCK_TYPES.TABLE) {
+            this._renderTableBlockEntry(itemDiv, entry);
         } else {
-            body.textContent = DiffEngine._stripHtml((entry.newItem || entry.oldItem)?.content || '');
+            this._renderTextBlockEntry(itemDiv, entry);
         }
-        itemDiv.appendChild(body);
         container.appendChild(itemDiv);
     }
 
-    /** Метка элемента доп.контента + маркер добавления/удаления/перестановки. */
-    static _appendContentHeader(itemDiv, baseLabel, entry) {
+    /** Метка блока + маркер добавления/удаления/перестановки. */
+    static _appendBlockHeader(itemDiv, baseLabel, entry) {
         let marker = '';
         if (entry.status === 'added') marker = ' (ДОБАВЛЕНО)';
         else if (entry.status === 'removed') marker = ' (УДАЛЕНО)';
@@ -659,39 +582,125 @@ export class DiffRenderer {
         itemDiv.appendChild(el);
     }
 
-    /** Рендер картинки-элемента: превью старой/новой + текст изменённых атрибутов. */
+    /**
+     * Text-блок: added/removed/unchanged показывают ВИДИМЫЙ текст (_stripHtml)
+     * — контент rich-HTML, сырой показал бы теги буквально. modified —
+     * word-diff-разметка + бейдж «Изменено форматирование» при formattingOnly
+     * (бейдж — сосед body ДО неё: SafeHTML.set заменяет innerHTML и стёр бы
+     * его, будь он внутри). oversized — крупный блок мимо пословного сравнения
+     * (перф-гвард движка), показываем только факт изменения.
+     */
+    static _renderTextBlockEntry(itemDiv, entry) {
+        const body = document.createElement('div');
+        body.className = 'diff-violation-item-body';
+
+        if (entry.status === 'added') {
+            const ins = document.createElement('ins');
+            ins.textContent = DiffEngine._stripHtml(entry.newBlock?.content || '');
+            body.appendChild(ins);
+        } else if (entry.status === 'removed') {
+            const del = document.createElement('del');
+            del.textContent = DiffEngine._stripHtml(entry.oldBlock?.content || '');
+            body.appendChild(del);
+        } else if (entry.status === 'modified' && entry.oversized) {
+            body.textContent = 'Текст изменён (крупный блок — пословное сравнение не выполнялось)';
+        } else if (entry.status === 'modified' && entry.wordDiff) {
+            if (entry.formattingOnly) {
+                this._appendFormatBadge(itemDiv);
+            }
+            SafeHTML.set(body, this._wordDiffToHtml(entry.wordDiff));
+        } else {
+            body.textContent = DiffEngine._stripHtml((entry.newBlock || entry.oldBlock)?.content || '');
+        }
+        itemDiv.appendChild(body);
+    }
+
+    /**
+     * Table-блок — компактная текстовая сводка, а не отрисовка сетки: движок
+     * сравнивает ячейки плоско (без LCS), показывать целую таблицу в дифе
+     * нарушения избыточно. Значения ячеек обрезаются до MAX_INLINE_TEXT.
+     */
+    static _renderTableBlockEntry(itemDiv, entry) {
+        const body = document.createElement('div');
+        body.className = 'diff-violation-item-body';
+        const cells = entry.cells || [];
+
+        if (entry.gridResized) {
+            const g = entry.gridResized;
+            this._appendSummaryLine(
+                body,
+                `${BLOCK_ATTR_LABELS.gridResized}: ${g.oldRows}×${g.oldCols} → ${g.newRows}×${g.newCols}`,
+            );
+        } else if (!cells.length) {
+            // Добавленный/удалённый/неизменившийся блок — только размер сетки.
+            const grid = ((entry.newBlock || entry.oldBlock) || {}).table?.grid || [];
+            const cols = grid.length ? Math.max(...grid.map(r => (r ? r.length : 0))) : 0;
+            this._appendSummaryLine(body, `Сетка: ${grid.length}×${cols}`);
+        }
+
+        if (cells.length) {
+            this._appendSummaryLine(body, `${BLOCK_ATTR_LABELS.cells}: ${cells.length}`);
+            for (const cell of cells) {
+                const line = document.createElement('div');
+                line.className = 'diff-violation-field diff-field-changed';
+                const strong = document.createElement('strong');
+                // Индексы человеческие (с единицы) — движок хранит их с нуля.
+                strong.textContent = `Строка ${cell.row + 1}, колонка ${cell.col + 1}: `;
+                line.appendChild(strong);
+                this.appendOldNewPair(line, this._truncate(cell.old), this._truncate(cell.new), { placeholder: '∅' });
+                body.appendChild(line);
+            }
+        }
+        itemDiv.appendChild(body);
+    }
+
+    /** Строка-сводка внутри тела блока (размер сетки, число изменённых ячеек). */
+    static _appendSummaryLine(container, text) {
+        const line = document.createElement('div');
+        line.className = 'diff-violation-sublabel';
+        line.textContent = text;
+        container.appendChild(line);
+    }
+
+    /** Обрезка длинного значения для текстовой сводки. */
+    static _truncate(value, max = MAX_INLINE_TEXT) {
+        const text = value == null ? '' : String(value);
+        return text.length > max ? `${text.slice(0, max)}…` : text;
+    }
+
+    /** Image-блок: превью старой/новой картинки + текст изменённых атрибутов. */
     static _renderImageEntry(itemDiv, entry) {
         if (entry.status === 'added') {
-            this._appendImagePreview(itemDiv, entry.newItem);
+            this._appendImagePreview(itemDiv, entry.newBlock);
             return;
         }
         if (entry.status === 'removed') {
-            this._appendImagePreview(itemDiv, entry.oldItem);
+            this._appendImagePreview(itemDiv, entry.oldBlock);
             return;
         }
 
         const fields = entry.fields || {};
         if (fields.url) {
+            // url — многомегабайтный data-URL: показываем факт смены двумя
+            // превью, а не текстом «было → стало».
             this._appendSublabel(itemDiv, 'Было:');
-            this._appendImagePreview(itemDiv, entry.oldItem);
+            this._appendImagePreview(itemDiv, entry.oldBlock);
             this._appendSublabel(itemDiv, 'Стало:');
-            this._appendImagePreview(itemDiv, entry.newItem);
+            this._appendImagePreview(itemDiv, entry.newBlock);
         } else {
-            this._appendImagePreview(itemDiv, entry.newItem || entry.oldItem);
+            this._appendImagePreview(itemDiv, entry.newBlock || entry.oldBlock);
         }
 
-        const attrLabels = { caption: 'Подпись', filename: 'Файл', width: 'Ширина' };
         for (const key of ['caption', 'filename', 'width']) {
             if (!fields[key]) continue;
             const line = document.createElement('div');
             line.className = 'diff-violation-field diff-field-changed';
             const strong = document.createElement('strong');
-            strong.textContent = `${attrLabels[key]}: `;
+            strong.textContent = `${BLOCK_ATTR_LABELS[key]}: `;
             line.appendChild(strong);
             if (key === 'caption' && fields[key].wordDiff) {
-                // Task 6: caption — rich-поле, word-diff по видимому тексту
-                // вместо сырых HTML-строк (зеркало _renderDiffViolation) —
-                // appendOldNewPair показал бы <b>-теги буквально.
+                // Подпись — rich-поле: word-diff по видимому тексту вместо
+                // сырых HTML-строк (appendOldNewPair показал бы <b> буквально).
                 if (fields[key].formattingOnly) {
                     this._appendFormatBadge(line);
                 }
@@ -699,7 +708,7 @@ export class DiffRenderer {
                 SafeHTML.set(wordDiffEl, this._wordDiffToHtml(fields[key].wordDiff));
                 line.appendChild(wordDiffEl);
             } else {
-                this.appendOldNewPair(line, fields[key].old, fields[key].new);
+                this.appendOldNewPair(line, this._truncate(fields[key].old), this._truncate(fields[key].new));
             }
             itemDiv.appendChild(line);
         }
@@ -716,30 +725,29 @@ export class DiffRenderer {
      * Превью картинки нарушения с fallback на текстовый плейсхолдер (общее ядро
      * с превью/редактором — violation-image-render.js). Пустой url → плейсхолдер.
      */
-    static _appendImagePreview(container, item) {
+    static _appendImagePreview(container, block) {
         const wrap = document.createElement('div');
         wrap.className = 'diff-violation-image';
-        const placeholderText = `Изображение: ${(item && item.filename) || ''}`;
+        const placeholderText = `Изображение: ${(block && block.filename) || ''}`;
         const placeholderClassName = 'diff-violation-image-placeholder';
-        if (!item || !item.url) {
+        if (!block || !block.url) {
             wrap.appendChild(buildImagePlaceholder(placeholderText, placeholderClassName));
         } else {
             renderImageWithFallback(wrap, {
-                src: item.url,
-                alt: item.caption || item.filename || '',
+                src: block.url,
+                alt: block.caption || block.filename || '',
                 imgClassName: 'diff-violation-image-img',
                 placeholderText,
                 placeholderClassName,
             });
         }
         container.appendChild(wrap);
-        if (item && item.caption) {
+        if (block && block.caption) {
             const cap = document.createElement('div');
             cap.className = 'diff-violation-caption';
-            // Task 6: caption — rich-поле, показываем ВИДИМЫЙ текст (_stripHtml),
-            // не сырой HTML буквально — паритет с добавленным/удалённым/
-            // неизменным case/freeText (см. докстринг _renderContentEntry).
-            cap.textContent = DiffEngine._stripHtml(item.caption);
+            // Подпись — rich-поле: показываем ВИДИМЫЙ текст (_stripHtml), не
+            // сырой HTML буквально (паритет с text-блоком, _renderTextBlockEntry).
+            cap.textContent = DiffEngine._stripHtml(block.caption);
             container.appendChild(cap);
         }
     }

@@ -24,6 +24,8 @@ const COMMAND_POLICY_KEY = {
     createLink: 'links',
     findReplace: 'findReplace',
     improveText: 'improveText',
+    insertUnorderedList: 'lists',
+    insertOrderedList: 'lists',
 };
 
 Object.assign(TextBlockManager.prototype, {
@@ -86,9 +88,20 @@ Object.assign(TextBlockManager.prototype, {
                     ▦
                 </button>
             </div>
-            
+
             <div class="toolbar-separator"></div>
-            
+
+            <div class="toolbar-group">
+                <button class="toolbar-btn" data-command="insertUnorderedList" title="Маркированный список">
+                    •
+                </button>
+                <button class="toolbar-btn" data-command="insertOrderedList" title="Нумерованный список">
+                    1.
+                </button>
+            </div>
+
+            <div class="toolbar-separator"></div>
+
             <div class="toolbar-group">
                 <button class="toolbar-btn" data-command="createLink" title="Добавить гиперссылку (Ctrl+Shift+K)">
                     🔗

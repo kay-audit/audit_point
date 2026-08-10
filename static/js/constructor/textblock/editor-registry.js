@@ -9,8 +9,8 @@
  * (capsuleLifecycle:true), без правки контроллера.
  */
 export const SURFACE_POLICY = {
-  textblock:      { footnotes: true,  fontSize: true, align: true, links: true, findReplace: true, improveText: true, capsuleLifecycle: false },
-  violationField: { footnotes: false, fontSize: true, align: true, links: true, findReplace: true, improveText: true, capsuleLifecycle: true },
+  textblock:      { footnotes: true,  fontSize: true, align: true, links: true, lists: true, findReplace: true, improveText: true, capsuleLifecycle: false },
+  violationField: { footnotes: false, fontSize: true, align: true, links: true, lists: true, findReplace: true, improveText: true, capsuleLifecycle: true },
   // cell — Фаза 2
 };
 

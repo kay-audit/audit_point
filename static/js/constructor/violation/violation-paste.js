@@ -1,56 +1,27 @@
 /**
- * Модуль обработки вставки из буфера обмена
- * Поддержка Ctrl+V для изображений и текста
+ * Обработка вставки из буфера обмена в контейнер блоков поля нарушения.
+ *
+ * Поддержка Ctrl+V для изображений и текста; текст становится текст-блоком —
+ * распознавания «Кейс N» больше нет, тип case умер вместе со старой моделью.
  */
 
 import { ViolationManager, isEditableTarget } from './violation-core.js';
 import { Notifications } from '../../shared/notifications.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
-import {
-    CONTENT_TYPE_CASE,
-    CONTENT_TYPE_FREE_TEXT,
-} from './violation-content-item.js';
+import { BLOCK_TYPES } from './violation-block-types.js';
 import { promptPasteChoice } from './violation-paste-choice.js';
 
 /**
- * Строгий маркер кейса: «Кейс» + номер + разделитель в начале строки.
- * Флаг i ловит «кейс» в любом регистре; класс разделителей —
- * точка / двоеточие / скобка / дефис / en-dash / em-dash. Требует РОВНО
- * такой префикс: «Кейсы …», «Кейс 7 без разделителя» — уже не кейс.
- */
-const CASE_PREFIX_RE = /^Кейс\s*\d+\s*[.:)\-–—]/i;
-
-/**
- * Определяет тип вставляемого из буфера текста и очищает содержимое.
- * Кейс — только при строгом совпадении CASE_PREFIX_RE; тогда снимается
- * РОВНО совпавший префикс (не фиксированные 4 символа). Иначе — произвольный
- * текст без изменений.
- *
- * @param {string} textContent - Оригинальный текст буфера (ожидается .trim()'нутым)
- * @returns {{type: string, content: string}}
- */
-export function parseClipboardText(textContent) {
-    if (CASE_PREFIX_RE.test(textContent)) {
-        return {
-            type: CONTENT_TYPE_CASE,
-            content: textContent.replace(CASE_PREFIX_RE, '').trim(),
-        };
-    }
-    return { type: CONTENT_TYPE_FREE_TEXT, content: textContent };
-}
-
-/**
  * true, если вставку с редактируемым target'ом всё же нужно перехватить ради
- * КАРТИНОК (§5.8): каретка стоит в rich-поле зоны дополнительного контента
- * (кейс / свободный текст / подпись), а в буфере есть image-элементы.
+ * КАРТИНОК (§5.8): каретка стоит в rich-поле зоны блоков (текст-блок либо
+ * подпись картинки), а в буфере есть image-элементы.
  *
  * Редактор поверхности читает из буфера только text/html|text/plain — файлы он
  * молча игнорирует, поэтому до этой ветки вставить картинку с клавиатуры можно
  * было, только сфокусировав сам контейнер зоны (клик по пустому месту).
  *
- * Строго ограничено зоной: rich-поля нарушения вне `.additional-content-wrapper`
- * (нарушено / установлено / причины / …) и текстблоки под предикат не попадают —
+ * Строго ограничено зоной блоков поля: текстблоки под предикат не попадают —
  * их поведение прежнее (#19).
  *
  * @param {EventTarget} target - e.target события paste
@@ -59,7 +30,7 @@ export function parseClipboardText(textContent) {
  */
 export function shouldInterceptImagesFromEditable(target, items) {
     if (!items || !isEditableTarget(target)) return false;
-    if (!target.closest || !target.closest('.additional-content-wrapper')) return false;
+    if (!target.closest || !target.closest('.violation-blocks-wrapper')) return false;
     for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf('image') !== -1) return true;
     }
@@ -93,7 +64,7 @@ export function clipboardHasText(html, plain) {
 }
 
 /**
- * Маршрут буфера при вставке в зону дополнительных материалов:
+ * Маршрут буфера при вставке в зону блоков поля:
  *  - `'images'` — только картинки → прежний конвейер зоны (диалог качества);
  *  - `'combo'`  — картинки И текст → выбор пользователя (№5), иначе один Ctrl+V
  *                 давал бы два результата: текст вставил бы редактор поля, а
@@ -214,16 +185,17 @@ Object.assign(ViolationManager.prototype, {
             // строго от каретки, породившей событие.
             const focusSource = interceptImages ? e.target : document.activeElement;
             const targetContainer = focusSource && focusSource.closest
-                ? focusSource.closest('.additional-content-wrapper')
+                ? focusSource.closest('.violation-blocks-wrapper')
                 : null;
             if (!targetContainer) {
                 return;
             }
 
-            const itemsContainer = targetContainer.querySelector('.additional-content-items');
+            const itemsContainer = targetContainer.querySelector('.violation-blocks-items');
             const violationId = itemsContainer?.dataset.violationId;
+            const fieldKey = itemsContainer?.dataset.fieldKey;
 
-            if (!violationId) {
+            if (!violationId || !fieldKey) {
                 return;
             }
 
@@ -234,9 +206,9 @@ Object.assign(ViolationManager.prototype, {
                 return;
             }
 
-            // Под focus-моделью вставляем в КОНЕЦ зоны (#19): позиция курсора мыши
-            // неактуальна — вставка инициирована с клавиатуры по фокусу.
-            const insertIndex = violation.additionalContent.items.length;
+            // Под focus-моделью вставляем в КОНЕЦ поля (#19): позиция курсора
+            // мыши неактуальна — вставка инициирована с клавиатуры по фокусу.
+            const insertIndex = violation?.[fieldKey]?.blocks?.length || 0;
 
             // Собираем ВСЕ картинки буфера (не только последнюю, #28) и
             // отдельно наличие текста.
@@ -271,7 +243,7 @@ Object.assign(ViolationManager.prototype, {
                 e.preventDefault();
                 e.stopPropagation();
 
-                await this.pasteCombinedClipboard(violation, targetContainer, insertIndex, {
+                await this.pasteCombinedClipboard(violation, fieldKey, targetContainer, insertIndex, {
                     imageFiles,
                     html,
                     plain,
@@ -288,40 +260,34 @@ Object.assign(ViolationManager.prototype, {
                 e.preventDefault();
 
                 // Тип-валидация ДО чтения (H6/#26) — warning с причиной отказа.
-                const accepted = this.filterAcceptedImageFiles(imageFiles, violation);
+                const accepted = this.filterAcceptedImageFiles(imageFiles, violation, fieldKey);
                 if (accepted.length === 0) return;
 
                 // insertIndex зафиксирован синхронно ДО async-чтения (приемлемо);
                 // тост об успехе с верным числом покажет insertImageFilesInOrder.
-                this.promptQualityThenInsertImages(violation, targetContainer, insertIndex, accepted);
+                this.promptQualityThenInsertImages(
+                    violation, fieldKey, targetContainer, insertIndex, accepted);
             }
             // Текст обрабатываем только если картинок в буфере нет И каретка не
             // в редактируемом поле: в §5.8-ветке текст вставляет редактор
             // поверхности (его handler отрабатывает следом за нашим capture),
-            // наша текстовая ветка добавила бы дубль отдельным элементом зоны.
+            // наша текстовая ветка добавила бы дубль отдельным блоком поля.
             else if (textItem && !targetIsEditable) {
                 const textContent = plain.trim();
 
                 if (textContent) {
                     e.preventDefault();
 
-                    // Строгий маркер кейса (#5): «Кейс N<разделитель>» снимается
-                    // ровно по совпадению, иначе — произвольный текст как есть.
-                    const { type, content } = parseClipboardText(textContent);
-                    const message = type === CONTENT_TYPE_CASE
-                        ? 'Кейс добавлен из буфера обмена'
-                        : 'Текст добавлен из буфера обмена';
-
                     // Единый гейт лимита (#4) уже мог отказать (Notifications.warning
                     // показан внутри) — тогда false, и success не зовём, чтобы не
-                    // подтверждать вставку, которой не произошло. updateBlock делает
-                    // сама addContentItemAtPosition — без двойного апдейта (#29).
-                    const added = this.addContentItemAtPosition(violation, type, targetContainer, insertIndex, {
-                        content: content
-                    });
+                    // подтверждать вставку, которой не произошло. Превью обновляет
+                    // мутатор внутри — без двойного апдейта (#29).
+                    const added = this.addBlockAtPosition(
+                        violation, fieldKey, BLOCK_TYPES.TEXT, targetContainer, insertIndex,
+                        { content: textContent });
                     if (!added) return;
 
-                    Notifications.success(message);
+                    Notifications.success('Текст добавлен из буфера обмена');
                 }
             }
         }, true);
@@ -334,16 +300,17 @@ Object.assign(ViolationManager.prototype, {
      * bulk), тем же, что у drag&drop и выбора файлов.
      *
      * Порядок «текст → картинки» обязателен: вставка картинок перерисовывает
-     * элементы зоны, а текст к этому моменту уже сложен в модель
+     * блоки поля, а текст к этому моменту уже сложен в модель
      * (insertTextIntoRichField → finalizeEdit → commit поверхности).
      *
      * @param {Object} violation - Объект нарушения
-     * @param {HTMLElement} container - Контейнер зоны (.additional-content-wrapper)
-     * @param {number} insertIndex - Позиция вставки картинок (конец зоны)
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} container - Контейнер содержимого поля (.violation-blocks-wrapper)
+     * @param {number} insertIndex - Позиция вставки картинок (конец поля)
      * @param {{imageFiles: File[], html: string, plain: string,
      *          field: HTMLElement, range: Range|null}} payload - Снимок буфера и каретки
      */
-    async pasteCombinedClipboard(violation, container, insertIndex, payload) {
+    async pasteCombinedClipboard(violation, fieldKey, container, insertIndex, payload) {
         const choice = await promptPasteChoice();
         if (!choice) return; // отмена — не вставляем ничего
 
@@ -353,9 +320,10 @@ Object.assign(ViolationManager.prototype, {
 
         if (choice === 'image' || choice === 'both') {
             // Тип-валидация ДО чтения (H6/#26) — warning с причиной отказа.
-            const accepted = this.filterAcceptedImageFiles(payload.imageFiles, violation);
+            const accepted = this.filterAcceptedImageFiles(payload.imageFiles, violation, fieldKey);
             if (accepted.length === 0) return;
-            await this.promptQualityThenInsertImages(violation, container, insertIndex, accepted);
+            await this.promptQualityThenInsertImages(
+                violation, fieldKey, container, insertIndex, accepted);
         }
     }
 });

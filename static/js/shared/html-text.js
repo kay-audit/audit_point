@@ -13,7 +13,7 @@ import { SafeHTML } from './sanitize.js';
  * (зеркало `_insertCorrected` в corrector-popover.js). Без этого `\n` не
  * отрисовался бы, а `&`/`<` из текста попали бы в rich-модель как невалидный HTML.
  * @param {string} v - Плоское значение (текст LLM/пользователя)
- * @returns {string} HTML для setViolationField/renderActContent
+ * @returns {string} HTML для setBlockField/renderActContent
  */
 export function plainToRichHtml(v) {
     return SafeHTML.escapeHtml(v).replace(/\n/g, '<br>');
