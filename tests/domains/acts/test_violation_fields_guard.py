@@ -1,24 +1,33 @@
 """Тест-страж декларативного контракта полей нарушения (violation_fields.py).
 
-По образцу test_block_types_guard.py: закрывает риск рассинхронизации
-контракта полей нарушения (метки/порядок/kind/флаги) со схемой
-ViolationSchema (порядок полей) и с фронтовым зеркалом
-static/js/constructor/violation/violation-fields.js (значения меток — тут
-пиннятся литералом, там — своим стражем tests/js/violation-fields.test.mjs).
-
-Покрытие форматтеров MARKER'ом — в Task 11 (форматтеры ещё не выровнены на
-этот контракт), здесь его сознательно нет.
+Блочная модель: закрывает риск рассинхронизации реестра полей
+(состав/метки/порядок/mandatory/small/колонки) со схемой ViolationSchema и
+с фронтовым зеркалом static/js/constructor/violation/violation-fields.js
+(значения меток — тут пиннятся литералом, там — своим стражем
+tests/js/violation-fields.test.mjs). Плюс страж значений типов блоков
+python-union ↔ фронтовые константы violation-block-types.js.
 """
+import re
+from pathlib import Path
+
 from app.domains.acts.schemas.act_content import ViolationSchema
 from app.domains.acts.violation_fields import (
-    CASE_LABEL_TEMPLATE,
-    FREE_TEXT_LABEL,
+    FIELD_BY_KEY,
     LABELS,
+    MANDATORY_FIELD_KEYS,
+    VIOLATION_FIELD_COLUMNS,
+    VIOLATION_FIELD_KEYS,
     VIOLATION_FIELDS,
 )
 
-# id/nodeId — метаданные нарушения, не поля контента; в контракт не входят.
-_META_FIELDS = ("id", "nodeId")
+# id/nodeId/fieldOrder — метаданные нарушения, не поля контента; в контракт не входят.
+_META_FIELDS = ("id", "nodeId", "fieldOrder")
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_BLOCK_TYPES_JS = (
+    _PROJECT_ROOT / "static" / "js" / "constructor" / "violation"
+    / "violation-block-types.js"
+)
 
 
 class TestOrderMatchesSchema:
@@ -36,18 +45,27 @@ class TestOrderMatchesSchema:
 
 
 class TestNoDuplicatesAndOrderIndex:
-    """order — позиция в кортеже, ключи не дублируются."""
+    """default_order — позиция в кортеже, ключи и колонки не дублируются."""
 
     def test_no_duplicate_keys(self):
         keys = [field.key for field in VIOLATION_FIELDS]
         assert len(keys) == len(set(keys)), "В VIOLATION_FIELDS есть дублирующиеся key"
 
-    def test_order_is_positional_index(self):
+    def test_no_duplicate_columns(self):
+        cols = [field.column for field in VIOLATION_FIELDS]
+        assert len(cols) == len(set(cols)), "В VIOLATION_FIELDS есть дублирующиеся column"
+
+    def test_default_order_is_positional_index(self):
         for index, field in enumerate(VIOLATION_FIELDS):
-            assert field.order == index, (
-                f"order поля {field.key!r} ({field.order}) должен совпадать с "
-                f"позицией в кортеже ({index})"
+            assert field.default_order == index, (
+                f"default_order поля {field.key!r} ({field.default_order}) должен "
+                f"совпадать с позицией в кортеже ({index})"
             )
+
+    def test_derived_collections_consistent(self):
+        assert VIOLATION_FIELD_KEYS == tuple(f.key for f in VIOLATION_FIELDS)
+        assert VIOLATION_FIELD_COLUMNS == tuple(f.column for f in VIOLATION_FIELDS)
+        assert set(FIELD_BY_KEY) == set(VIOLATION_FIELD_KEYS)
 
 
 class TestCanonicalLabels:
@@ -57,53 +75,73 @@ class TestCanonicalLabels:
         assert LABELS == {
             "violated": "Нарушено",
             "established": "Установлено",
-            "descriptionList": "",
-            "additionalContent": "",
+            "description": "Описание",
+            "codeMining": "CodeMining",
+            "processMining": "ProcessMining",
+            "additionalContent": "Дополнительный контент",
             "reasons": "Причины",
             "measures": "Принятые меры",
             "consequences": "Последствия",
             "responsible": "Ответственные",
         }
 
-    def test_case_and_free_text_labels(self):
-        assert CASE_LABEL_TEMPLATE == "Кейс {n}"
-        assert FREE_TEXT_LABEL == ""
 
+class TestMandatoryAndSmallFlags:
+    """mandatory/small — точные значения контракта (решения владельца в спеке)."""
 
-class TestKindSmallAndPreviewFlags:
-    """kind/small/show_label_in_preview — точные значения контракта (бриф #31A)."""
+    def test_mandatory_flag_values(self):
+        assert MANDATORY_FIELD_KEYS == ("violated", "established")
 
-    def test_kind_small_show_label_in_preview(self):
-        expected = {
-            "violated": ("pair", True, True),
-            "established": ("pair", True, True),
-            "descriptionList": ("list", True, False),
-            "additionalContent": ("additional", True, False),
-            "reasons": ("optional_text", False, True),
-            "measures": ("optional_text", False, True),
-            "consequences": ("optional_text", False, True),
-            "responsible": ("optional_text", False, True),
-        }
-        actual = {
-            field.key: (field.kind, field.small, field.show_label_in_preview)
-            for field in VIOLATION_FIELDS
-        }
-        assert actual == expected
-
-
-class TestRichFlag:
-    """Флаг rich указывает, какие поля требуют rich-редактора и HTML-санитайзера."""
-
-    def test_rich_flag_values(self):
+    def test_small_flag_values(self):
         expected = {
             "violated": True,
             "established": True,
-            "descriptionList": True,
-            "additionalContent": False,
-            "reasons": True,
-            "measures": True,
-            "consequences": True,
-            "responsible": True,
+            "description": False,
+            "codeMining": False,
+            "processMining": False,
+            "additionalContent": True,
+            "reasons": False,
+            "measures": False,
+            "consequences": False,
+            "responsible": False,
         }
-        actual = {f.key: f.rich for f in VIOLATION_FIELDS}
+        actual = {f.key: f.small for f in VIOLATION_FIELDS}
         assert actual == expected
+
+
+class TestColumnNames:
+    """Имена колонок БД — snake_case ключей (якорь для schema.sql-стража)."""
+
+    def test_column_literal_values(self):
+        expected = {
+            "violated": "violated",
+            "established": "established",
+            "description": "description",
+            "codeMining": "code_mining",
+            "processMining": "process_mining",
+            "additionalContent": "additional_content",
+            "reasons": "reasons",
+            "measures": "measures",
+            "consequences": "consequences",
+            "responsible": "responsible",
+        }
+        actual = {f.key: f.column for f in VIOLATION_FIELDS}
+        assert actual == expected
+
+
+class TestBlockTypesSync:
+    """Значения типов блоков: python-union ↔ фронтовые константы BLOCK_TYPES.
+
+    По образцу пары block_types.py ↔ block-types.js: фронт не импортирует
+    Python, синхронизация ручная, пин — этот тест (парсит js-файл).
+    """
+
+    def test_frontend_block_types_match_python_literals(self):
+        js_source = _BLOCK_TYPES_JS.read_text(encoding="utf-8")
+        js_values = set(
+            re.findall(r"^\s*[A-Z_]+:\s*'([a-z]+)'", js_source, re.MULTILINE)
+        )
+        assert js_values == {"text", "image", "table"}, (
+            "BLOCK_TYPES в violation-block-types.js разошёлся со значениями "
+            "Literal-типов блоков в act_content.py (text/image/table)"
+        )
