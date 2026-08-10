@@ -173,7 +173,7 @@ test('regenerateIds: все id новые, ссылки и ключи слова
     assert.ok(payload.dicts.tables.T1);
 });
 
-test('regenerateIds: элементы additionalContent.items нарушения получают НОВЫЕ id (#22)', () => {
+test('regenerateIds: блоки ВСЕХ полей нарушения получают НОВЫЕ id (#22, блочная модель)', () => {
     const payload = {
         node: {
             id: 'old_root', type: 'item', children: [
@@ -184,11 +184,15 @@ test('regenerateIds: элементы additionalContent.items нарушения
             violations: {
                 V1: {
                     id: 'V1', nodeId: 'old_v',
-                    additionalContent: {
+                    violated: {
                         enabled: true,
-                        items: [
-                            { id: 'case_1', type: 'case', content: 'A' },
-                            { id: 'case_2', type: 'case', content: 'B' },
+                        blocks: [{ id: 'text_1', type: 'text', content: 'A' }],
+                    },
+                    codeMining: {
+                        enabled: true,
+                        blocks: [
+                            { id: 'table_1', type: 'table', table: { grid: [], colWidths: [] } },
+                            { id: 'image_1', type: 'image', url: '', caption: '', filename: 'a.png', width: 0 },
                         ],
                     },
                 },
@@ -204,22 +208,22 @@ test('regenerateIds: элементы additionalContent.items нарушения
 
     const vNode = out.node.children[0];
     const newEntry = out.dicts.violations[vNode.violationId];
-    const newIds = newEntry.additionalContent.items.map(i => i.id);
 
-    assert.equal(newIds.length, 2);
-    assert.ok(!newIds.includes('case_1') && !newIds.includes('case_2'), 'старые id элементов заменены новыми');
-    assert.notEqual(newIds[0], newIds[1], 'id элементов уникальны между собой');
-    // Регенерируется только id — содержимое (тип/текст) элемента сохранено.
-    assert.equal(newEntry.additionalContent.items[0].type, 'case');
-    assert.equal(newEntry.additionalContent.items[0].content, 'A');
-    assert.equal(newEntry.additionalContent.items[1].content, 'B');
+    const violatedIds = newEntry.violated.blocks.map(b => b.id);
+    const cmIds = newEntry.codeMining.blocks.map(b => b.id);
+    assert.ok(!violatedIds.includes('text_1'), 'id блока violated заменён');
+    assert.ok(!cmIds.includes('table_1') && !cmIds.includes('image_1'), 'id блоков codeMining заменены');
+    assert.equal(new Set([...violatedIds, ...cmIds]).size, 3, 'все новые id уникальны');
+    // Регенерируется только id — содержимое блока сохранено.
+    assert.equal(newEntry.violated.blocks[0].content, 'A');
+    assert.equal(newEntry.codeMining.blocks[1].filename, 'a.png');
 
     // Исходный payload (буфер) не мутирован.
-    assert.equal(payload.dicts.violations.V1.additionalContent.items[0].id, 'case_1');
-    assert.equal(payload.dicts.violations.V1.additionalContent.items[1].id, 'case_2');
+    assert.equal(payload.dicts.violations.V1.violated.blocks[0].id, 'text_1');
+    assert.equal(payload.dicts.violations.V1.codeMining.blocks[0].id, 'table_1');
 });
 
-test('regenerateIds: id элементов доп.контента уникальны даже при одинаковом Date.now() внутри цикла (#22)', () => {
+test('regenerateIds: id блоков уникальны даже при одинаковом Date.now() внутри цикла (#22)', () => {
     const payload = {
         node: { id: 'old_v', type: 'violation', violationId: 'V1', children: [] },
         dicts: {
@@ -228,8 +232,8 @@ test('regenerateIds: id элементов доп.контента уникал�
                     id: 'V1', nodeId: 'old_v',
                     additionalContent: {
                         enabled: true,
-                        items: Array.from({ length: 20 }, (_, i) => (
-                            { id: `case_${i}`, type: 'case', content: `c${i}` }
+                        blocks: Array.from({ length: 20 }, (_, i) => (
+                            { id: `text_${i}`, type: 'text', content: `c${i}` }
                         )),
                     },
                 },
@@ -239,25 +243,28 @@ test('regenerateIds: id элементов доп.контента уникал�
 
     const out = regenerateIds(payload, { genNodeId: () => 'n1', genContentId: (type) => `${type}_x` });
     const newEntry = out.dicts.violations[out.node.violationId];
-    const ids = newEntry.additionalContent.items.map(i => i.id);
+    const ids = newEntry.additionalContent.blocks.map(b => b.id);
     assert.equal(new Set(ids).size, ids.length, 'генератор с индексом — все id уникальны');
 });
 
-test('regenerateIds: нарушение без additionalContent.items не падает (обычные поля не тронуты)', () => {
+test('regenerateIds: нарушение с пустыми/отсутствующими контейнерами не падает', () => {
     const payload = {
         node: { id: 'old_v', type: 'violation', violationId: 'V1', children: [] },
         dicts: {
             violations: {
-                V1: { id: 'V1', nodeId: 'old_v', violated: 'x', established: 'y' },
+                V1: {
+                    id: 'V1', nodeId: 'old_v',
+                    violated: { enabled: true, blocks: [] },
+                    // остальные поля отсутствуют целиком (повреждённый буфер)
+                },
             },
         },
     };
 
     const out = regenerateIds(payload, { genNodeId: () => 'n1', genContentId: (type) => `${type}_x` });
     const newEntry = out.dicts.violations[out.node.violationId];
-    assert.equal(newEntry.violated, 'x');
-    assert.equal(newEntry.established, 'y');
-    assert.equal(newEntry.additionalContent, undefined);
+    assert.deepEqual(newEntry.violated, { enabled: true, blocks: [] });
+    assert.equal(newEntry.reasons, undefined);
 });
 
 // ── Чистое ядро: filterPinnedFromSubtree (КП-3) ────────────────────────────────
