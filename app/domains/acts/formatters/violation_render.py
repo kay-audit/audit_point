@@ -55,7 +55,10 @@ def format_violation(
     lines: list[str] = []
 
     for field in ordered_fields(violation_data):
-        container = violation_data.get(field.key) or {}
+        container = violation_data.get(field.key)
+        if not isinstance(container, dict):
+            # Повреждённые данные (скаляр старой модели и т.п.) — считаем пустым.
+            container = {}
         blocks = container.get('blocks') or []
 
         if field.mandatory:

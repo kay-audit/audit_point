@@ -137,57 +137,49 @@ class TestNoDoubleEscaping:
 _FAKE = "[evil](http://evil.example)"
 
 
+def _fake_block(bid: str = "text_1") -> dict:
+    return {"id": bid, "type": "text", "content": _FAKE}
+
+
 def _violation(**over):
-    base = {
-        "violated": "",
-        "established": "",
-        "descriptionList": {"enabled": False, "items": []},
-        "additionalContent": {"enabled": False, "items": []},
-        "reasons": {"enabled": False, "content": ""},
-        "measures": {"enabled": False, "content": ""},
-        "consequences": {"enabled": False, "content": ""},
-        "responsible": {"enabled": False, "content": ""},
-    }
+    from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
+    base = {key: {"enabled": False, "blocks": []} for key in VIOLATION_FIELD_KEYS}
+    base["violated"]["enabled"] = True
+    base["established"]["enabled"] = True
     base.update(over)
     return base
 
 
 class TestFakeLinkDeadInAllFields:
     def test_violated(self):
-        out = _md()._format_violation(_violation(violated=_FAKE))
+        out = _md()._format_violation(
+            _violation(violated={"enabled": True, "blocks": [_fake_block()]})
+        )
         assert _FAKE not in out
         assert "\\[evil\\]" in out
 
     def test_established(self):
-        out = _md()._format_violation(_violation(established=_FAKE))
+        out = _md()._format_violation(
+            _violation(established={"enabled": True, "blocks": [_fake_block()]})
+        )
         assert _FAKE not in out
 
     def test_reasons(self):
         out = _md()._format_violation(
-            _violation(reasons={"enabled": True, "content": _FAKE})
+            _violation(reasons={"enabled": True, "blocks": [_fake_block()]})
         )
         assert _FAKE not in out
 
-    def test_description_list_item(self):
+    def test_description(self):
         out = _md()._format_violation(
-            _violation(descriptionList={"enabled": True, "items": [_FAKE]})
+            _violation(description={"enabled": True, "blocks": [_fake_block()]})
         )
         assert _FAKE not in out
         assert "\\[evil\\]" in out
 
-    def test_case_content(self):
+    def test_additional_content_text_block(self):
         out = _md()._format_violation(
-            _violation(additionalContent={
-                "enabled": True, "items": [{"type": "case", "content": _FAKE}],
-            })
-        )
-        assert _FAKE not in out
-
-    def test_free_text_content(self):
-        out = _md()._format_violation(
-            _violation(additionalContent={
-                "enabled": True, "items": [{"type": "freeText", "content": _FAKE}],
-            })
+            _violation(additionalContent={"enabled": True, "blocks": [_fake_block()]})
         )
         assert _FAKE not in out
 
