@@ -55,7 +55,7 @@ def _make_export_fixture() -> dict:
     дерево (root → раздел 5 → пункт с таблицей/текстблоком/нарушением),
     1 обычная таблица с colWidths и объединением, 1 риск-таблица с подвидом
     kind (exportData сериализует kind только при не-'regular'), 1 текстблок,
-    1 нарушение с descriptionList и additionalContent.
+    1 нарушение блочной модели (fieldOrder + контейнеры с 3 типами блоков).
     """
     grid = _grid(3, 3)
     # Горизонтальное объединение в строке данных — spanOrigin переживает round-trip.

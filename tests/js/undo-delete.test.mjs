@@ -398,24 +398,24 @@ test('undo нарушения с items сверх ТЕКУЩЕГО лимита 
     const violationId = violationNode.violationId;
     AppState.generateNumbering();
 
-    // Нарушение легитимно накопило 5 элементов (лимит на тот момент был выше).
+    // Нарушение легитимно накопило 5 блоков (лимит на тот момент был выше).
     // Админ снижает лимит НИЖЕ фактического количества ДО удаления.
     AppState.violations[violationId].additionalContent.enabled = true;
-    AppState.violations[violationId].additionalContent.items =
-        Array.from({length: 5}, (_, i) => ({id: `it${i}`, type: 'freeText', text: ''}));
+    AppState.violations[violationId].additionalContent.blocks =
+        Array.from({length: 5}, (_, i) => ({id: `b${i}`, type: 'text', content: ''}));
     getImageLimits().maxItemsPerViolation = 2;
 
     assert.ok(AppState.deleteNode(violationNode.id));
     assert.equal(AppState.violations[violationId], undefined);
 
-    assert.ok(UndoDeleteManager.undoLast(), 'лимит items снимка не должен клинить undo');
-    assert.equal(notified.error.length, 0, 'отказа по лимиту items быть не должно');
+    assert.ok(UndoDeleteManager.undoLast(), 'лимит блоков снимка не должен клинить undo');
+    assert.equal(notified.error.length, 0, 'отказа по лимиту блоков быть не должно');
 
     const restored = item.children.find(c => c.type === 'violation');
     assert.ok(restored, 'узел нарушения восстановлен');
     assert.equal(
-        AppState.violations[violationId].additionalContent.items.length, 5,
-        'все 5 элементов восстановлены целиком, incl. сверх лимита'
+        AppState.violations[violationId].additionalContent.blocks.length, 5,
+        'все 5 блоков восстановлены целиком, incl. сверх лимита'
     );
     assertIndexConsistent('undo нарушения сверх items-лимита');
     assertNoIndexMiss();
@@ -431,8 +431,8 @@ test('лимит items снимка не клинит ВЕСЬ LIFO-стек: un
     AppState.generateNumbering();
 
     AppState.violations[violationId].additionalContent.enabled = true;
-    AppState.violations[violationId].additionalContent.items =
-        Array.from({length: 3}, (_, i) => ({id: `it${i}`, type: 'freeText', text: ''}));
+    AppState.violations[violationId].additionalContent.blocks =
+        Array.from({length: 3}, (_, i) => ({id: `b${i}`, type: 'text', content: ''}));
     getImageLimits().maxItemsPerViolation = 1;
 
     // Порядок удаления: older → потом нарушение (нарушение — верх стека).

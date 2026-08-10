@@ -380,7 +380,7 @@ class ActAuditLogRepository(BaseRepository):
 
         Сравнивает текущее состояние в БД с входящими данными.
 
-        Для полей-коллекций нарушения (descriptionList/additionalContent)
+        Для полей-контейнеров нарушения (блочная модель)
         в diff пишется только компактная сводка
         ``{"changed": True, "old_items": N, "new_items": M}`` — содержимое
         элементов не сохраняется, т.к. additionalContent может содержать
