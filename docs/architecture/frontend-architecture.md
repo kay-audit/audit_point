@@ -1177,7 +1177,7 @@ Constructor **не адаптивен** (0 media queries в `constructor/*`). Э
 
 ### 13.7 Cache-busting
 
-Jinja-фильтр `versioned` (применяется ко всем `url_for('static', path='...')`) добавляет `?v={app_version}` к URL. Регистрируется в `app/core/templating.py:32`; значение берётся из `Settings.app_version` (`app/core/config.py:273`, сейчас **14.0.0**). При смене версии браузер форсированно перезагружает статику.
+Jinja-фильтр `versioned` (применяется ко всем `url_for('static', path='...')`) добавляет `?v={app_version}` к URL. Регистрируется в `app/core/templating.py:32`; значение берётся из `Settings.app_version` (`app/core/config.py:273`, сейчас **14.0.1**). При смене версии браузер форсированно перезагружает статику.
 
 ### 13.8 `<meta name="app-version">`
 

@@ -270,7 +270,7 @@ class Settings(BaseSettings):
 
     # Метаданные приложения
     app_title: str = "Audit Workstation"
-    app_version: str = "14.0.0"
+    app_version: str = "14.0.1"
 
     # Аутентификация
     jupyterhub_user: str = Field(default="unknown_user")

@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**Текущая версия: `14.0.0`.**
+**Текущая версия: `14.0.1`.**
 
 ## Методология
 
@@ -260,5 +260,10 @@ in-memory бэкенд локов удалён); блокировки актов
 не по HTTP, а через Redis-стримы к воркеру в Jupyter DataLab, у которого есть сетевой доступ к моделям
 (`app/domains/chat/services/redis_bridge_adapter.py`, воркер — `scripts/datalab/llm_redis_worker.ipynb`).
 Шаблон окружения разделён: `.env.example` → `.env.prod` плюс отдельный `.env.dev`.
+
+- 14.0.1 · `6b197079` — PATCH: документация сверена с кодом. Гайд-бук разбит на хаб и пять частей
+  (`architecture-and-backend`, `database`, `ai-assistant`, `testing`, `deploy-and-configuration`),
+  deep-dive по актам влит в `data-model-acts.md`; убраны JupyterHub-деплой, следы SSE и упразднённые
+  профили LLM.
 
 ---

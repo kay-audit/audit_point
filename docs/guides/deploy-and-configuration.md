@@ -272,7 +272,7 @@ chat_settings.api_key.get_secret_value()  # безопасное получен�
 
 ```env
 APP_TITLE=Audit Workstation
-APP_VERSION=14.0.0
+APP_VERSION=14.0.1
 JUPYTERHUB_USER=22494524_omega-sbrf-ru
 
 SERVER__HOST=0.0.0.0
@@ -443,7 +443,7 @@ def test_chat_settings_defaults():
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
 | `APP_TITLE` | str | `Audit Workstation` | Название приложения |
-| `APP_VERSION` | str | `14.0.0` | Версия (`Settings.app_version`, `app/core/config.py:273`) |
+| `APP_VERSION` | str | `14.0.1` | Версия (`Settings.app_version`, `app/core/config.py:273`) |
 | `JUPYTERHUB_USER` | str | `unknown_user` | Username (цифры): тест-режим авторизации (`AUTH__ENABLED=false`, §9.3a) и/или Kerberos-логин для Greenplum (`app/db/connection.py:213-218`). Имя — историческое, к JupyterHub/DataLab деплою больше не привязано |
 | `AUDIT_ID_SERVICE_URL` | str | `""` | URL планируемого внешнего сервиса генерации ID для связи актов и фактур. Заглушка — сервис ещё не подключён |
 | `AUDIT_ID_SERVICE_TIMEOUT` | int | `10` | Таймаут обращения к сервису ID (сек). Заглушка |
