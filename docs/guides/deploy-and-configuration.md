@@ -700,7 +700,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__IMAGES__MAX_FILE_SIZE` | int | `4194304` | Макс. размер картинки нарушения (сырые байты; согласован с лимитом HTTP-запроса по base64) |
 | `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `5242880` | Суммарный размер картинок на акт (сырые байты) |
 | `ACTS__IMAGES__ALLOWED_MIME_TYPES` | list | `jpeg/png/gif` | Whitelist MIME картинок (без SVG; без webp — python-docx не встраивает его в DOCX) |
-| `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` | int | `50` | Макс. элементов additionalContent на нарушение |
+| `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` | int | `50` | Макс. блоков в одном поле нарушения (блочная модель — лимит на каждое из 10 полей независимо, не на нарушение целиком) |
 | `ACTS__IMAGES__IMAGE_MAX_HEIGHT_PERCENT` | int | `40` | Макс. высота картинки нарушения (% листа A4) — превью и DOCX |
 | `ACTS__TABLES__MAX_ROWS` | int | `64` | Макс. строк таблицы |
 | `ACTS__TABLES__MAX_COLS` | int | `16` | Макс. колонок таблицы |

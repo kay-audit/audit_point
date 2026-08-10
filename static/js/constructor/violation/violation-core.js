@@ -31,11 +31,12 @@ const FORMALIZED_FIELD_KEYS = [
  * Пересоздаёт секцию нарушения существующим путём обновления (ItemsRenderer
  * держит DOM-индекс, прямая замена узла оставила бы в нём висячую ссылку).
  *
- * Обращение через window-глобал, а НЕ через import: items-renderer.js
- * импортирует violationManager (violation-init.js), и статический импорт
- * обратно замкнул бы цикл — при входе в граф со стороны violation-core.js
- * расширения прототипа исполнились бы до объявления класса (TDZ). Тот же
- * приём, что у context-menu-violation.js с глобальным violationManager.
+ * Обращение через window-глобал, а НЕ через import: items-renderer.js стоит
+ * НАД графом нарушений — он импортирует violationManager (violation-init.js),
+ * и обратный статический импорт добавил бы ещё одно ребро цикла в и без того
+ * закольцованный граф (violation-core → preview → state-core →
+ * storage-manager → items-renderer → violation-init). Тот же приём, что у
+ * context-menu-violation.js с глобальным violationManager.
  *
  * @param {string} violationId
  */
@@ -272,8 +273,7 @@ export class ViolationManager {
      *
      * Значение может прийти готовым HTML (формализатор отдаёт списки
      * `<ul><li>…</li></ul>`, спека §3.5) — тогда берём как есть; плоскую
-     * строку переводим в rich HTML (экранирование + 
- → <br>).
+     * строку переводим в rich HTML (экранирование + перенос строки в `<br>`).
      *
      * @param {Object} violation - Объект нарушения
      * @param {Object} fields - Ответ формализатора (шесть строковых полей)

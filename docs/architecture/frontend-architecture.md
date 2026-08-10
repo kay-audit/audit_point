@@ -86,8 +86,10 @@ static/js/
     ├── search/       # FindBar (Ctrl+F) + ActSearchEngine/Highlight/Replace —
     │                 #   поиск/замена по текстблокам и rich-полям нарушений,
     │                 #   deep-dive §12 в textblock-editor-architecture.md
-    ├── violation/    # ViolationManager (20 файлов, включая
-    │                 #   violation-field-surface.js — rich-поверхности полей)
+    ├── violation/    # ViolationManager (21 файл, включая
+    │                 #   violation-field-surface.js — ViolationBlockSurface,
+    │                 #   violation-blocks.js — контейнер блоков поля,
+    │                 #   violation-table-block.js — редактор встроенной таблицы)
     ├── preview/      # PreviewManager + per-type renderer'ы
     ├── dialog/       # HelpManager, InvoiceDialog
     ├── context-menu/ # 5 файлов (tree, cells, violation, links-footnotes, core)
@@ -216,7 +218,7 @@ CSS повторяет тройное разделение — см. главу 
 | `constructor/textblock/editor-registry.js` | `EditorRegistry` (активная поверхность), `SURFACE_POLICY` (политика возможностей по kind; deep-dive §15 в `textblock-editor-architecture.md`) |
 | `constructor/textblock/editable-surface.js` | `TextBlockSurface` (контракт `EditableSurface`) |
 | `constructor/textblock/editor-controller.js` | `EditorController` (mount/unmount поверхности, capsule-lifecycle, drop) |
-| `constructor/violation/violation-field-surface.js` | `ViolationFieldSurface`, `ViolationContentItemSurface`, `ViolationListItemSurface`, `_createRichFieldEditor` (rich-поля нарушений) |
+| `constructor/violation/violation-field-surface.js` | `ViolationBlockSurface` (единая поверхность text-блоков и image-caption всех 10 полей), `_createRichFieldEditor` (rich-поля нарушений) |
 | `constructor/search/find-bar.js` | `FindBar` (немодальная панель поиска/замены; `installHotkey()` — `Ctrl+F`, зовётся в bootstrap после `App.init`, по образцу `NodeClipboard.installHotkey()`) |
 | `constructor/search/act-search-engine.js` | `ActSearchEngine`, `TextBlockSearchTarget`, `FootnoteBodySearchTarget`, `ViolationFieldSearchTarget` (движок поиска/замены по текстблокам и rich-полям нарушений, без UI) |
 | `constructor/search/act-search-highlight.js` | `ActSearchHighlight` (подсветка через CSS Custom Highlight API) |
@@ -906,7 +908,7 @@ Fallback: если `BroadcastChannel` недоступен (старый Safari)
 - `_diffTree` — flatten оба дерева в map по id, `node._diff = added/modified/unchanged`.
 - `_diffTables` — cell-level (row × col matrix).
 - `_diffTextBlocks` — word-level через LCS на `Uint16Array`, fallback на coarse-diff если `m*n > 250000`.
-- `_diffViolations` — поле-за-полем (включая `descriptionList`/`additionalContent`).
+- `_diffViolations` — блочная модель: по каждому из 10 полей реестра — дифф списка блоков по `id` (added/removed/modified/reordered), внутри modified text-блока — word-diff, у table-блока — плоское сравнение ячеек; плюс дифф `fieldOrder` и `enabled` каждого поля.
 - `_diffInvoices` — поле-за-полем по `INVOICE_DIFF_FIELD_KEYS` (`portal/acts-manager/invoice-diff-fields.js`, новый shared-модуль с списком полей и подписей — переиспользуется `diff-renderer.js` для `INVOICE_FIELD_LABELS`).
 
 `portal/acts-manager/diff-renderer.js` (755 строк) — DOM-рендер с подсветкой.

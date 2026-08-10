@@ -418,15 +418,20 @@ Floating-тулбар (`initGlobalToolbar`) — не привязан к кон�
 `_applyToolbarPolicy(surface)` (:637), которая гасит кнопки по
 `SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :18-27:
 `createFootnote→footnotes`, `justify*→align`, `createLink→links`,
-`findReplace`, `improveText`); обратная операция — `detachToolbar()`.
-Для текстблоков политика разрешает всё; в полях нарушений отключена
+`insertUnorderedList`/`insertOrderedList→lists`, `findReplace`, `improveText`);
+обратная операция — `detachToolbar()`.
+Для текстблоков и rich-полей нарушения (§15.4) политика разрешает и списки
+(`lists:true` у обоих kind); в полях нарушений отключена
 кнопка сноски (§15). Известная дырка (задокументирована в коде, :11-17):
 `fontSize` из политики этим механизмом не применяется — триггер размера
 `#fontSizeTrigger` не несёт `data-command`; безвредно, пока обе политики
 `fontSize:true`. Кнопки форматирования
 (`bold`/`italic`/`underline`/`strikeThrough`/`justify*`) идут через
 `document.execCommand` (deprecated Web API, но по-прежнему поддержан
-всеми целевыми браузерами — см. §13 про non-goals).
+всеми целевыми браузерами — см. §13 про non-goals). Кнопки списков
+(«Маркированный список»/«Нумерованный список») — тот же `execCommand`
+(`insertUnorderedList`/`insertOrderedList`); DOCX-конвертер учит `<ul>/<ol>/<li>`
+стилями Word «List Bullet»/«List Number» на общем пути (§15.2).
 
 **Кнопка «Корректор» (`✨`, `data-command="improveText"`).** Обрабатывает выделенный
 текст через LLM в двух режимах (кнопки в шапке панели): «Исправить ошибки»
@@ -1375,13 +1380,18 @@ element с ре-рендером; внешняя запись — формали
 | Класс | Файл | kind | Точка записи в модель |
 |---|---|---|---|
 | `TextBlockSurface` | `textblock/editable-surface.js:12` | `textblock` | `saveContent`/`flushActiveEditor`/`finalizeEdit` |
-| `ViolationFieldSurface` | `violation/violation-field-surface.js:125` | `violationField` | `setViolationField` |
-| `ViolationContentItemSurface` | `violation-field-surface.js:196` | `violationField` | `setContentItemField` |
-| `ViolationListItemSurface` | `violation-field-surface.js:258` | `violationField` | `setViolationListItem` |
+| `ViolationBlockSurface` | `violation/violation-field-surface.js:86` | `violationField` | `setBlockField` |
 
-Запись в модель нарушения — **только** через мутаторы
-(`requireWrite`-guard + обновление превью); прямое присваивание в
-`violation[field]` обходит guard и запрещено.
+Блочная модель (2026-08): единственная поверхность `ViolationBlockSurface`
+покрывает оба rich-носителя блока поля нарушения — `content` текст-блока и
+`caption` блока-картинки; адресация — по СТАБИЛЬНОМУ `id` блока (не индексу):
+`viol:<vid>:<fieldKey>:block:<blockId>` (content) либо `...:caption`. Прежние
+поверхности старой модели (`ViolationFieldSurface` с путями,
+`ViolationContentItemSurface`, индексная `ViolationListItemSurface`) удалены
+вместе с моделью. Запись в модель нарушения — **только** через мутатор
+`setBlockField` (`requireWrite`-guard + обновление превью,
+`violation-mutations.js`); прямое присваивание в `block.content`/`block.caption`
+обходит guard и запрещено.
 
 ### 15.2 `EditorRegistry` + `SURFACE_POLICY`
 
@@ -1390,17 +1400,26 @@ app-импортов). Реестр: `setActive/getActive/clear/flushActive`
 (`flushActive` = `_active?.commit?.()`, ветка persistence-воронки — §11).
 Политика возможностей по kind:
 
-| kind | footnotes | fontSize | align | links | findReplace | improveText | capsuleLifecycle |
-|---|---|---|---|---|---|---|---|
-| `textblock` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| `violationField` | **—** | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** |
+| kind | footnotes | fontSize | align | links | lists | findReplace | improveText | capsuleLifecycle |
+|---|---|---|---|---|---|---|---|---|
+| `textblock` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `violationField` | **—** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** |
+
+`lists` (2026-08, блочная модель нарушений) — кнопки «Маркированный
+список»/«Нумерованный список» (`insertUnorderedList`/`insertOrderedList`,
+`COMMAND_POLICY_KEY` в `textblock-toolbar.js`) добавлены в ОБЩИЙ тулбар:
+доступны и в текстблоках, и в любом rich text-блоке поля нарушения — не
+только там, где раньше жили пункты `descriptionList`. DOCX-конвертер
+(`render_block_segments`, `docx/builders/inline.py`) учит `<ul>/<ol>/<li>` на
+общем пути и рендерит их стилями Word «List Bullet»/«List Number» одинаково
+для текстблоков и rich-полей нарушения.
 
 **`capsuleLifecycle` НЕ значит «есть/нет капсулы»** — это «капсульный
 lifecycle (observer, beforeinput, copy/cut/paste/drop, tooltip) ведёт
 `EditorController`». Текстблоки держат капсулы своим путём
 (`handleEditorFocus`, слушатели навешаны в `createEditor`) и через
 контроллер **не монтируются**: единственный вызов `EditorController.mount`
-во фронте — `violation-field-surface.js:423`. Будущий `kind='cell'`
+во фронте — `violation-field-surface.js:218`. Будущий `kind='cell'`
 (Фаза 2) включит lifecycle одной строкой политики.
 
 `textBlockManager.activeEditor` — **элемент-проекция** активной поверхности
@@ -1433,27 +1452,35 @@ mount-time слушатель опоздал бы на drop в несфокус�
 ### 15.4 Rich-поля нарушений
 
 Фабрика — `_createRichFieldEditor(surface, {placeholder, isReadOnly})`
-(`violation-field-surface.js:366`): `div.violation-field.violation-textarea`
+(`violation-field-surface.js:172`): `div.violation-field.violation-textarea`
 с `contentEditable`, наполнение из модели через `renderActContent`
 (профиль 'acts'), `field.__surface = surface` (линчпин поиска/замены,
-ставится до read-only-ветки — RO-поля тоже ищутся), `focus → mount`,
-`drop → handleSurfaceDrop`. Rich стали **все** текстовые поля: `violated`,
-`established`, 4 опциональных (`reasons`/`measures`/`consequences`/
-`responsible`), пункты `descriptionList`, кейсы/свободный текст и подпись
-картинки доп.контента. Plain остались: `filename`, `url` (base64),
-`width`, чекбоксы, метки. Канон состава — реестр
-`app/domains/acts/violation_fields.py` (флаг `rich`) + фронт-зеркало
-`violation-fields.js`; guard-тесты пиннят флаги с обеих сторон.
+ставится до read-only-ветки — RO-поля тоже ищутся), `focus → mount`
+(`:218`), `drop → handleSurfaceDrop`. Rich — не поле, а ТИП БЛОКА: `content`
+любого text-блока и `caption` любого image-блока, в любом из 10 полей
+реестра. Plain остались: `filename`, `url` (data:image-URL), `width` картинки,
+ячейки table-блока (verbatim, как у больших таблиц), чекбоксы, метки. Канон
+состава типов блоков — дискриминированный union в `act_content.py`
+(`ViolationTextBlockSchema`/`ViolationImageBlockSchema`/
+`ViolationTableBlockSchema`) + фронт-зеркало `violation-block-types.js`
+(`BLOCK_TYPES`); реестр полей `violation_fields.py` флаг `rich` больше не
+несёт — «богатость» определяется типом блока, не полем-контейнером.
 
 Teardown при пересоздании DOM — `_teardownActiveRichField(violationId)`;
-при удалении пункта списка зовётся строго **до** `splice` (адресация
-`ViolationListItemSurface` индексная).
+при удалении блока (`removeBlockFromField`, `violation-blocks.js`) зовётся
+строго **до** удаления блока мутатором `removeBlock` — иначе `unmount`
+закоммитил бы висящий ввод в уже удалённый блок поверх detached-хоста.
+Адресация `ViolationBlockSurface` — по стабильному `id` блока, не по индексу
+(устойчива к параллельному добавлению/удалению/перестановке блоков).
 
-Корректор коммитит в поверхность-владельца (§6), формализатор пишет через
-`surface.setContent` (`plainToRichHtml` из `shared/html-text.js`, обратный
-адаптер `_richToPlain` санитизирует до `innerHTML`), поиск/замена видит
-поля как `ViolationFieldSearchTarget` (§12.1) с параллельным
-undo-снимком поверхностей (§12.7).
+Корректор коммитит в поверхность-владельца (§6). Формализатор НЕ пишет через
+существующую поверхность: `ViolationManager._applyFormalized`
+(`violation-core.js`) добавляет НОВЫЙ text-блок в конец каждого извлечённого
+поля через мутатор `addBlock` — готовый HTML от LLM (списки `<ul><li>`)
+берётся как есть, плоская строка переводится `plainToRichHtml`
+(`shared/html-text.js`). Поиск/замена видит text-блоки/caption'ы нарушения
+как `ViolationFieldSearchTarget` (§12.1) с параллельным undo-снимком
+поверхностей (§12.7).
 
 Бэкенд-парность: санитизация nh3 по реестру (§9.3), HTML-aware проверка
 пустоты (`content_validation.py::_is_html_value_empty`), DOCX через общий
