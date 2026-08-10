@@ -10,19 +10,29 @@ retention-чистку, мониторинг, ёмкости, troubleshooting.
 `/api/v1/chat/conversations/{cid}/messages/{message_id}` до терминального
 статуса и рендерит ответ целиком (декоративный «эффект печати», без
 токен-стриминга). Форвард в агента: оркестратор/прямой проброс создаёт
-черновик `chat_messages` (status='streaming') + вопрос в шине
-`chat_agent_messages_bus`; фоновый `AgentChannelPoller` поллит шину;
+черновик `chat_messages` (status='streaming') + вопрос в шине;
+фоновый `AgentChannelPoller` поллит шину;
 `AgentChannelService.poll_once` дозаполняет reasoning и финализирует
 черновик (`chat_messages.status` → `complete`/`failed`; bus-строка → `completed`/`failed`).
+
+Пока черновик в `streaming` и привязан к шине (`chat_messages.agent_ref`),
+GET-поллинг дополнительно отдаёт `status_details: {bus_status, queue_ahead}`
+(`AgentChannelService.get_queue_details`, `app/domains/chat/services/agent_channel.py:403`):
+`bus_status` — статус вопроса в шине, `queue_ahead` — сколько вопросов
+стоит перед ним (считается только для `pending`). Это первый диагностический
+сигнал при жалобе «ассистент завис»: `pending` с растущим `queue_ahead` —
+очередь внешнего агента, `processing` — агент уже работает.
 
 См. также `app/domains/chat/services/agent_channel.py`,
 `agent_channel_poller.py` и `docs/integrations/external-agent-imitation.sql`
 (SQL-стенд имитации внешнего агента под единую таблицу).
 
 > **Имя bus-таблицы — без app-префикса**: задаётся `CHAT__AGENT_CHANNEL__TABLE_NAME`
-> целиком (дефолт `chat_agent_messages_bus`, **без** `DATABASE__TABLE_PREFIX`). В SQL
-> ниже подставь актуальное имя, если оно переопределено; на GP добавляется схема
-> `DATABASE__GP__SCHEMA`.
+> целиком (дефолт кода — `chat_agent_messages_bus`, **без** `DATABASE__TABLE_PREFIX`;
+> в `.env.prod` сейчас `agent_conversation_messages`). В SQL ниже подставь актуальное
+> имя своей инсталляции. Схема берётся из `CHAT__AGENT_CHANNEL__SCHEMA_NAME`, при
+> пустом значении — схема домена чата (`CHAT__SCHEMA_NAME`), затем основная схема
+> адаптера (`DATABASE__GP__SCHEMA` на GP).
 
 ---
 
@@ -109,7 +119,8 @@ SQL-операцию (SELECT шины, финализирующая транза
 
 | Параметр | Дефолт | Что значит |
 |---|---|---|
-| `TABLE_NAME` | `chat_agent_messages_bus` | Имя bus-таблицы |
+| `TABLE_NAME` | `chat_agent_messages_bus` | Имя bus-таблицы целиком, без app-префикса (в `.env.prod` — `agent_conversation_messages`) |
+| `SCHEMA_NAME` | `""` | Схема bus-таблицы; пусто → схема чата → основная схема адаптера |
 | `CLAIM_TIMEOUT_SEC` | 1800 (30 мин) | Сколько ждать, пока агент возьмёт вопрос в работу (фаза `pending` → `processing`). После — `mark_timeout(reason='claim')` |
 | `ANSWER_TIMEOUT_SEC` | 600 (10 мин) | Сколько ждать ответ агента (фаза `processing`). После — `mark_timeout(reason='answer')`, черновик финализируется error-блоком |
 | `POLL_MIN_INTERVAL_SEC` | 2.0 | Минимум между SELECT'ами поллера (старт adaptive backoff) |
@@ -179,10 +190,13 @@ ADMIN__DB_POOL_MONITOR__WARN_RATIO=0.9
 ```
 # Канал к агенту:
 audit_workstation.domains.chat.services.agent_channel_poller   # цикл polling шины
-audit_workstation.domains.chat.services.agent_channel          # submit / poll_once / mark_timeout
+audit_workstation.domains.chat.service.agent_channel           # submit / poll_once / mark_timeout
+                                                               # (именно "service", без "s" — так в коде)
 
-# Ошибки LLM (локальная LLM/GigaChat в синхронном POST):
+# Ошибки LLM (локальная LLM в синхронном POST):
 audit_workstation.domains.chat.agent_loop          # exception в петле оркестратора
+audit_workstation.domains.chat.llm_call            # retry / circuit breaker / fallback
+audit_workstation.domains.chat.services.llm_health_probe   # закрытие breaker'а по ping'у
 ```
 
 ---
@@ -197,15 +211,30 @@ audit_workstation.domains.chat.agent_loop          # exception в петле о�
 4. `admin.db_pool_monitor` — мониторинг asyncpg-пула (каждые 30 сек, WARNING при ≥0.9 утилизации)
 5. `chat.tool_metrics_batcher` — батч-INSERT в `chat_tool_metrics`
 6. `chat.audit_log_batcher` — батч-INSERT в `chat_audit_log`
-7. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит шину
-   `chat_agent_messages_bus` по активным запросам с adaptive backoff
+7. `chat.agent_channel_poller` — `AgentChannelPoller`: поллит bus-таблицу
+   канала агента по активным запросам с adaptive backoff
    (соединение не удерживает — исполнитель берёт коннект на каждую
    SQL-операцию тика), при старте reconcile подхватывает зависшие
    streaming-черновики `chat_messages`
-8. `chat.llm_health_probe` — периодическая проверка доступности LLM-провайдера
+8. `chat.llm_health_probe` — фоновый ping primary-LLM при открытом circuit
+   breaker (`CHAT__HEALTH_PROBE__*`); на маршруте `redis-bridge,…` пингом
+   служит heartbeat воркера моста + его `target_health`
+9. `notifications.email_init` — инициализация SMTP-клиента (ОТП-письма,
+   уведомления); при `NOTIFICATIONS__EMAIL__ENABLED=false` или пустом
+   `SMTP_PASSWORD` — no-op с WARNING
+10. `auth.redis` — подключение к Redis. Регистрируется **последним**: доменные
+    хуки цепляются при `discover_domains` (`app/main.py:286`), а
+    `register_lifespan_hooks()` вызывается строкой ниже (`:290`). Fail-fast:
+    ошибка = приложение не стартует
 
-**Shutdown** — в обратном порядке. Если что-то не остановилось за 5с —
-warning в лог.
+**Shutdown** — в обратном порядке (Redis закрывается первым). Если что-то не
+остановилось за 5с — warning в лог.
+
+В `/admin/diagnostics` батчеры видны под ключом `batchers`, а
+`admin.db_pool_monitor` / `chat.agent_channel_poller` / `chat.llm_health_probe` —
+под `background_tasks` (`app/core/observability_registry.py::get_all_statuses`).
+Хуки `auth.redis` и `notifications.email_init` фоновых задач не создают и в
+diagnostics не отображаются.
 
 ---
 
@@ -233,8 +262,13 @@ warning в лог.
 
 1. Логи: `audit_workstation.domains.chat.agent_loop` уровня
    `exception` — там реальная причина (timeout LLM, 5xx от провайдера, etc).
-2. Проверь circuit breaker (`CHAT__CIRCUIT_BREAKER_*`). Если он в `open`
-   — fallback-провайдер тоже недоступен.
+2. Проверь circuit breaker (`CHAT__CIRCUIT_BREAKER_*`) — в `/admin/diagnostics`
+   поле `background_tasks."chat.llm_health_probe".breaker_state`. Если `open` и
+   `last_ping_ok=false`, primary лежит; при пустом `CHAT__FALLBACK_PROFILE`
+   fallback выключен, и падать будет каждый запрос.
+3. Если маршрут `redis-bridge,…` — проверь heartbeat воркера моста
+   (`GET llm:bridge:worker:alive` в Redis) и наличие цели в его `targets`:
+   [`troubleshooting.md` №7](troubleshooting.md#7-llm-мост-redis-bridge-воркер-недоступен--дедлайн-заявки).
 
 ### 5.3. «Черновик ответа агента завис в status='streaming'»
 

@@ -12,6 +12,14 @@
 
 Гайд покрывает оба сценария — отличия отмечены **🅐 Action-only**.
 
+> Реально зарегистрированные сейчас инструменты — только action-типа
+> (`app/core/chat/names.py`: `chat.forward_to_knowledge_agent`, `chat.notify`,
+> `chat.list_pages`, `acts.open_act_page`, `admin.open_admin_panel`, два
+> `*.open_ck_*_page`). Информационные tool'ы домена актов удалены осознанно:
+> данные отдаёт внешний ИИ-агент, который сам ходит в БД
+> (`app/domains/acts/integrations/chat_tools.py`). Прежде чем заводить
+> «получить список X», проверьте, не должен ли на это отвечать агент.
+
 ---
 
 ## Шаг 1. Константа имени в `app/core/chat/names.py`
@@ -134,7 +142,13 @@ def get_chat_tools() -> list[ChatTool]:
 
 **Типы параметров (`ChatToolParam.type`):** `string`, `integer`, `boolean`,
 `array`, `object`, `date`. Для `array` — `items_type` указывает тип элементов.
-Для `enum` — список разрешённых значений.
+Для `enum` — список разрешённых значений. `date` уходит провайдеру как
+`{"type": "string", "format": "date"}` (`ChatTool.to_openai_tool`).
+
+**Поле `handler` можно оставить пустым только осознанно:** если handler
+строится per-request (как forward к внешнему агенту — ему нужны
+`conversation_id` и соединение), поставь `per_request_handler=True`. Иначе
+`register_tools()` на старте напишет warning «зарегистрирован без handler».
 
 ---
 
@@ -144,9 +158,10 @@ def get_chat_tools() -> list[ChatTool]:
 
 ```python
 # app/domains/acts/__init__.py
-from app.core.domain_registry import DomainDescriptor
 
-def _build_domain() -> DomainDescriptor:
+def _build_domain():
+    # Импорты внутри функции — сборка домена ленивая (см. реальный acts/__init__.py)
+    from app.core.domain import DomainDescriptor
     from app.domains.acts.integrations.chat_tools import get_chat_tools
     # ... остальная сборка ...
     return DomainDescriptor(
@@ -202,10 +217,11 @@ ClientActionsRegistry.register('my_new_action', (params) => {
 - НЕ зови `ClientActionsRegistry.execute(...)` напрямую — потеряешь
   идемпотентность по `block_id`. Используй `executeBlock({action, params, block_id})`.
 - Для action с навигацией (`open_url` и аналоги) пропускай URL через
-  `AppConfig.api.getUrl(url)`. Конвенция сохраняется как страховка на случай
-  proxied-деплоя (исторически — под JupyterHub-proxy без нее ловили 404 на
-  `/hub/...` минуя `/user/{user}/proxy/{port}/`); на актуальном SDP-деплое
-  proxy-путей нет.
+  `AppConfig.api.getUrl(url)`. `getUrl` вычисляет базовый префикс приложения из
+  текущего адреса страницы (`AppConfig.api.getBaseUrl`, `static/js/shared/app-config.js`)
+  и приклеивает его к относительному пути. На SDP приложение занимает корень
+  origin и префикс пустой, но конвенция обязательна: при деплое за прокси с
+  подпутём захардкоженный `/api/...` уходит мимо приложения и даёт 404.
 
 ---
 
@@ -300,6 +316,10 @@ grep -r "TOOL_GET_USER_ACTS\|acts.get_user_acts" \
 
 - **`name` не уникально между доменами** — `register_tools()` упадёт с
   `RuntimeError`. Используй формат `<domain>.<verb>_<object>`.
+- **Два имени схлопываются в одно проводное** — `acts.open_page` и
+  `acts_open_page` дают один и тот же `to_wire_name`, `register_tools()` падает
+  с `RuntimeError` («LLM не различит их»). Проверка в
+  `app/core/chat/tools.py:151-159`.
 - **Handler возвращает не str** — оркестратор не парсит. Сделай
   `json.dumps(result, ensure_ascii=False)`.
 - **Без `ensure_ascii=False`** — русский текст превратится в `\uXXXX`,
@@ -307,8 +327,11 @@ grep -r "TOOL_GET_USER_ACTS\|acts.get_user_acts" \
 - **Forgot button_translator для tool'а, который агент возвращает как
   кнопку** — фронт получит кнопку с `action_id=acts.get_user_acts`, а
   ClientActionsRegistry такого имени не знает → кнопка не работает.
-- **Action `open_url` с относительным URL без `getUrl`** — фронт под
-  JupyterHub-proxy уходит на `/hub/...`, 404. См. [`developer-guide.md §9.2`](developer-guide.md#92-за-jupyterhub-proxy).
+- **Action `open_url` с относительным URL без `getUrl`** — при деплое за прокси
+  с подпутём переход уходит мимо приложения, 404. См. [`deploy-and-configuration.md §9`](deploy-and-configuration.md).
+- **URL с чужой схемой в `open_url`** — блок не пройдёт валидацию:
+  `ALLOWED_OPEN_URL_SCHEMES` (`app/core/chat/blocks.py`) разрешает только
+  `http://`, `https://`, `mailto:` и путь от корня (`/`).
 - **Не помечать terminal-tool** — оркестратор сам определит по типу
   возвращаемого значения (`client_action` / `blocks_list` / `buttons`).
   Никакого `terminal=True` флага в `ChatTool` нет.

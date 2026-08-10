@@ -28,7 +28,21 @@
   `IF EXISTS`.
 
 **Схема для PG**: без квалификатора (схема `public`).
-**Схема для GP**: `s_grnplm_ld_audit_da_project_4` (значение `DATABASE__GP__SCHEMA`).
+
+**Схема для GP — не одна.** У каждой группы таблиц она берётся из своей настройки,
+и это **не обязательно** `DATABASE__GP__SCHEMA` (на ПРОМе тот равен
+`s_grnplm_ld_audit_da_project_34`, тогда как справочники живут в `_4`):
+
+| Таблицы | Настройка | Значение в `.env.prod` |
+|---|---|---|
+| `t_db_oarb_ua_*` (словари и факты) | `UA_DATA__SCHEMA_NAME` | пусто → основная схема адаптера (`DATABASE__GP__SCHEMA`) |
+| `t_db_oarb_ua_user` | `ADMIN__USER_DIRECTORY__SCHEMA` | `s_grnplm_ld_audit_da_project_4` |
+| `t_db_oarb_ua_hadoop_tables` | `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` | `s_grnplm_ld_audit_da_project_4` |
+| `t_db_oarb_ck_fr_validation` + вью | `CK_FIN_RES__SCHEMA_NAME` | `s_grnplm_ld_audit_da_project_4` |
+| `t_db_oarb_ck_cs_validation` + вью | `CK_CLIENT_EXP__SCHEMA_NAME` | `s_grnplm_ld_audit_da_project_4` |
+
+В SQL ниже подставлена `s_grnplm_ld_audit_da_project_4` — сверь с `.env` своей среды
+перед запуском.
 
 **Правила те же, что в `drop-all-tables.md`:**
 - **Без `CASCADE`.** Дропаем в обратном порядке зависимостей (вью — до таблиц, на
@@ -96,7 +110,8 @@ DROP TABLE IF EXISTS t_db_oarb_ua_hadoop_tables;  -- ACTS__INVOICE__HIVE_REGISTR
 
 ## 2. Greenplum (тестовая среда, перенаполняемая ETL)
 
-> Схема `s_grnplm_ld_audit_da_project_4` (значение `DATABASE__GP__SCHEMA`).
+> Схема `s_grnplm_ld_audit_da_project_4` — значение справочных настроек из таблицы выше,
+> **не** `DATABASE__GP__SCHEMA`; сверь со своим `.env`.
 > **Только для тест-среды, которую вы намеренно перезаполняете** — на боевом GP это
 > данные ETL.
 

@@ -5,7 +5,7 @@
 --
 --  Место: docs/integrations/external-agent-imitation.sql (НЕ часть продакшен-кода)
 --  Целевая БД: PostgreSQL (dev) и Greenplum (prod) — все запросы GP-совместимы
---  Связанная документация: docs/guides/developer-guide.md (Chat domain deep-dive §11)
+--  Связанная документация: docs/guides/ai-assistant.md (Chat domain deep-dive §11)
 --
 --  ВАЖНО — имена таблиц:
 --    Bus-таблица канала — БЕЗ app-префикса: её имя задаётся настройкой
@@ -31,7 +31,9 @@
 --                        reply_to=<id вопроса> и есть сигнал «ответ готов»
 --    • role            = 'user' (вопрос от AW) | 'assistant' (ответ агента)
 --                        | 'system'; CHECK владельца роль 'tool' НЕ допускает
---    • metadata        = JSONB: у вопроса ключи {mode, kb}; у ответа ключ
+--    • metadata        = JSONB: у вопроса ключи {mode, kb} (mode = agent_mode
+--                        запроса: 'adaptive' | 'always'; kb по умолчанию 'oarb');
+--                        у ответа ключ
 --                        {reasoning} — рассуждения агента (стримятся дельтами,
 --                        пока пишется ответ; legacy-ключ {thinking} AW тоже
 --                        понимает)
@@ -181,8 +183,12 @@ END$$;
 -- ────────────────────────────────────────────────────────────────────────────
 --
 -- buttons — массив [{action_id, label, params}]. Сейчас поддерживается
--- action_id 'acts.open_act_page' (открывает страницу акта по km_number).
+-- action_id 'acts.open_act_page' (params: km_number и/или sz_number).
 -- Кнопки рендерятся под текстом ответа как интерактивные элементы.
+-- Трансляция: button_translator ресолвит КМ/СЗ в URL /constructor?act_id=<id>
+-- и переписывает кнопку в клиентский action open_url. Если акта с таким
+-- номером в БД НЕТ, клик выдаст уведомление «Акт <номер> не найден» —
+-- для проверки навигации подставь km_number реально существующего акта.
 --
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 
@@ -463,7 +469,7 @@ BEGIN
             'other_user_42',                            -- другой пользователь
             'user',
             'Другой пользователь: что такое КМ-99-00001?',
-            '{"mode": "adaptive", "kb": "acts_default"}'::jsonb,
+            '{"mode": "adaptive", "kb": "oarb"}'::jsonb,   -- как пишет AW: mode из agent_mode, kb по умолчанию 'oarb'
             'pending',
             now() - INTERVAL '1 minute',               -- РАНЬШЕ вашего вопроса
             now() - INTERVAL '1 minute');
@@ -492,15 +498,16 @@ WHERE user_id  = 'other_user_42'
   AND status   = 'pending';
 
 -- Проверить: впереди должно стать 0.
+-- (Тот же запрос, что и выше: очередь глобальная, фильтра по user_id в
+--  AgentMessageRepository.count_pending_before НЕТ — свои вопросы тоже считаются.)
 SELECT COUNT(*) AS ahead_count
 FROM chat_agent_messages_bus
 WHERE role = 'user'
   AND status = 'pending'
-  AND user_id <> (SELECT user_id FROM chat_agent_messages_bus WHERE id = '<QUESTION_ID>')
   AND created_at < (SELECT created_at FROM chat_agent_messages_bus WHERE id = '<QUESTION_ID>');
 
--- ── Фронт должен обновить статус на «Агент скоро возьмёт в работу…» или убрать
--- ── счётчик очереди. Поллер продлил claim-таймер, зафиксировав движение очереди.
+-- ── Фронт должен сменить строку статуса на «В очереди: вы следующий»
+-- ── (ahead_count = 0). Поллер продлил claim-таймер, зафиксировав движение очереди.
 -- ── Далее — сценарий 9 (взятие в работу) или 1/2/3 (сразу завершить ваш вопрос).
 
 
@@ -508,8 +515,8 @@ WHERE role = 'user'
 -- 9. СЦЕНАРИЙ "задержка взятия в работу"
 -- ────────────────────────────────────────────────────────────────────────────
 --
--- Цель: наблюдать, что фронт продолжает показывать «В очереди: впереди 0 запросов»
--- (или «Ожидаем агента…») пока вопрос остаётся pending — даже без чужих запросов.
+-- Цель: наблюдать, что фронт продолжает показывать «В очереди: вы следующий»
+-- (текст для ahead_count = 0) пока вопрос остаётся pending — даже без чужих запросов.
 -- Claim-таймер AW — 30 мин idle для pending; пока вопрос живой (обновляется
 -- или уменьшается очередь) — таймер не истечёт.
 --

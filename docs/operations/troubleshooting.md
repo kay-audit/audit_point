@@ -1,6 +1,6 @@
 # Troubleshooting — типовые проблемы
 
-Сборник симптомов и решений для частых ошибок. Если не нашёл свою проблему — проверь раздел «Key Patterns» в `docs/guides/developer-guide.md` и логи uvicorn.
+Сборник симптомов и решений для частых ошибок. Если не нашёл свою проблему — начни с хаба гайд-бука [`docs/guides/developer-guide.md`](../guides/developer-guide.md) и логов uvicorn.
 
 ## Оглавление
 
@@ -11,7 +11,7 @@
 4a. [Форвард в «Базу знаний ОАРБ» не срабатывает](#4a-форвард-в-базу-знаний-оарб-не-срабатывает)
 5. [LLM возвращает 4xx (включая GigaChat 422)](#5-llm-возвращает-4xx-включая-gigachat-422)
 6. [HTTP-метрики не пишутся в БД](#6-http-метрики-не-пишутся-в-бд)
-7. [404 на `/api/v1/...` под JupyterHub-proxy](#7-404-на-apiv1-под-jupyterhub-proxy)
+7. [LLM-мост `redis-bridge`: воркер недоступен / дедлайн заявки](#7-llm-мост-redis-bridge-воркер-недоступен--дедлайн-заявки)
 8. [Валидация КМ-номера падает](#8-валидация-км-номера-падает)
 9. [`RuntimeError: Database pool не инициализирован`](#9-runtimeerror-database-pool-не-инициализирован)
 10. [Greenplum: `InvalidTableDefinitionError` при `CREATE TABLE`](#10-greenplum-invalidtabledefinitionerror-при-create-table)
@@ -27,6 +27,7 @@
 20. [Singleton-lock — приложение не стартует / зависший процесс](#20-singleton-lock--приложение-не-стартует--зависший-процесс)
 21. [Записи в audit_log / metrics пропадают — что проверить](#21-записи-в-audit_log--metrics-пропадают--что-проверить)
 22. [Старт падает: `must be owner of relation <bus-таблица>`](#22-старт-падает-must-be-owner-of-relation-bus-таблица)
+23. [Redis недоступен: приложение не стартует / ошибки блокировок](#23-redis-недоступен-приложение-не-стартует--ошибки-блокировок)
 
 ---
 
@@ -34,14 +35,16 @@
 
 **Симптом:** при работе с Greenplum в логе появляется сообщение `Kerberos токен протух. Выполните 'kinit' для обновления.`, запросы к БД падают с ошибкой инициализации пула либо при первом обращении к connection.
 
-**Причина:** Kerberos билет имеет ограниченный TTL (обычно 8–24 часа). Pre-flight проверка `_is_kerberos_ticket_valid()` (см. `app/db/connection.py:65`) дёргает `klist -s` и при ненулевом exit-коде логирует инструкции через `_log_kerberos_instructions()`.
+**Причина:** Kerberos билет имеет ограниченный TTL (обычно 8–24 часа). Pre-flight проверка `_is_kerberos_ticket_valid()` (`app/db/connection.py:96`) дёргает `klist -s` и при ненулевом exit-коде логирует инструкции через `_log_kerberos_instructions()` (`app/db/connection.py:126`).
 
 **Решение:**
 1. В терминале выполни `kinit` (введи пароль доменной учётки).
 2. Проверь билет: `klist` — должен быть валидный TGT.
 3. Перезапусти приложение (`uvicorn ...`) либо повтори запрос; пул переинициализируется при следующей попытке.
 
-**См. также:** `app/db/connection.py` строки 56–101, 219–246.
+> Текст ошибки в самом приложении местами ещё говорит про «терминал JupyterHub» (`app/main.py:207` — CRITICAL при старте, `app/main.py:388-392` — 401-ответ обработчика `KerberosTokenExpiredError`). Это историческая формулировка кода; на SDP `kinit` выполняется в обычном терминале хоста. Лог `_log_kerberos_instructions` JupyterHub не упоминает.
+
+**См. также:** `app/db/connection.py::_is_kerberos_ticket_valid` / `::_log_kerberos_instructions`, pre-flight и перехват в `init_db` (`app/db/connection.py:261-290`).
 
 ---
 
@@ -57,9 +60,9 @@
 **Решение:**
 1. Проверь `klist`.
 2. Проверь доступность хоста (`Test-NetConnection <gp_host> -Port 5432` в PowerShell).
-3. Для локальной разработки переключись на PostgreSQL: в `.env` поставь `DATABASE__TYPE=postgresql` и заполни локальные креды.
+3. Для локальной разработки переключись на PostgreSQL: в `.env` поставь `DATABASE__TYPE=postgresql` и заполни локальные креды (готовый набор — `.env.dev`).
 
-**См. также:** `app/db/connection.py::_is_kerberos_ticket_valid`, `developer-guide.md §6.3`.
+**См. также:** `app/db/connection.py::_is_kerberos_ticket_valid`, §6.3 в [`database.md`](../guides/database.md).
 
 ---
 
@@ -93,7 +96,8 @@
 1. Проверь таблицу `chat_agent_messages_bus`: есть ли запись-вопрос (`role='user'`) и появился ли ответ (`role='assistant'` с `reply_to` = id вопроса). Статус ответа должен дойти до `completed`. Если ответа нет — внешний агент не подхватил вопрос.
 2. Если агент действительно отвечает медленнее — поднять `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` в `.env`.
 3. **Параметры polling** — `CHAT__AGENT_CHANNEL__POLL_MIN_INTERVAL_SEC` (2.0), `POLL_MAX_INTERVAL_SEC` (10.0), `POLL_BACKOFF_MULTIPLIER` (1.5). Интервал растёт от min к max при пустых тиках и сбрасывается при появлении ответа.
-4. Имя bus-таблицы настраивается через `CHAT__AGENT_CHANNEL__TABLE_NAME` (дефолт `chat_agent_messages_bus`).
+4. Имя bus-таблицы настраивается через `CHAT__AGENT_CHANNEL__TABLE_NAME` — целиком, без app-префикса (дефолт кода `chat_agent_messages_bus`, в `.env.prod` — `agent_conversation_messages`); схема — `CHAT__AGENT_CHANNEL__SCHEMA_NAME`.
+5. Промежуточный статус виден и без SQL: пока черновик в `streaming`, GET `/messages/{message_id}` отдаёт `status_details: {bus_status, queue_ahead}` — `pending` с ненулевым `queue_ahead` означает очередь на стороне внешнего агента.
 
 **См. также:** `app/domains/chat/services/agent_channel.py`, `agent_channel_poller.py`, `docs/integrations/external-agent-imitation.sql`.
 
@@ -121,19 +125,21 @@
 
 ### 5. LLM возвращает 4xx (включая GigaChat 422)
 
-**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (Qwen/SGLang) или `422 RequestInputValidationException` (GigaChat). Отдельный случай — падение на **первом же** запросе с `400 invalid_request_error: tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}'` (Anthropic-модели, например через openrouter по маршруту `openai`).
+**Симптом:** Чат падает на втором tool-вызове. В логе LLM-провайдер: `400 Input is a zero-length, empty document` (OpenAI-совместимый бэкенд с Qwen) или `422 RequestInputValidationException` (GigaChat). Отдельный случай — падение на **первом же** запросе с `400 invalid_request_error: tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}'` (Anthropic-модели за маршрутом `openai`).
 
 **Причина:** одна из трёх известных проблем:
 - assistant-сообщение в history содержит `content=null` + `tool_calls`.
 - `arguments=""` для no-args tool_call'ов (`chat.list_pages` и т.п.) попало в эхо.
-- в `tools[]` уехало доменное имя с точкой. Anthropic валидирует имя по спеке OpenAI строго, sglang и GigaChat — нет, поэтому проблема видна только после смены провайдера.
+- в `tools[]` уехало доменное имя с точкой. Anthropic валидирует имя по спеке OpenAI строго, локальные inference-серверы и GigaChat — нет, поэтому проблема видна только после смены бэкенда.
+
+> Маршрут LLM задаётся `CHAT__PROFILE`: `openai` | `gigachat` | `redis-bridge,openai` | `redis-bridge,gigachat` (`parse_route` — `app/domains/chat/settings.py:84`). Проводной формат тела (`openai`/`gigachat`) от транспорта не зависит — эти 4xx одинаково воспроизводятся и при прямом HTTP, и через мост.
 
 **Решение:**
 1. Обнови ветку до актуального master — все три бага закрыты (`safe_args` в `orchestrator_helpers.py`, явная сборка dict с `content=raw_msg.content or ""`, `to_wire_name` в `app/core/chat/tools.py`).
 2. Если фикс уже есть, а ошибка повторяется — проверь, не делает ли твой новый код `messages.append(response.choices[0].message)` напрямую (Pydantic `ChatCompletionMessage` сериализует `content` как `null`).
 3. Для `tools.N.custom.name` — проверь, что схему строит `ChatTool.to_openai_tool()`, а не собранный руками dict с `tool.name`; см. dev-guide §7.1a «Имена инструментов: каноническое ≠ проводное».
 
-**См. также:** правила «assistant с `content=null` + tool_calls недопустим для Qwen/SGLang (400) и GigaChat-proxy (422)» и «`arguments=""` для no-args tool_call'ов даёт тот же класс падений — оба эха собираются вручную через `safe_args()` (хелпер в `app/domains/chat/services/orchestrator_helpers.py`) и применяются в обеих ветках agent loop'а (основной `run_agent_loop` non-streaming и ветка GigaChat-fallback)».
+**См. также:** правила «assistant с `content=null` + tool_calls недопустим для Qwen на OpenAI-совместимом бэкенде (400) и GigaChat-proxy (422)» и «`arguments=""` для no-args tool_call'ов даёт тот же класс падений — оба эха собираются вручную через `safe_args()` (хелпер в `app/domains/chat/services/orchestrator_helpers.py`) и применяются в обеих ветках agent loop'а (основной `run_agent_loop` non-streaming и ветка GigaChat-fallback)».
 
 ---
 
@@ -152,20 +158,20 @@
 
 ---
 
-### 7. 404 на `/api/v1/...` под JupyterHub-proxy
+### 7. LLM-мост `redis-bridge`: воркер недоступен / дедлайн заявки
 
-> Историческое: относится к упразднённому JupyterHub-деплою; актуальный деплой — SDP, доступ по IP:порту напрямую, без proxy-путей (`developer-guide.md` §9.3a). Конвенция `AppConfig.api.getUrl()` и regression-grep из решения ниже остаются в силе как страховка на случай будущего proxied-деплоя.
+**Симптом:** при маршруте `CHAT__PROFILE=redis-bridge,gigachat` (или `redis-bridge,openai`) чат либо **мгновенно** отдаёт штатный error-блок недоступности LLM, либо не отвечает до конца `CHAT__REQUEST_TIMEOUT` и падает по таймауту. При прямых маршрутах (`gigachat` / `openai`) тот же запрос работает.
 
-**Симптом:** В Greenplum-окружении (через JupyterHub) фронт стабильно ловит 404 на `/api/v1/<что-угодно>`. Локально всё работает.
-
-**Причина:** Фронт делает `fetch('/api/v1/...')` без `AppConfig.api.getUrl(...)`. Браузер резолвит относительный URL против origin (`https://hub.example/`), JupyterHub роутит на `/hub/api/v1/...` минуя `/user/{user}/proxy/{port}/` → 404.
+**Причина:** локальная LLM исполняется не из приложения, а воркером в Jupyter DataLab: заявка уходит в Redis Stream `llm:bridge:requests`, ответ читается из `llm:bridge:resp:{id}` (префикс — `CHAT__REDIS_BRIDGE__KEY_PREFIX`, дефолт `llm:bridge:`). Перед `XADD` клиент читает heartbeat `llm:bridge:worker:alive` (воркер обновляет каждые 15 сек, TTL 45 сек) и проверяет, что цель маршрута есть в его `targets`; если нет — мгновенный `APIConnectionError` без ожидания. Дедлайн ожидания ответа равен `CHAT__REQUEST_TIMEOUT`; по нему поднимается `BridgeDeadlineError` (подкласс `APITimeoutError`), который **сознательно не ретраится**, но включает circuit breaker и fallback-маршрут.
 
 **Решение:**
-1. Все fetch'и к API ОБЯЗАНЫ идти через `AppConfig.api.getUrl('/api/v1/...')`.
-2. Симметрично client_action `open_url` — относительные URL прогонять через `resolveProxyUrl`.
-3. Найти дыры: `grep "fetch\(\s*['\"\`]/api"` по `static/js/`.
+1. Проверить heartbeat: `redis-cli -h <REDIS__HOST> -p <REDIS__PORT> GET llm:bridge:worker:alive`. Ключа нет → воркер не запущен либо heartbeat протух: открыть `scripts/datalab/llm_redis_worker.ipynb` в DataLab и сделать Run All.
+2. Ключ есть, но в `targets` нет нужной цели (`gigachat` / `openai`) — у цели не задан URL в окружении ноутбука (`GIGACHAT_API_URL` / `OPENAI_API_URL`); токен для локального бэкенда опционален.
+3. `XLEN llm:bridge:requests` устойчиво растёт — воркер не вычитывает stream (упал, завис на rate limit цели, нет сети до бэкенда).
+4. Поле `target_health` в heartbeat — карта живости бэкендов по `GET /models`. Её читает только фоновая задача `chat.llm_health_probe`; пользовательский путь на неё не смотрит, поэтому «воркер жив, а LLM за ним лежит» выглядит как обычные 5xx от провайдера.
+5. Проверить fallback: `CHAT__FALLBACK_PROFILE` (пустое значение = fallback выключен). Типовая прод-конфигурация — primary `redis-bridge,gigachat`, fallback `redis-bridge,openai` на том же воркере.
 
-**См. также:** `docs/guides/developer-guide.md` §9.2.
+**См. также:** [`docs/integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md) (протокол, конверты, smoke-чеклист), `app/domains/chat/services/redis_bridge_adapter.py`, `scripts/datalab/llm_redis_worker.ipynb`.
 
 ---
 
@@ -187,13 +193,13 @@
 
 **Симптом:** Любой запрос к API возвращает 500 с этим сообщением.
 
-**Причина:** Lifespan приложения ещё не отработал (uvicorn недавно стартовал и пул в процессе прогрева) либо инициализация упала (Kerberos, сеть, неверные креды) — поищи в логах строку `Database pool ready: ...` (`app/db/connection.py:252`). Если её нет — пул не поднялся.
+**Причина:** Lifespan приложения ещё не отработал (uvicorn недавно стартовал и пул в процессе прогрева) либо инициализация упала (Kerberos, сеть, неверные креды) — поищи в логах строку `Database pool ready: ...` (`app/db/connection.py:294`). Если её нет — пул не поднялся.
 
 **Решение:**
 1. Дождись `Database pool ready:` в логах перед первыми запросами.
 2. Если не появляется — проверь предыдущие строки лога: там будет конкретная причина (Kerberos, ConnectionRefused, неверный пароль).
 
-**См. также:** `app/db/connection.py::init_db`, `developer-guide.md §6.3`.
+**См. также:** `app/db/connection.py::init_db`, §6.3 в [`database.md`](../guides/database.md).
 
 ---
 
@@ -208,7 +214,7 @@
 2. Lookups `WHERE id = $1` по-прежнему идут через PK-индекс (`id` стоит первым).
 3. Проверь регрессию: `tests/test_gp_compatibility.py::test_distributed_by_subset_of_primary_key`.
 
-**См. также:** `docs/guides/developer-guide.md` §6.2 и §6.5.
+**См. также:** §6.2 и §6.5 в [`database.md`](../guides/database.md).
 
 ---
 
@@ -226,7 +232,7 @@
    - `get_settings.cache_clear()` — если используется `@lru_cache()` декорированный геттер.
 2. In-process `asyncio.Lock` (например `_user_locks`) — сбрасывай через autouse-фикстуру, инициализируй lazily (НЕ `defaultdict(asyncio.Lock)`).
 
-**См. также:** `tests/conftest.py`, `docs/guides/developer-guide.md` §8.2.
+**См. также:** `tests/conftest.py`, §8.2 в [`testing.md`](../guides/testing.md).
 
 ---
 
@@ -234,14 +240,16 @@
 
 **Симптом:** В сообщении ассистента вместо контента видно warning-fallback вида «⚠ Блок неизвестного типа …».
 
-**Причина:** Бэк добавил новый тип блока (например `chart`, `table_grid`), но фронт ещё не знает о нём — он отсутствует в `KNOWN_BLOCK_TYPES`. См. актуальный список: `static/js/shared/chat/chat-messages.js:21` (`KNOWN_BLOCK_TYPES` Set).
+**Причина:** Бэк прислал тип блока, которого нет в `switch (block.type)` метода `ChatRenderer.renderBlock` (`static/js/shared/chat/chat-renderer.js:437-465`). Неизвестный тип уходит в ветку `default` → `console.warn('ChatRenderer: неизвестный тип блока', …)` и `_renderUnknown` (`:488`), который и рисует плашку «⚠ Блок неизвестного типа: `<type>`. Обновите страницу.».
+
+> Гейт рендера — именно `switch`, а **не** `KNOWN_BLOCK_TYPES`. Этот Set (`static/js/shared/chat/chat-messages.js:21`) в рендер-пути не участвует: во всём фронте у него три вхождения — объявление (`:21`), реэкспорт (`:36`) и `window.*` (`:678`). Добавление типа в Set не чинит проблему.
 
 **Решение:**
-1. Добавить новый тип в `KNOWN_BLOCK_TYPES` Set.
-2. Добавить handler в `ChatRenderer.renderBlock` (`static/js/shared/chat/chat-renderer.js:136`).
-3. Параллельно на бэке тип должен быть зарегистрирован И в `MessageBlock` union (`app/core/chat/blocks.py`), И в `_DiscriminatedBlock` (`app/core/chat/schemas.py`) — иначе `parse_message_blocks` не распознает.
+1. Добавить `case '<тип>':` в `switch` в `ChatRenderer.renderBlock` и метод рендера рядом с `_renderText`/`_renderButtons`.
+2. Параллельно на бэке тип должен быть зарегистрирован И в `MessageBlock` union (`app/core/chat/blocks.py`), И в `_DiscriminatedBlock` (`app/core/chat/schemas.py`) — иначе `parse_message_blocks` не распознает.
+3. Если тип уже поддержан в актуальной версии — у пользователя закешированная старая статика: hard-reload (плашка так и советует).
 
-**См. также:** `docs/testing/manual-qa-frontend-unknown-block.md`. При добавлении нового блока обнови `MessageBlock` union в `app/core/chat/blocks.py` И `_DiscriminatedBlock` в `app/core/chat/schemas.py` — иначе `parse_message_blocks` не распознает тип.
+**См. также:** `docs/testing/manual-qa-frontend-unknown-block.md`.
 
 ---
 
@@ -255,13 +263,13 @@
 1. Для проверки дефолтов инстанцируй модель напрямую с минимально нужными required-полями: `ChatDomainSettings(api_base="...", api_key="...", model="...")`.
 2. `_load_from_env` используй ТОЛЬКО для проверки nested env-override (типа `CHAT__RETRY__ON_429`) с явным `monkeypatch.setenv(...)`.
 
-**См. также:** `docs/guides/developer-guide.md` §8.4.
+**См. также:** §8.4 в [`testing.md`](../guides/testing.md).
 
 ---
 
 ### 14. GigaChat: 422 `RequestInputValidationException` на втором tool-вызове
 
-**Симптом:** Профиль `gigachat`, первый вызов с function_call успешен, второй валится с 422.
+**Симптом:** Маршрут с проводным форматом GigaChat (`gigachat` или `redis-bridge,gigachat`), первый вызов с function_call успешен, второй валится с 422.
 
 **Причина:** Нативная схема GigaChat-proxy валидирует request строго: `function_call.arguments` в assistant-сообщении должно быть **dict**, не JSON-string. На пути ответа `_translate_response` делает `dict → JSON-string` (для OpenAI SDK-схемы), а на обратном пути (эхо history) `_translate_messages` через `_args_to_dict(raw)` должен делать `JSON-string → dict`.
 
@@ -278,13 +286,13 @@
 
 **Симптом:** В UI редактора индикатор сохранения завис в жёлтом цвете (локально сохранено, в БД не записано). Никаких 4xx/5xx в Network tab.
 
-**Причина:** `StorageManager` (`static/js/state/storage-manager.js`) использует dual-tracking save: red (несохранено) → yellow (в localStorage) → white (в БД). DB-save идёт через debounce 3 секунды + periodic 2 минуты. Если индикатор завис в yellow дольше 2 минут — либо есть JS-ошибка в момент DB-save, либо сервер вернул не 200/204.
+**Причина:** `StorageManager` (`static/js/constructor/storage-manager.js`) использует dual-tracking save: red (несохранено) → yellow (в localStorage) → white (в БД). Снимок в localStorage пишется по debounce `AppConfig.localStorage.autoSaveDebounce` (3 сек) и периодически раз в `periodicSaveInterval` (2 мин). Если индикатор завис в yellow дольше 2 минут — либо есть JS-ошибка в момент DB-save, либо сервер вернул не 200/204.
 
 **Решение:**
 1. Открой DevTools Console — поищи ошибки от `StorageManager`.
 2. Открой Network — найди PUT/PATCH на эндпоинт сохранения акта, проверь status и response.
 3. Если запрос не уходит вообще — проверь, что `AppState.markAsUnsaved()` действительно дёргается (proxy-based tracking).
-4. В крайнем случае — `localStorage.getItem('act_<id>')` содержит последнюю валидную версию, можно восстановить.
+4. В крайнем случае — снимок черновика лежит в `localStorage` под ключом `audit_workstation_state:<act_id>` (`StorageManager._snapshotKey`, префикс — `AppConfig.localStorage.stateKeyPrefix`); там последняя валидная версия, её можно восстановить.
 
 **См. также:** `docs/guides/developer-guide.md` §4.6 (Dual-tracking save).
 
@@ -343,7 +351,7 @@
 **Решение:**
 1. В `app/domains/<domain>/migrations/greenplum/schema.sql` использовать обычный `CREATE INDEX ...` без `IF NOT EXISTS`. GP-адаптер исполняет SQL по одному statement и ловит `DuplicateTableError`/`DuplicateObjectError` — повторный накат безопасен.
 2. Для колонок — добавлять только в новые таблицы или через отдельный bootstrap, проверяющий `information_schema.columns`.
-3. Тот же запрет распространяется на `CREATE SEQUENCE IF NOT EXISTS`, `ON CONFLICT`, `jsonb_set()`, `gen_random_uuid()` — см. `docs/guides/developer-guide.md` «Greenplum Compatibility».
+3. Тот же запрет распространяется на `CREATE SEQUENCE IF NOT EXISTS`, `ON CONFLICT`, `jsonb_set()`, `gen_random_uuid()` — см. «Greenplum Compatibility» в [`database.md`](../guides/database.md).
 
 **См. также:** `tests/test_gp_compatibility.py`, `app/db/adapters/greenplum.py`.
 
@@ -376,7 +384,7 @@
 
 **Симптом:** при старте процесс падает с критичным логом `Не удалось захватить singleton-lock: ...` и `RuntimeError` в lifespan. Тело сообщения обычно `lock уже держит другой воркер pid=N host=...`.
 
-**Причина:** `acquire_singleton_lock()` (`app/core/singleton_lock.py:38-86`) пишет строку в таблицу `{PREFIX}app_singleton_lock` с PK по `service_name`. В JupyterHub-деплое допустим **ровно один** процесс на пользователя — это защищает `_running`-registry раннера и in-process `asyncio.Lock`'и от двойной активации. При мягком shutdown lifespan делает DELETE строки (`app/main.py:266-280`). При жёстком kill -9 / OOM-killer'е строка остаётся; следующий старт через `stale_ttl_sec` (`SECURITY__SINGLETON_LOCK_STALE_TTL_SEC`, default 60 сек) перезапишет её. Внутри окна TTL — старт упадёт.
+**Причина:** `acquire_singleton_lock()` (`app/core/singleton_lock.py:38`) пишет строку в таблицу `{PREFIX}app_singleton_lock` с PK по `service_name`. Деплой допускает **ровно один** процесс приложения — это защищает in-process реестры (батчеры, `asyncio.Lock`'и сервисов, поллер шины) от двойной активации. При мягком shutdown lifespan делает DELETE строки (`release_singleton_lock`, `app/main.py:249-259`). При жёстком kill -9 / OOM-killer'е строка остаётся; следующий старт через `stale_ttl_sec` (`SECURITY__SINGLETON_LOCK_STALE_TTL_SEC`, default 60 сек) перезапишет её. Внутри окна TTL — старт упадёт.
 
 **Что делать:**
 
@@ -401,7 +409,7 @@
 
 4. Если процесс действительно жив — найти его и остановить (`kill <pid>`); при корректном SIGTERM lifespan сам удалит строку.
 
-**См. также:** `app/main.py:130-146` (захват), `app/main.py:266-280` (release), `app/core/singleton_lock.py`, `docs/operations/operations-recovery.md` (полный playbook).
+**См. также:** `app/main.py:134-149` (захват), `app/main.py:249-259` (release), `app/core/singleton_lock.py` (`acquire_singleton_lock` — строка 38, `release_singleton_lock` — 124), [`operations-recovery.md`](operations-recovery.md) (полный playbook).
 
 ---
 
@@ -415,10 +423,10 @@
 
 1. Получить состояние батчеров через diagnostics-endpoint (нужна роль `Админ`):
    ```bash
-   curl -X GET "http://<host>/<proxy>/api/v1/admin/diagnostics" | jq
+   curl -X GET "http://<host>:<port>/api/v1/admin/diagnostics" | jq
    ```
 
-2. В ответе — `batchers.<имя>.dropped_count`. Если ≠ 0 — записи теряются. Также интересны `last_error` (текст последнего исключения flush'а) и `last_flush_ago_sec` (когда был последний успешный flush).
+2. В ответе — два ключа: `batchers` и `background_tasks` (`app/core/observability_registry.py::get_all_statuses`). Смотреть `batchers.<имя>.dropped_count`. Если ≠ 0 — записи теряются. Также интересны `last_error` (текст последнего исключения flush'а) и `last_flush_ago_sec` (когда был последний успешный flush).
 
 3. В логах найти строки `Батчер ...: буфер переполнен` (overflow) и `Батчер ...: flush_callback упал` (ошибка записи в БД). В overflow-логе `extra` содержит `batcher_name`, `dropped_now`, `dropped_count_total`.
 
@@ -426,7 +434,7 @@
    - При overflow — поднять `OBSERVABILITY__METRICS_MAX_BUFFER_SIZE` или `OBSERVABILITY__METRICS_BATCH_SIZE` (быстрее опустошение), либо уменьшить нагрузку, генерирующую события (имя видно в `batcher.name`).
    - При `last_error` — устранить корневую причину (например, CHECK constraint без mapping в `CHECK_CONSTRAINT_MESSAGES`).
 
-**См. также:** `app/core/metrics_batcher.py::get_status`, `app/core/observability_registry.py`, `app/api/v1/endpoints/admin_diagnostics.py`, `docs/guides/developer-guide.md` §9.5a / §9.5b.
+**См. также:** `app/core/metrics_batcher.py::get_status`, `app/core/observability_registry.py`, `app/api/v1/endpoints/admin_diagnostics.py`, §9.5a / §9.5b в [`deploy-and-configuration.md`](../guides/deploy-and-configuration.md).
 
 ---
 
@@ -439,3 +447,25 @@
 **Решение:** исправлено в адаптерах (`app/db/adapters/{base,greenplum,postgresql}.py`): операторы-«спутники» (`CREATE INDEX`, `COMMENT ON`) уже существующей таблицы пропускаются, если таблица объявлена в schema.sql **внешней** директивой `-- @external-table: <имя как в DDL>` (bus-таблица канала агента объявлена так в обеих схемах chat-домена). Спутники собственных существующих таблиц исполняются как раньше — иначе новый индекс из релиза молча не доезжал бы до развёрнутых стендов (дубликаты идемпотентны: `IF NOT EXISTS` на PG, перехват `DuplicateObjectError` на GP). `ALTER TABLE` исполняется всегда (путь эволюции собственных таблиц). При появлении новой внешней таблицы — добавь директиву рядом с её dev-имитацией. На старых версиях — митигация: попросить владельца создать индексы из schema.sql либо выдать ownership учётке приложения.
 
 **См. также:** `DatabaseAdapter._external_tables_from_sql`, `DatabaseAdapter._companion_target_table`, `tests/db/test_adapters.py::TestSkipCompanionsForExistingTables`.
+
+---
+
+### 23. Redis недоступен: приложение не стартует / ошибки блокировок
+
+**Симптом:** старт падает с `RuntimeError: Redis недоступен (<host>:<port>/<db>): ... Redis обязателен во всех окружениях — проверьте настройки REDIS__* в .env и что сервер запущен`. Либо приложение уже работает, но в логе идут WARNING'и вида «Redis недоступен при чтении кеша …», а захват/продление блокировки акта отдаёт 5xx.
+
+**Причина:** Redis — обязательная инфраструктурная зависимость во всех окружениях (DEV = ПРОМ = тесты), подключается startup-хуком `auth.redis` (`app/auth/lifecycle.py:69`) по принципу fail-fast: без Redis приложение не стартует, `AUTH__ENABLED` на это не влияет. На Redis живут ОТП-коды и сессии авторизации, кэши (роли, user-контекст, счётчик непрочитанных уведомлений), блокировки актов (`lock:act:{id}`, `app/domains/acts/repositories/act_lock_backends.py:28`) и заявки LLM-моста (`llm:bridge:*`, п. 7).
+
+**Поведение при сбое Redis уже после старта** — не режим работы, а авария; деградация разная по подсистемам:
+- кэши — WARNING в лог + сквозной поход в SQL (запрос отрабатывает);
+- мутации блокировок актов (захват / продление / снятие) — fail-closed, 5xx;
+- чтение `is_locked` в списке актов — fail-open (`false` + WARNING);
+- LLM через `redis-bridge` — `APIConnectionError`, дальше circuit breaker и fallback.
+
+**Решение:**
+1. `redis-cli -h <REDIS__HOST> -p <REDIS__PORT> PING` → `PONG`. На ПРОМе Redis — `10.110.10.38:7474`, db `0`.
+2. На Windows/DEV `REDIS__HOST` должен быть **`127.0.0.1`**, а не `localhost`: resolve уходит в IPv6 `::1`, и redis-py не фолбэкает на IPv4.
+3. Проверить блок `REDIS__*` в `.env` (`HOST`, `PORT`, `DB`, `PASSWORD`, `MAX_CONNECTIONS`, `SOCKET_TIMEOUT`) — сверить с `.env.prod` / `.env.dev`.
+4. Требование к версии — Redis ≥ 7.0 (LLM-мост использует `XAUTOCLAIM` с 3-элементным ответом). ПРОМ и DEV — 7.0.15.
+
+**См. также:** `app/core/redis.py`, `app/auth/lifecycle.py`, `docs/integrations/redis-llm-bridge.md`.

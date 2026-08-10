@@ -33,22 +33,28 @@ HTTP-запроса.
 - `SERVER__LOG_LEVEL` — `app/core/config.py:29` (`ServerSettings.log_level`,
   `Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]`, валидируется через
   `field_validator` на `.upper()` — регистр не важен).
-- `LOG_FORMAT` — `app/core/logging.py:74-76` (`_resolve_format`, читает
+- `LOG_FORMAT` — `app/core/logging.py:73-75` (`_resolve_format`, читает
   `os.getenv("LOG_FORMAT", "text")`, нормализует `.strip().lower()`).
-- Инициализация логгера происходит на module-level в `app/main.py:49-50`:
+- Инициализация логгера происходит на module-level в `app/main.py:50-51`:
   `settings = get_settings(); logger = setup_logging(settings.server.log_level)`.
-- Уровень uvicorn синхронизирован с `SERVER__LOG_LEVEL` — `app/main.py:469-470`.
+- Уровень uvicorn синхронизирован с `SERVER__LOG_LEVEL` при standalone-запуске
+  (`python -m app.main`) — `app/main.py:501`
+  (`log_level=settings.server.log_level.lower()`).
 
 Защита от повторной настройки в дочерних воркерах uvicorn — `setup_logging`
 возвращает уже сконфигурированный логгер, если у него есть handler'ы
 (`app/core/logging.py:92-93`).
 
-Пример `.env` (см. `.env.prod:25-26`):
+Значения в шаблонах окружения (`.env.prod:34-35` — ПРОМ, `.env.dev:34-35` — DEV):
 
 ```
+# .env.prod
 SERVER__LOG_LEVEL=INFO
-LOG_FORMAT=text                      # для разработки
-# LOG_FORMAT=json                    # для прода / агрегаторов
+LOG_FORMAT=json                      # прод / агрегаторы
+
+# .env.dev
+SERVER__LOG_LEVEL=INFO
+LOG_FORMAT=text                      # разработка
 ```
 
 ## 3. Формат JSON-лога
@@ -74,7 +80,7 @@ datefmt="%Y-%m-%dT%H:%M:%S"
 | `level` | `levelname` → `rename_fields` | `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`. |
 | `name` | `logger.name` | Иерархическое имя: `audit_workstation.<...>`. |
 | `message` | `logger.<...>("...")` | Текст сообщения (после `%`-форматирования). |
-| `request_id` | `request_id_var.get()` | Подставляется фильтром `RequestIdFilter` (`app/core/logging.py:31-36`). Вне HTTP-контекста — `"-"`. |
+| `request_id` | `request_id_var.get()` | Подставляется фильтром `RequestIdFilter` (`app/core/logging.py:32-37`). Вне HTTP-контекста — `"-"`. |
 
 Любые дополнительные поля, переданные через `extra={...}`, попадают в JSON
 автоматически как ключи верхнего уровня (свойство `python-json-logger`,
@@ -86,7 +92,7 @@ datefmt="%Y-%m-%dT%H:%M:%S"
 {
   "timestamp": "2026-05-19T14:23:11",
   "level": "WARNING",
-  "name": "audit_workstation.domains.chat.services.agent_loop",
+  "name": "audit_workstation.domains.chat.agent_loop",
   "message": "LLM timeout",
   "request_id": "a3f9c1d2",
   "stage": "run",
@@ -104,7 +110,7 @@ agent loop'а.
 {
   "timestamp": "2026-05-19T14:24:02",
   "level": "ERROR",
-  "name": "audit_workstation.domains.chat.services.tool_executor",
+  "name": "audit_workstation.domains.chat.tool_executor",
   "message": "Ошибка выполнения tool=acts.open_act_page error_id=7a2b9c4d",
   "request_id": "a3f9c1d2",
   "exc_info": "Traceback (most recent call last): ..."
@@ -117,7 +123,15 @@ LLM мог передать его пользователю для трасси�
 
 Поля `user`, `username` НЕ являются стандартными полями форматтера. Они
 появятся в JSON только если конкретное место кода пробросит их через
-`extra={"username": ...}` (так делает `chat_audit_service.py:80`).
+`extra={"username": ...}` (так делает `chat_audit_service.py:77`).
+
+Имена логгеров не всегда повторяют путь модуля: в `app/domains/chat/services/`
+часть модулей регистрируется без сегмента `services`
+(`...chat.agent_loop`, `...chat.tool_executor`, `...chat.llm_call`,
+`...chat.orchestrator`), а `agent_channel.py` — под
+`audit_workstation.domains.chat.service.agent_channel` (`service`, без «s»).
+Грепать логи по имени модуля вслепую нельзя — сверяйся с `logging.getLogger(...)`
+в самом файле.
 
 ## 4. Формат текстового лога
 
@@ -131,7 +145,7 @@ datefmt="%Y-%m-%d %H:%M:%S"
 Пример строки:
 
 ```
-WARNING:     [2026-05-19 14:23:11] [a3f9c1d2] audit_workstation.domains.chat.services.orchestrator - LLM timeout
+WARNING:     [2026-05-19 14:23:11] [a3f9c1d2] audit_workstation.domains.chat.agent_loop - LLM timeout
 ```
 
 Структура:
@@ -341,9 +355,12 @@ LIMIT 100;
 
 В логи **намеренно не попадают**:
 
-- **Содержимое сообщений пользователя в чате.** В `messages.py:82`
-  логируется только превью (`message=%r, domains=%r`) с пометкой
-  `truncated`. Полный текст в логи не идёт.
+- **Содержимое сообщений пользователя в чате.** На INFO
+  (`app/domains/chat/api/messages.py:71`) пишутся только метаданные —
+  `conversation`, `message_len`, `files`, `agent_mode`. Сам текст уходит в лог
+  только на **DEBUG** (`:75`, `Тело запроса (truncated): message=%r, domains=%r`)
+  и обрезается до 500 символов. При штатном `SERVER__LOG_LEVEL=INFO` текста
+  сообщений в логах нет вообще.
 - **Tool-аргументы.** В `agent_loop.py` `args_str` обрезается до 200 символов
   перед эмитом в лог:
   `args_str[:200] + "..." if len(args_str) > 200 else args_str`.
@@ -354,18 +371,34 @@ LIMIT 100;
   `f"Инструмент завершился с ошибкой. error_id={error_id}. Сообщите
   администратору."` (формируется в `tool_executor.py`). Имена БД,
   SQL-фрагменты и прочие чувствительные данные не утекают в чат.
-- **Пароли БД.** `DatabaseSettings.password: SecretStr`
-  (`app/core/config.py:80`). Pydantic `SecretStr` при `repr()` отдаёт
+- **Пароли и секреты.** `DatabaseSettings.password: SecretStr`
+  (`app/core/config.py:78`), `GreenplumSettings.password` (`:204`),
+  `CHAT__API_KEY` / `CHAT__FALLBACK_API_KEY` (`SecretStr` в
+  `app/domains/chat/settings.py`). Pydantic `SecretStr` при `repr()` отдаёт
   `**********` — не попадает ни в логи, ни в трейсы исключений pydantic.
+  Отдельно: `AUTH__JWT_SECRET` и SMTP-пароль в логи не пишутся, но лежат
+  открытым текстом в `.env` — файл не коммитится.
+- **ОТП-коды.** При `NOTIFICATIONS__EMAIL__ENABLED=false` (или незарегистрированном
+  домене уведомлений) код пишется в лог открытым текстом — ветка dev-режима
+  `logger.info("DEV-режим: ОТП-код для %s = %s", ...)` (`app/auth/router.py:199`).
+  На ПРОМе почта обязана быть включена и настроена: там доступ к логам иначе
+  равен доступу к чужим ОТП. Если почта включена, но отправка сорвалась, код в
+  лог **не** пишется — только ERROR «код пользователю не доставлен»
+  (`app/auth/router.py:192-195`). Отдельный риск: при
+  `NOTIFICATIONS__EMAIL__ENABLED=true` с пустым `SMTP_PASSWORD` хук
+  `notifications.email_init` не инициализирует SMTP-клиент и пишет WARNING
+  (`app/domains/notifications/_lifecycle.py:90-94`) — письма не уходят, коды
+  недоступны никому.
 - **Generic exception handler** возвращает клиенту только
-  `{"detail": "Внутренняя ошибка сервера"}`, а полный traceback пишет в лог
-  через `logger.exception(...)` (`main.py:423-431`).
+  `{"detail": "Внутренняя ошибка сервера", "code": "internal-server-error"}`,
+  а полный traceback пишет в лог через `logger.exception(...)`
+  (`app/main.py:447-459`).
 
 Если вы добавляете новое место логирования с пользовательским контентом —
 проверьте, что обрезаете его до разумного размера (паттерн `[:200]`) и не
 кладёте в `message`, если поле может содержать секрет.
 
-## 10. Чтение логов в JupyterHub
+## 10. Где лежат логи
 
 ### Файловый handler
 
@@ -384,22 +417,29 @@ LIMIT 100;
 
 ### Консоль
 
-`StreamHandler(sys.stdout)` — все записи дублируются в stdout. Под
-JupyterHub stdout пишется в служебные логи воркера; точное расположение
-зависит от конфигурации JupyterHub (обычно `/var/log/jupyterhub/` или
-аналог), и проверять физический путь нужно у администратора кластера. В
-самом приложении этот путь не сконфигурирован.
+`StreamHandler(sys.stdout)` — все записи дублируются в stdout. Куда попадёт
+stdout, решает то, чем запущен процесс: терминал, `nohup`/`tee`-файл или
+журнал системного супервизора. В самом приложении этот путь не
+сконфигурирован.
 
-### Под локальным запуском (PostgreSQL)
+### На ПРОМе (SDP, Greenplum)
 
-При запуске через `python -m app.main` или `uvicorn app.main:app` stdout
-печатает в текущий терминал, файл — `<repo>/logs/app.log`.
+Файл — `<repo>/logs/app.log` в каталоге развёрнутого проекта, доступ по SSH к
+хосту приложения. Формат — `json` (`.env.prod`), поэтому разбирать удобнее
+через `jq` (см. §6). Stdout уходит туда, куда его направил запускающий скрипт.
 
-### Под JupyterHub (Greenplum)
+### Локально (DEV, PostgreSQL)
 
-Файл `<repo>/logs/app.log` пишется в директорию проекта пользователя
-JupyterHub. Доступ — по тому же пути в файловом дереве Jupyter (через
-терминал или файловый менеджер). Stdout уходит в журналы JupyterHub-воркера.
+При запуске через `python -m app.main` или `uvicorn app.main:create_app --factory`
+stdout печатает в текущий терминал, файл — `<repo>/logs/app.log`. Формат —
+`text` (`.env.dev`), поиск по `grep` (см. §6).
+
+### Логи воркера LLM-моста
+
+Воркер `scripts/datalab/llm_redis_worker.ipynb` живёт **вне** этого приложения —
+в Jupyter DataLab, и в `logs/app.log` не пишет. Его вывод виден только в
+ячейке ноутбука; со стороны приложения о его состоянии судят по heartbeat
+`llm:bridge:worker:alive` в Redis (troubleshooting №7).
 
 Внешние агрегаторы (Loki / ELK / ClickHouse) в коде проекта не
 сконфигурированы — это уровень инфраструктуры. Для отправки в агрегатор

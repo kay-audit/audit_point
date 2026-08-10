@@ -1,8 +1,8 @@
 # Operations Recovery Playbook — Audit Workstation
 
 > Реальные сценарии «что-то не так в проде». У каждого: **симптом**, **как диагностировать**, **как починить**.
-> Документ — для оператора, не для разработчика. Глубокая архитектура — [`developer-guide.md`](../guides/developer-guide.md). Симптомы со стандартным фиксом — [`troubleshooting.md`](troubleshooting.md).
-> Плейсхолдеры в SQL: `{SCHEMA}` — `DATABASE__GP__SCHEMA` (например `s_grnplm_ld_audit_da_project_4`); `{PREFIX}` — `DATABASE__TABLE_PREFIX` (default `t_db_oarb_audit_act_`); `{BUS_TABLE}` — имя bus-таблицы целиком из `CHAT__AGENT_CHANNEL__TABLE_NAME` (по умолчанию `chat_agent_messages_bus`, без app-префикса).
+> Документ — для оператора, не для разработчика. Глубокая архитектура — [`developer-guide.md`](../guides/developer-guide.md) (хаб гайд-бука). Симптомы со стандартным фиксом — [`troubleshooting.md`](troubleshooting.md).
+> Плейсхолдеры в SQL: `{SCHEMA}` — `DATABASE__GP__SCHEMA` (в `.env.prod` — `s_grnplm_ld_audit_da_project_34`; в `.env.dev` — `s_grnplm_ld_audit_da_project_4`); `{PREFIX}` — `DATABASE__TABLE_PREFIX` (default `t_db_oarb_audit_act_`); `{BUS_TABLE}` — имя bus-таблицы целиком из `CHAT__AGENT_CHANNEL__TABLE_NAME` (дефолт кода — `chat_agent_messages_bus`, в `.env.prod` — `agent_conversation_messages`; app-префикс к нему **не** добавляется). Если задан `CHAT__AGENT_CHANNEL__SCHEMA_NAME`, шина лежит в этой схеме, а не в `{SCHEMA}`.
 
 ---
 
@@ -10,7 +10,7 @@
 
 **Симптом.** Пользователь жалуется: «Ассистент завис на печати». В UI крутится typing-индикатор, ответа нет > 5 минут. В чате включён тумблер «База знаний ОАРБ» (режим «Адаптивный» или «Всегда»), вопрос ушёл в шину к внешнему ИИ-агенту.
 
-**Как это работает.** Форвард создаёт черновик ассистент-сообщения в `chat_messages` (`status='streaming'`, `agent_ref` = uid вопроса) и пишет вопрос в единую bus-таблицу `chat_agent_messages_bus` (`role='user'`, `status='pending'`). Фоновый `AgentChannelPoller` поллит шину; `AgentChannelService.poll_once` дозаполняет reasoning-блок по дельтам, а когда ответ готов — финализирует черновик (`complete`/`failed`).
+**Как это работает.** Форвард создаёт черновик ассистент-сообщения в `chat_messages` (`status='streaming'`, `agent_ref` = uid вопроса) и пишет вопрос в единую bus-таблицу `{BUS_TABLE}` (`role='user'`, `status='pending'`). Фоновый `AgentChannelPoller` поллит шину; `AgentChannelService.poll_once` дозаполняет reasoning-блок по дельтам, а когда ответ готов — финализирует черновик (`complete`/`failed`).
 
 **Диагностика.**
 
@@ -21,7 +21,7 @@ FROM {SCHEMA}.{PREFIX}chat_messages
 WHERE status = 'streaming'
   AND created_at < now() - interval '5 minutes';
 
--- 2. Состояние соответствующих записей в шине (agent_ref → chat_agent_messages_bus.id).
+-- 2. Состояние соответствующих записей в шине (agent_ref → {BUS_TABLE}.id).
 SELECT id, chat_id, role, status, created_at, updated_at
 FROM {SCHEMA}.{BUS_TABLE}
 WHERE id IN (... agent_ref из шага 1 ...)
@@ -38,7 +38,7 @@ WHERE reply_to IN (... agent_ref из шага 1 ...);
 **Recovery.**
 
 1. **Не торопиться.** Если процесс жив и `chat.agent_channel_poller` запущен (`/admin/diagnostics`), а внешний агент ещё работает — поллер догонит ответ. Двухфазные таймауты: `CLAIM_TIMEOUT_SEC` (1800 = 30 мин, фаза `pending`) и `ANSWER_TIMEOUT_SEC` (600 = 10 мин, фаза `processing`). По истечении `mark_timeout` сам пометит черновик `failed`. Дать сработать.
-2. **Если рестартовали uvicorn** — `AgentChannelPoller.reconcile()` в startup-hook восстанавливает подписки из всех `streaming`-черновиков с непустым `agent_ref` (`app/domains/chat/services/agent_channel_poller.py:297`). Дождаться, пока поллер сделает первые тики.
+2. **Если рестартовали uvicorn** — `AgentChannelPoller.reconcile()` в startup-hook восстанавливает подписки из всех `streaming`-черновиков с непустым `agent_ref` (`app/domains/chat/services/agent_channel_poller.py:311`). Дождаться, пока поллер сделает первые тики.
 3. **Forcibly закрыть.** Если ответа от агента нет и автоматика не помогает — пометить черновик и вопрос вручную:
    ```sql
    -- Черновик ассистент-сообщения → failed (на GP 6.x / PG 9.4 без jsonb-||,
@@ -72,9 +72,9 @@ WHERE service_name = 'audit_workstation';
 
 ---
 
-## 3. `chat_agent_messages_bus` распухла
+## 3. Bus-таблица канала агента распухла
 
-**Симптом.** GP-таблица `chat_agent_messages_bus` (единая шина к внешнему агенту) стала большой, тики `AgentChannelPoller` заметно медленнее (видно по росту нагрузки на GP и по `/admin/diagnostics` для `chat.agent_channel_poller`).
+**Симптом.** GP-таблица `{BUS_TABLE}` (единая шина к внешнему агенту) стала большой, тики `AgentChannelPoller` заметно медленнее (видно по росту нагрузки на GP и по `/admin/diagnostics` для `chat.agent_channel_poller`).
 
 **Диагностика.**
 
@@ -92,7 +92,7 @@ GROUP BY status;
 
 **Recovery.**
 
-> Автоматического фонового cleanup для `chat_agent_messages_bus` сейчас нет — чистка ручная/кроновая.
+> Автоматического фонового cleanup для шины сейчас нет — чистка ручная/кроновая.
 
 1. **Ручная очистка** старых терминальных сообщений (`completed`/`failed`). Не трогать `pending`/`processing` — это ещё живые запросы:
    ```sql
@@ -126,13 +126,13 @@ GROUP BY status;
 
 **Что автоматически:**
 
-- `AgentChannelPoller.reconcile()` в startup-hook восстанавливает подписки из всех `streaming`-черновиков с непустым `agent_ref` (`app/domains/chat/services/agent_channel_poller.py:297`). Поллер продолжит ждать ответы из шины.
+- `AgentChannelPoller.reconcile()` в startup-hook восстанавливает подписки из всех `streaming`-черновиков с непустым `agent_ref` (`app/domains/chat/services/agent_channel_poller.py:311`). Поллер продолжит ждать ответы из шины.
 - `chat_messages.status='streaming'` с уже пришедшим ответом агента — поллер финализирует через `poll_once`; без ответа дольше `CLAIM_TIMEOUT_SEC`/`ANSWER_TIMEOUT_SEC` → `mark_timeout` пометит `failed`.
-- Singleton-lock освобождается мягко в shutdown-hook (`app/main.py:266-280`).
+- Singleton-lock освобождается мягко в shutdown-hook (`app/main.py:249-259`).
 
 **Что НЕ автоматически:**
 
-- Записи, дропнутые батчерами при shutdown'е без graceful drain — ушли в /dev/null. `stop()` каждого батчера делает финальный flush (`app/core/metrics_batcher.py:118-138`), но если процесс получил SIGKILL, до stop() не дошло.
+- Записи, дропнутые батчерами при shutdown'е без graceful drain — ушли в /dev/null. `stop()` каждого батчера делает финальный flush (`app/core/metrics_batcher.py:163-187`), но если процесс получил SIGKILL, до stop() не дошло.
 
 **Что проверить после рестарта:**
 
@@ -169,7 +169,7 @@ GROUP BY domain
 ORDER BY denied DESC;
 ```
 
-Каждая запись — это случай, когда `require_domain_access(domain)` вернул 403 (`app/api/v1/deps/role_deps.py:118-141`). Поле `reason` показывает роли пользователя и какой `domain_name` ему не хватило.
+Каждая запись — это случай, когда `require_domain_access(domain)` вернул 403 (`app/api/v1/deps/role_deps.py:160-177`). Поле `reason` показывает роли пользователя и какой `domain_name` ему не хватило.
 
 См. dev-guide §9.5c.
 
@@ -199,3 +199,54 @@ kill -9 <pid>
 
 - Активный сохранение акта в `acts.audit_log_batcher` (потеряется аудит). Подождать ~30 сек после последней пользовательской активности.
 - Активный forward к внешнему агенту (`chat_messages.status='streaming'` с непустым `agent_ref`). После SIGKILL черновик остаётся в `streaming`; финализация/таймаут не отработают — состояние подвиснет до reconcile следующего старта.
+
+---
+
+## 8. Redis лёг
+
+**Симптом.** Приложение не стартует: `RuntimeError: Redis недоступен (<host>:<port>/<db>) … Redis обязателен во всех окружениях`. Либо процесс жив, но пользователи не могут войти (ОТП-код «не принимается»), в логе — WARNING'и о недоступности кеша, а взятие акта в работу падает с 5xx.
+
+**Как это работает.** Redis — обязательная зависимость, подключается startup-хуком `auth.redis` (`app/auth/lifecycle.py:69`) по принципу fail-fast. На нём живут: ОТП-коды и сессии авторизации, кеши (роли, user-контекст, счётчик непрочитанных уведомлений), блокировки актов (`lock:act:{act_id}` с TTL, `app/domains/acts/repositories/act_lock_backends.py`) и очередь LLM-моста (`llm:bridge:*`).
+
+**Диагностика.**
+
+```bash
+redis-cli -h <REDIS__HOST> -p <REDIS__PORT> PING          # ожидаем PONG
+redis-cli -h <REDIS__HOST> -p <REDIS__PORT> INFO server | grep redis_version   # нужен >= 7.0
+redis-cli -h <REDIS__HOST> -p <REDIS__PORT> -n <REDIS__DB> DBSIZE
+```
+
+**Recovery.**
+
+1. Поднять Redis / восстановить сетевую доступность, затем **перезапустить приложение**, если оно упало на старте.
+2. Данные восстанавливать не нужно и негде: ОТП-коды короткоживущие (`AUTH__OTP_TTL`, 300 сек — пользователь просто запросит код заново), кеши перезаполнятся сами, блокировки актов исчезают вместе с ключами (акты становятся свободными — это безопасное состояние), заявки моста эфемерны.
+3. Проверить, что не потерялись «повисшие» блокировки: отдельного сборщика просроченных локов нет и не нужно — истечение обеспечивает TTL Redis.
+4. После восстановления — smoke по §2 runbook'а: вход по ОТП, открытие акта, сообщение в чат.
+
+**См. также:** [`troubleshooting.md` №23](troubleshooting.md#23-redis-недоступен-приложение-не-стартует--ошибки-блокировок), `app/core/redis.py`.
+
+---
+
+## 9. Воркер LLM-моста не отвечает
+
+**Симптом.** При маршруте `CHAT__PROFILE=redis-bridge,…` чат на любой вопрос отдаёт ошибку недоступности LLM (иногда мгновенно), тогда как остальное приложение работает штатно.
+
+**Как это работает.** Запрос к локальной LLM исполняется воркером в Jupyter DataLab: приложение кладёт заявку в Redis Stream `llm:bridge:requests` и ждёт ответ в `llm:bridge:resp:{id}`. Перед отправкой проверяется heartbeat `llm:bridge:worker:alive` (TTL 45 сек).
+
+**Диагностика.**
+
+```bash
+redis-cli -h <REDIS__HOST> -p <REDIS__PORT> GET llm:bridge:worker:alive   # JSON: worker_id, targets, target_health
+redis-cli -h <REDIS__HOST> -p <REDIS__PORT> XLEN llm:bridge:requests      # глубина очереди заявок
+```
+
+Плюс `/admin/diagnostics` → `background_tasks."chat.llm_health_probe"`: поля `breaker_state` и `last_ping_ok` показывают, видит ли приложение primary-маршрут живым.
+
+**Recovery.**
+
+1. Запустить/перезапустить воркер: `scripts/datalab/llm_redis_worker.ipynb` в DataLab, Run All. Рестарт приложения при этом **не нужен** — клиент моста не кеширует «воркер мёртв».
+2. Если heartbeat есть, а нужной цели нет в `targets` — в окружении ноутбука не задан URL цели (`GIGACHAT_API_URL` / `OPENAI_API_URL`).
+3. Если очередь `llm:bridge:requests` растёт, а ответов нет — воркер завис; Kernel → Interrupt и повторный Run All. Незаконченные заявки подхватит `XAUTOCLAIM` следующего запуска (min-idle 10 мин), просроченные по `deadline_ts` будут пропущены.
+4. Временная мера — переключить `CHAT__PROFILE` на прямой маршрут (`gigachat` / `openai`) с рестартом приложения; **работает только там, где у площадки есть прямой сетевой доступ к бэкенду LLM** — с SDP его нет.
+
+**См. также:** [`troubleshooting.md` №7](troubleshooting.md#7-llm-мост-redis-bridge-воркер-недоступен--дедлайн-заявки), [`redis-llm-bridge.md`](../integrations/redis-llm-bridge.md) §8-§9.

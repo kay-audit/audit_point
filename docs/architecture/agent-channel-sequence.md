@@ -7,7 +7,7 @@
 ответ целиком с декоративным «эффектом печати» (token-стриминга нет).
 
 См. также:
-- [`docs/guides/developer-guide.md §7.8`](../guides/developer-guide.md#78-внешний-ии-агент-через-таблицы-бд) — внешний ИИ-агент через таблицы БД (обзор)
+- [`docs/guides/ai-assistant.md §7.8`](../guides/ai-assistant.md) — внешний ИИ-агент через таблицы БД (обзор)
 - [`docs/integrations/external-agent-imitation.sql`](../integrations/external-agent-imitation.sql) — SQL-стенд имитации внешнего агента
 - [`docs/architecture/chat-frontend-architecture.md`](chat-frontend-architecture.md) — frontend-клиент чата
 
@@ -40,7 +40,7 @@
 
 | Позиция UI | `agent_mode` | Поведение POST /messages |
 |---|---|---|
-| Выключен | `off` | Локальная LLM/GigaChat синхронно через `orchestrator.run(...)` |
+| Выключен | `off` | Локальный LLM-провайдер (маршрут `CHAT__PROFILE`) синхронно через `orchestrator.run(...)` |
 | Адаптивный | `adaptive` | Оркестратор с forward-tool в наборе — сам решает, форвардить ли |
 | Всегда | `always` | Прямой проброс вопроса в bus, оркестратор не запускается |
 
@@ -165,16 +165,30 @@ sequenceDiagram
 
 ## 3. Маппинг ответа агента в блоки сообщения
 
-`AgentChannelService.map_answer_to_blocks(row)` собирает список блоков из
-строки-ответа в порядке:
+`map_answer_to_blocks(row, max_block_text_size)` (`agent_channel.py:95`, **модульная
+функция**, не метод сервиса) собирает список блоков из строки-ответа в порядке:
 
-1. **reasoning** — из `metadata.reasoning`, legacy `metadata.thinking` (если есть);
+1. **reasoning** — из `metadata.reasoning`, legacy `metadata.thinking` (если есть),
+   `block_id` шаблоном `{id}:reasoning:0`;
 2. **text** — `content` (обрезается до `MAX_BLOCK_TEXT_SIZE` = 262144);
 3. **buttons** — из `buttons` JSONB, `block_id` шаблоном `{id}:btn:0`;
-   `button_translator.translate_buttons` переводит `action_id` ChatTool в
-   client-action `open_url`;
-4. **media** — `image`/`file` из `media` JSONB;
-5. **error** — если `answer.status == 'error'`.
+   `_normalize_button` проставляет дефолты (`action_id` → `btn_<i>`, `label`, `params`);
+4. **media** — `image` (mime `image/*`) / `file` из `media` JSONB; одиночный объект
+   оборачивается в список.
+
+**Error-блока эта функция не производит.** Ошибочные исходы закрывает
+`poll_once`: `MessageRepository.mark_failed` с отдельно собранным блоком
+(`{"type": "error", "code": "agent_error", …}`), а таймауты —
+`build_timeout_error_block(reason)` (`agent_channel.py:192`).
+
+**Трансляция кнопок** идёт ДО маппинга: `poll_once` вызывает
+`button_translator.translate_buttons(answer["buttons"])` (`agent_channel.py:547`),
+которая ресолвит `action_id` через реестр ChatTool и подменяет его на
+client-action (`open_url`).
+
+Терминальность строки-ответа определяется наборами
+`_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress")` и
+`_BUS_ERROR_STATUSES = ("failed", "error")` (`agent_channel.py:42-45`).
 
 ---
 
@@ -212,16 +226,20 @@ sequenceDiagram
 
 - POST/GET messages — `app/domains/chat/api/messages.py` (`send_message`, `get_message`)
 - AgentChannelService — `app/domains/chat/services/agent_channel.py`
-  (`submit`, `poll_once`, `mark_timeout`, `get_queue_details`, `map_answer_to_blocks`, `build_timeout_error_block`)
+  (методы класса: `submit` `:254`, `mark_timeout` `:330`, `get_queue_details` `:403`,
+  `poll_once` `:423`; модульные функции: `map_answer_to_blocks` `:95`,
+  `build_timeout_error_block` `:192`)
 - AgentChannelPoller — `app/domains/chat/services/agent_channel_poller.py`
-  (`subscribe`/`unsubscribe`/`_tick`/`_run` adaptive-backoff, reconcile из streaming-черновиков, `start`/`stop`/`get_status`)
+  (`subscribe` `:104` / `unsubscribe` `:148` / `_tick` `:154` / `_abandon_subscription` `:280` /
+  `reconcile` `:311` / `_run` `:349` adaptive-backoff, `start` `:388` / `stop` `:398` / `get_status` `:81`)
 - button_translator — `app/domains/chat/services/button_translator.py` (`translate_buttons`)
 - forward-tool (adaptive) — `app/domains/chat/services/forward_tool_factory.py`
 - bus-репозиторий — `app/domains/chat/repositories/agent_message_repository.py` (`count_active_for_user`, `get_by_uid`, `get_answer_for_question`)
 - chat_messages streaming-методы — `app/domains/chat/repositories/message_repository.py`
   (`create_streaming`/`finalize`/`mark_failed`/`get_streaming_drafts`)
-- настройки — `AgentChannelSettings` (`app/domains/chat/settings.py`),
+- настройки — `AgentChannelSettings` (`app/domains/chat/settings.py:22`),
   env-префикс `CHAT__AGENT_CHANNEL__`: `TABLE_NAME=chat_agent_messages_bus`,
+  `SCHEMA_NAME=""` (пусто → схема домена чата, затем основная схема адаптера),
   `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`,
   `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=600`,
   `MAX_BLOCK_TEXT_SIZE=262144`

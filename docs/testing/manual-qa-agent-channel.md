@@ -16,16 +16,18 @@
 
 ## Подготовка
 
-1. Поднять PostgreSQL и применить миграцию (`app/domains/chat/migrations/postgresql/schema.sql`):
+1. Поднять Redis (`REDIS__HOST`/`REDIS__PORT` из `.env`) — без него приложение не стартует (fail-fast в хуке `auth.redis`, см. `app/auth/lifecycle.py`).
+
+2. Поднять PostgreSQL и применить миграцию (`app/domains/chat/migrations/postgresql/schema.sql`):
    - Должна появиться таблица `chat_agent_messages_bus` (без app-префикса — имя из `CHAT__AGENT_CHANNEL__TABLE_NAME`).
    - В `chat_messages` должна быть колонка `agent_ref VARCHAR(36)`.
 
-2. Заполнить `.env.local` (dev, маршрут `openai` напрямую в OpenRouter — детали маршрутов см. developer-guide §7.1a):
+3. Заполнить `.env` (за основу — `.env.dev`; маршрут `openai` = прямой HTTP к OpenAI-совместимому бэкенду, детали маршрутов см. §7.1a в [`ai-assistant.md`](../guides/ai-assistant.md)):
    ```
    CHAT__PROFILE=openai
-   CHAT__API_BASE=https://openrouter.ai/api/v1
+   CHAT__API_BASE=https://foundation-models.api.cloud.ru/v1
    CHAT__API_KEY=<твой ключ>
-   CHAT__MODEL=minimax/minimax-m2:free
+   CHAT__MODEL=<модель бэкенда>
    CHAT__RETRY__ON_429=true
    CHAT__RETRY__ON_5XX=true
    CHAT__MAX_PARALLEL_STREAMS_PER_USER=3
@@ -34,10 +36,12 @@
    CHAT__AGENT_CHANNEL__POLL_MAX_INTERVAL_SEC=10.0
    CHAT__AGENT_CHANNEL__POLL_BACKOFF_MULTIPLIER=1.5
    CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600
+   CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800
    CHAT__AGENT_CHANNEL__MAX_BLOCK_TEXT_SIZE=262144
    ```
+   Для проверки канала подходит и маршрут через мост (`CHAT__PROFILE=redis-bridge,openai`, дефолт `.env.dev`) — форвард на агента от маршрута LLM не зависит.
 
-3. Запустить `uvicorn app.main:app --reload`, открыть портал в браузере.
+4. Запустить `uvicorn app.main:app --reload`, открыть портал в браузере.
 
 ## Чек-лист
 
@@ -64,15 +68,29 @@
 ### 4. Ответ с кнопками
 - Форварднуть вопрос, ответ агента вставить по сценарию §2 из `external-agent-imitation.sql` (с `buttons`).
 - Ожидаемо: под текстом ответа отрисованы кнопки. Нажатие на кнопку `acts.open_act_page` переводит на `/constructor?act_id={id}` (где `id` — INTEGER из `acts.id`).
-- Под капотом: `button_translator.translate_buttons` мапит `action_id` ChatTool → client-action `open_url`.
+- В сценарии §2 имитации подставь `km_number` **существующего** акта: если акт не найден, транслятор вернёт не `open_url`, а уведомление «Акт `<номер>` не найден» — это тоже валидный подсценарий для проверки.
+- Под капотом: `button_translator.translate_buttons` мапит `action_id` ChatTool → client-action `open_url` (кнопка без зарегистрированного ChatTool или без `button_translator` проходит как есть — фронт её не исполнит).
 
 ### 5. Ответ с файлом/медиа
 - Форварднуть вопрос, ответ агента вставить по сценарию §3 из `external-agent-imitation.sql` (с `media`).
 - Ожидаемо: `image/*` рендерится встроенным изображением; прочие mime — иконка + кнопка «Скачать» (через `GET /api/v1/chat/files/{file_id}`).
 
-### 6. Таймаут агента
-- Форварднуть вопрос, но НЕ имитировать ответ агента дольше `ANSWER_TIMEOUT_SEC` (по умолчанию 600с).
-- Ожидаемо: черновик `chat_messages` финализируется error-блоком («Внешний агент не ответил вовремя» — `build_timeout_error_block`); `AgentChannelService.mark_timeout` best-effort ставит строке-вопросу `status='failed'`.
+### 6. Таймауты агента (двухфазные, idle-семантика)
+Отсчёт в обеих фазах идёт от последнего **признака жизни** агента (переход `pending`→`processing`, рост `metadata.reasoning`, изменение `updated_at` строки-ответа, уменьшение числа pending-вопросов впереди), а не от создания вопроса.
+
+- **Claim-таймаут** (вопрос так и не взяли в работу): форварднуть вопрос и не трогать строку-вопрос дольше `CLAIM_TIMEOUT_SEC` (по умолчанию 1800с). Ожидаемо: error-блок «Внешний агент не взял вопрос в работу за отведённое время. Попробуйте позже.» (`build_timeout_error_block(reason='claim')`).
+- **Answer-таймаут** (взяли, но не ответили): перевести вопрос в `processing` (сценарий §5 или §9 имитации) и дальше ничего не делать дольше `ANSWER_TIMEOUT_SEC` (по умолчанию 600с). Ожидаемо: error-блок «Внешний агент не ответил вовремя. Попробуйте позже.» (`reason='answer'`).
+- В обоих случаях: черновик `chat_messages` финализируется error-блоком, `AgentChannelService.mark_timeout` best-effort ставит строке-вопросу `status='failed'`, подписка снимается.
+- Для быстрой проверки таймауты удобно временно уменьшить в `.env` (например, до 60/30 сек) — иначе ждать полчаса.
+
+### 6a. Очередь и статус ожидания
+- Выполнить сценарий §8 имитации (вставить «чужой» pending-вопрос с более ранним `created_at`).
+- Ожидаемо: под облаком-черновиком строка статуса «В очереди: впереди 1 запрос» (при 0 впереди — «В очереди: вы следующий»); после перевода вопроса в `processing` — «Агент работает над ответом…».
+- Очередь глобальная: `AgentMessageRepository.count_pending_before` считает pending-вопросы **всех** пользователей, созданные раньше вашего (фильтра по user_id нет).
+
+### 6b. Порционный reasoning
+- Выполнить сценарий §10 имитации (строка-ответ с пустым `content` + 4 UPDATE, дописывающих `metadata.reasoning`).
+- Ожидаемо: фронт допечатывает дельты рассуждений по мере роста; уже показанные фрагменты не переанимируются (в т.ч. после reload). Каждый UPDATE — признак жизни, продлевающий answer-таймер.
 
 ### 7. Восстановление после reload
 - Форварднуть вопрос, во время ожидания перезагрузить страницу.

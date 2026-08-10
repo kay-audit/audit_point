@@ -1,16 +1,24 @@
 # Manual QA — fallback на неизвестные типы блоков чата
 
 Чек-лист ручной проверки graceful degradation фронт-чата, когда бэк добавляет
-новый тип блока (например `chart`, `table_advanced`), которого ещё нет в
-whitelist'е `KNOWN_BLOCK_TYPES` в `static/js/shared/chat/chat-messages.js`.
+новый тип блока (например `chart`, `table_advanced`), которого фронт ещё
+не знает.
+
+Фактический гейт рендера — `switch (block.type)` в
+`ChatRenderer.renderBlock` (`static/js/shared/chat/chat-renderer.js`):
+незнакомый `type` уходит в `default` → `_renderUnknown`. Набор
+`KNOWN_BLOCK_TYPES` в `static/js/shared/chat/chat-messages.js` — декларативное
+зеркало `MessageBlock`-union бэка для сверки и отладки; путь рендера его НЕ
+опрашивает, поэтому добавление типа только в этот Set новый блок не отрисует —
+нужна ветка в `switch`.
 
 Транспорт чата — POST + polling (SSE нигде нет): фронт шлёт сообщение через
-`POST /api/v1/chat/conversations/{cid}/messages`, получает `{message_id}` и
-поллит `GET /api/v1/chat/conversations/{cid}/messages/{message_id}` до
+`POST /api/v1/chat/conversations/{cid}/messages` (FormData, в т.ч.
+`agent_mode`), получает `{message_id}` и поллит
+`GET /api/v1/chat/conversations/{cid}/messages/{message_id}` до
 терминального статуса, после чего рендерит ответ **целиком** с декоративным
-эффектом печати (потокового стриминга токенов нет). Любой блок проходит
-через `ChatRenderer.renderBlock`; неизвестный `type` уходит в default-ветку
-`_renderUnknown`. Тот же путь работает и при загрузке истории.
+эффектом печати (потокового стриминга токенов нет). Тот же путь рендера
+работает и при загрузке истории.
 
 Ожидание: вместо падения или пропажи блока пользователь видит плашку
 «⚠ Блок неизвестного типа: <type>. Обновите страницу.» и полный payload

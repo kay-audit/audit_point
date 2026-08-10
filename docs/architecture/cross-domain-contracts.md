@@ -15,7 +15,7 @@
 
 ## 1. Принципы изоляции
 
-Между доменами **нет прямых импортов**:
+Между доменами **нет прямых импортов реализаций**:
 
 ```bash
 $ grep -rn "from app.domains.\(acts\|admin\|ck_\|ua_data\)" app/domains/chat
@@ -24,6 +24,14 @@ $ grep -rn "from app.domains.\(acts\|admin\|ck_\|ua_data\)" app/domains/chat
 $ grep -rn "from app.domains.acts" app/domains/admin
 # пусто
 ```
+
+**Единственное легальное исключение — импорт Protocol-интерфейса.**
+ЦК-домены импортируют `IDictionaryRepository` из
+`app/domains/ua_data/interfaces.py` (`ck_fin_res/deps.py:17`,
+`ck_fin_res/services/fr_validation_service.py:19`, и зеркально в
+`ck_client_exp`) — это тип, а не реализация: сам объект приходит через
+фабрику `ua_data.dictionary_repository` (§2.5). Модуль `interfaces.py`
+сознательно не тянет за собой репозитории/сервисы ua_data.
 
 Связь идёт через **2 механизма**:
 
@@ -44,7 +52,7 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 |---|---|
 | **Регистрирует** | `app/domains/admin/_lifecycle.py` (или `__init__.py::_build_domain`) |
 | **Использует** | `app/domains/acts/deps.py::get_users_repository` (`get_factory("admin.user_directory")()`) |
-| **Контракт** | Обычный callable без аргументов, возвращает `UserDirectoryRepository` на исполнителе БД (`get_executor()`, см. [`developer-guide.md §6.3a`](../guides/developer-guide.md#63a-исполнитель-бд-connection-per-operation)) с методом `get_user(username: str) -> UserInfo` |
+| **Контракт** | Обычный callable без аргументов, возвращает `UserDirectoryRepository` на исполнителе БД (`get_executor()`, см. [`database.md §6.3a`](../guides/database.md#63a-исполнитель-бд-connection-per-operation)) с методом `get_user(username: str) -> UserInfo` |
 | **Что сломается** | Удаление/переименование ключа → `acts` потеряет атрибуцию авторов актов. `RuntimeError: factory 'admin.user_directory' not registered` на старте. Чат **не затронут** (не использует) |
 
 ### 2.2. `ua_data.invoice_table_names` — реестр Hive-таблиц
@@ -73,6 +81,33 @@ $ grep -rn "from app.domains.acts" app/domains/admin
 | **Использует** | `app/core/notifications_emit.py::push_notification` — общая точка входа для продьюсеров (домены `acts`, `chat`) |
 | **Контракт** | Обычный callable без аргументов, возвращает `NotificationService` на исполнителе БД. Продьюсеры зовут фабрику и `await svc.push(...)` напрямую, без `async for`/`aclosing` |
 | **Что сломается** | `has_factory`-guard в `push_notification` — отсутствие домена `notifications` не ломает продьюсеров: уведомление молча не отправится, в лог уйдёт warning |
+
+### 2.5. `ua_data.dictionary_repository` — справочники ua_data для ЦК-доменов
+
+| Аспект | Значение |
+|---|---|
+| **Регистрирует** | `app/domains/ua_data/_lifecycle.py:43` (`_dictionary_repository_factory`) |
+| **Использует** | `app/domains/ck_fin_res/deps.py:30` и `app/domains/ck_client_exp/deps.py:30` — `get_factory("ua_data.dictionary_repository")(ex)` |
+| **Контракт** | **Единственная фабрика реестра, принимающая аргумент**: callable `(conn) -> DictionaryRepository`, где `conn` — исполнитель БД (`get_executor()`). Потребители типизируют результат Protocol'ом `IDictionaryRepository` |
+| **Что сломается** | Оба ЦК-домена (`ck_fin_res`, `ck_client_exp`) не соберут свои сервисы верификации — `RuntimeError` на построении зависимости запроса |
+
+### 2.6. `admin.http_metrics_service` — HTTP-метрики для core
+
+| Аспект | Значение |
+|---|---|
+| **Регистрирует** | `app/domains/admin/_lifecycle.py:60` (`_http_metrics_service_factory`) |
+| **Использует** | `app/main.py:315` (middleware HTTP-метрик) |
+| **Контракт** | Callable без аргументов; возвращает `HttpMetricsService` **либо `None`**, если `ADMIN__HTTP_METRICS_ENABLED=false`. Проверка флага инкапсулирована в фабрике — core не импортирует `AdminSettings` |
+| **Что сломается** | Core начнёт зависеть от `admin.settings`/`admin.deps` напрямую; при удалении ключа — метрики HTTP не собираются |
+
+### 2.7. `admin.access_denied_audit` — запись отказов доступа
+
+| Аспект | Значение |
+|---|---|
+| **Регистрирует** | `app/domains/admin/_lifecycle.py:101` (`_access_denied_audit_factory`) |
+| **Использует** | `app/api/v1/deps/role_deps.py:207` (`require_domain_access` при 403) |
+| **Контракт** | Callable без аргументов, возвращает **async-функцию** `(*, username, domain, path, method, reason) -> bool`: `True` — запись передана батчеру, `False` — батчер ещё не поднят (core логирует warning). Исключения батчера поглощаются внутри — 403-ответ не должен зависеть от аудита |
+| **Что сломается** | `role_deps` (core) пришлось бы импортировать `AccessDeniedRecord` из admin напрямую — прямая зависимость core → домен |
 
 Сосед по реестру того же домена, `notifications.email`
 (`_email_factory` в `notifications/_lifecycle.py`, потребитель —
@@ -103,20 +138,21 @@ email-сервису соединение БД не нужно, а отправ�
 
 | Аспект | Значение |
 |---|---|
-| **Константа** | `TOOL_FORWARD_TO_KNOWLEDGE_AGENT` |
-| **Создаётся в** | `app/domains/chat/services/forward_tool_factory.py` (`build_forward_tool_descriptor()`) |
-| **Когда доступен LLM** | Только в `agent_mode='adaptive'` — оркестратор сам решает форвардить вопрос внешнему агенту. В `agent_mode='always'` LLM минуется: вопрос пишется в шину `chat_agent_messages_bus` напрямую (`AgentChannelService.submit`). В `agent_mode='off'` tool скрыт |
-| **Контракт** | Имя tool'а должно совпадать с константой во всех потребителях. Если переименовать — оркестратор перестанет распознавать tool, адаптивный форвард не сработает |
+| **Константа** | `TOOL_FORWARD_TO_KNOWLEDGE_AGENT` (`names.py:17`, значение `"chat.forward_to_knowledge_agent"`) |
+| **Создаётся в** | `app/domains/chat/services/forward_tool_factory.py::build_forward_tool_descriptor()` — **только СХЕМА** тула (`handler=None`, `per_request_handler=True`, `category="forward"`); параметры `question` (обяз.) и `kb_hint` (опц.). Регистрируется статически при `discover_domains()` |
+| **Кто исполняет** | Не handler, а `agent_loop` — **по имени тула**: перехватывает вызов, пишет вопрос в шину `chat_agent_messages_bus` и отдаёт дозаполнение поллеру |
+| **Когда доступен LLM** | Только в `agent_mode='adaptive'` — оркестратор сам решает форвардить вопрос внешнему агенту. В `agent_mode='always'` LLM минуется: вопрос пишется в шину напрямую (`AgentChannelService.submit`). В `agent_mode='off'` tool скрыт |
+| **Контракт** | Имя tool'а должно совпадать с константой во всех потребителях. Если переименовать — `agent_loop` перестанет распознавать вызов по имени, адаптивный форвард молча не сработает |
 
 ### 3.2. `acts.open_act_page` (и аналогичные `open_*_page` tools)
 
 | Аспект | Значение |
 |---|---|
-| **Константа** | `TOOL_OPEN_ACT_PAGE` (и аналогичные) |
-| **Handler** | `app/domains/acts/integrations/action_handlers.py:open_act_page_handler` |
-| **Параметр `km_number`** | Принимает строку формата `КМ-XX-XXXXX`. Если LLM или внешний агент передаст другой формат — handler вернёт ErrorBlock «не удалось извлечь цифры» |
-| **Возвращает** | JSON ClientActionBlock `{action: "open_url", params: {url: "/constructor?act_id=<int>"}, ...}` |
-| **Что сломается** | Переименование `km_number` параметра → LLM перестанет вызывать tool правильно (название параметра — часть LLM-описания). Изменение URL формата → фронтовый `chat-client-actions.js::resolveProxyUrl` может не распознать |
+| **Константа** | `TOOL_OPEN_ACT_PAGE` (`names.py:20`) и аналогичные `TOOL_OPEN_ADMIN_PANEL`, `TOOL_OPEN_CK_FIN_RES_PAGE`, `TOOL_OPEN_CK_CLIENT_EXP_PAGE` |
+| **Handler** | `app/domains/acts/integrations/action_handlers.py:81::open_act_page_handler` |
+| **Параметры** | Оба опциональны, но нужен хотя бы один: `km_number` (формат `КМ-XX-XXXXX`) и `sz_number` (номер служебной записки). Нераспознанный формат КМ **не** ошибка: `KMUtils.extract_km_digits` кидает — handler логирует warning и ищет по точному совпадению строки `km_number` |
+| **Возвращает** | Ровно один акт → JSON ClientActionBlock `{action: "open_url", params: {url: "/constructor?act_id=<int>"}, ...}`. Несколько → **текст** со списком кандидатов и просьбой уточнить. Ноль либо ни одного параметра → **текст** с пояснением. ErrorBlock этот handler не возвращает |
+| **Что сломается** | Переименование `km_number`/`sz_number` → LLM перестанет вызывать tool правильно (названия параметров — часть LLM-описания). Изменение URL-формата → фронтовый `resolveProxyUrl` соберёт неверный адрес |
 
 ### 3.3. `admin.open_admin_panel` и тулы доменов ЦК
 
@@ -148,13 +184,14 @@ email-сервису соединение БД не нужно, а отправ�
 | Аспект | Значение |
 |---|---|
 | **Формат** | `f"{message_id}:client_action:{i}"` (детерминированный, нумерация через `BlockIdGenerator`) |
-| **Генерируется в** | `Orchestrator._parse_client_action_result` (`orchestrator.py`; вызывается из `agent_loop.py`, non-streaming) и `AgentChannelService.map_answer_to_blocks` (`agent_channel.py`, forward-путь). Per-message экземпляр `BlockIdGenerator` (`app/core/chat/block_id_generator.py`) — единый счётчик для всех источников эмиссии |
+| **Генерируется в** | `Orchestrator._parse_client_action_result` (`orchestrator.py:511`; вызывается из `agent_loop.py`). Per-message экземпляр `BlockIdGenerator` (`app/core/chat/block_id_generator.py`) — единый per-type счётчик (`gen.next("client_action")` → `…:client_action:0`, `…:1`), общий для всех источников эмиссии внутри одного сообщения |
 | **Используется на фронте** | `chat-client-actions.js::executeBlock` — Set исполненных id в `sessionStorage` под ключом `chat:executedActions` |
-| **Что сломается, если изменить формат** | Фронт перестанет распознавать «уже исполненный» при reload вкладки → бесконечный redirect-цикл (action `open_url` будет каждый раз заново переходить по URL). Подробнее — [`developer-guide.md §7.9`](../guides/developer-guide.md#79-action-handlers-и-clientactionblock) |
+| **Что сломается, если изменить формат** | Фронт перестанет распознавать «уже исполненный» при reload вкладки → бесконечный redirect-цикл (action `open_url` будет каждый раз заново переходить по URL). Подробнее — [`ai-assistant.md §7.9`](../guides/ai-assistant.md#79-action-handlers-и-clientactionblock) |
 
 **`block_id` блоков из ответа внешнего агента** (форвард через шину `chat_agent_messages_bus`):
-- Формат задаётся в `AgentChannelService.map_answer_to_blocks` (`agent_channel.py`): кнопки — `f"{row['id']}:btn:0"`, reasoning — `f"{row['id']}:reasoning:0"`, где `row['id']` — uid строки-ответа в шине.
-- `map_answer_to_blocks` мапит ответ агента в блоки в порядке: reasoning (из `metadata.reasoning`, legacy `thinking`) → text → buttons → media (image/file) → error.
+- Формат задаётся в `map_answer_to_blocks` (`agent_channel.py:95`, модульная функция, не метод сервиса): кнопки — `f"{row['id']}:btn:0"`, reasoning — `f"{row['id']}:reasoning:0"`, где `row['id']` — uid строки-ответа в шине.
+- `map_answer_to_blocks` мапит ответ агента в блоки в порядке: reasoning (из `metadata.reasoning`, legacy `thinking`) → text → buttons → media (image/file). Error-блока эта функция **не** производит: ошибочные исходы закрывает `poll_once` через `MessageRepository.mark_failed` с отдельно собранным error-блоком.
+- Клиентские действия в этом пути не эмитятся напрямую: `action_id` кнопок транслируются в `open_url` через `button_translator.translate_buttons` (вызов — `agent_channel.py:547`, до маппинга в блоки).
 - Используется: `ClientActionsRegistry.executeBlock` дедупит исполнённые client-action по `block_id` (см. §5 выше). Стабильность формата важна, чтобы повторный поллинг GET /messages не создавал дублей кнопок.
 
 ---
@@ -171,7 +208,7 @@ SSE в чате нет. Транспорт единый для всех режи
 
 | `agent_mode` | Поведение бэка |
 |---|---|
-| `off` | Локальная LLM/GigaChat исполняется синхронно в POST через `orchestrator.run(...)`; forward-tool скрыт от LLM |
+| `off` | Локальный LLM-провайдер (маршрут `CHAT__PROFILE`) исполняется синхронно в POST через `orchestrator.run(...)`; forward-tool скрыт от LLM |
 | `adaptive` | `orchestrator.run(...)` синхронно; forward-tool доступен LLM, оркестратор сам решает форвардить через шину `chat_agent_messages_bus` |
 | `always` | Прямой проброс в агента: `AgentChannelService.submit` пишет вопрос в шину + черновик `chat_messages` (status='streaming'), LLM минуется |
 
@@ -188,21 +225,26 @@ SSE в чате нет. Транспорт единый для всех режи
 | Шина агента | таблица `chat_agent_messages_bus` (см. §10) |
 | Лимит параллельных запросов | `AgentMessageRepository.count_active_for_user` ≥ `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3) → `ChatLimitError` (HTTP 422) до записей в БД |
 | Фоновый хук поллера | `chat.agent_channel_poller` (наряду с `chat.tool_metrics_batcher`, `chat.audit_log_batcher`) |
-| Настройки канала | `AgentChannelSettings`, env-префикс `CHAT__AGENT_CHANNEL__` (`TABLE_NAME=chat_agent_messages_bus`, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`) |
+| Настройки канала | `AgentChannelSettings` (`app/domains/chat/settings.py:22`), env-префикс `CHAT__AGENT_CHANNEL__` (`TABLE_NAME=chat_agent_messages_bus`, `SCHEMA_NAME=""` — пусто → схема домена чата, затем основная схема адаптера, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`) |
 
 ---
 
-## 7. URL-контракты под JupyterHub proxy
+## 7. URL-контракты бэк ↔ фронт
+
+Бэк отдаёт **относительные** пути; абсолютный адрес собирает фронт — единой
+точкой `AppConfig.api.getUrl(endpoint)` (для client-action `open_url` — через
+`resolveProxyUrl`, который делегирует туда же).
 
 | Что | Где захардкожено | Что нельзя |
 |---|---|---|
-| Открытие страницы акта | `acts.open_act_page` handler возвращает `/constructor?act_id=<int>` | НЕ возвращать абсолютный URL `http://...` — фронт пройдёт мимо proxy-rewrite |
+| Открытие страницы акта | `acts.open_act_page` handler возвращает `/constructor?act_id=<int>` | НЕ возвращать абсолютный URL `http://...` — он пройдёт мимо сборки адреса на фронте |
 | Открытие админ-панели | `admin.open_admin_panel` → `/admin` | то же |
-| API fetch от фронта | `chat-stream.js`, любые `fetch(...)` | Обязательно через `AppConfig.api.getUrl(endpoint)`, иначе под JupyterHub → 404 |
+| API fetch от фронта | `chat-stream.js`, любые `fetch(...)` | Обязательно через `AppConfig.api.getUrl(endpoint)` + реестр `AppConfig.chatEndpoints`; литеральный `/api/v1/...` в callsite — рефакторинг-запах |
 
-Подробнее — [`developer-guide.md §7.9`](../guides/developer-guide.md#79-action-handlers-и-clientactionblock)
-(client-action `open_url`) и [`developer-guide.md §9.2`](../guides/developer-guide.md#92-за-jupyterhub-proxy)
-(frontend fetch через `AppConfig.api.getUrl`).
+Подробнее — [`ai-assistant.md §7.9`](../guides/ai-assistant.md#79-action-handlers-и-clientactionblock)
+(client-action `open_url`) и
+[`chat-frontend-architecture.md`](chat-frontend-architecture.md) («Единая точка
+сборки URL: `AppConfig.api.getUrl`»).
 
 ---
 
@@ -255,7 +297,16 @@ SSE в чате нет. Транспорт единый для всех режи
 | `status` | TEXT | `pending`/`processing`/`completed`/`failed` (CHECK владельца, подтверждённая спека) — записи статуса от AW best-effort |
 | `created_at`, `updated_at` | TIMESTAMPTZ | NOT NULL; у владельца есть DEFAULT'ы, но AW не полагается и передаёт явно |
 
-**GP**: без PK (у владельца `id` nullable), `DISTRIBUTED BY (chat_id)`.
+**GP**: без PK (у владельца `id` nullable), `WITH (appendonly=false) DISTRIBUTED BY (chat_id)`
+плюс отдельный `CREATE INDEX idx_{BUS_TABLE}_id ON …(id)`
+(`app/domains/chat/migrations/greenplum/schema.sql:120-142`).
+
+**Имя и схема в миграции — плейсхолдеры `{BUS_SCHEMA_Q}{BUS_TABLE}`**, без
+`{PREFIX}`: app-префикс к шине не клеится, имя задаётся
+`CHAT__AGENT_CHANNEL__TABLE_NAME` целиком, схема — `…__SCHEMA_NAME`.
+DDL помечен директивой адаптеру `-- @external-table: {BUS_SCHEMA_Q}{BUS_TABLE}`:
+если таблицу уже создал владелец, её «спутники» (`CREATE INDEX`, `COMMENT ON`)
+пропускаются.
 
 **Связь с `chat_messages`**: `chat_messages.agent_ref` VARCHAR(36) — ссылка из
 черновика ассистент-сообщения на uid вопроса в шине. Поток submit → poller →

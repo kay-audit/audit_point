@@ -16,7 +16,10 @@
 Если в `.env` префикс другой — подставить руками (`s/t_db_oarb_audit_act_/<your_prefix>/g`).
 
 **Схема для PG**: без квалификатора (схема `public`).
-**Схема для GP**: `s_grnplm_ld_audit_da_project_4` (значение `DATABASE__GP__SCHEMA` из `.env`; подставить своё при отличии).
+**Схема для GP**: значение `DATABASE__GP__SCHEMA` из `.env`. **Сверь перед запуском:** в
+`.env.dev` это `s_grnplm_ld_audit_da_project_4` (подставлено в SQL ниже), а в `.env.prod` —
+**`s_grnplm_ld_audit_da_project_34`**. Справочники и ЦК-данные этим скриптом не дропаются
+и живут по своим настройкам схемы (на ПРОМе — `_4`) — см. [`drop-reference-tables.md`](drop-reference-tables.md).
 
 **Внимание**:
 - **Намеренно без `CASCADE`.** От рабочих таблиц могли быть сделаны зависимые
@@ -28,7 +31,8 @@
   батч на первой ошибке (psql без `ON_ERROR_STOP`, DBeaver «Execute script»),
   чтобы единичная зависимость не оборвала остальной сброс.
 - Если задан `CHAT__SCHEMA_NAME` и/или `CHAT__AGENT_CHANNEL__SCHEMA_NAME`, таблицы чата / bus-таблица создаются в указанной схеме — дропать их в ней, а не в основной.
-- **Bus-таблица — без app-префикса**: её имя задаётся `CHAT__AGENT_CHANNEL__TABLE_NAME` целиком (дефолт `chat_agent_messages_bus`, **без** `DATABASE__TABLE_PREFIX`). Здесь подставлено фактическое имя из `.env` (`t_db_oarb_audit_act_chat_agent_messages_bus`). Если задано другое — подставить его.
+- **Bus-таблица — без app-префикса**: её имя задаётся `CHAT__AGENT_CHANNEL__TABLE_NAME` целиком (дефолт кода — `chat_agent_messages_bus`, в `.env.prod` — `agent_conversation_messages`), `DATABASE__TABLE_PREFIX` к нему **не** приклеивается. В SQL ниже стоит дефолтное имя — сверь со своим `.env`.
+- **Bus-таблица бывает чужой.** Приложение создаёт её только если её нет; в схеме она помечена директивой `-- @external-table` (`app/domains/chat/migrations/*/schema.sql`), потому что на ПРОМе её может владеть команда внешнего ИИ-агента. Если владелец — не учётка приложения, `DROP` упадёт по правам: это нормально, таблицу дропать и не нужно (см. troubleshooting №22).
 - Sequences дропаются ПОСЛЕ таблиц, у которых они в DEFAULT.
 
 > **Важно про пересоздание.** Приложение на старте (`create_tables_if_not_exist`)
@@ -38,7 +42,7 @@
 > пересоздание. Чтобы такое расхождение не
 > всплывало рантайм-ошибкой (`UndefinedColumnError`), при старте работает
 > диагностика: если таблица существует, но устарела по колонкам, в лог пишется
-> WARNING со списком недостающих колонок (см. `developer-guide.md` §6.5.4).
+> WARNING со списком недостающих колонок (см. [`database.md`](../guides/database.md) §6.5.4).
 
 ---
 
@@ -52,10 +56,11 @@ DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_audit_log;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_tool_metrics;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_message_feedback;
 -- ВНИМАНИЕ: имя bus-таблицы задаётся ЦЕЛИКОМ через CHAT__AGENT_CHANNEL__TABLE_NAME
--- (дефолт chat_agent_messages_bus, БЕЗ префикса DATABASE__TABLE_PREFIX).
--- Если в .env задано другое значение — подставить его здесь вместо
--- t_db_oarb_audit_act_chat_agent_messages_bus, иначе DROP не найдёт таблицу.
-DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_agent_messages_bus;
+-- (дефолт кода chat_agent_messages_bus, в .env.prod agent_conversation_messages),
+-- префикс DATABASE__TABLE_PREFIX к нему НЕ добавляется. Подставь имя из своего
+-- .env, иначе DROP не найдёт таблицу. Если таблицей владеет внешняя команда —
+-- DROP упадёт по правам, и это ожидаемо: чужую шину дропать не нужно.
+DROP TABLE IF EXISTS chat_agent_messages_bus;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_files;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_messages;
 DROP TABLE IF EXISTS t_db_oarb_audit_act_chat_conversations;
@@ -100,7 +105,9 @@ DROP SEQUENCE IF EXISTS t_db_oarb_audit_act_access_denied_audit_id_seq;
 
 ## 2. Greenplum (прод-инсталляция)
 
-> Схема `s_grnplm_ld_audit_da_project_4` (значение `DATABASE__GP__SCHEMA` из `.env`; подставить своё при отличии).
+> Схема ниже — `s_grnplm_ld_audit_da_project_4` (значение из `.env.dev`). **На ПРОМе
+> `DATABASE__GP__SCHEMA=s_grnplm_ld_audit_da_project_34`** — перед запуском подставь
+> схему своей инсталляции (`s/s_grnplm_ld_audit_da_project_4\./<your_schema>./g`).
 > Справочники и ЦК-данные (`t_db_oarb_ua_*`, `t_db_oarb_ck_*`) на GP — внешние ETL-данные, в этом скрипте не дропаются.
 
 ```sql
@@ -111,10 +118,12 @@ DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_aud
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_tool_metrics;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_message_feedback;
 -- ВНИМАНИЕ: имя bus-таблицы задаётся ЦЕЛИКОМ через CHAT__AGENT_CHANNEL__TABLE_NAME
--- (дефолт chat_agent_messages_bus, БЕЗ префикса DATABASE__TABLE_PREFIX).
--- Если в .env задано другое значение — подставить его здесь вместо
--- t_db_oarb_audit_act_chat_agent_messages_bus, иначе DROP не найдёт таблицу.
-DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_agent_messages_bus;
+-- (дефолт кода chat_agent_messages_bus, в .env.prod agent_conversation_messages),
+-- префикс DATABASE__TABLE_PREFIX к нему НЕ добавляется; схема — из
+-- CHAT__AGENT_CHANNEL__SCHEMA_NAME, при пустом значении из схемы чата/основной.
+-- Если таблицей владеет команда внешнего агента — DROP упадёт по правам, и это
+-- ожидаемо: чужую шину дропать не нужно.
+DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.chat_agent_messages_bus;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_files;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_messages;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_audit_act_chat_conversations;
@@ -177,6 +186,14 @@ WHERE schemaname = 's_grnplm_ld_audit_da_project_4'
   AND tablename LIKE 't_db_oarb_audit_act_%'
 ORDER BY tablename;
 -- Ожидается: 0 строк.
+```
+
+Bus-таблица канала агента под этот фильтр **не попадает** — она без app-префикса.
+Проверять её отдельно по имени из `CHAT__AGENT_CHANNEL__TABLE_NAME`:
+
+```sql
+SELECT schemaname, tablename FROM pg_tables
+WHERE tablename = 'chat_agent_messages_bus';   -- или agent_conversation_messages
 ```
 
 После дропа при следующем старте `uvicorn` приложение пересоздаст все таблицы из миграций

@@ -1,15 +1,16 @@
 # Frontend архитектура чата
 
-> См. также: `docs/guides/developer-guide.md` §7.7 — общая роль чата в архитектуре.
+> См. также: `docs/guides/ai-assistant.md` §7.7 — общая роль чата в архитектуре.
 
 ## Обзор
 
 Чат AI-ассистента в Audit Workstation — это vanilla-JS приложение (ES6+) на
 Native ES Modules без bundler'а. Каждый чат-модуль — отдельный JS-файл
-с `import`/`export`; entry-файлы (`portal-common.js`, `constructor.js`)
-импортят все 13 модулей в нужном порядке (chat-feedback подтягивается через
-граф chat-messages.js, а не напрямую в entry). Модули общаются между собой через
-синхронную шину событий `ChatEventBus`.
+с `import`/`export`. Файлов в `static/js/shared/chat/` — 13; entry-файлы
+(`portal-common.js`, `constructor.js`) импортят **12** из них явно, в нужном
+порядке, а 13-й (`chat-feedback.js`) подтягивается через граф
+`chat-messages.js`. Модули общаются между собой через синхронную шину событий
+`ChatEventBus`.
 
 Архитектура — event-driven, тонкий фасад `ChatManager` оркеструет ядерные
 модули в `static/js/shared/chat/` и опциональный региональный модуль
@@ -19,11 +20,11 @@ Native ES Modules без bundler'а. Каждый чат-модуль — отд
 затем опрашивает `GET /api/v1/chat/conversations/{cid}/messages/{message_id}`
 до терминального статуса (`complete` / `failed`) и отдаёт ответ **целиком**.
 Полный ответ рендерится через `ChatRenderer.typeOutBlocks` с декоративным
-«эффектом печати» (токен-стриминга нет). Список известных типов блоков
-(`KNOWN_BLOCK_TYPES`) синхронизирован с `MessageBlock`-union в
-`app/core/chat/blocks.py`. Если бэк прислал блок неизвестного типа — фронт
-не падает, а показывает warning-плейсхолдер «⚠ Блок неизвестного типа …»
-(см. «Unknown-block fallback»).
+«эффектом печати» (токен-стриминга нет). Единственный гейт известных типов —
+`switch (block.type)` в `ChatRenderer.renderBlock`; он должен быть
+синхронизирован с `MessageBlock`-union в `app/core/chat/blocks.py`. Если бэк
+прислал блок неизвестного типа — фронт не падает, а показывает
+warning-плейсхолдер «⚠ Блок неизвестного типа …» (см. «Unknown-block fallback»).
 
 Чат имеет три режима отображения — inline (встроенный в правую панель портала),
 modal (полноэкранный оверлей) и popup (плавающее окно с resize-углом
@@ -46,14 +47,15 @@ modal (полноэкранный оверлей) и popup (плавающее �
   инициализации.
 
 - **`chat-renderer.js`** — рендерер блоков сообщений в DOM. Объект
-  `ChatRenderer` (`chat-renderer.js:8`) с `renderBlock(block, opts)`
-  (`chat-renderer.js:136-163`), `renderBlocks`, `appendBlock`,
-  `createStreamingBlock(blockType)` (`chat-renderer.js:208`),
-  `typeOutSingleBlock(container, block)`, `appendTextAnimated(el, text)`.
+  `ChatRenderer` (`chat-renderer.js:83`) с `renderBlock(block, opts)`
+  (`chat-renderer.js:437-486`), `renderBlocks` (`:319`), `appendBlock` (`:342`),
+  `createStreamingBlock(blockType, blockId)` (`chat-renderer.js:520`),
+  `typeOutSingleBlock(container, block)` (`:290`), `appendTextAnimated(sb, text)`
+  (`:261`).
   Поддерживает типы text, code, reasoning, plan, file, image, buttons,
   client_action, error и default-ветку для неизвестных. Группирует подряд
   идущие reasoning в один сворачиваемый `<details class="chat-reasoning-group">`
-  (`chat-renderer.js:74-127`). **Markdown-пайплайн** `_markdownToHtml(text)`:
+  (`chat-renderer.js:331-420`). **Markdown-пайплайн** `_markdownToHtml(text)` (`:1098`):
   vendored `marked` 18 (ESM, `static/vendor/marked/`) → `_closeDanglingFences`
   (незакрытые code-фенсы) → DOMPurify с `CHAT_MD_CONFIG` из `sanitize.js`
   (без img/svg/input, class разрешён) → постобработка ссылок
@@ -65,14 +67,16 @@ modal (полноэкранный оверлей) и popup (плавающее �
   подключается через `@import` в `css/entry/shared.css`. Облако пользователя
   и error-блоки рендерятся как plain-text (md не применяется).
 
-- **`chat-client-actions.js`** — IIFE-модуль с реестром `ClientActionsRegistry`
-  (`chat-client-actions.js:45`). Регистрирует стандартные команды
-  `open_url`, `notify`, `trigger_sdk` (`chat-client-actions.js:153, 161, 178`).
+- **`chat-client-actions.js`** — ESM-модуль с реестром `ClientActionsRegistry`
+  (`chat-client-actions.js:44`). Регистрирует стандартные команды
+  `open_url`, `notify`, `trigger_sdk` (`chat-client-actions.js:152, 160, 177`).
   Обеспечивает идемпотентность через `block_id` и `sessionStorage`
-  (`EXECUTED_STORAGE_KEY = 'chat:executedActions'`,
-  `chat-client-actions.js:13-43`). Содержит whitelist URL-схем
-  `ALLOWED_OPEN_URL_SCHEMES` (`chat-client-actions.js:124`) и `resolveProxyUrl`
-  для подстановки JupyterHub-префикса (`chat-client-actions.js:142-151`).
+  (`EXECUTED_STORAGE_KEY = 'chat:executedActions'`, `EXECUTED_MAX_SIZE = 500`,
+  `chat-client-actions.js:15-42`). Содержит whitelist URL-схем
+  `ALLOWED_OPEN_URL_SCHEMES` (`chat-client-actions.js:123`) и `resolveProxyUrl`
+  (`chat-client-actions.js:141-150`) — прогон относительного URL через
+  `AppConfig.api.getUrl`, единая точка сборки адреса (см. «Единая точка сборки
+  URL»).
 
 - **`chat-stream.js`** — poll-клиент (не SSE). Объект `ChatStream`
   (`chat-stream.js:11`) с `sendAndPoll(conversationId, message, files, options)`
@@ -92,13 +96,14 @@ modal (полноэкранный оверлей) и popup (плавающее �
   переиспользуется при reload/switch посреди ожидания.
 
 - **`chat-history.js`** — панель списка бесед. Объект `ChatHistory`
-  (`chat-history.js:8`) с `loadConversations`, `createConversation`,
-  `deleteConversation`, `selectConversation`, `resetToNew`. Все fetch'и идут
-  через `AppConfig.api.getUrl(endpoint)` (`chat-history.js:57, 103, 141`).
+  (`chat-history.js:11`) с `loadConversations` (`:53`), `createConversation`
+  (`:107`), `deleteConversation` (`:145`), `selectConversation` (`:188`),
+  `resetToNew` (`:89`). Все fetch'и идут
+  через `AppConfig.api.getUrl(endpoint)` (`chat-history.js:61, 110, 149`).
   При смене беседы вызывает callback `onConversationChange`, который
-  подключает `ChatContext.init()` (`chat-context.js:28-30`).
+  подключает `ChatContext.init()` (`chat-context.js:37`).
 
-- **`chat-ui.js`** — UI-контроллер. Объект `ChatUI` (`chat-ui.js:8`) реагирует
+- **`chat-ui.js`** — UI-контроллер. Объект `ChatUI` (`chat-ui.js:13`) реагирует
   на события `ui:processing` и `ui:scroll-bottom` (`chat-ui.js:40-41`).
   Управляет блокировкой input'а и кнопки отправки и авторесайзом textarea.
   Индикатор «печатает» больше не управляется через шину — он ставится прямо
@@ -106,64 +111,70 @@ modal (полноэкранный оверлей) и popup (плавающее �
   цикл сообщения»).
 
 - **`chat-files.js`** — менеджер прикрепляемых файлов. Объект `ChatFiles`
-  (`chat-files.js:7`) с очередью `_pendingFiles`, валидацией размера
+  (`chat-files.js:12`) с очередью `_pendingFiles`, валидацией размера
   и количества, drag-and-drop в `.chat-body`. Дефолтные лимиты `_FILE_LIMITS`
-  (`chat-files.js:21-25`) перетягиваются с сервера через
-  `/api/v1/chat/limits` (`chat-files.js:81-100`). Все DOM-listener'ы крепятся
-  с `AbortController.signal` для чистого `destroy()`.
+  (`chat-files.js:26`) перетягиваются с сервера через
+  `/api/v1/chat/limits` (`_loadLimits`, `chat-files.js:86-105`). Все DOM-listener'ы
+  крепятся с `AbortController.signal` для чистого `destroy()` (`:62`).
 
 - **`chat-context.js`** — контекст беседы и domain-фильтр. Объект `ChatContext`
-  (`chat-context.js:7`) с `ensureConversation()` (lazy-create с Promise-lock
-  от двойной отправки, `chat-context.js:46-62`), `detectDomains()`
-  (читает `<meta name="chat-domains">`, `chat-context.js:139-149`),
-  `getEnabledKnowledgeBases()`. Также маппинг key→label баз знаний из
+  (`chat-context.js:13`) с `ensureConversation()` (lazy-create с Promise-lock
+  `_pendingEnsure` от двойной отправки, `chat-context.js:81-105`), `detectDomains()`
+  (читает `<meta name="chat-domains">`, `chat-context.js:190-205`),
+  `getEnabledKnowledgeBases()` (`:169`), `getAgentMode()` (`:284`; читает
+  `localStorage['assistant_oarb_mode']`, дефолт при отсутствии/мусоре — `always`).
+  Также маппинг key→label баз знаний из
   `<meta name="chat-knowledge-bases">` либо из data-атрибутов
-  (`chat-context.js:195-227`).
+  (`_getKnowledgeBaseMap`, `chat-context.js:299-333`).
 
 - **`chat-messages.js`** — оркестратор отправки/опроса и рендер user/assistant
-  сообщений. Объект `ChatMessages` (`chat-messages.js:32`) с публичным
-  `KNOWN_BLOCK_TYPES` (`chat-messages.js:20-30`), `_send` (`chat-messages.js:138`),
-  `_renderReadyMessage` (`chat-messages.js:197`), `_renderConversationMessages`
-  (`chat-messages.js:393`). Хранит `_pollController` (`AbortController`)
-  текущего опроса и отменяет его (`_abortPoll`) при переключении/очистке беседы,
-  чтобы typing-bubble не зависал. `_renderProgress(container, msg)` обрабатывает
+  сообщений. Объект `ChatMessages` (`chat-messages.js:33`) с `_send` (`chat-messages.js:146`),
+  `_renderReadyMessage` (`chat-messages.js:208`), `_renderConversationMessages`
+  (`chat-messages.js:592`). Хранит `_pollController` (`AbortController`, `:51`)
+  текущего опроса и отменяет его (`_abortPoll`, `:131`) при переключении/очистке
+  беседы, чтобы typing-bubble не зависал. `_renderProgress(container, msg)` (`:256`)
+  обрабатывает
   каждый `onProgress`-тик: обновляет строку статуса `.chat-typing-status`
   («В очереди: впереди N запрос(а/ов)» / «В очереди: вы следующий» /
   «Агент работает над ответом…») по `msg.status_details`, инкрементально
   допечатывает блоки по дельтам (`data-block-id`, WeakMap-реестр, очередь
   promise-анимаций, `appendTextAnimated`). Запоминает welcome-сообщение как
   DOM-узел (`cloneNode`) для безопасного восстановления при `clearChat`
-  (`chat-messages.js:63-66`).
+  (`chat-messages.js:73`).
 
 - **`chat-manager.js`** — тонкий фасад. Класс `ChatManager`
-  (`chat-manager.js:15`) со статикой `init()`, `destroy()`, `sendMessage()`,
-  `clearChat()`. Атомарный флаг `_isSending` защищает от двойного
-  клика/Enter до первого `await` (`chat-manager.js:23-28, 125-143`). Общий
+  (`chat-manager.js:21`) со статикой `init()` (`:39`), `destroy()` (`:106`),
+  `sendMessage()` (`:131`), `clearChat()` (`:154`). Атомарный флаг `_isSending`
+  защищает от двойного
+  клика/Enter до первого `await` (`chat-manager.js:34, 131-147`). Общий
   `AbortController` снимает все DOM-listener'ы одним `abort()`
-  (`chat-manager.js:64-66, 102-105`).
+  (`chat-manager.js:28, 71, 106-120`).
 
 - **`chat-modal.js`** — overlay-режим. Класс `ChatModalManager`
-  (`chat-modal.js:8`) с `open`, `close`, ленивой инициализацией
-  `ChatManager.init()` при первом открытии и Escape-handler'ом,
-  который подключается только пока модалка открыта (`chat-modal.js:34-37,
-  53-56`).
+  (`chat-modal.js:11`) с `open` (`:20`), `close` (`:45`), ленивой инициализацией
+  `ChatManager.init()` при первом открытии и Escape через общий `EscapeStack`:
+  `EscapeStack.push(...)` в `open` (`:34-36`), unsubscribe-хэндл `_escapeUnsub`
+  снимается в `close` (`:52-55`) — ESC не срабатывает, пока модалка скрыта.
 
 - **`chat-feedback.js`** — панель обратной связи по сообщениям ассистента
-  (лайк/дизлайк/копировать). Объект-литерал `ChatFeedback` с публичным
+  (лайк/дизлайк/копировать). Объект-литерал `ChatFeedback` (`chat-feedback.js:36`)
+  с публичным
   методом `ChatFeedback.attach(contentEl, {conversationId, messageId, initial})`
-  — прикрепляет ряд действий под завершённым ответом ассистента. Лайк —
+  (`:50`) — прикрепляет ряд действий под завершённым ответом ассистента. Лайк —
   мгновенно; дизлайк — мгновенно + раскрывает форму причин с чекбоксами
-  (`REASONS`, синхронизированы с бэком `FEEDBACK_REASON_CODES`) и полем
+  (`REASONS`, `:22`; синхронизированы с бэком `FEEDBACK_REASON_CODES`) и полем
   комментария. Оценка переключаемая/отменяемая. Запросы идут через
-  `AppConfig.api.getUrl` (JupyterHub proxy), метод `PUT/DELETE
-  /api/v1/chat/conversations/{cid}/messages/{mid}/feedback`. Вызывается из
+  `AppConfig.api.getUrl` + `AppConfig.chatEndpoints.feedback(cid, mid)`, метод
+  `PUT/DELETE /api/v1/chat/conversations/{cid}/messages/{mid}/feedback`.
+  Эмитит в шину `feedback:submitted` / `feedback:cleared`. Вызывается из
   `ChatMessages._renderReadyMessage` после завершения анимации ответа —
   панель всегда последней под финальным облаком. **Не импортируется в
   entry напрямую**: подтягивается через граф `chat-messages.js`
   (`import { ChatFeedback } from './chat-feedback.js'`).
 
 - **`chat-title.js`** — генерация title новой беседы по первому пользовательскому
-  сообщению. Объект-литерал `ChatTitle` с методом `ChatTitle.derive(text, files)`:
+  сообщению. Объект-литерал `ChatTitle` (`chat-title.js:8`) с методом
+  `ChatTitle.derive(text, files)` (`:27`):
   обрезает текст до `MAX_LENGTH=40` символов по word boundary + `…`; при
   пустом тексте и наличии файлов — `«Файлы: <имя первого>»`; при отсутствии
   обоих — `«Новая беседа»`. Используется в `ChatContext._createConversation`
@@ -173,12 +184,13 @@ modal (полноэкранный оверлей) и popup (плавающее �
 ### Региональный модуль (`static/js/constructor/header/`)
 
 - **`chat-popup.js`** — popup-режим для редактора актов. Класс
-  `ChatPopupManager` (`chat-popup.js:7`) с `setup`, `open`, `close`,
-  `toggle`. Делает **полный re-init** `ChatManager` при каждом открытии
-  и `destroy()` при закрытии (`chat-popup.js:81-83, 106-108`) — чтобы
-  не накапливались подписки на шину. Сохраняет размеры панели
-  в `localStorage['chat_popup_size']` (`chat-popup.js:11, 186-211`),
-  поддерживает свободный resize за угол (`chat-popup.js:126-180`).
+  `ChatPopupManager` (`chat-popup.js:11`) с `setup` (`:24`), `open` (`:82`),
+  `close` (`:109`), `toggle` (`:130`). Делает **полный re-init** `ChatManager`
+  при каждом открытии и `destroy()` при закрытии (`chat-popup.js:88-90, 122-124`)
+  — чтобы не накапливались подписки на шину. Свободный resize за угол и
+  сохранение размера в `localStorage['chat_popup_size']` делегированы общей
+  утилите `makeResizablePanel` (`static/js/shared/resizable-panel.js`;
+  вызов — `chat-popup.js:63-73`). Escape — через `EscapeStack` (`:95-97` / `:115-118`).
 
 ## Шина событий (ChatEventBus)
 
@@ -191,16 +203,22 @@ modal (полноэкранный оверлей) и popup (плавающее �
 
 | Событие | Эмитит | Слушает | Payload |
 |---|---|---|---|
-| `chat:send-request` | `ChatManager.sendMessage` (`chat-manager.js:139`) | `ChatMessages._onSendRequest` (`chat-messages.js:83`) | `{text, files}` |
-| `chat:clear` | `ChatManager.clearChat` (`chat-manager.js:152`) | `ChatMessages`, `ChatContext` (`chat-context.js:34`) | — |
-| `context:conversation-switched` | `ChatContext._onConversationSwitch` (`chat-context.js:181`) | `ChatMessages`, `ChatFiles` (`chat-files.js:44`) | `{conversationId, messages}` |
-| `context:conversation-cleared` | `ChatContext._onConversationSwitch` (`chat-context.js:160`) | `ChatMessages`, `ChatFiles` (`chat-files.js:43`) | — |
-| `ui:processing` | `ChatMessages._send` (`chat-messages.js:139, 186`) | `ChatUI._setProcessing` (`chat-ui.js:40`) | `{state: boolean}` |
+| `chat:send-request` | `ChatManager.sendMessage` (`chat-manager.js:145`) | `ChatMessages._onSendRequest` (`chat-messages.js:94`) | `{text, files}` |
+| `chat:clear` | `ChatManager.clearChat` (`chat-manager.js:158`) | `ChatMessages` (`chat-messages.js:97`), `ChatContext` (`chat-context.js:52`) | — |
+| `context:conversation-switched` | `ChatContext._onConversationSwitch` (`chat-context.js:233`) | `ChatMessages` (`chat-messages.js:95`), `ChatFiles` (`chat-files.js:49`) | `{conversationId, messages}` |
+| `context:conversation-cleared` | `ChatContext._onConversationSwitch` (`chat-context.js:211`) | `ChatMessages` (`chat-messages.js:96`), `ChatFiles` (`chat-files.js:48`) | — |
+| `ui:processing` | `ChatMessages._send` (`chat-messages.js:147, 197`) | `ChatUI._setProcessing` (`chat-ui.js:40`) | `{state: boolean}` |
 | `ui:scroll-bottom` | `ChatMessages` (множество мест) | `ChatUI._scrollToBottom` (`chat-ui.js:41`) | — |
-| `files:changed` | `ChatFiles` (drag-drop, picker, удаление чипа) | — (внешние слушатели) | `{files: File[]}` |
-| `files:cleared` | `ChatFiles.clear` (`chat-files.js:116`) | — (внешние слушатели) | — |
+| `files:changed` | `ChatFiles` (drag-drop, picker, удаление чипа: `chat-files.js:141, 204, 296`) | — (внешние слушатели) | `{files: File[]}` |
+| `files:cleared` | `ChatFiles.clear` (`chat-files.js:121`) | — (внешние слушатели) | — |
+| `feedback:submitted` | `ChatFeedback` (`chat-feedback.js:210, 237`) | — (внешние слушатели) | `{messageId, rating, …}` |
+| `feedback:cleared` | `ChatFeedback` (`chat-feedback.js:201`) | — (внешние слушатели) | `{messageId}` |
 
-`ChatEventBus.reset()` (`chat-event-bus.js:71-73`) сбрасывает все подписки —
+Конструктор использует ту же шину как общий cross-module event bus
+(`node:tb-changed`, `node:invoice-changed`) — см.
+[`frontend-architecture.md`](frontend-architecture.md) §7.6.
+
+`ChatEventBus.reset()` (`chat-event-bus.js:71-75`) сбрасывает все подписки —
 используется только в тестах.
 
 ## Жизненный цикл сообщения
@@ -210,18 +228,18 @@ modal (полноэкранный оверлей) и popup (плавающее �
 1. **Инициализация.** Шаблон портала или конструктора грузит скрипты
    в правильном порядке (см. ниже). Каждый модуль публикуется в `window`.
    Конкретный режим (inline / modal / popup) вызывает `ChatManager.init()`
-   (`chat-manager.js:33-93`).
+   (`chat-manager.js:39-99`).
 
 2. **Ввод.** Пользователь набирает текст в `.chat-input`, при необходимости
    прикрепляет файлы через `ChatFiles` (picker или drag-drop в `.chat-body`).
    Авторесайз textarea и валидация файлов — onChange.
 
 3. **Отправка.** Enter (без shift) или клик по `.chat-send-btn` →
-   `ChatManager.sendMessage()` (`chat-manager.js:125`). Атомарный флаг
+   `ChatManager.sendMessage()` (`chat-manager.js:131`). Атомарный флаг
    `_isSending` ставится до первого `await`, защищая от двойного клика,
    и эмиттится `chat:send-request` с `{text, files}`.
 
-4. **Подписчик `ChatMessages._send`** (`chat-messages.js:138-188`):
+4. **Подписчик `ChatMessages._send`** (`chat-messages.js:146-199`):
    - эмиттит `ui:processing {state: true}` → `ChatUI` блокирует input/send;
    - вызывает `ChatContext.ensureConversation()` — ленивое создание беседы
      через `POST /api/v1/chat/conversations` (с Promise-lock от дублей);
@@ -235,20 +253,21 @@ modal (полноэкранный оверлей) и popup (плавающее �
      `ChatStream.sendAndPoll(...)`.
 
 5. **`ChatStream.sendAndPoll`** (`chat-stream.js:27-64`):
-   - строит `FormData` (`message`, `domains` JSON-string, `files[]`) и
-     добавляет `agent_mode`;
+   - строит `FormData` (`message`, `domains` JSON-string, `files[]`;
+     `_buildFormData`, `:212`) и добавляет `agent_mode` (`:31`);
    - делает `POST /api/v1/chat/conversations/{id}/messages` через
      `AppConfig.api.getUrl`, читает JSON `{message_id}`;
    - передаёт управление `pollMessage`, который опрашивает
      `GET .../messages/{message_id}` с адаптивным интервалом до статуса
      `complete`/`failed`; каждый streaming-тик вызывает `onProgress(msg)`.
 
-5а. **`onProgress`-тики.** `ChatMessages._renderProgress(container, msg)`:
+5а. **`onProgress`-тики.** `ChatMessages._renderProgress(container, msg)`
+   (`chat-messages.js:256-265`):
    - обновляет строку `.chat-typing-status` по `msg.status_details`;
    - инкрементально допечатывает блоки по дельтам: реестр WeakMap(el→text),
      очередь promise-анимаций, `appendTextAnimated`.
 
-6. **`ChatMessages._renderReadyMessage`** (`chat-messages.js:197-211`) —
+6. **`ChatMessages._renderReadyMessage`** (`chat-messages.js:208-254`) —
    по терминальному ответу убирает typing-плейсхолдер и снимает маркер-класс,
    затем допечатывает оставшиеся хвосты: для `complete` — через
    `ChatRenderer.typeOutBlocks` (анимирует только то, что ещё не отрисовано),
@@ -266,9 +285,9 @@ modal (полноэкранный оверлей) и popup (плавающее �
 8. **Resume при разрыве/switch'е.** Если вкладку перезагрузили или
    переключили беседу пока ассистент ждёт ответа (сообщение сохранено со
    `status='streaming'`), `_renderConversationMessages`
-   (`chat-messages.js:393-443`) рендерит накопленные text/reasoning-блоки
+   (`chat-messages.js:592-665`) рендерит накопленные text/reasoning-блоки
    черновика **мгновенно** и seed'ит реестр инкрементального рендера
-   (`_seedIncrementalBlocks`: `renderedLen` = текущая длина) — уже показанное
+   (`_seedIncrementalBlocks`, `:363`: `renderedLen` = текущая длина) — уже показанное
    не переанимируется, ставит typing-bubble и возобновляет опрос тем же
    `ChatStream.pollMessage(conversationId, msg.id, ...)`; последующие
    progress-тики допечатывают только новые дельты. Источник истины — БД:
@@ -310,9 +329,13 @@ SSE в чате **нет**. Обмен с бэком — две HTTP-опера�
 
 | `agent_mode` | Поведение бэка | Статус первого ответа |
 |---|---|---|
-| `off` | Локальная LLM/GigaChat исполняется синхронно в POST через `orchestrator.run(...)` | `complete` сразу |
+| `off` | Локальный LLM-провайдер (маршрут `CHAT__PROFILE`) исполняется синхронно в POST через `orchestrator.run(...)`; forward-tool скрыт от LLM | `complete` сразу |
 | `adaptive` | Тот же синхронный путь, но в наборе tools есть forward-tool — оркестратор сам решает форвардить вопрос в агента | `complete`, либо `streaming` если ушёл форвард |
-| `always` | Прямой проброс вопроса во внешнего агента | `streaming`, финализируется поллером |
+| `always` | Прямой проброс вопроса во внешнего агента, LLM-оркестратор не запускается | `streaming`, финализируется поллером |
+
+Значение приходит form-параметром `agent_mode` (`app/domains/chat/api/messages.py:49`,
+дефолт на бэке — `off`); фронт всегда шлёт его явно из
+`ChatContext.getAgentMode()`.
 
 При форварде бэк создаёт черновик `chat_messages` (`status='streaming'`) и
 кладёт вопрос в bus-таблицу `chat_agent_messages_bus`; фоновый `AgentChannelPoller`
@@ -323,9 +346,9 @@ SSE в чате **нет**. Обмен с бэком — две HTTP-опера�
 
 ### Декоративный «эффект печати» и инкрементальное допечатывание
 
-`ChatRenderer.typeOutBlocks(container, blocks)` (`chat-renderer.js:98-162`):
+`ChatRenderer.typeOutBlocks(container, blocks)` (`chat-renderer.js:175-221`):
 блоки типов `text`/`reasoning` анимируются посимвольно через
-`createStreamingBlock(type)` + `_animateText`; остальные типы (`code`, `file`,
+`createStreamingBlock(type)` + `_animateText` (`:223`); остальные типы (`code`, `file`,
 `image`, `plan`, `buttons`, `client_action`, `error`) рисуются мгновенно через
 `renderBlock`. При `prefers-reduced-motion: reduce` или отсутствии блоков —
 весь ответ рендерится мгновенно.
@@ -338,9 +361,9 @@ promise'ов: новая порция текста добавляется в о�
 
 ### Маппинг типов на рендереры
 
-Все типы блоков перечислены в `KNOWN_BLOCK_TYPES`
-(`chat-messages.js:17-27`) и обрабатываются в `ChatRenderer.renderBlock`
-(`chat-renderer.js:140-163`):
+Все типы блоков обрабатываются в `switch (block.type)` внутри
+`ChatRenderer.renderBlock` (`chat-renderer.js:437-465`) — это **единственный**
+реестр типов на фронте:
 
 | `block.type` | Метод | DOM-класс |
 |---|---|---|
@@ -353,7 +376,20 @@ promise'ов: новая порция текста добавляется в о�
 | `buttons` | `_renderButtons` (группа кнопок → замена на бейдж после клика) | `.chat-block-buttons` |
 | `client_action` | `_renderClientAction` (label-чип + опц. исполнение) | `.chat-block-client-action` |
 | `error` | `_renderError` | `.chat-block-error` |
-| (любой другой) | `_renderUnknown` | `.chat-block-unknown` |
+| (`default`-ветка switch) | `_renderUnknown` | `.chat-block-unknown` |
+
+> **`KNOWN_BLOCK_TYPES` рендером НЕ читается.** Set объявлен в
+> `chat-messages.js:21`, реэкспортируется свойством `ChatMessages` (`:36`) и
+> публикуется как `window.KNOWN_BLOCK_TYPES` (`:678`) — и на этом всё:
+> `grep -rn "KNOWN_BLOCK_TYPES" static/ tests/ templates/` даёт ровно эти три
+> строки, ни одного чтения. Добавление типа в Set **ни на что не влияет**;
+> поведение определяет только `switch`. Константа — кандидат на удаление из
+> кода.
+>
+> Второй, независимый hardcoded-список типов — `isStreamingBlockType(type)`
+> (`chat-renderer.js:275`, возвращает `true` для `text`/`reasoning`): он решает,
+> анимировать блок посимвольно или отрисовать мгновенно. Новый «стримящийся»
+> тип добавляется туда отдельно.
 
 ## Unknown-block fallback
 
@@ -363,8 +399,9 @@ promise'ов: новая порция текста добавляется в о�
 `ChatRenderer.renderBlock`, у которого есть fallback-ветка для неизвестных
 типов:
 
-- **Любой неизвестный блок** (`block.type ∉ KNOWN_BLOCK_TYPES`) попадает в
-  `_renderUnknown(block)` (`chat-renderer.js:373`). Полный payload
+- **Любой блок, для типа которого нет `case` в `switch`** (`chat-renderer.js:461`),
+  попадает в `default`-ветку: `console.warn` + `_renderUnknown(block)`
+  (`chat-renderer.js:488`). Полный payload
   показывается в `<pre>` через `JSON.stringify(block, null, 2)`. Так как
   ответ приходит целиком (POST+poll, без стриминга по чанкам), отдельной
   ветки «стримящийся неизвестный блок» больше нет — и live-ответ, и история
@@ -379,18 +416,22 @@ promise'ов: новая порция текста добавляется в о�
 </div>
 ```
 
-Стили — `static/css/shared/chat/chat-blocks.css:384-412` (жёлто-оранжевый
+Стили — `static/css/shared/chat/chat-blocks.css:422-449` (жёлто-оранжевый
 warning-бордер слева, моноширинный шрифт для payload, перенос длинных слов).
 
 Console.warn пишется для каждого неизвестного блока — без падения
 с trace'ом. Сценарий ручной проверки описан в
 `docs/testing/manual-qa-frontend-unknown-block.md`.
 
-> **Синхронизация.** При добавлении нового типа блока в бэк
-> (`MessageBlock` union в `app/core/chat/blocks.py` И `_DiscriminatedBlock`
-> в `app/core/chat/schemas.py`) — обязательно добавить тип в
-> `KNOWN_BLOCK_TYPES` (`chat-messages.js:17`) и в `switch` в
-> `ChatRenderer.renderBlock` (`chat-renderer.js:140`).
+> **Синхронизация — три места.** При добавлении нового типа блока:
+> 1. `MessageBlock` union в `app/core/chat/blocks.py`;
+> 2. `_DiscriminatedBlock` в `app/core/chat/schemas.py` (через `Annotated[..., Tag("...")]`);
+> 3. новый `case` в `switch` `ChatRenderer.renderBlock` (`chat-renderer.js:437`)
+>    **плюс** сам метод `_renderX`.
+>
+> Пункт 3 — единственный, что влияет на рендер: `KNOWN_BLOCK_TYPES` трогать
+> не нужно (см. врез выше). Если тип должен печататься посимвольно —
+> дополнительно `isStreamingBlockType` (`chat-renderer.js:275`).
 
 ## Режимы: inline / modal / popup
 
@@ -410,18 +451,18 @@ input `.chat-input` и кнопка `.chat-send-btn` уже присутству
 
 Используется на страницах, где нет встроенной чат-панели (acts-manager,
 admin). DOM модального оверлея (`#chatModalOverlay`) присутствует в
-шаблоне портала, но скрыт. `open()` (`chat-modal.js:19-41`):
+шаблоне портала, но скрыт. `open()` (`chat-modal.js:20-40`):
 
 1. показывает оверлей (убирает `.hidden`, ставит `body.chat-modal-open`);
 2. при первом открытии — `ChatManager.init()` + `_setupCloseHandlers()`,
    флаг `_chatInitialized = true`;
-3. подписывает Escape-handler **только на время открытия**, флаг
-   `_escapeAttached` защищает от двойного `addEventListener`
-   (`chat-modal.js:34-37`).
+3. регистрирует close-callback в общем `EscapeStack` **только на время
+   открытия**; unsubscribe-хэндл лежит в `_escapeUnsub`, что заодно защищает
+   от двойной подписки (`chat-modal.js:34-36`).
 
-`close()` снимает Escape-handler через `removeEventListener` (защита
-от утечки слушателя), но не вызывает `ChatManager.destroy()` — состояние
-переживает повторные open/close.
+`close()` (`:45-56`) вызывает `_escapeUnsub()` (снятие из `EscapeStack` —
+защита от утечки слушателя), но не вызывает `ChatManager.destroy()` —
+состояние переживает повторные open/close.
 
 ### Popup (`ChatPopupManager`, конструктор)
 
@@ -430,29 +471,30 @@ admin). DOM модального оверлея (`#chatModalOverlay`) прису
 `#chatPopupPanel`. Региональный модуль `chat-popup.js` (не в shared) —
 потому что popup имеет специфичную для редактора фичу: свободное
 изменение размера за угол и сохранение размера в
-`localStorage['chat_popup_size']`.
+`localStorage['chat_popup_size']` (реализация — общая утилита
+`makeResizablePanel`, `shared/resizable-panel.js`).
 
 Ключевое отличие от modal: `ChatPopupManager.open` / `close` делают
 **полный re-init** ChatManager при каждом открытии — `ChatManager.init()`
-в `open`, `ChatManager.destroy()` в `close` (`chat-popup.js:81-83,
-106-108`). Это нужно, чтобы каждое открытие давало свежий
+в `open`, `ChatManager.destroy()` в `close` (`chat-popup.js:88-90,
+122-124`). Это нужно, чтобы каждое открытие давало свежий
 `AbortController` и не накапливались подписки на шину после многократных
 toggle'ов.
 
 ## Client actions
 
-`ClientActionsRegistry` (`chat-client-actions.js:45-116`) — реестр
+`ClientActionsRegistry` (`chat-client-actions.js:44-115`) — реестр
 исполнителей чисто-клиентских команд. Бэк генерирует блок типа
 `client_action`, фронт показывает label-чип в чате и опционально
 выполняет действие.
 
 ### Стандартные handler'ы
 
-Регистрируются в самом модуле (`chat-client-actions.js:153-188`):
+Регистрируются в самом модуле (`chat-client-actions.js:152-187`):
 
-- `open_url({url})` — навигация. Проверяет URL через `isAllowedUrl`
+- `open_url({url})` — навигация. Проверяет URL через `isAllowedUrl` (`:125`)
   (whitelist схем `ALLOWED_OPEN_URL_SCHEMES = ['http://', 'https://',
-  'mailto:', '/']` (`chat-client-actions.js:124`)) — это **defense in
+  'mailto:', '/']` (`chat-client-actions.js:123`)) — это **defense in
   depth** относительно `ALLOWED_OPEN_URL_SCHEMES` в
   `app/core/chat/blocks.py`. Запрещены `javascript:`, `data:`,
   `vbscript:`, `file:`. Перед `window.location.href` относительный путь
@@ -464,7 +506,7 @@ toggle'ов.
 
 - `trigger_sdk({method, args})` — вызов произвольной `window`-функции.
   Защищён whitelist'ом `ALLOWED_SDK_METHODS = new Set([])`
-  (`chat-client-actions.js:173-176`) — **пустой по умолчанию**. Метод
+  (`chat-client-actions.js:172-176`) — **пустой по умолчанию**. Метод
   добавляется в whitelist явно перед использованием. Без этого LLM мог
   бы вызвать `alert`, `fetch`, eval-аналоги — критично для безопасности.
 
@@ -486,12 +528,13 @@ client_action-блока в сообщении; нумерацию ведёт `B
 > вызывало бесконечный редирект-цикл для `open_url` actions из истории.
 
 Фронт ведёт `Set<string>` исполненных id, сериализуется в
-`sessionStorage['chat:executedActions']` (`chat-client-actions.js:13-43`). Soft
-cap — 500 элементов, при переполнении выкидываются самые старые. Фронт-логика
+`sessionStorage['chat:executedActions']` (`chat-client-actions.js:15-42`). Soft
+cap — `EXECUTED_MAX_SIZE = 500` элементов (`:17`), при переполнении выкидываются
+самые старые. Фронт-логика
 не меняется — id хранится так же, изменилось только то, как он генерируется
 на бэке.
 
-`ClientActionsRegistry.executeBlock(block)` (`chat-client-actions.js:83-99`)
+`ClientActionsRegistry.executeBlock(block)` (`chat-client-actions.js:82-99`)
 — **единая точка** для исполнения с идемпотентностью:
 
 ```js
@@ -506,7 +549,7 @@ this.execute(block.action, block.params || {});
 с открытым чатом (sessionStorage переживает reload).
 
 **Старая семантика `{execute: true/false}`** через `_renderClientAction(opts)`
-(`chat-renderer.js:584-614`) сохранена для совместимости. Новый код
+(`chat-renderer.js:889-926`) сохранена для совместимости. Новый код
 должен вызывать `ClientActionsRegistry.executeBlock(block)` напрямую —
 NOT `execute(action, params)`, иначе обойдётся `block_id`-проверка
 и получится redirect-цикл.
@@ -516,25 +559,27 @@ NOT `execute(action, params)`, иначе обойдётся `block_id`-пров
 Имена действий — это магические строки. На бэке они вынесены в
 `app/core/chat/names.py` (`ACTION_OPEN_URL`, `ACTION_NOTIFY`, …). На фронте
 имена прибиты в `ClientActionsRegistry.register('open_url', ...)`
-(`chat-client-actions.js:153, 161, 178`). Импорт из Python невозможен —
+(`chat-client-actions.js:152, 160, 177`). Импорт из Python невозможен —
 при переименовании action'а в `names.py` **обязательно** обновить строку
 в `chat-client-actions.js` вручную. Иначе `client_action`-блок
 с новым именем молча перестанет исполняться (console.warn без падения).
 
-## JupyterHub proxy: `AppConfig.api.getUrl`
+## Единая точка сборки URL: `AppConfig.api.getUrl`
 
-> Историческое: актуальный деплой — SDP (доступ по IP:порту, без proxy-путей);
-> `app/main.py` больше не вычисляет `root_path` ни для одного типа БД.
-> `AppConfig.api.getUrl()` на SDP всегда возвращает endpoint как есть — раздел
-> ниже описывает прежнюю JupyterHub-модель, конвенция сохранена как страховка
-> на случай будущего proxied-деплоя.
+Все обращения чата к API строятся из двух реестров, а не из литералов
+в callsite'ах:
 
-В прежнем деплое на Greenplum приложение работало через JupyterHub proxy:
-`/user/{user}/proxy/{port}/...`. Это значит, что относительный URL
-`/api/v1/chat/...` браузер резолвил против origin'а — то есть на
-`/api/v1/chat/...`, минуя `/user/{user}/proxy/{port}/`. Результат — 404.
+- `AppConfig.chatEndpoints` (`shared/app-config.js:120`) — относительные
+  пути чат-эндпоинтов (`conversations`, `conversation(cid)`, `messages(cid)`,
+  `feedback(cid, mid)`, `activeForward(cid)`, `limits`, `file(fileId)`, …).
+  Параметризованные — функции, статические — строки.
+- `AppConfig.api.getUrl(endpoint)` (`shared/app-config.js:94`) — сборка
+  итогового адреса от базового URL приложения (`getBaseUrl()`, `:59`).
 
-`AppConfig.api.getUrl(endpoint)` подставляет правильный префикс, если он есть.
+Смысл конвенции — **одна точка**, где относительный путь превращается в
+абсолютный: сменится схема размещения приложения — правится один метод, а не
+десятки `fetch`. Магические строки `/api/v1/chat/...` в модулях чата —
+рефакторинг-запах.
 
 ### Обязательные точки
 
@@ -542,35 +587,32 @@ NOT `execute(action, params)`, иначе обойдётся `block_id`-пров
 
 | Модуль | Места вызова |
 |---|---|
-| `ChatFiles._loadLimits` | `chat-files.js:83` |
-| `ChatContext._createConversation` (fallback ветка) | `chat-context.js:83` |
-| `ChatContext._onConversationSwitch` | `chat-context.js:168` |
-| `ChatStream.sendAndPoll` (POST) | `chat-stream.js:35` |
-| `ChatStream.pollMessage` (GET) | `chat-stream.js:78-80` |
-| `ChatHistory.loadConversations` | `chat-history.js:57` |
-| `ChatHistory.createConversation` | `chat-history.js:103` |
-| `ChatHistory.deleteConversation` | `chat-history.js:141` |
-| `ChatRenderer._getFileUrl` | `chat-renderer.js:644-647` |
+| `ChatFiles._loadLimits` | `chat-files.js:88` |
+| `ChatContext._createConversation` (fallback ветка) | `chat-context.js:131` |
+| `ChatContext._onConversationSwitch` | `chat-context.js:219` |
+| `ChatContext.checkActiveForward` | `chat-context.js:259` |
+| `ChatStream.sendAndPoll` (POST) | `chat-stream.js:36` |
+| `ChatStream.pollMessage` (GET) | `chat-stream.js:85` |
+| `ChatHistory.loadConversations` | `chat-history.js:61` |
+| `ChatHistory.createConversation` | `chat-history.js:110` |
+| `ChatHistory.deleteConversation` | `chat-history.js:149` |
+| `ChatFeedback._request` | `chat-feedback.js:310` |
+| `ChatRenderer._getFileUrl` | `chat-renderer.js:953` |
 
 **Все `open_url` client-actions** с относительным URL — через
-`resolveProxyUrl` (`chat-client-actions.js:142-151, 158`). Это нужно потому,
-что бэк-handler'ы (`admin.open_admin_panel`, `acts.open_act_page`, …) отдают
-URL вида `/admin`, `/constructor?act_id=...` (без знания о proxy-префиксе).
+`resolveProxyUrl` (`chat-client-actions.js:141-150, 157`), который делегирует
+в тот же `AppConfig.api.getUrl`. Это нужно потому, что бэк-handler'ы
+(`admin.open_admin_panel`, `acts.open_act_page`, …) отдают URL вида `/admin`,
+`/constructor?act_id=...` — относительными, без знания о размещении приложения.
 
-### Симптомы дыры
-
-Если новый fetch использует относительный URL напрямую (`fetch('/api/v1/...')`),
-то под JupyterHub'ом запрос уходит на `/api/v1/...`, JupyterHub роутит на
-`/hub/api/v1/...` минуя `/user/{user}/proxy/{port}/` → **404**. На локальном
-PG-деплое всё работает, баг проявится только в продакшене.
-
-Поиск всех дыр в проекте:
+### Регрессионная проверка
 
 ```bash
-grep -rn "fetch(\s*['\"\`]/api" static/js/
+grep -rn "fetch(\s*['\"\`]/api" static/js/shared/chat/
 ```
 
-Каждый найденный `fetch` без `AppConfig.api.getUrl` — баг.
+Совпадений быть не должно: каждый `fetch` в модулях чата обязан идти через
+`AppConfig.api.getUrl`.
 
 ## ES-модули и публикация в window
 
@@ -631,6 +673,6 @@ import '../constructor/header/chat-popup.js'; // constructor
 - Забыть `export` → импорты из других файлов упадут с `Named export 'X' not found`.
 - Забыть `window.X = X` → inline-скрипты в шаблонах падают с `ReferenceError`.
 - Использовать reserved-word под strict mode (`protected`, `private`, `public`, `implements`, `interface`, `package`) как имя параметра/переменной → `SyntaxError` при загрузке модуля.
-- Добавить новый тип блока на бэк, забыть `KNOWN_BLOCK_TYPES` и `ChatRenderer.renderBlock` switch — пользователь увидит unknown-block fallback.
+- Добавить новый тип блока на бэк, забыть `case` в switch `ChatRenderer.renderBlock` — пользователь увидит unknown-block fallback. (`KNOWN_BLOCK_TYPES` здесь ни при чём — Set рендером не читается.)
 - Добавить новый client-action на бэк (`names.py`), забыть `ClientActionsRegistry.register(...)` — действие молча перестанет работать.
-- Добавить новый fetch с относительным URL без `AppConfig.api.getUrl` → 404 под JupyterHub.
+- Захардкодить URL в callsite вместо `AppConfig.chatEndpoints` + `AppConfig.api.getUrl` — единая точка сборки адреса перестаёт быть единой.
