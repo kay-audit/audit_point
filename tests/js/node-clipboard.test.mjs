@@ -42,7 +42,7 @@ import {
     getStructureLimits,
     resetImageLimitsForTests,
 } from '../../static/js/constructor/violation/violation-image-validator.js';
-import { CONTENT_TYPE_IMAGE } from '../../static/js/constructor/violation/violation-content-item.js';
+import { BLOCK_TYPES } from '../../static/js/constructor/violation/violation-block-types.js';
 import { TreeUtils } from '../../static/js/constructor/tree/tree-utils.js';
 import { AppConfig } from '../../static/js/shared/app-config.js';
 import { Notifications } from '../../static/js/shared/notifications.js';
@@ -335,11 +335,11 @@ test('resetInvoices: invoice удалён во всём поддереве', () 
 
 // ── Чистое ядро: лимит картинок (КП-5) ─────────────────────────────────────────
 
-test('estimateActImageBytes суммирует только image-элементы', () => {
+test('estimateActImageBytes суммирует только image-блоки', () => {
     const violations = {
-        v1: { additionalContent: { items: [
-            { type: CONTENT_TYPE_IMAGE, url: 'data:image/png;base64,' + 'A'.repeat(400) },
-            { type: 'freeText', content: 'нет картинки' },
+        v1: { additionalContent: { blocks: [
+            { type: BLOCK_TYPES.IMAGE, url: 'data:image/png;base64,' + 'A'.repeat(400) },
+            { type: 'text', content: 'нет картинки' },
         ] } },
     };
     // 400 символов base64 ≈ 300 байт.
@@ -475,7 +475,7 @@ test('КП-5: вставка отклонена при превышении ли
     const bigUrl = 'data:image/png;base64,' + 'A'.repeat(4 * 1024 * 1024);
     AppState.violations[violationId].additionalContent = {
         enabled: true,
-        items: [{ id: 'img1', type: CONTENT_TYPE_IMAGE, url: bigUrl }],
+        blocks: [{ id: 'img1', type: BLOCK_TYPES.IMAGE, url: bigUrl }],
     };
 
     assert.ok(NodeClipboard.copyNode(src.id));
@@ -498,7 +498,7 @@ test('КП-5: copyNode отклоняет фрагмент с картинкам
     const bigUrl = 'data:image/png;base64,' + 'A'.repeat(8 * 1024 * 1024);
     AppState.violations[violationId].additionalContent = {
         enabled: true,
-        items: [{ id: 'img1', type: CONTENT_TYPE_IMAGE, url: bigUrl }],
+        blocks: [{ id: 'img1', type: BLOCK_TYPES.IMAGE, url: bigUrl }],
     };
 
     // Шпион за setItem: при отказе он не должен вызываться.

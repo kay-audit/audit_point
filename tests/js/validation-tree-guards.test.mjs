@@ -318,14 +318,14 @@ test('canInsertSubtree: reorder таблицы ВНУТРИ родителя н�
 // нечем, и единственным гейтом оставался бэкенд (400 на сохранение акта).
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Плоский узел-нарушение + запись словаря с n элементами доп. контента. */
+/** Плоский узел-нарушение + запись словаря с n блоками в additionalContent. */
 function violationEntry(id, itemsCount) {
     return {
         id,
         nodeId: `node-${id}`,
         additionalContent: {
             enabled: true,
-            items: Array.from({ length: itemsCount }, (_, i) => ({ id: `${id}-i${i}`, type: 'freeText' })),
+            blocks: Array.from({ length: itemsCount }, (_, i) => ({ id: `${id}-b${i}`, type: 'text', content: '' })),
         },
     };
 }
@@ -341,8 +341,8 @@ test('canInsertSubtree: нарушение фрагмента с items свер�
 
     const node = { id: 'v1', type: 'violation', violationId: 'v1', children: [] };
     const result = ValidationTree.canInsertSubtree('p', node, { v1: violationEntry('v1', 3) });
-    assert.equal(result.valid, false, '3 элемента при лимите 2 не должны проходить');
-    assert.match(result.message, /дополнительного контента/);
+    assert.equal(result.valid, false, '3 блока при лимите 2 не должны проходить');
+    assert.match(result.message, /лимит блоков/);
 });
 
 test('canInsertSubtree: items ровно по лимиту → success', () => {

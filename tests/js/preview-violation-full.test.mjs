@@ -1,10 +1,11 @@
 /**
- * Превью нарушений = полнота DOCX (H4/M.3/M.5).
+ * Превью нарушений = полнота DOCX (H4/M.3/M.5) — блочная модель.
  *
- * Тестируем чистые части рендерера: collectViolationLines (полные тексты,
- * полный descriptionList, нумерация кейсов со сбросом — семантика
- * docx/builders/violation.py) и imagePresentationStyle (маппинг
- * item.width / image_max_height_percent → CSS, Б-1.4/Б-1.6).
+ * Тестируем чистые части рендерера: collectViolationLines (поля в порядке
+ * fieldOrder, метка + блоки, полные тексты без обрезки — семантика
+ * docx/builders/violation.py), imagePresentationStyle (маппинг block.width /
+ * image_max_height_percent → CSS, Б-1.4/Б-1.6) и splitTopLevelBlocks
+ * (per-line align, паритет с split_block_segments).
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -16,17 +17,27 @@ import {
     splitTopLevelBlocks,
     PreviewViolationRenderer,
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
-import { VIOLATION_LABELS } from '../../static/js/constructor/violation/violation-fields.js';
+import { VIOLATION_LABELS, VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
+import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
+
+const LONG = 'Очень длинный текст нарушения, который раньше обрезался превью до пары десятков символов. '.repeat(20);
+
+let _bid = 0;
+const text = (content) => ({ id: `text_t_${++_bid}`, type: 'text', content });
+
+function makeViolation(overrides = {}) {
+    const v = { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() };
+    v.violated.blocks = [text('Нарушено-текст')];
+    v.established.blocks = [text('Установлено-текст')];
+    return Object.assign(v, overrides);
+}
 
 /**
- * Рендерит нарушение с одним image-элементом и возвращает применённый
+ * Рендерит нарушение с одним image-блоком и возвращает применённый
  * inline-стиль картинки. Перехватывает document.createElement, чтобы достать
  * созданный <img> (appendChild в стабе — no-op).
- *
- * @param {Object} imageItem Элемент additionalContent типа image.
- * @returns {{width: (string|undefined), maxHeight: (string|undefined)}}
  */
-function renderImageStyle(imageItem) {
+function renderImageStyle(imageBlock) {
     const origCreate = document.createElement;
     let imgStyle = null;
     document.createElement = (tag) => {
@@ -35,159 +46,123 @@ function renderImageStyle(imageItem) {
         return el;
     };
     try {
-        PreviewViolationRenderer.create({
-            violated: '—',
-            established: '—',
-            descriptionList: { enabled: false, items: [] },
-            additionalContent: { enabled: true, items: [imageItem] },
-            reasons: { enabled: false, content: '' },
-            consequences: { enabled: false, content: '' },
-            responsible: { enabled: false, content: '' },
-        });
+        PreviewViolationRenderer.create(makeViolation({
+            additionalContent: { enabled: true, blocks: [imageBlock] },
+        }));
     } finally {
         document.createElement = origCreate;
     }
     return imgStyle || {};
 }
 
-const LONG = 'Очень длинный текст нарушения, который раньше обрезался превью до пары десятков символов. '.repeat(20);
-
-function makeViolation(overrides = {}) {
-    return Object.assign({
-        id: 'v1',
-        nodeId: 'n1',
-        violated: 'Нарушено-текст',
-        established: 'Установлено-текст',
-        descriptionList: { enabled: false, items: [] },
-        additionalContent: { enabled: false, items: [] },
-        reasons: { enabled: false, content: '' },
-        consequences: { enabled: false, content: '' },
-        responsible: { enabled: false, content: '' },
-    }, overrides);
-}
+// --- Полнота модели строк ---
 
 test('violated/established выводятся полностью, без обрезки', () => {
-    const lines = collectViolationLines(makeViolation({ violated: LONG, established: LONG }));
-    const violated = lines.find(l => l.label === 'Нарушено');
-    const established = lines.find(l => l.label === 'Установлено');
-    assert.equal(violated.text, LONG);
-    assert.equal(established.text, LONG);
+    const v = makeViolation();
+    v.violated.blocks = [text(LONG)];
+    v.established.blocks = [text(LONG)];
+    const lines = collectViolationLines(v);
+    assert.equal(lines.find(l => l.label === 'Нарушено').text, LONG);
+    assert.equal(lines.find(l => l.label === 'Установлено').text, LONG);
 });
 
-test('violated/established пустые → метка + пустое тело, без «—» (#14, Q1)', () => {
-    const lines = collectViolationLines(makeViolation({ violated: '', established: '' }));
-    const violated = lines.find(l => l.label === 'Нарушено');
-    const established = lines.find(l => l.label === 'Установлено');
-    assert.equal(violated.text, '');
-    assert.equal(established.text, '');
+test('mandatory-поля с пустым контейнером → метка + пустое тело (#14, Q1)', () => {
+    const v = makeViolation();
+    v.violated.blocks = [];
+    v.established.blocks = [];
+    const lines = collectViolationLines(v);
+    assert.equal(lines.find(l => l.label === 'Нарушено').text, '');
+    assert.equal(lines.find(l => l.label === 'Установлено').text, '');
 });
 
-test('descriptionList — полный список пунктов, включая пустые, без заголовка «В том числе» (#12/#15/Q1)', () => {
-    const items = ['Метрика один', 'Метрика два', 'Метрика три'];
-    const lines = collectViolationLines(makeViolation({
-        descriptionList: { enabled: true, items: [...items, ''] },
-    }));
-    const list = lines.find(l => l.type === 'list');
-    assert.ok(list, 'нет list-строки');
-    assert.deepEqual(list.items, [...items, '']); // ничего не отфильтровано, включая пустой пункт
-    assert.equal(list.label, '', 'заголовок «В том числе» убран (#12)');
+test('выключенное поле не выводится; включённое пустое — тоже', () => {
+    const v = makeViolation({
+        reasons: { enabled: false, blocks: [text('скрытая')] },
+        measures: { enabled: true, blocks: [] },
+    });
+    const lines = collectViolationLines(v);
+    assert.ok(!lines.some(l => (l.text || '').includes('скрытая')));
+    assert.ok(!lines.some(l => l.label === VIOLATION_LABELS.measures));
 });
 
-test('DOM: пустая метка descriptionList не рисует одинокую «:» (#12)', () => {
-    const created = [];
-    const origCreate = document.createElement;
-    document.createElement = (tag) => {
-        const el = origCreate(tag);
-        created.push(el);
-        return el;
+test('несколько text-блоков: первый инлайнится с меткой, остальные — продолжения без метки', () => {
+    const v = makeViolation({
+        reasons: { enabled: true, blocks: [text('первый'), text('второй'), text('третий')] },
+    });
+    const lines = collectViolationLines(v);
+    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.reasons);
+    assert.equal(lines[idx].text, 'первый');
+    assert.equal(lines[idx + 1].label, '');
+    assert.equal(lines[idx + 1].text, 'второй');
+    assert.equal(lines[idx + 2].text, 'третий');
+});
+
+test('поле, начинающееся с картинки, даёт метку отдельной строкой', () => {
+    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: '', filename: 'x.png', width: 0 };
+    const v = makeViolation({
+        additionalContent: { enabled: true, blocks: [image, text('после картинки')] },
+    });
+    const lines = collectViolationLines(v);
+    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.additionalContent);
+    assert.equal(lines[idx].text, '', 'метка без инлайн-текста');
+    assert.equal(lines[idx + 1].type, 'image');
+    assert.equal(lines[idx + 2].text, 'после картинки');
+});
+
+test('image-блок попадает в модель строк целиком', () => {
+    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: 'Подпись', filename: 'x.png', width: 50 };
+    const v = makeViolation({
+        additionalContent: { enabled: true, blocks: [text('t'), image] },
+    });
+    const line = collectViolationLines(v).find(l => l.type === 'image');
+    assert.equal(line.item, image);
+});
+
+test('table-блок попадает в модель строк с сеткой и флагом small поля', () => {
+    const tableBlock = {
+        id: 'table_1', type: 'table',
+        table: { grid: [[{ content: 'A' }]], colWidths: [100] },
     };
-    try {
-        PreviewViolationRenderer.create(makeViolation({
-            descriptionList: { enabled: true, items: ['Пункт 1', ''] },
-        }));
-    } finally {
-        document.createElement = origCreate;
+    const v = makeViolation({
+        codeMining: { enabled: true, blocks: [tableBlock] },
+    });
+    const line = collectViolationLines(v).find(l => l.type === 'table');
+    assert.ok(line, 'table-строка отсутствует');
+    assert.equal(line.table, tableBlock.table);
+});
+
+test('fieldOrder меняет порядок строк модели', () => {
+    const order = [...VIOLATION_FIELD_KEYS].filter(k => k !== 'responsible');
+    order.unshift('responsible');
+    const v = makeViolation({
+        fieldOrder: order,
+        responsible: { enabled: true, blocks: [text('Иванов И.И.')] },
+    });
+    const lines = collectViolationLines(v);
+    assert.equal(lines[0].label, VIOLATION_LABELS.responsible);
+});
+
+test('№10/#11: ВСЕ подписи полей превью берутся из реестра VIOLATION_LABELS', () => {
+    const v = makeViolation();
+    for (const key of VIOLATION_FIELD_KEYS) {
+        v[key] = { enabled: true, blocks: [text(`значение-${key}`)] };
     }
-    const strayLabel = created.some(el => el.className === 'preview-violation-label' && el.textContent === ':');
-    assert.ok(!strayLabel, '_addList не должен создавать labelEl при пустом label');
+    const lines = collectViolationLines(v);
+    for (const key of VIOLATION_FIELD_KEYS) {
+        const line = lines.find(l => l.text === `значение-${key}`);
+        assert.ok(line, `строка поля ${key} не найдена`);
+        assert.equal(line.label, VIOLATION_LABELS[key]);
+    }
 });
 
-test('выключенный descriptionList не выводится', () => {
-    const lines = collectViolationLines(makeViolation({
-        descriptionList: { enabled: false, items: ['скрытая'] },
-    }));
-    assert.ok(!lines.some(l => l.type === 'list'));
-});
-
-test('кейсы — полные, без обрезки, свободный текст — без подписи (M.5/#10)', () => {
-    const lines = collectViolationLines(makeViolation({
-        additionalContent: {
-            enabled: true,
-            items: [
-                { id: 'c1', type: 'case', content: LONG },
-                { id: 'f1', type: 'freeText', content: LONG },
-            ],
-        },
-    }));
-    assert.equal(lines.find(l => l.label === 'Кейс 1').text, LONG);
-    const freeTextLine = lines.find(l => l.type === 'line' && l.text === LONG && l.label === '');
-    assert.ok(freeTextLine, 'свободный текст рендерится без подписи (#10)');
-});
-
-test('пустой свободный текст не рендерится — паритет с DOCX/MD/TXT (у freeText нет метки, ничего не пропущено)', () => {
-    const lines = collectViolationLines(makeViolation({
-        additionalContent: {
-            enabled: true,
-            items: [
-                { id: 'f1', type: 'freeText', content: '' },
-                { id: 'f2', type: 'freeText', content: '   ' },
-            ],
-        },
-    }));
-    assert.ok(!lines.some(l => l.type === 'line' && l.label === ''), 'пустой/whitespace-only freeText не должен давать строку (в отличие от пустых кейсов/пунктов списка, у которых есть метка/маркер)');
-});
-
-test('нумерация кейсов сбрасывается после не-кейса (паритет DOCX/MD/TXT)', () => {
-    const lines = collectViolationLines(makeViolation({
-        additionalContent: {
-            enabled: true,
-            items: [
-                { id: 'c1', type: 'case', content: 'Первый' },
-                { id: 'c2', type: 'case', content: 'Второй' },
-                { id: 'i1', type: 'image', url: 'data:image/png;base64,AAAA', filename: 'x.png' },
-                { id: 'c3', type: 'case', content: 'После картинки' },
-            ],
-        },
-    }));
-    const labels = lines.filter(l => /^Кейс/.test(l.label || '')).map(l => l.label);
-    assert.deepEqual(labels, ['Кейс 1', 'Кейс 2', 'Кейс 1']);
-});
-
-test('пустой кейс рендерится (метка + пустое тело), нумерация не пропускает его (#9/Q1)', () => {
-    const lines = collectViolationLines(makeViolation({
-        additionalContent: {
-            enabled: true,
-            items: [
-                { id: 'c1', type: 'case', content: '' },
-                { id: 'c2', type: 'case', content: 'Единственный' },
-            ],
-        },
-    }));
-    const cases = lines.filter(l => /^Кейс/.test(l.label || ''));
-    assert.equal(cases.length, 2, 'оба кейса рендерятся, включая пустой первый');
-    assert.equal(cases[0].label, 'Кейс 1');
-    assert.equal(cases[0].text, '');
-    assert.equal(cases[1].label, 'Кейс 2', 'заполненный кейс получает номер 2, как в форме');
-    assert.equal(cases[1].text, 'Единственный');
-});
-
-test('image-элемент попадает в модель строк целиком', () => {
-    const item = { id: 'i1', type: 'image', url: 'data:image/png;base64,AAAA', caption: 'Подпись', filename: 'x.png', width: 50 };
-    const lines = collectViolationLines(makeViolation({
-        additionalContent: { enabled: true, items: [item] },
-    }));
-    const image = lines.find(l => l.type === 'image');
-    assert.equal(image.item, item);
+test('small-флаг реестра доходит до строк (9pt-группа vs 12pt)', () => {
+    const v = makeViolation({
+        additionalContent: { enabled: true, blocks: [text('доп')] },
+        reasons: { enabled: true, blocks: [text('причина')] },
+    });
+    const lines = collectViolationLines(v);
+    assert.equal(lines.find(l => l.text === 'доп').small, true, 'additionalContent — small');
+    assert.equal(lines.find(l => l.text === 'причина').small, false, 'reasons — обычный 12pt');
 });
 
 // --- Task 6: подпись — rich-HTML, рендерится через renderActContent -------
@@ -218,60 +193,39 @@ test('_appendCaption: пустая/отсутствующая caption — нич
     assert.equal(appended, null);
 });
 
-test('опциональные поля выводятся полностью при enabled', () => {
-    const lines = collectViolationLines(makeViolation({
-        reasons: { enabled: true, content: LONG },
-        consequences: { enabled: false, content: 'скрытая' },
-    }));
-    assert.equal(lines.find(l => l.label === 'Причины').text, LONG);
-    assert.ok(!lines.some(l => (l.text || '').includes('скрытая')));
-});
-
-test('#11: подпись поля responsible берётся из контракта VIOLATION_LABELS («Ответственные»)', () => {
-    const lines = collectViolationLines(makeViolation({
-        responsible: { enabled: true, content: 'Иванов И.И.' },
-    }));
-    const line = lines.find(l => l.text === 'Иванов И.И.');
-    assert.ok(line, 'строка responsible не найдена');
-    assert.equal(line.label, 'Ответственные');
-});
-
-test('№10: ВСЕ подписи полей превью берутся из реестра VIOLATION_LABELS, а не захардкожены', () => {
-    const lines = collectViolationLines(makeViolation({
-        violated: 'V', established: 'E',
-        reasons: { enabled: true, content: 'R' },
-        measures: { enabled: true, content: 'M' },
-        consequences: { enabled: true, content: 'C' },
-        responsible: { enabled: true, content: 'O' },
-    }));
-    assert.equal(lines.find(l => l.text === 'V').label, VIOLATION_LABELS.violated);
-    assert.equal(lines.find(l => l.text === 'E').label, VIOLATION_LABELS.established);
-    assert.equal(lines.find(l => l.text === 'R').label, VIOLATION_LABELS.reasons);
-    assert.equal(lines.find(l => l.text === 'M').label, VIOLATION_LABELS.measures);
-    assert.equal(lines.find(l => l.text === 'C').label, VIOLATION_LABELS.consequences);
-    assert.equal(lines.find(l => l.text === 'O').label, VIOLATION_LABELS.responsible);
-});
-
-test('№10: заголовок descriptionList берётся из реестра (VIOLATION_LABELS.descriptionList)', () => {
-    const lines = collectViolationLines(makeViolation({
-        descriptionList: { enabled: true, items: ['x'] },
-    }));
-    const list = lines.find(l => l.type === 'list');
-    assert.equal(list.label, VIOLATION_LABELS.descriptionList);
-});
-
-// --- rich-рендер тела поля (renderActContent, Task 1.1.4) ---
+// --- rich-рендер тела поля (renderActContent) ---
 
 test('rich-тело поля через renderActContent, не createTextNode', () => {
     const seen = [];
     const orig = document.createTextNode;
     document.createTextNode = (t) => { seen.push(String(t)); return orig(t); };
     try {
-        PreviewViolationRenderer.create(makeViolation({ violated: 'до <b>x</b> после' }));
+        const v = makeViolation();
+        v.violated.blocks = [text('до <b>x</b> после')];
+        PreviewViolationRenderer.create(v);
     } finally {
         document.createTextNode = orig;
     }
     assert.ok(!seen.some(t => t.includes('<b>')), 'сырой HTML не должен уйти в текст-ноду');
+});
+
+// --- imagePresentationStyle (Б-1.4/Б-1.6) ---
+
+test('width=50 → CSS width:50%; width=0 → авто (width не задаётся)', () => {
+    const style50 = imagePresentationStyle({ width: 50 }, 40);
+    assert.equal(style50.width, '50%');
+    const styleAuto = imagePresentationStyle({ width: 0 }, 40);
+    assert.equal(styleAuto.width, '');
+    assert.ok(style50.maxHeight.endsWith('mm'));
+});
+
+test('DOM: инлайн-стиль картинки применяет width и maxHeight', () => {
+    const style = renderImageStyle({
+        id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA',
+        caption: '', filename: 'x.png', width: 50,
+    });
+    assert.equal(style.width, '50%');
+    assert.ok(String(style.maxHeight).endsWith('mm'));
 });
 
 // --- #13: splitTopLevelBlocks (паритет с split_block_segments, inline.py) ---
@@ -297,8 +251,7 @@ test('splitTopLevelBlocks: вложенный <div> остаётся внутр�
     ]);
 });
 
-// --- F2/Пункт 1: text-align сегмента сохраняется в модели (паритет с DOCX
-// BlockSegment.alignment, split_block_segments в inline.py) -----------------
+// --- F2/Пункт 1: text-align сегмента сохраняется в модели ---
 
 test('splitTopLevelBlocks: text-align верхнеуровневого <div> попадает в align сегмента', () => {
     assert.deepEqual(splitTopLevelBlocks('<div style="text-align:center">центр</div>'), [
@@ -318,12 +271,6 @@ test('splitTopLevelBlocks: <div> без style — align: null (нераспоз�
     assert.deepEqual(splitTopLevelBlocks('<div>обычная</div>'), [{ html: 'обычная', align: null }]);
     assert.deepEqual(splitTopLevelBlocks('<div style="text-align:start">старт</div>'), [{ html: 'старт', align: null }]);
 });
-
-// --- Ревью F2/Minor: align извлекается ТОЛЬКО из атрибута style, не из всего
-// текста открывающего тега (паритет со скоупом бэкового _extract_text_align,
-// inline.py: он ищет только в attrs['style']) — иначе `class="text-align:center"`
-// (class — разрешённый атрибут без ограничений на содержимое) давал бы align в
-// превью при отсутствии его в DOCX ------------------------------------------
 
 test('splitTopLevelBlocks: "text-align:center" в class (не в style) — align: null, не подделка', () => {
     assert.deepEqual(splitTopLevelBlocks('<div class="text-align:center">текст</div>'), [
@@ -355,7 +302,7 @@ test('#13: _addLine режет верхнеуровневые <div>-абзацы
     };
     try {
         PreviewViolationRenderer.create(makeViolation({
-            reasons: { enabled: true, content: '<div>первая</div><div>вторая</div>' },
+            reasons: { enabled: true, blocks: [text('<div>первая</div><div>вторая</div>')] },
         }));
     } finally {
         document.createElement = origCreate;
@@ -371,10 +318,6 @@ test('#13: _addLine режет верхнеуровневые <div>-абзацы
     assert.ok(secondLine, 'второй абзац рендерится отдельным блоком ниже');
 });
 
-// --- F2/Пункт 1: превью теряло per-line text-align многострочных полей -----
-// (паритет с DOCX render_block_segments: align сегмента переопределяет
-// default_alignment абзаца целиком, включая метку) ---------------------------
-
 test('F2-1: _addLine переносит text-align первого сегмента на строку с меткой, второго — на строку-продолжение', () => {
     const created = [];
     const origCreate = document.createElement;
@@ -385,22 +328,21 @@ test('F2-1: _addLine переносит text-align первого сегмент
     };
     try {
         PreviewViolationRenderer.create(makeViolation({
-            reasons: { enabled: true, content: '<div style="text-align:center">первая</div><div style="text-align:right">вторая</div>' },
+            reasons: { enabled: true, blocks: [text('<div style="text-align:center">первая</div><div style="text-align:right">вторая</div>')] },
         }));
     } finally {
         document.createElement = origCreate;
     }
 
-    // Стаб appendChild — no-op, textContent родителя не собирается из детей
-    // (в отличие от реального DOM), поэтому строки различаем по порядку
-    // создания: violated/established всегда рендерятся первыми (#14/Q1), reasons —
-    // последним из optionalFields; _addLine создаёт line ДО body-span, затем
-    // contLine — в цикле по остальным сегментам (гарантированный порядок).
+    // Стаб appendChild — no-op, textContent родителя не собирается из детей,
+    // поэтому строки различаем по порядку создания: violated/established
+    // рендерятся первыми (#14/Q1), reasons — последним включённым; _addLine
+    // создаёт line ДО body-span, затем contLine — в цикле по сегментам.
     const lineDivs = created.filter((c) => c.tag === 'div'
         && c.el.className && c.el.className.includes('preview-violation-line'));
     assert.equal(lineDivs.length, 4, 'violated/established (по 1 строке) + reasons (строка с меткой + продолжение)');
     const [reasonsLine, reasonsCont] = lineDivs.slice(-2);
-    assert.equal(reasonsLine.el.style.textAlign, 'center', 'align первого сегмента переносится на строку с меткой (DOCX выравнивает весь абзац, включая label-run)');
+    assert.equal(reasonsLine.el.style.textAlign, 'center', 'align первого сегмента переносится на строку с меткой');
     assert.equal(reasonsCont.el.style.textAlign, 'right', 'align продолжения переносится на его строку');
 });
 
@@ -414,7 +356,7 @@ test('F2-1: поле без text-align — раскладка прежняя, и
     };
     try {
         PreviewViolationRenderer.create(makeViolation({
-            reasons: { enabled: true, content: '<div>первая</div><div>вторая</div>' },
+            reasons: { enabled: true, blocks: [text('<div>первая</div><div>вторая</div>')] },
         }));
     } finally {
         document.createElement = origCreate;
@@ -423,61 +365,4 @@ test('F2-1: поле без text-align — раскладка прежняя, и
         && c.el.className && c.el.className.includes('preview-violation-line'));
     assert.ok(lines.length >= 2, 'ожидались строки нарушения');
     assert.ok(lines.every((l) => !l.el.style.textAlign), 'без явного align инлайн text-align не задаётся');
-});
-
-// --- imagePresentationStyle (Б-1.4 / Б-1.6) ---
-
-test('width=50 → width:50%, дефолтный лимит высоты 40% полезной высоты листа = 110.8mm', () => {
-    const style = imagePresentationStyle({ width: 50 }, 40);
-    assert.equal(style.width, '50%');
-    assert.equal(style.maxHeight, '110.8mm');
-});
-
-test('width=0 (Авто) → width не задаётся', () => {
-    const style = imagePresentationStyle({ width: 0 }, 40);
-    assert.equal(style.width, '');
-});
-
-test('width отсутствует у старых актов → авто', () => {
-    const style = imagePresentationStyle({}, 40);
-    assert.equal(style.width, '');
-});
-
-test('кастомный image_max_height_percent учитывается', () => {
-    const style = imagePresentationStyle({ width: 25 }, 50);
-    assert.equal(style.width, '25%');
-    assert.equal(style.maxHeight, '138.5mm');
-});
-
-test('#13: база потолка высоты — полезная высота листа (277мм), не полная A4 (297мм)', () => {
-    // Паритет с DOCX _USABLE_HEIGHT_TWIPS (Page.height_twips - Margins.top - Margins.bottom
-    // = 16838-567-567=15704 твип ≈ 277мм, docx/builders/violation.py): тот же
-    // image_max_height_percent должен давать ту же физическую высоту в превью и в Word.
-    const style = imagePresentationStyle({ width: 0 }, 100);
-    assert.equal(style.maxHeight, '277mm', 'при 100% потолок равен полезной высоте, а не полной высоте листа A4');
-});
-
-test('нулевой/отсутствующий процент высоты → дефолт 40', () => {
-    assert.equal(imagePresentationStyle({}, 0).maxHeight, '110.8mm');
-    assert.equal(imagePresentationStyle({}, undefined).maxHeight, '110.8mm');
-});
-
-// --- применённый стиль <img> (FINDING 6 / Б-1.6, #13): паритет с DOCX ---
-
-test('явная ширина → задаётся И width, И потолок высоты (#13, паритет с DOCX _scale_picture)', () => {
-    const style = renderImageStyle({ type: 'image', url: 'data:image/png;base64,AAAA', width: 50, filename: 'x.png' });
-    assert.equal(style.width, '50%');
-    assert.equal(style.maxHeight, '110.8mm', 'explicit-width картинка тоже ограничена по высоте, как в DOCX');
-});
-
-test('авторазмер (width=0) → задаётся maxHeight, ширина не фиксируется', () => {
-    const style = renderImageStyle({ type: 'image', url: 'data:image/png;base64,AAAA', width: 0, filename: 'x.png' });
-    assert.equal(style.width, undefined, 'auto-size картинка не должна получать width');
-    assert.equal(style.maxHeight, '110.8mm', 'auto-size картинка ограничивает высоту (защита скролла, Б-1.6)');
-});
-
-test('width отсутствует (старые акты) → авторазмер с maxHeight', () => {
-    const style = renderImageStyle({ type: 'image', url: 'data:image/png;base64,AAAA', filename: 'x.png' });
-    assert.equal(style.width, undefined);
-    assert.equal(style.maxHeight, '110.8mm');
 });

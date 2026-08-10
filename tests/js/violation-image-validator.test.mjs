@@ -64,10 +64,10 @@ test('абсурдный сырой потолок отсекает гигант
     assert.match(res.reason, /для обработки/);
 });
 
-test('достигнут лимит элементов на нарушение → отказ, текст из единой точки app-config.js (№14)', () => {
+test('достигнут лимит блоков поля → отказ, текст из единой точки app-config.js (№14)', () => {
     const res = validateImageType(file(), { itemsCount: 3, limits: LIMITS });
     assert.equal(res.ok, false);
-    assert.match(res.reason, /лимит элементов/);
+    assert.match(res.reason, /лимит блоков/);
     // №14: текст не хардкодится тут — берётся из AppConfig.content.errors.
     // contentItemsLimitReached, той же точки, что и paste/undo-гейт.
     assert.equal(res.reason, AppConfig.content.errors.contentItemsLimitReached(3));
