@@ -15,7 +15,7 @@
 import { AppConfig } from '../../shared/app-config.js';
 import { applyActsAllowlist } from '../../shared/sanitize.js';
 import { formatMb } from '../../shared/format-units.js';
-import { CONTENT_TYPE_IMAGE } from './violation-content-item.js';
+import { VIOLATION_FIELD_KEYS } from './violation-fields.js';
 
 /** Дефолтные лимиты — зеркало ImagesSettings (app/domains/acts/settings.py). */
 export const DEFAULT_IMAGE_LIMITS = {
@@ -157,7 +157,8 @@ export function estimateDataUrlBytes(url) {
 }
 
 /**
- * Суммарный размер всех картинок акта (по data-URL в additionalContent).
+ * Суммарный размер всех картинок акта (по data-URL image-блоков ВСЕХ полей
+ * нарушения — блочная модель: картинка может лежать в любом поле реестра).
  *
  * @param {Object} violations - Словарь нарушений (AppState.violations)
  * @returns {number} Суммарный размер в байтах
@@ -165,10 +166,13 @@ export function estimateDataUrlBytes(url) {
 export function estimateActImageBytes(violations) {
     let total = 0;
     for (const violation of Object.values(violations || {})) {
-        const items = violation?.additionalContent?.items || [];
-        for (const item of items) {
-            if (item && item.type === CONTENT_TYPE_IMAGE && item.url) {
-                total += estimateDataUrlBytes(item.url);
+        for (const fieldKey of VIOLATION_FIELD_KEYS) {
+            const blocks = violation?.[fieldKey]?.blocks;
+            if (!Array.isArray(blocks)) continue;
+            for (const block of blocks) {
+                if (block && block.type === 'image' && block.url) {
+                    total += estimateDataUrlBytes(block.url);
+                }
             }
         }
     }
