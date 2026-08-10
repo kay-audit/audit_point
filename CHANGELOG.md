@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**Текущая версия: `14.0.1`.**
+**Текущая версия: `14.0.2`.**
 
 ## Методология
 
@@ -286,5 +286,9 @@ in-memory бэкенд локов удалён); блокировки актов
   (`architecture-and-backend`, `database`, `ai-assistant`, `testing`, `deploy-and-configuration`),
   deep-dive по актам влит в `data-model-acts.md`; убраны JupyterHub-деплой, следы SSE и упразднённые
   профили LLM.
+- 14.0.2 · `cc266d00` — PATCH: метаданные приложения (`__title__`, `__version__`) сведены к единственному
+  источнику `app/__init__.py`, откуда их берёт `Settings`. `APP_TITLE`/`APP_VERSION` в шаблонах `.env`
+  закомментированы (env-override остался рабочим), из документации убран хардкод версии, согласованность
+  проверяет `tests/test_version_consistency.py`.
 
 ---
