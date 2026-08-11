@@ -159,19 +159,10 @@ test('setBlockField на несуществующем блоке → false бе�
     assert.equal(previewCalls.length, 0);
 });
 
-// --- setTableCell (ввод в ячейку блока-таблицы) ---
-
-test('setTableCell пишет ячейку с typing-превью; вне сетки → false', () => {
-    reset();
-    const v = makeViolation();
-    const table = createTableBlock({ grid: [[{ content: '' }]], colWidths: [100] });
-    v.codeMining.blocks.push(table);
-    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', table.id, 0, 0, 'значение'), true);
-    assert.equal(table.table.grid[0][0].content, 'значение');
-    assert.equal(previewCalls[0].fn, 'scheduleTypingBlock');
-    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', table.id, 5, 0, 'x'), false);
-    assert.equal(mutations.setTableCell.call({}, v, 'codeMining', 'нет', 0, 0, 'x'), false);
-});
+// Мутатора setTableCell больше нет: встроенная таблица обслуживается общей
+// машинерией таблиц (table-cells-operations + cell-write-through), которая
+// пишет в grid напрямую по адресу resolveTable, а read-only отсекают гейты
+// startEditingCell / ContextMenuManager.show — как у узловых таблиц.
 
 // --- moveBlock (DnD внутри поля) ---
 

@@ -59,17 +59,46 @@ export function createImageBlock(extraData = {}) {
 }
 
 /**
+ * Стартовая сетка новой встроенной таблицы: 2×2, первая строка — шапка
+ * (`isHeader: true` — тот же признак, по которому узловые таблицы рендерят
+ * `<th>` и запрещают вставку строки выше заголовка).
+ *
+ * Пустой сеткой начинать нельзя: вся машинерия таблиц работает от ВЫБРАННОЙ
+ * ячейки (контекст-меню, вставка строк/колонок), а на пустом гриде выбирать
+ * нечего — пользователь не смог бы добавить ни строки, ни колонки.
+ * @returns {{grid: Object[][], colWidths: number[]}}
+ */
+function createDefaultGrid() {
+    const grid = [];
+    for (let r = 0; r < 2; r++) {
+        const row = [];
+        for (let c = 0; c < 2; c++) {
+            row.push({
+                content: '',
+                isHeader: r === 0,
+                colSpan: 1,
+                rowSpan: 1,
+                originRow: r,
+                originCol: c,
+            });
+        }
+        grid.push(row);
+    }
+    return { grid, colWidths: [100, 100] };
+}
+
+/**
  * Блок-таблица: обычная таблица (сетка + ширины колонок), без метаданных
  * узла дерева — metrics/risk-подвиды и пины к встроенным таблицам не
  * применяются.
- * @param {Object} [table] - Готовая сетка {grid, colWidths}; по умолчанию пустая
+ * @param {Object} [table] - Готовая сетка {grid, colWidths}; по умолчанию 2×2 с шапкой
  * @returns {Object}
  */
 export function createTableBlock(table = null) {
     return {
         id: generateBlockId(BLOCK_TYPES.TABLE),
         type: BLOCK_TYPES.TABLE,
-        table: table || { grid: [], colWidths: [] },
+        table: table || createDefaultGrid(),
     };
 }
 

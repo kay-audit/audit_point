@@ -394,6 +394,13 @@ Object.assign(ViolationManager.prototype, {
         // Сохраняем текущее состояние активности зоны.
         const wasActive = this.currentActiveContainer === container;
 
+        // Симметрично removeBlockFromField: перерисовка уничтожает узлы поля, а
+        // смонтированное rich-поле осталось бы жить на уничтоженном хосте и
+        // закоммитило бы устаревший HTML. Снимаем контроллер ДО перерисовки —
+        // и только на пути, который реально перерисовывает (отказ по лимиту
+        // сюда не доходит и не должен ронять активный редактор).
+        this._teardownActiveRichField(violation.id);
+
         if (itemsContainer) {
             this.renderBlocks(violation, fieldKey, itemsContainer);
         }

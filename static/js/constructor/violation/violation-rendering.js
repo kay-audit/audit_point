@@ -14,7 +14,9 @@ import { ViolationManager } from './violation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { BLOCK_TYPES } from './violation-block-types.js';
 import { renderImageWithFallback } from './violation-image-render.js';
-import { createTableBlockElement } from './violation-table-block.js';
+import { createTableElement } from '../table/table-render.js';
+import { makeEmbeddedTableId } from '../table/table-store.js';
+import { tableManager } from '../table/table-core.js';
 import { toggleEmptyClass } from './violation-field-empty.js';
 
 /**
@@ -219,21 +221,39 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Блок-таблица: встроенный редактор (violation-table-block.js) в общей
-     * обёртке блока — ручка DnD и подпись типа как у остальных.
+     * Блок-таблица: ОБЫЧНАЯ таблица конструктора в общей обёртке блока.
+     *
+     * Разметка и машинерия — те же, что у узловых таблиц: `createTableElement`
+     * даёт `.editable-table` (а значит и те же CSS), а
+     * `attachEventListenersToContainer` — dblclick-редактирование, выделение,
+     * контекст-меню и ручки ресайза. Адрес таблицы для этой машинерии —
+     * синтетический id `vt::…` (table-store.js); host-контейнер помечен
+     * `data-embedded-table-id`, по нему `afterTableChanged` находит, что
+     * пересобрать после структурной правки.
      *
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldKey - Ключ поля реестра
      * @param {Object} block - Блок типа 'table'
-     * @param {boolean} [isReadOnly] - Режим просмотра
+     * @param {boolean} [isReadOnly] - Режим просмотра (здесь сознательно не
+     *        читается: гейты режима живут в самой машинерии, см. ниже)
      * @returns {HTMLElement} Обёртка блока
      */
     createTableBlockWrapper(violation, fieldKey, block, isReadOnly = false) {
         const { wrapper, body } = this._createBlockWrapper('Таблица');
         body.className = 'content-item content-item--table';
-        body.appendChild(createTableBlockElement({
-            violation, fieldKey, block, manager: this, isReadOnly,
-        }));
+
+        const tableId = makeEmbeddedTableId(violation.id, fieldKey, block.id);
+        const host = document.createElement('div');
+        host.className = 'violation-table-block-scroll';
+        host.dataset.embeddedTableId = tableId;
+        host.appendChild(createTableElement(block.table || {}, tableId));
+
+        // Слушатели вешаем и в режиме просмотра — паритет с узловыми таблицами:
+        // запись отсекают гейты startEditingCell и ContextMenuManager.show,
+        // а выделение ячеек в просмотре разрешено.
+        tableManager.attachEventListenersToContainer(host);
+
+        body.appendChild(host);
         return wrapper;
     }
 });

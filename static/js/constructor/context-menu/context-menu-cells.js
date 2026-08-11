@@ -3,8 +3,8 @@
  * Управляет операциями с ячейками: объединение, разъединение, вставка/удаление строк и колонок.
  */
 import { ContextMenuManager } from './context-menu-core.js';
-import { AppState } from '../state/state-core.js';
 import { Notifications } from '../../shared/notifications.js';
+import { resolveTable } from '../table/table-store.js';
 import { MSG_ROW_HAS_MERGED_CELLS } from '../table/table-cells-operations.js';
 
 export class CellContextMenu {
@@ -65,7 +65,7 @@ export class CellContextMenu {
         if (selectedCount > 0) {
             const cell = tableManager.selectedCells[0];
             const tableId = cell.dataset.tableId;
-            const table = AppState.tables[tableId];
+            const table = resolveTable(tableId);
 
             isProtectedTable = table && table.protected === true;
 
@@ -143,7 +143,7 @@ export class CellContextMenu {
         const tableId = cell.dataset.tableId;
         const rowIndex = parseInt(cell.dataset.row);
         const colIndex = parseInt(cell.dataset.col);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         const isProtectedTable = table && table.protected === true;
 
@@ -298,7 +298,7 @@ export class CellContextMenu {
         const tableId = cell.dataset.tableId;
         const rowIndex = parseInt(cell.dataset.row);
         const colIndex = parseInt(cell.dataset.col);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         let hint = '';
         let highlightType = null;
@@ -399,7 +399,7 @@ export class CellContextMenu {
 
     /**
      * Универсальная подсветка для всех операций с таблицей.
-     * @param {Object} table - Объект таблицы из AppState
+     * @param {Object} table - Объект таблицы (resolveTable)
      * @param {number} rowIndex - Индекс строки
      * @param {number} colIndex - Индекс колонки
      * @param {string} type - Тип операции
@@ -472,7 +472,7 @@ export class CellContextMenu {
      * Подсвечивает горизонтальную границу строки (верхнюю или нижнюю).
      * Учитывает colspan ячеек для непрерывной линии.
      * @param {HTMLElement} tableElement - DOM-элемент таблицы
-     * @param {Object} table - Объект таблицы из AppState
+     * @param {Object} table - Объект таблицы (resolveTable)
      * @param {number} rowIndex - Индекс строки
      * @param {string} side - Сторона ('top' или 'bottom')
      */
@@ -512,7 +512,7 @@ export class CellContextMenu {
      * Подсвечивает вертикальную границу колонки (левую или правую).
      * Учитывает rowspan ячеек для непрерывной линии.
      * @param {HTMLElement} tableElement - DOM-элемент таблицы
-     * @param {Object} table - Объект таблицы из AppState
+     * @param {Object} table - Объект таблицы (resolveTable)
      * @param {number} colIndex - Индекс колонки
      * @param {string} side - Сторона ('left' или 'right')
      */
@@ -668,7 +668,7 @@ export class CellContextMenu {
      * @returns {boolean} true если в grid у ячейки colSpan>1 или rowSpan>1
      */
     _isMergedInGrid(cell) {
-        const table = AppState.tables[cell.dataset.tableId];
+        const table = resolveTable(cell.dataset.tableId);
         const cellData = table?.grid?.[parseInt(cell.dataset.row)]?.[parseInt(cell.dataset.col)];
         if (!cellData || cellData.isSpanned) return false;
         return (cellData.colSpan || 1) > 1 || (cellData.rowSpan || 1) > 1;
@@ -744,7 +744,7 @@ export class CellContextMenu {
         const tableId = coords[0].tableId;
         if (!coords.every(c => c.tableId === tableId)) return false;
 
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
         if (!table) return false;
 
         const minRow = Math.min(...coords.map(c => c.row));

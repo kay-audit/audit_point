@@ -160,30 +160,6 @@ export const violationMutations = {
     },
 
     /**
-     * Пишет содержимое ячейки блока-таблицы (печатный ввод → typing-превью).
-     * Отдельный метод (а не setBlockField('table', ...)): ввод в ячейку —
-     * per-keystroke, дискретный updateBlock на каждый символ был бы дорог.
-     * @param {Object} violation - Объект нарушения
-     * @param {string} fieldKey - Ключ поля реестра
-     * @param {string} blockId - ID блока-таблицы
-     * @param {number} row - Строка ячейки
-     * @param {number} col - Колонка ячейки
-     * @param {string} value - Новое содержимое (plain-текст)
-     * @returns {boolean} true — записано; false — read-only/ячейка не найдена
-     */
-    setTableCell(violation, fieldKey, blockId, row, col, value) {
-        if (ValidationCore.requireWrite('cannotEdit')) return false;
-
-        const block = findBlock(violation, fieldKey, blockId);
-        const cell = block?.table?.grid?.[row]?.[col];
-        if (!cell) return false;
-
-        cell.content = value;
-        _schedulePreview(violation.id, false);
-        return true;
-    },
-
-    /**
      * Переставляет блок внутри поля (drag-and-drop, §5.10a).
      *
      * toIndex — позиция вставки В ИСХОДНОМ массиве (как её считает dragover),

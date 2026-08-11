@@ -9,11 +9,10 @@
  *
  * Высота строк — auto (как в Word); ручного изменения высоты строк больше нет.
  */
-import { AppState } from '../state/state-core.js';
-import { ItemsRenderer } from '../items/items-renderer.js';
 import { pixelWidthsToWeights } from './col-widths.js';
 import { makeIdempotentTeardown } from './resize-teardown.js';
 import { getStructureLimits } from '../violation/violation-image-validator.js';
+import { resolveTable, afterTableChanged } from './table-store.js';
 
 export class TableSizes {
     constructor(tableManager) {
@@ -30,10 +29,12 @@ export class TableSizes {
     startColumnResize(e) {
         const cell = e.target.parentElement;
         const table = cell.closest('table');
-        const section = table.closest('.table-section');
-        if (!section) return;
 
-        const tableId = section.dataset.tableId;
+        // id таблицы берём с самой ячейки: карточной обёртки `.table-section`
+        // у встроенных таблиц нарушений нет, а dataset.tableId есть у обеих.
+        const tableId = cell.dataset.tableId;
+        if (!tableId) return;
+
         const colgroup = table.querySelector('colgroup');
         if (!colgroup) return;
 
@@ -49,8 +50,8 @@ export class TableSizes {
         const tableWidth = table.offsetWidth || 1;
 
         // Начальные проценты пары колонок (из реальной геометрии).
-        const startLeftPct = (cols[leftIdx].offsetWidth || this._colPixelWidth(table, leftIdx)) / tableWidth * 100;
-        const startRightPct = (cols[rightIdx].offsetWidth || this._colPixelWidth(table, rightIdx)) / tableWidth * 100;
+        const startLeftPct = (cols[leftIdx].offsetWidth || this._colPixelWidth(table, leftIdx, tableId)) / tableWidth * 100;
+        const startRightPct = (cols[rightIdx].offsetWidth || this._colPixelWidth(table, rightIdx, tableId)) / tableWidth * 100;
         const pairPct = startLeftPct + startRightPct;
 
         // Минимальная ширина колонки в процентах (min_col_width_px от ширины
@@ -110,7 +111,7 @@ export class TableSizes {
      * @private
      */
     _commitColWidths(tableId, tableElement) {
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
         if (!table) return;
 
         const colgroup = tableElement.querySelector('colgroup');
@@ -138,7 +139,7 @@ export class TableSizes {
         }
 
         // Перерисовка из colWidths (colgroup пересоберётся из новых весов).
-        ItemsRenderer.updateTable(tableId);
+        afterTableChanged(tableId);
     }
 
     /**
@@ -146,13 +147,12 @@ export class TableSizes {
      * Нужна, когда col.offsetWidth ещё не посчитан браузером.
      * @param {HTMLElement} tableElement - DOM-элемент <table>
      * @param {number} idx - Индекс колонки
+     * @param {string} tableId - ID таблицы
      * @returns {number} Оценка ширины в пикселях
      * @private
      */
-    _colPixelWidth(tableElement, idx) {
-        const section = tableElement.closest('.table-section');
-        const table = section ? AppState.tables[section.dataset.tableId] : null;
-        const widths = table?.colWidths || [];
+    _colPixelWidth(tableElement, idx, tableId) {
+        const widths = resolveTable(tableId)?.colWidths || [];
         const total = widths.reduce((a, b) => a + b, 0) || widths.length || 1;
         const share = (widths[idx] || 1) / total;
         return (tableElement.offsetWidth || 1) * share;

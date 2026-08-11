@@ -733,7 +733,7 @@ class TestSaveContentTableCellsStoredVerbatim:
 
     ПОЧЕМУ ЭТО БЕЗОПАСНО: все потребители содержимого ячеек рендерят его как
     ТЕКСТ, а не как HTML, поэтому payload никогда не интерпретируется:
-      - редактор: items-renderer._createTableCell → cell.textContent
+      - редактор: table-render.js → cell.textContent
       - предпросмотр: preview-table-renderer → cell.textContent
       - DOCX-экспорт: run.add_run(text) (текстовый run, не HTML)
       - TXT/MD-экспорт: plain text

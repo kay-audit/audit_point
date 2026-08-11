@@ -1,11 +1,13 @@
 /**
  * Операции с ячейками таблиц.
  * Обрабатывает редактирование содержимого, выделение и объединение/разделение ячеек.
- * Работает с матричной grid-структурой таблиц в AppState.
+ *
+ * Таблица адресуется строковым id из `cell.dataset.tableId` и разрешается через
+ * `resolveTable` (table-store.js) — один и тот же код обслуживает узловые
+ * таблицы (`AppState.tables`) и встроенные таблицы блоков нарушения. Перерисовку
+ * редактора и превью после правки берёт на себя `afterTableChanged`.
  */
 import { ChangelogTracker } from '../changelog-tracker.js';
-import { ItemsRenderer } from '../items/items-renderer.js';
-import { PreviewManager } from '../preview/preview.js';
 import { AppState } from '../state/state-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { Notifications } from '../../shared/notifications.js';
@@ -13,6 +15,12 @@ import { getStructureLimits } from '../violation/violation-image-validator.js';
 import { applyInsertColumnWidth, applyRemoveColumnWidth } from './col-widths.js';
 import { mergeRange, unmergeAt } from './table-merge-core.js';
 import { validateGridRegion, gridToMerges, applyMergesToGrid } from './grid-merges.js';
+import {
+    resolveTable,
+    isEmbeddedTableId,
+    afterTableChanged,
+    afterTableCellChanged,
+} from './table-store.js';
 
 /**
  * Единое сообщение отказа удаления строки с объединениями (M.22).
@@ -74,7 +82,7 @@ export class TableCellsOperations {
                 const tableId = cellEl.dataset.tableId;
                 const row = parseInt(cellEl.dataset.row);
                 const col = parseInt(cellEl.dataset.col);
-                const table = AppState.tables[tableId];
+                const table = resolveTable(tableId);
 
                 if (table && table.grid && table.grid[row] && table.grid[row][col]) {
                     if (!table.grid[row][col].isSpanned) {
@@ -82,12 +90,16 @@ export class TableCellsOperations {
                     }
                 }
 
-                if (typeof ChangelogTracker !== 'undefined') {
+                // Встроенные таблицы нарушений в журнал правок не пишем: правки
+                // нарушения фиксирует блочный аудит-дифф при сохранении
+                // (violation-audit.js), а запись о таблице vt::… была бы
+                // фантомной — такой таблицы в акте нет.
+                if (typeof ChangelogTracker !== 'undefined' && !isEmbeddedTableId(tableId)) {
                     ChangelogTracker._recordDebounced('modify_table', tableId, '', {field: 'cell'}, 5000);
                 }
 
-                // Контентная правка одной ячейки → точечный патч блока таблицы.
-                PreviewManager.updateBlock('table', tableId);
+                // Контентная правка одной ячейки → точечный патч блока превью.
+                afterTableCellChanged(tableId);
             }
 
             cellEl.classList.remove('editing');
@@ -122,7 +134,7 @@ export class TableCellsOperations {
     /**
      * H5-A: коммитит pending-редактирование ячейки, если оно есть.
      * Используется перед сохранением (Ctrl+S), чтобы значение из textarea
-     * успело попасть в AppState.tables[id].grid[r][c].content до saveState.
+     * успело попасть в grid[r][c].content состояния до saveState.
      *
      * Каждая `.editing`-ячейка содержит textarea, у которой listener 'blur'
      * вызывает finishEditing → cellData.content = textarea.value.trim().
@@ -203,7 +215,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         let rowIndex = parseInt(cell.dataset.row);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[0] в _checkGridColumnsConsistent был бы undefined → TypeError. No-op.
@@ -282,8 +294,7 @@ export class TableCellsOperations {
         table.grid = applyMergesToGrid(table.grid, gridToMerges(table.grid));
 
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -296,7 +307,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         let rowIndex = parseInt(cell.dataset.row);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[0] в _checkGridColumnsConsistent был бы undefined → TypeError. No-op.
@@ -375,8 +386,7 @@ export class TableCellsOperations {
         table.grid = applyMergesToGrid(table.grid, gridToMerges(table.grid));
 
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -389,7 +399,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         let colIndex = parseInt(cell.dataset.col);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[0] в _checkColumnLimit был бы undefined → TypeError. No-op.
@@ -457,8 +467,7 @@ export class TableCellsOperations {
 
         applyInsertColumnWidth(table, colIndex);
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -471,7 +480,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         let colIndex = parseInt(cell.dataset.col);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[0] в _checkColumnLimit был бы undefined → TypeError. No-op.
@@ -558,8 +567,7 @@ export class TableCellsOperations {
 
         applyInsertColumnWidth(table, insertColIndex);
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -574,7 +582,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         const rowIndex = parseInt(cell.dataset.row);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[rowIndex].some(...) ниже был бы чтением undefined → TypeError. No-op.
@@ -630,8 +638,7 @@ export class TableCellsOperations {
         this._shiftSpanOriginsForRowDelete(table, rowIndex);
 
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -644,7 +651,7 @@ export class TableCellsOperations {
         const cell = this.tableManager.selectedCells[0];
         const tableId = cell.dataset.tableId;
         const colIndex = parseInt(cell.dataset.col);
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
 
         // Пустой grid (grid:[]) — легальное персистентное/импортированное состояние;
         // grid[0].length ниже был бы чтением undefined → TypeError. No-op.
@@ -700,8 +707,7 @@ export class TableCellsOperations {
 
         applyRemoveColumnWidth(table, colIndex);
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
     }
 
     /**
@@ -973,7 +979,7 @@ export class TableCellsOperations {
             return;
         }
 
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
         if (!table) return;
 
         // Проверка protected
@@ -1040,8 +1046,7 @@ export class TableCellsOperations {
         table.grid = nextGrid;
 
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
         Notifications.success('Ячейки объединены');
     }
 
@@ -1058,7 +1063,7 @@ export class TableCellsOperations {
         const row = parseInt(cell.dataset.row);
         const col = parseInt(cell.dataset.col);
 
-        const table = AppState.tables[tableId];
+        const table = resolveTable(tableId);
         if (!table) return;
 
         // Проверка protected
@@ -1094,8 +1099,7 @@ export class TableCellsOperations {
         table.grid = nextGrid;
 
         this.clearSelection();
-        ItemsRenderer.updateTable(tableId);
-        PreviewManager.update();
+        afterTableChanged(tableId);
         Notifications.success('Ячейка разъединена');
     }
 }

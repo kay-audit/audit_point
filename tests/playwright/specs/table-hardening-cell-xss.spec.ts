@@ -4,7 +4,7 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
  * B8 (table-hardening): XSS-инвариант ячеек таблицы.
  *
  * Содержимое ячеек рендерится через textContent и в редакторе
- * (items-renderer._createTableCell), и в предпросмотре
+ * (table-render.js), и в предпросмотре
  * (preview-table-renderer). textContent трактует строку как ТЕКСТ, а не HTML —
  * никакой `<script>`/`<img>` не создаётся как элемент и ничего не исполняется.
  * Этот инвариант критичен (бэкенд НЕ санитизирует ячейки — он полагается на

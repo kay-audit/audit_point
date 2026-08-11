@@ -134,7 +134,12 @@ test('фабрики блоков создают релевантные типу
 
   const table = createTableBlock();
   assert.equal(table.type, 'table');
-  assert.deepEqual(table.table, { grid: [], colWidths: [] });
+  // Стартовая сетка 2×2: первая строка — шапка (isHeader), веса колонок поровну.
+  assert.equal(table.table.grid.length, 2);
+  assert.deepEqual(table.table.colWidths, [100, 100]);
+  assert.deepEqual(table.table.grid.map(row => row.map(c => c.isHeader)),
+    [[true, true], [false, false]]);
+  assert.ok(table.table.grid.flat().every(c => c.content === ''));
 
   const ids = new Set([text.id, image.id, table.id, createTextBlock().id]);
   assert.equal(ids.size, 4, 'id блоков уникальны');
