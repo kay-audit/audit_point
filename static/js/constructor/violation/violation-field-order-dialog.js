@@ -2,10 +2,11 @@
  * Модалка «Порядок полей» нарушения.
  *
  * Десять строк-полей в текущем порядке (метки из реестра), сортировка мышью
- * (HTML5 draggable — простая перестановка строки), выключенные поля показаны
- * приглушённо, но перетаскиваются. «Применить» пишет перестановку в
- * violation.fieldOrder через мутатор, «Вернуть стандартный порядок» — null
- * (содержимое полей не трогается ни в одном из случаев).
+ * (HTML5 draggable, живая перестановка на dragover + FLIP-анимация),
+ * выключенные поля показаны приглушённо, но перетаскиваются. «Применить»
+ * пишет перестановку в violation.fieldOrder через мутатор, «Вернуть
+ * стандартный порядок» — null (содержимое полей не трогается ни в одном
+ * из случаев).
  *
  * Стрелок вверх/вниз в самой форме нет — сценарий закрывает эта модалка
  * целиком (спека §4.3).
@@ -13,6 +14,8 @@
 
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 import { VIOLATION_LABELS, getOrderedFieldKeys } from './violation-fields.js';
+
+const FLIP_DURATION_MS = 150;
 
 /**
  * Перестановка ключа в списке: чистая функция (тестируется без DOM).
@@ -40,6 +43,23 @@ export function reorderKeys(order, fromIndex, toIndex) {
 }
 
 /**
+ * Позиция вставки перетаскиваемой строки относительно строки-цели по
+ * Y-координате курсора: верхняя половина строки-цели — вставка перед ней
+ * (targetIndex), нижняя половина — после (targetIndex + 1). Чистая функция
+ * без DOM — принимает уже снятые числа, поэтому тестируется без jsdom.
+ *
+ * @param {number} targetTop - top строки-цели (getBoundingClientRect().top)
+ * @param {number} targetHeight - height строки-цели
+ * @param {number} clientY - Y-координата курсора (dragover event)
+ * @param {number} targetIndex - индекс строки-цели в текущем order
+ * @returns {number} Позиция вставки — второй аргумент для reorderKeys
+ */
+export function insertionIndexByPointer(targetTop, targetHeight, clientY, targetIndex) {
+    const after = clientY > targetTop + targetHeight / 2;
+    return after ? targetIndex + 1 : targetIndex;
+}
+
+/**
  * Открывает модалку порядка полей.
  *
  * @param {Object} params
@@ -62,84 +82,141 @@ export async function openFieldOrderDialog({ violation, manager, onApplied }) {
         onMount: ({ overlay, close }) => {
             const dialog = overlay.querySelector('.custom-dialog');
             if (!dialog) return;
+            // Модификатор ширины — три кнопки (в т.ч. «Вернуть стандартный
+            // порядок») не помещаются в стандартные --dialog-max-width.
+            dialog.classList.add('custom-dialog--field-order');
 
             const list = document.createElement('div');
             list.className = 'violation-field-order-list';
 
-            let dragFrom = null;
+            const reduceMotion = typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-            const renderRows = () => {
-                list.innerHTML = '';
-                order.forEach((key, index) => {
-                    const row = document.createElement('div');
-                    row.className = 'violation-field-order-row';
-                    if (!violation?.[key]?.enabled) {
-                        row.classList.add('violation-field-order-row--disabled');
+            // Строки создаются ОДИН раз и далее только переставляются в DOM
+            // (layout) — пересоздание строки, на которой идёт нативный HTML5
+            // drag, обрывает сессию перетаскивания.
+            const rowsByKey = new Map();
+            let dragFromKey = null;
+            let dragSnapshotOrder = null;
+
+            /**
+             * Переставляет DOM-узлы строк под текущий `order`. Без
+             * reduce-motion — проигрывает FLIP-переход (снятие позиций до,
+             * transform из старой позиции в новую после).
+             */
+            const layout = () => {
+                const prevTops = reduceMotion ? null : new Map();
+                if (prevTops) {
+                    for (const [key, el] of rowsByKey) {
+                        prevTops.set(key, el.getBoundingClientRect().top);
                     }
-                    row.draggable = true;
-                    row.dataset.fieldKey = key;
-                    row.dataset.index = String(index);
+                }
 
-                    const handle = document.createElement('span');
-                    handle.className = 'violation-field-order-handle';
-                    handle.textContent = '⋮⋮';
+                order.forEach((key) => list.appendChild(rowsByKey.get(key)));
 
-                    const label = document.createElement('span');
-                    label.className = 'violation-field-order-label';
-                    label.textContent = VIOLATION_LABELS[key] || key;
-
-                    row.appendChild(handle);
-                    row.appendChild(label);
-
-                    row.addEventListener('dragstart', (e) => {
-                        dragFrom = index;
-                        row.classList.add('dragging');
-                        if (e.dataTransfer) {
-                            e.dataTransfer.effectAllowed = 'move';
-                            e.dataTransfer.setData('text/plain', key);
-                        }
-                    });
-                    row.addEventListener('dragend', () => {
-                        dragFrom = null;
-                        row.classList.remove('dragging');
-                    });
-                    row.addEventListener('dragover', (e) => {
-                        e.preventDefault();
-                        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-                    });
-                    row.addEventListener('drop', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (dragFrom === null || dragFrom === index) return;
-                        // Верхняя половина строки — вставка перед ней, нижняя — после.
-                        const rect = row.getBoundingClientRect();
-                        const after = e.clientY > rect.top + rect.height / 2;
-                        order = reorderKeys(order, dragFrom, after ? index + 1 : index);
-                        dragFrom = null;
-                        renderRows();
-                    });
-
-                    list.appendChild(row);
-                });
+                if (!prevTops) return;
+                for (const [key, el] of rowsByKey) {
+                    const dy = prevTops.get(key) - el.getBoundingClientRect().top;
+                    if (!dy) continue;
+                    el.style.transition = 'none';
+                    el.style.transform = `translateY(${dy}px)`;
+                    void el.offsetHeight; // форсируем reflow, чтобы transition сыграл из выставленной позиции
+                    el.style.transition = `transform ${FLIP_DURATION_MS}ms ease`;
+                    el.style.transform = '';
+                }
             };
 
-            renderRows();
+            const createRow = (key) => {
+                const row = document.createElement('div');
+                row.className = 'violation-field-order-row';
+                if (!violation?.[key]?.enabled) {
+                    row.classList.add('violation-field-order-row--disabled');
+                }
+                row.draggable = true;
+                row.dataset.fieldKey = key;
+
+                const handle = document.createElement('span');
+                handle.className = 'violation-field-order-handle';
+                handle.textContent = '⋮⋮';
+
+                const label = document.createElement('span');
+                label.className = 'violation-field-order-label';
+                label.textContent = VIOLATION_LABELS[key] || key;
+
+                row.appendChild(handle);
+                row.appendChild(label);
+
+                row.addEventListener('dragstart', (e) => {
+                    dragFromKey = key;
+                    dragSnapshotOrder = [...order];
+                    row.classList.add('dragging');
+                    if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', key);
+                    }
+                });
+
+                row.addEventListener('dragend', (e) => {
+                    // Отмена нативным drag'ом (Esc, drop вне зоны) — браузер
+                    // оставляет dropEffect='none': откатываем к снапшоту.
+                    if (dragSnapshotOrder && e.dataTransfer && e.dataTransfer.dropEffect === 'none') {
+                        order = dragSnapshotOrder;
+                        layout();
+                    }
+                    row.classList.remove('dragging');
+                    dragFromKey = null;
+                    dragSnapshotOrder = null;
+                });
+
+                row.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                    if (dragFromKey === null || dragFromKey === key) return;
+
+                    const rect = row.getBoundingClientRect();
+                    const targetIndex = order.indexOf(key);
+                    const toIndex = insertionIndexByPointer(rect.top, rect.height, e.clientY, targetIndex);
+                    const fromIndex = order.indexOf(dragFromKey);
+                    const next = reorderKeys(order, fromIndex, toIndex);
+                    // Защита от дребезга: перерисовываем только при реальной смене порядка.
+                    if (next.join(' ') === order.join(' ')) return;
+                    order = next;
+                    layout();
+                });
+
+                row.addEventListener('drop', (e) => {
+                    // Перестановка уже применена по ходу dragover — drop только фиксирует событие.
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+
+                return row;
+            };
+
+            order.forEach((key) => rowsByKey.set(key, createRow(key)));
+            order.forEach((key) => list.appendChild(rowsByKey.get(key)));
+
+            // Подстраховка для зазоров между строками и хвоста списка: без
+            // preventDefault здесь drop в тонком gap отменил бы перетаскивание.
+            list.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = dragFromKey ? 'move' : 'none';
+            });
+
             dialog.appendChild(list);
 
-            const row = document.createElement('div');
-            row.className = 'dialog-buttons';
-
-            const applyBtn = document.createElement('button');
-            applyBtn.type = 'button';
-            applyBtn.className = 'btn btn-primary';
-            applyBtn.textContent = 'Применить';
-            applyBtn.addEventListener('click', () => close('apply'));
-
+            // «Вернуть стандартный порядок» — отдельной строкой на всю
+            // ширину: текст не должен резаться рядом с «Применить»/«Отмена».
             const resetBtn = document.createElement('button');
             resetBtn.type = 'button';
-            resetBtn.className = 'btn btn-secondary';
+            resetBtn.className = 'btn btn-ghost btn-block violation-field-order-reset-btn';
             resetBtn.textContent = 'Вернуть стандартный порядок';
             resetBtn.addEventListener('click', () => close('reset'));
+            dialog.appendChild(resetBtn);
+
+            const buttonsRow = document.createElement('div');
+            buttonsRow.className = 'dialog-buttons';
 
             const cancelBtn = document.createElement('button');
             cancelBtn.type = 'button';
@@ -147,10 +224,15 @@ export async function openFieldOrderDialog({ violation, manager, onApplied }) {
             cancelBtn.textContent = 'Отмена';
             cancelBtn.addEventListener('click', () => close('cancel'));
 
-            row.appendChild(applyBtn);
-            row.appendChild(resetBtn);
-            row.appendChild(cancelBtn);
-            dialog.appendChild(row);
+            const applyBtn = document.createElement('button');
+            applyBtn.type = 'button';
+            applyBtn.className = 'btn btn-primary';
+            applyBtn.textContent = 'Применить';
+            applyBtn.addEventListener('click', () => close('apply'));
+
+            buttonsRow.appendChild(cancelBtn);
+            buttonsRow.appendChild(applyBtn);
+            dialog.appendChild(buttonsRow);
         },
     });
 

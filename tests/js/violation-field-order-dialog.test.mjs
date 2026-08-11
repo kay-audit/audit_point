@@ -12,7 +12,7 @@
 import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reorderKeys } from '../../static/js/constructor/violation/violation-field-order-dialog.js';
+import { reorderKeys, insertionIndexByPointer } from '../../static/js/constructor/violation/violation-field-order-dialog.js';
 import { VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 
 const BASE = ['a', 'b', 'c', 'd'];
@@ -64,4 +64,18 @@ test('перестановка сохраняет полный состав кл
     // Мутатор setFieldOrder принимает только полную перестановку реестра —
     // без этого инварианта модалка молча ломала бы порядок.
     assert.equal(new Set(moved).size, VIOLATION_FIELD_KEYS.length);
+});
+
+test('insertionIndexByPointer: курсор в верхней половине строки-цели — вставка перед ней', () => {
+    // Строка top=100, height=40 → середина на 120. Курсор на 110 — выше середины.
+    assert.equal(insertionIndexByPointer(100, 40, 110, 2), 2);
+});
+
+test('insertionIndexByPointer: курсор в нижней половине строки-цели — вставка после неё', () => {
+    assert.equal(insertionIndexByPointer(100, 40, 130, 2), 3);
+});
+
+test('insertionIndexByPointer: курсор точно на середине — граница относится к верхней половине', () => {
+    // clientY > mid, а не >=, поэтому ровно середина ещё не «после».
+    assert.equal(insertionIndexByPointer(100, 40, 120, 2), 2);
 });
