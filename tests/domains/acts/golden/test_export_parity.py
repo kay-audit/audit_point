@@ -24,6 +24,7 @@ from app.domains.acts.formatters.text_formatter import TextFormatter
 from app.domains.acts.settings import ActsSettings
 
 from tests.domains.acts.golden.fixture_act import (
+    LABELS_NEVER_RENDERED,
     MARKER_ATTACHED_TBL_CELL,
     MARKER_FOOTNOTE_TEXT,
     MARKER_IMG_FILENAME,
@@ -124,6 +125,22 @@ def test_txt_contains_all_markers(golden_txt):
     markers = MARKERS_ALL_FORMATS + [MARKER_ATTACHED_TBL_CELL, MARKER_IMG_FILENAME]
     missing = _missing(markers, golden_txt)
     assert missing == [], f"TXT потерял маркеры: {missing}"
+
+
+def test_no_format_renders_unlabeled_field_labels(golden_docx, golden_md, golden_txt):
+    """Поля с labeled=False выводятся без заголовка во всех трёх форматах.
+
+    Их контент при этом обязан доезжать (маркеры GOLDEN_V_CM_*/PM/FREETEXT
+    входят в MARKERS_ALL_FORMATS) — проверяется presence-тестами выше.
+    """
+    outputs = {
+        "docx": _docx_body_text(golden_docx),
+        "md": golden_md,
+        "txt": golden_txt,
+    }
+    for fmt, output in outputs.items():
+        present = [label for label in LABELS_NEVER_RENDERED if label in output]
+        assert present == [], f"{fmt}: выведены лишние метки полей: {present}"
 
 
 # ---------------------------------------------------------------------------

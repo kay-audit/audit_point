@@ -140,13 +140,20 @@ test('golden: контент всех 10 полей и всех 3 типов б�
     assert.deepEqual(missing, [], `превью потеряло маркеры: ${missing}`);
 });
 
-test('golden: метки полей — из реестра (CodeMining/ProcessMining/Описание/Ответственные)', () => {
+test('golden: метки полей с labeled=true — из реестра (Описание/Ответственные/…)', () => {
     const lines = collectViolationLines(goldenViolation);
     const labels = lines.map(l => l.label).filter(Boolean);
-    for (const expected of ['Нарушено', 'Установлено', 'Описание', 'CodeMining',
-                            'ProcessMining', 'Дополнительный контент', 'Причины',
+    for (const expected of ['Нарушено', 'Установлено', 'Описание', 'Причины',
                             'Принятые меры', 'Последствия', 'Ответственные']) {
         assert.ok(labels.includes(expected), `метка «${expected}» отсутствует в превью`);
+    }
+});
+
+test('golden: метки полей с labeled=false в превью не выводятся (паритет с экспортами)', () => {
+    const lines = collectViolationLines(goldenViolation);
+    const labels = lines.map(l => l.label).filter(Boolean);
+    for (const unexpected of ['CodeMining', 'ProcessMining', 'Дополнительный контент']) {
+        assert.ok(!labels.includes(unexpected), `метка «${unexpected}» лишняя в превью`);
     }
 });
 

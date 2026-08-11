@@ -2,8 +2,10 @@
 Общий рендеринг нарушений для Markdown/TXT форматтеров (блочная модель).
 
 Единый цикл: поля в порядке ``fieldOrder`` нарушения (или стандартном, см.
-``violation_fields.ordered_fields``) → у включённого поля метка + блоки по
-порядку. Формат-специфичны только четыре точки, передаваемые колбэками:
+``violation_fields.ordered_fields``) → у видимого поля метка + блоки по
+порядку. Видимость и наличие метки — общая политика реестра
+(``should_render_field`` / ``field_label_for_render``), та же, что у DOCX.
+Формат-специфичны только четыре точки, передаваемые колбэками:
 оформление метки (жирный MD / plain TXT), конвертер rich-HTML текста
 (HTML→Markdown / HTML→plain), рендер картинки (#16) и рендер таблицы
 (pipe-table MD / ASCII TXT) — их держат сами форматтеры.
@@ -13,7 +15,11 @@ add_case / add_additional_content / ...) умер вместе со старой
 """
 from typing import Callable
 
-from app.domains.acts.violation_fields import ordered_fields
+from app.domains.acts.violation_fields import (
+    field_label_for_render,
+    ordered_fields,
+    should_render_field,
+)
 
 
 def wrap_bold(text: str) -> str:
@@ -37,10 +43,10 @@ def format_violation(
     """
     Форматирует нарушение: цикл по полям реестра в порядке отображения.
 
-    Правила видимости:
-    - mandatory-поля (Нарушено/Установлено): метка выводится всегда, даже
-      при пустом контейнере (#14 — паритет с DOCX «метка + пустое тело»);
-    - остальные поля — только при enabled и хотя бы одном блоке.
+    Правила видимости и меток — общая политика реестра:
+    ``should_render_field`` (mandatory всегда, остальные — при enabled и
+    непустом контейнере) и ``field_label_for_render`` (None — поле выводится
+    без строки метки, только контент).
 
     Args:
         violation_data: Документ нарушения (10 контейнеров + fieldOrder)
@@ -61,14 +67,16 @@ def format_violation(
             container = {}
         blocks = container.get('blocks') or []
 
-        if field.mandatory:
-            # Метка обязательного поля — всегда (#14).
-            lines.append(bold_wrap(f"{field.label}:"))
-            lines.append("")
-        else:
-            if not container.get('enabled', False) or not blocks:
-                continue
-            lines.append(bold_wrap(f"{field.label}:"))
+        if not should_render_field(
+            field,
+            enabled=bool(container.get('enabled', False)),
+            has_blocks=bool(blocks),
+        ):
+            continue
+
+        label = field_label_for_render(field)
+        if label is not None:
+            lines.append(bold_wrap(f"{label}:"))
             lines.append("")
 
         for block in blocks:

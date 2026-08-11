@@ -19,7 +19,7 @@ from typing import Any
 
 from app.domains.acts.formatters.utils.html_utils import HTMLUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
-from app.domains.acts.violation_fields import MANDATORY_FIELD_KEYS
+from app.domains.acts.violation_fields import VIOLATION_FIELDS
 
 # Базовые разделы 1–5 (по id, как ValidationAct.validateStructure на фронте).
 _BASE_SECTION_IDS = ("1", "2", "3", "4", "5")
@@ -105,19 +105,25 @@ def _field_is_empty(field: Any) -> bool:
 
 
 def _violation_has_empty_fields(violation: Any) -> bool:
-    """Есть ли у нарушения незаполненные обязательные поля (violated/established).
+    """Есть ли у нарушения незаполненные ВКЛЮЧЁННЫЕ поля.
 
-    Обязательные поля (`MANDATORY_FIELD_KEYS`) — контейнеры блочной модели
-    `{enabled, blocks}`; поле считается пустым, если в нём нет ни одного
-    непустого блока (`_field_is_empty`). Опциональные поля (описание,
-    CodeMining, ProcessMining, доп. контент, причины, принятые меры,
-    последствия, ответственные) сознательно НЕ учитываются — консервативно,
-    вне scope находки о пустых обязательных полях.
+    Поля блочной модели — контейнеры `{enabled, blocks}`; поле считается
+    пустым, если в нём нет ни одного непустого блока (`_field_is_empty`).
+    Учитываются обязательные (`mandatory` в реестре — включены всегда) и
+    опциональные, которые пользователь ВКЛЮЧИЛ чекбоксом: включённое пустое
+    поле — незаконченная работа, а не осознанный пропуск (выключенное поле
+    не проверяется вовсе). Ревью №6: без этого включённое пустое поле молча
+    доезжало до экспорта — раньше «висячей подписью» в DOCX, теперь тихой
+    пропажей (рендеры такое поле не выводят), и предупредить о нём при
+    сохранении может только валидация.
     """
-    return any(
-        _field_is_empty(getattr(violation, key, None))
-        for key in MANDATORY_FIELD_KEYS
-    )
+    for field in VIOLATION_FIELDS:
+        container = getattr(violation, field.key, None)
+        if not field.mandatory and not getattr(container, "enabled", False):
+            continue
+        if _field_is_empty(container):
+            return True
+    return False
 
 
 def _count_header_rows(grid) -> int:

@@ -123,7 +123,9 @@ def test_complete_table_no_issues():
 
 
 # ── Нарушения (Q1, wave 2 → блочная модель): мягкое предупреждение о
-# незаполненных обязательных полях (violated/established). ──
+# незаполненных ВКЛЮЧЁННЫХ полях — обязательных (violated/established,
+# включены всегда) и опциональных, которым пользователь поставил чекбокс
+# (ревью №6). Выключенные поля не проверяются. ──
 
 def _act_with_violation(violation: dict, node_extra: dict | None = None):
     """Валидный акт с одним узлом-нарушением в разделе 1."""
@@ -259,21 +261,62 @@ def test_violation_multiple_blocks_one_filled_is_complete():
     assert "violation_incomplete" not in _codes(issues)
 
 
-def test_violation_optional_fields_empty_not_counted():
-    """Опциональные поля (причины/принятые меры/последствия/ответственные и
-    др.) с пустыми blocks=[] НЕ считаются — вне scope находки о пустых
-    обязательных полях."""
+def test_violation_disabled_optional_fields_empty_not_counted():
+    """ВЫКЛЮЧЕННЫЕ опциональные поля с пустыми blocks=[] не считаются:
+    пользователь их сознательно не заполняет, в экспорт они не идут."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("Установлено расхождение"),
+        "reasons": {"enabled": False, "blocks": []},
+        "consequences": {"enabled": False, "blocks": []},
+        "responsible": {"enabled": False, "blocks": []},
+        "measures": {"enabled": False, "blocks": []},
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" not in _codes(issues)
+
+
+def test_violation_enabled_empty_optional_field_is_warning():
+    """Ревью №6: ВКЛЮЧЁННОЕ опциональное поле без блоков — незаполненное.
+
+    Включив чекбокс, пользователь заявил намерение заполнить поле; пустым оно
+    до экспорта не доезжает (рендеры его не выводят), поэтому единственный
+    сигнал «работа не закончена» — это предупреждение при сохранении."""
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
         "violated": _text_field("Нарушен пункт 1.1"),
         "established": _text_field("Установлено расхождение"),
         "reasons": {"enabled": True, "blocks": []},
-        "consequences": {"enabled": True, "blocks": []},
-        "responsible": {"enabled": True, "blocks": []},
-        "measures": {"enabled": True, "blocks": []},
     })
     issues = collect_validation_issues(data)
-    assert "violation_incomplete" not in _codes(issues)
+    assert "violation_incomplete" in _codes(issues)
+    assert status_from_issues(issues) == "warning"
+
+
+def test_violation_enabled_optional_field_with_empty_blocks_is_warning():
+    """Блоки есть, но все визуально пусты — поле тоже незаполнено."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("Установлено расхождение"),
+        "codeMining": _text_field("<p><br></p>"),
+    })
+    issues = collect_validation_issues(data)
+    assert "violation_incomplete" in _codes(issues)
+
+
+def test_violation_enabled_optional_field_filled_no_issue():
+    """Включённое и заполненное опциональное поле замечаний не даёт."""
+    data = _act_with_violation({
+        "id": "v1", "nodeId": "vnode1",
+        "violated": _text_field("Нарушен пункт 1.1"),
+        "established": _text_field("Установлено расхождение"),
+        "reasons": _text_field("Причина расхождения"),
+        "additionalContent": _text_field("Пояснение"),
+    })
+    issues = collect_validation_issues(data)
+    assert issues == []
 
 
 def test_violation_br_only_is_warning():

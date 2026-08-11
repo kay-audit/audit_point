@@ -4,11 +4,14 @@
 указывается в блоке пункта (item) и подставляется при сборке в formatter.py.
 
 Единый цикл: поля в порядке fieldOrder нарушения (или стандартном, см.
-violation_fields.ordered_fields) → у включённого поля метка + блоки по
-порядку. Размер шрифта поля — из флага small дескриптора (9pt/12pt), курсив
-следует той же группе. Блоки:
-- text — rich-HTML через общий render_block_segments (первый text-блок
-  включённого поля идёт inline с меткой — привычный вид «Метка: текст»);
+violation_fields.ordered_fields) → у видимого поля метка + блоки по порядку.
+Видимость и наличие метки — общая политика реестра (should_render_field /
+field_label_for_render), не локальные условия: поля без метки
+(CodeMining/ProcessMining/Дополнительный контент) выводят один контент
+подряд, как текстблоки. Размер шрифта поля — из флага small дескриптора
+(9pt/12pt), курсив следует той же группе. Блоки:
+- text — rich-HTML через общий render_block_segments (первый text-блок поля
+  С МЕТКОЙ идёт inline с ней — привычный вид «Метка: текст»);
 - image — inline shape: отдельный абзац по центру, подпись курсивом по
   центру ниже (Б-1.5). Ширина — поле `width` (% полезной ширины страницы);
   0 — натуральный размер, но не шире полезной ширины (Б-1.4). Допустимые
@@ -37,7 +40,11 @@ from app.domains.acts.schemas.act_content import (
     ViolationImageBlockSchema,
     ViolationSchema,
 )
-from app.domains.acts.violation_fields import ordered_fields
+from app.domains.acts.violation_fields import (
+    field_label_for_render,
+    ordered_fields,
+    should_render_field,
+)
 
 # Полезная ширина страницы (A4 минус поля) в твипах — потолок ширины картинок.
 _USABLE_WIDTH_TWIPS = Page.width_twips - Margins.left - Margins.right
@@ -65,32 +72,36 @@ def _data_url_re() -> re.Pattern:
 def build_violation(doc: Document, violation: ViolationSchema) -> None:
     """Рендерит нарушение в документ (без заголовка и нумерации).
 
-    Правила видимости — зеркало MD/TXT (violation_render.format_violation):
-    mandatory-поля выводят метку даже при пустом контейнере (#14); остальные
-    поля — только при enabled и хотя бы одном блоке.
+    Видимость поля и его метка — общая политика реестра (should_render_field /
+    field_label_for_render), та же, что у MD/TXT (violation_render).
     """
     for field in ordered_fields({"fieldOrder": violation.fieldOrder}):
         container = getattr(violation, field.key)
         blocks = list(container.blocks)
 
-        if not field.mandatory and (not container.enabled or not blocks):
+        if not should_render_field(
+            field, enabled=container.enabled, has_blocks=bool(blocks)
+        ):
             continue
 
         size_pt = Sizes.violation_pt if field.small else Sizes.body_pt
         italic = field.small
 
-        # Привычный вид «Метка: текст»: первый text-блок идёт inline с меткой;
-        # если первый блок — картинка/таблица (или блоков нет) — метка отдельным
-        # абзацем, блоки следом.
-        label = f"{field.label}:"
-        if blocks and blocks[0].type == "text":
-            first = blocks.pop(0)
-            _labeled_paragraph(
-                doc, label, first.content,
-                italic=italic, size_pt=size_pt, rich=True,
-            )
-        else:
-            _labeled_paragraph(doc, label, "", italic=italic, size_pt=size_pt)
+        label = field_label_for_render(field)
+        if label is not None:
+            # Привычный вид «Метка: текст»: первый text-блок идёт inline с
+            # меткой; если первый блок — картинка/таблица (или блоков нет) —
+            # метка отдельным абзацем, блоки следом.
+            if blocks and blocks[0].type == "text":
+                first = blocks.pop(0)
+                _labeled_paragraph(
+                    doc, f"{label}:", first.content,
+                    italic=italic, size_pt=size_pt, rich=True,
+                )
+            else:
+                _labeled_paragraph(
+                    doc, f"{label}:", "", italic=italic, size_pt=size_pt,
+                )
 
         for block in blocks:
             if block.type == "text":

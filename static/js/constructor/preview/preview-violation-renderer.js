@@ -2,10 +2,15 @@
  * Рендерер нарушений для предпросмотра — блочная модель.
  *
  * Паритет ПОЛНОТЫ данных с DOCX (build_violation): поля в порядке fieldOrder
- * нарушения (или стандартном), у включённого поля метка + блоки по порядку.
+ * нарушения (или стандартном), у видимого поля метка + блоки по порядку.
  * Первый text-блок инлайнится с меткой («Метка: текст», как в DOCX);
  * mandatory-поля (Нарушено/Установлено) выводят метку даже при пустом
- * контейнере (Q1/#14). ВСЕ подписи полей — из контракта violation-fields.js
+ * контейнере (Q1/#14); поля с labeled=false (CodeMining/ProcessMining/
+ * Дополнительный контент) метку не выводят вовсе — контент идёт подряд, как
+ * у текстблоков. Политика — РУЧНОЕ зеркало Python-предикатов
+ * should_render_field / field_label_for_render (violation_fields.py): фронт не
+ * импортирует Python, синхронизация конвенцией проекта.
+ * ВСЕ подписи полей — из контракта violation-fields.js
  * (VIOLATION_LABELS, №10): ни одного захардкоженного литерала метки.
  * Блок-таблица — через общий PreviewTableRenderer (та же графика, что у
  * таблиц-узлов); картинка — реальный <img> с подписью (H4/M.3/M.5).
@@ -41,8 +46,8 @@ const _FIELD_BY_KEY = Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f]));
  * Чистая модель строк нарушения — полные тексты, как в DOCX.
  *
  * Флаг `small` помечает поля, которые в Word рендерятся 9pt-курсивом
- * (small в реестре: Нарушено/Установлено/Дополнительный контент); остальные —
- * обычный текст листа (12pt, без курсива).
+ * (small в реестре: Нарушено/Установлено); остальные — обычный текст листа
+ * (12pt, без курсива).
  *
  * @param {Object} violation - Данные нарушения
  * @returns {Array<Object>} Строки: {type:'line', label, text, small} |
@@ -60,14 +65,18 @@ export function collectViolationLines(violation) {
             continue;
         }
 
-        const label = VIOLATION_LABELS[key];
-        // Первый text-блок инлайнится с меткой (паритет с DOCX); иначе метка
-        // отдельной строкой, блоки следом.
-        if (blocks.length && blocks[0].type === BLOCK_TYPES.TEXT) {
-            const first = blocks.shift();
-            lines.push({ type: 'line', label, text: first.content || '', small: field.small });
-        } else {
-            lines.push({ type: 'line', label, text: '', small: field.small });
+        // Поле без метки (labeled=false) — только контент, блоки подряд;
+        // строка-носитель метки не создаётся вовсе.
+        if (field.labeled) {
+            const label = VIOLATION_LABELS[key];
+            // Первый text-блок инлайнится с меткой (паритет с DOCX); иначе метка
+            // отдельной строкой, блоки следом.
+            if (blocks.length && blocks[0].type === BLOCK_TYPES.TEXT) {
+                const first = blocks.shift();
+                lines.push({ type: 'line', label, text: first.content || '', small: field.small });
+            } else {
+                lines.push({ type: 'line', label, text: '', small: field.small });
+            }
         }
 
         for (const block of blocks) {

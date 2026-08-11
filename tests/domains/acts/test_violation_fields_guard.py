@@ -1,7 +1,7 @@
 """Тест-страж декларативного контракта полей нарушения (violation_fields.py).
 
 Блочная модель: закрывает риск рассинхронизации реестра полей
-(состав/метки/порядок/mandatory/small/колонки) со схемой ViolationSchema и
+(состав/метки/порядок/mandatory/small/labeled/колонки) со схемой ViolationSchema и
 с фронтовым зеркалом static/js/constructor/violation/violation-fields.js
 (значения меток — тут пиннятся литералом, там — своим стражем
 tests/js/violation-fields.test.mjs). Плюс страж значений типов блоков
@@ -18,6 +18,8 @@ from app.domains.acts.violation_fields import (
     VIOLATION_FIELD_COLUMNS,
     VIOLATION_FIELD_KEYS,
     VIOLATION_FIELDS,
+    field_label_for_render,
+    should_render_field,
 )
 
 # id/nodeId/fieldOrder — метаданные нарушения, не поля контента; в контракт не входят.
@@ -87,19 +89,21 @@ class TestCanonicalLabels:
 
 
 class TestMandatoryAndSmallFlags:
-    """mandatory/small — точные значения контракта (решения владельца в спеке)."""
+    """mandatory/small/labeled — точные значения контракта (решения владельца)."""
 
     def test_mandatory_flag_values(self):
         assert MANDATORY_FIELD_KEYS == ("violated", "established")
 
     def test_small_flag_values(self):
+        """9pt-курсив — только Нарушено/Установлено (additionalContent выведен
+        из группы решением владельца: обычный размер, без курсива)."""
         expected = {
             "violated": True,
             "established": True,
             "description": False,
             "codeMining": False,
             "processMining": False,
-            "additionalContent": True,
+            "additionalContent": False,
             "reasons": False,
             "measures": False,
             "consequences": False,
@@ -107,6 +111,52 @@ class TestMandatoryAndSmallFlags:
         }
         actual = {f.key: f.small for f in VIOLATION_FIELDS}
         assert actual == expected
+
+    def test_labeled_flag_values(self):
+        """Без метки в экспортах/превью — CodeMining/ProcessMining/доп. контент."""
+        expected = {
+            "violated": True,
+            "established": True,
+            "description": True,
+            "codeMining": False,
+            "processMining": False,
+            "additionalContent": False,
+            "reasons": True,
+            "measures": True,
+            "consequences": True,
+            "responsible": True,
+        }
+        actual = {f.key: f.labeled for f in VIOLATION_FIELDS}
+        assert actual == expected
+
+
+class TestRenderPolicy:
+    """Централизованная политика рендеров (№18): предикаты реестра.
+
+    Оба Python-рендера (DOCX и MD/TXT) обязаны звать эти функции вместо
+    собственных условий — тест фиксирует их семантику как контракт.
+    """
+
+    def test_label_none_for_unlabeled_fields(self):
+        for key in ("codeMining", "processMining", "additionalContent"):
+            assert field_label_for_render(FIELD_BY_KEY[key]) is None
+
+    def test_label_is_field_label_for_labeled_fields(self):
+        for key, label in LABELS.items():
+            if FIELD_BY_KEY[key].labeled:
+                assert field_label_for_render(FIELD_BY_KEY[key]) == label
+
+    def test_mandatory_field_always_rendered(self):
+        """#14: метка обязательного поля выводится и при пустом контейнере."""
+        field = FIELD_BY_KEY["violated"]
+        assert should_render_field(field, enabled=True, has_blocks=False) is True
+        assert should_render_field(field, enabled=False, has_blocks=False) is True
+
+    def test_optional_field_requires_enabled_and_blocks(self):
+        field = FIELD_BY_KEY["reasons"]
+        assert should_render_field(field, enabled=True, has_blocks=True) is True
+        assert should_render_field(field, enabled=True, has_blocks=False) is False
+        assert should_render_field(field, enabled=False, has_blocks=True) is False
 
 
 class TestColumnNames:

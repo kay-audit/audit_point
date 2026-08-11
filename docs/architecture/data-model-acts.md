@@ -507,22 +507,24 @@ API истории и восстановления — роутер `app/domains
 
 ## 13. Карточка нарушения: контракт полей и рендер
 
-**Контракт полей — `app/domains/acts/violation_fields.py`.** Single source of truth: `VIOLATION_FIELDS` — кортеж `ViolationFieldDescriptor(key, column, label, default_order, mandatory, small)` для всех 10 полей нарушения (`id`/`nodeId`/`fieldOrder` — метаданные нарушения, не входят в реестр):
+**Контракт полей — `app/domains/acts/violation_fields.py`.** Single source of truth: `VIOLATION_FIELDS` — кортеж `ViolationFieldDescriptor(key, column, label, default_order, mandatory, small, labeled)` для всех 10 полей нарушения (`id`/`nodeId`/`fieldOrder` — метаданные нарушения, не входят в реестр):
 
-| `key` | `column` | `label` | `default_order` | `mandatory` | `small` |
-|---|---|---|---|---|---|
-| `violated` | `violated` | «Нарушено» | 0 | ✔ | ✔ |
-| `established` | `established` | «Установлено» | 1 | ✔ | ✔ |
-| `description` | `description` | «Описание» | 2 | ✘ | ✘ |
-| `codeMining` | `code_mining` | «CodeMining» | 3 | ✘ | ✘ |
-| `processMining` | `process_mining` | «ProcessMining» | 4 | ✘ | ✘ |
-| `additionalContent` | `additional_content` | «Дополнительный контент» | 5 | ✘ | ✔ |
-| `reasons` | `reasons` | «Причины» | 6 | ✘ | ✘ |
-| `measures` | `measures` | «Принятые меры» | 7 | ✘ | ✘ |
-| `consequences` | `consequences` | «Последствия» | 8 | ✘ | ✘ |
-| `responsible` | `responsible` | «Ответственные» (канон #11 — не «Ответственный») | 9 | ✘ | ✘ |
+| `key` | `column` | `label` | `default_order` | `mandatory` | `small` | `labeled` |
+|---|---|---|---|---|---|---|
+| `violated` | `violated` | «Нарушено» | 0 | ✔ | ✔ | ✔ |
+| `established` | `established` | «Установлено» | 1 | ✔ | ✔ | ✔ |
+| `description` | `description` | «Описание» | 2 | ✘ | ✘ | ✔ |
+| `codeMining` | `code_mining` | «CodeMining» | 3 | ✘ | ✘ | ✘ |
+| `processMining` | `process_mining` | «ProcessMining» | 4 | ✘ | ✘ | ✘ |
+| `additionalContent` | `additional_content` | «Дополнительный контент» | 5 | ✘ | ✘ | ✘ |
+| `reasons` | `reasons` | «Причины» | 6 | ✘ | ✘ | ✔ |
+| `measures` | `measures` | «Принятые меры» | 7 | ✘ | ✘ | ✔ |
+| `consequences` | `consequences` | «Последствия» | 8 | ✘ | ✘ | ✔ |
+| `responsible` | `responsible` | «Ответственные» (канон #11 — не «Ответственный») | 9 | ✘ | ✘ | ✔ |
 
-`mandatory=True` (`violated`/`established`) — чекбокса в UI нет, `enabled` принудительно `True` (`ViolationSchema.enforce_mandatory_enabled`). `small=True` (`violated`/`established`/`additionalContent`) → 9pt (`Sizes.violation_pt`) в DOCX + курсив; `small=False` → 12pt (`Sizes.body_pt`, обычное начертание; закреплено `test_reasons_block_stays_12pt_non_italic`). Поля `kind`/`rich` старого реестра (виды `pair`/`list`/`additional`/`optional_text` + флаг `rich` per-поле) удалены — все 10 полей одной формы `{enabled, blocks}`, «богатость» контента определяется типом блока (text/image/table), а не полем-контейнером.
+`mandatory=True` (`violated`/`established`) — чекбокса в UI нет, `enabled` принудительно `True` (`ViolationSchema.enforce_mandatory_enabled`). `small=True` (`violated`/`established`) → 9pt (`Sizes.violation_pt`) в DOCX + курсив; `small=False` → 12pt (`Sizes.body_pt`, обычное начертание; закреплено `test_reasons_block_stays_12pt_non_italic`). `labeled=False` (`codeMining`/`processMining`/`additionalContent`, решение владельца) — в экспортах и превью поле выводится БЕЗ заголовка-метки, одним контентом подряд, как текстблок; в форме конструктора подпись и чекбокс поля остаются. Поля `kind`/`rich` старого реестра (виды `pair`/`list`/`additional`/`optional_text` + флаг `rich` per-поле) удалены — все 10 полей одной формы `{enabled, blocks}`, «богатость» контента определяется типом блока (text/image/table), а не полем-контейнером.
+
+**Политика рендеров централизована в реестре** (там же, `violation_fields.py`): `should_render_field(field, enabled, has_blocks)` — выводить ли поле (mandatory всегда, опциональное — при `enabled` и непустом контейнере) и `field_label_for_render(field)` — метка либо `None` при `labeled=False`. Оба Python-рендера (DOCX и MD/TXT) ОБЯЗАНЫ звать эти предикаты, а не повторять условия у себя; фронтовое превью (`preview-violation-renderer.js`) остаётся ручным зеркалом, как и весь реестр. Семантику предикатов пинит `TestRenderPolicy` в страже реестра, паритет трёх форматов — `test_violation_parity.py` (метки `labeled=True` обязаны быть в каждом выводе, метки `labeled=False` — отсутствовать в каждом).
 
 Реестр синхронизируется **ВРУЧНУЮ** с фронтовым зеркалом `static/js/constructor/violation/violation-fields.js` (как `block_types.py` ↔ `block-types.js`, `chat/names.py` ↔ `chat-client-actions.js` — фронт Python не импортирует). Два теста-стража держат соответствие: `tests/domains/acts/test_violation_fields_guard.py` (бэк) и `tests/js/violation-fields.test.mjs` (фронт, точные строки меток). `ordered_fields(violation_data)` (`violation_fields.py`) — единая точка порядка отображения: `fieldOrder` нарушения, если он валиден (перестановка ВСЕХ ключей реестра), иначе `VIOLATION_FIELDS` как есть; читают DOCX/MD/TXT-рендеры и фронтовый `getOrderedFieldKeys` (`violation-fields.js`).
 
@@ -530,9 +532,9 @@ API истории и восстановления — роутер `app/domains
 
 **Санитайзер — `utils/html_sanitizer.py`.** Единый цикл `_sanitize_violation_common` (общий для obj- и dict-формы) — по всем 10 полям реестра → по блокам поля → диспетчер `_sanitize_block` по `type`: `text` → `content` через `sanitize_rich_html` (nh3); `image` → `caption` через `sanitize_rich_html`, `url`/`filename` — plain, не трогаются; `table` — не трогается (ячейки хранятся дословно, тот же инвариант B8, что у больших таблиц узла). Отсутствующее/`None`-поле или `blocks` не-список пропускаются без исключения.
 
-**Общий рендер MD/TXT — `formatters/violation_render.py::format_violation`.** Единый цикл по `ordered_fields(violation_data)`: у mandatory-поля метка выводится всегда (даже при пустом контейнере — паритет с DOCX); у остальных — только при `enabled` и хотя бы одном блоке. Внутри поля — по блокам: `text` → `text_conv(content)` (колбэк HTML→Markdown/plain от вызывающего форматтера), `image`/`table` → колбэки `add_image`/`add_table`. `bold_wrap`/`wrap_plain` — единственная точка расхождения MD/TXT по оформлению метки. Прежний зоопарк per-kind функций (`add_required_pair`/`add_description_list`/`add_case`/`add_additional_content`/…) убран вместе со старой моделью полей.
+**Общий рендер MD/TXT — `formatters/violation_render.py::format_violation`.** Единый цикл по `ordered_fields(violation_data)`; видимость поля и его метка — через предикаты реестра (`should_render_field`/`field_label_for_render`, см. выше): у mandatory-поля метка выводится всегда (даже при пустом контейнере — паритет с DOCX), у остальных — только при `enabled` и хотя бы одном блоке, у `labeled=False` строка метки не выводится вовсе. Внутри поля — по блокам: `text` → `text_conv(content)` (колбэк HTML→Markdown/plain от вызывающего форматтера), `image`/`table` → колбэки `add_image`/`add_table`. `bold_wrap`/`wrap_plain` — единственная точка расхождения MD/TXT по оформлению метки. Прежний зоопарк per-kind функций (`add_required_pair`/`add_description_list`/`add_case`/`add_additional_content`/…) убран вместе со старой моделью полей.
 
-**DOCX — `formatters/docx/builders/violation.py::build_violation`.** Тот же цикл по `ordered_fields`: размер шрифта поля — `Sizes.violation_pt` при `small=True`, иначе `Sizes.body_pt` (вместо позиционного хардкода «первые четыре поля мелкие»); первый text-блок включённого поля идёт inline с меткой («Метка: текст» — привычный вид), остальные блоки — своими абзацами/shape'ами; `image` → `_add_image`/`_scale_picture`, `table` → общий `build_table` через `EmbeddedTableSchema`. Списки (`<ul>/<ol>/<li>`) конвертируются в стили Word «List Bullet»/«List Number» на общем пути `render_block_segments` (`docx/builders/inline.py`) — рендерятся одинаково и из текстблоков, и из любого rich-поля нарушения (§9.3/§15 в [`textblock-editor-architecture.md`](textblock-editor-architecture.md)).
+**DOCX — `formatters/docx/builders/violation.py::build_violation`.** Тот же цикл по `ordered_fields` и те же предикаты видимости/метки: размер шрифта поля — `Sizes.violation_pt` при `small=True`, иначе `Sizes.body_pt` (вместо позиционного хардкода «первые четыре поля мелкие»); у поля С МЕТКОЙ первый text-блок идёт inline с ней («Метка: текст» — привычный вид), остальные блоки — своими абзацами/shape'ами; у поля с `labeled=False` абзац-метка не создаётся вовсе (в том числе пустой, когда поле начинается с картинки или таблицы) — все блоки рендерятся напрямую; `image` → `_add_image`/`_scale_picture`, `table` → общий `build_table` через `EmbeddedTableSchema`. Списки (`<ul>/<ol>/<li>`) конвертируются в стили Word «List Bullet»/«List Number» на общем пути `render_block_segments` (`docx/builders/inline.py`) — рендерятся одинаково и из текстблоков, и из любого rich-поля нарушения (§9.3/§15 в [`textblock-editor-architecture.md`](textblock-editor-architecture.md)).
 
 **Фронт: контейнер блоков и аудит.** `violation-blocks.js::createBlocksField` — единый компонент секции ОДНОГО поля (заголовок/чекбокс, тулбар «+ Текст | + Таблица | + Картинка», зона вставки с контекстным меню и приёмом файлов) для всех 10 полей реестра — «Дополнительный контент» перестал быть особым случаем. Записи в модель — только через мутаторы `violation-mutations.js` (`setFieldEnabled`/`setFieldOrder`/`setBlockField`/`addBlock`/`removeBlock`/`moveBlock`/`setTableCell`). `violation-audit.js::ViolationAudit` — снимок для дифф-аудита двухфазный: `synthesize()` кладёт фингерпринты (по реестру, блок-за-блоком; картинки — без `url`, таблицы — только содержимое ячеек) в статический `_pendingSnapshot` (не коммитит), `confirmSave()` промотирует его в `_snapshot` только ПОСЛЕ подтверждённого успешного сохранения (вызывается из `shared/api.js` — `saveActContent`/`forceSaveToDb` — и `constructor/lock-manager.js` — `_initiateExit` — в ветке успеха). Раньше снимок коммитился независимо от результата сохранения, что могло зафиксировать несохранённое состояние как базу для следующего диффа.
 

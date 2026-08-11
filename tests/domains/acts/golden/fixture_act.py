@@ -111,10 +111,18 @@ MARKERS_ALL_FORMATS = [
     "GOLDEN_V_CONSEQUENCES",
     "GOLDEN_V_RESPONSIBLE",
     MARKER_IMG_CAPTION,
-    # Метки новых полей — во всех форматах.
+    # Метка поля с labeled=True — во всех форматах. Метки CodeMining /
+    # ProcessMining / Дополнительного контента сюда НЕ входят: эти поля
+    # выводятся без заголовка (решение владельца) — их отсутствие проверяет
+    # LABELS_NEVER_RENDERED.
+    "Описание",
+]
+
+# Метки полей с labeled=False: не должны появляться НИ В ОДНОМ формате.
+LABELS_NEVER_RENDERED = [
     "CodeMining",
     "ProcessMining",
-    "Описание",
+    "Дополнительный контент",
 ]
 
 

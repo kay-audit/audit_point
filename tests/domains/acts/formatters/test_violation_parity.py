@@ -5,8 +5,9 @@
 с пустым url и текст-блок; в codeMining — блок-таблица) прогоняется через все
 три форматтера:
 
-- **label-parity** — каждая метка контракта (``violation_fields.LABELS``)
-  обязана присутствовать в КАЖДОМ выводе;
+- **label-parity** — метка каждого поля с ``labeled=True``
+  (``violation_fields.LABELS``) обязана присутствовать в КАЖДОМ выводе, а
+  метки полей с ``labeled=False`` — отсутствовать в КАЖДОМ;
 - **value-parity** — уникальный маркер каждого поля доходит до каждого
   вывода (проверяем доходимость ЗНАЧЕНИЯ, не только метки); плейсхолдер
   картинки «Изображение: {filename}» одинаков во всех трёх форматтерах;
@@ -25,7 +26,11 @@ from app.domains.acts.formatters.markdown_formatter import MarkdownFormatter
 from app.domains.acts.formatters.text_formatter import TextFormatter
 from app.domains.acts.schemas.act_content import ViolationSchema
 from app.domains.acts.settings import ActsSettings
-from app.domains.acts.violation_fields import LABELS, VIOLATION_FIELD_KEYS
+from app.domains.acts.violation_fields import (
+    FIELD_BY_KEY,
+    LABELS,
+    VIOLATION_FIELD_KEYS,
+)
 
 
 def _md() -> MarkdownFormatter:
@@ -89,10 +94,28 @@ def _all_outputs(violation: ViolationSchema) -> dict[str, str]:
 
 @pytest.mark.parametrize("fmt", ["docx", "md", "txt"])
 def test_labels_parity(fmt):
-    """Каждая метка контракта присутствует в выводе каждого форматтера."""
+    """Метка КАЖДОГО поля с labeled=True присутствует в выводе форматтера."""
     out = _all_outputs(_reference_violation())[fmt]
     for key in VIOLATION_FIELD_KEYS:
+        if not FIELD_BY_KEY[key].labeled:
+            continue
         assert LABELS[key] in out, f"{fmt}: метка {LABELS[key]!r} не дошла до вывода"
+
+
+@pytest.mark.parametrize("fmt", ["docx", "md", "txt"])
+def test_unlabeled_fields_have_no_label_in_any_format(fmt):
+    """Метки полей с labeled=False не выводит НИ ОДИН формат (решение владельца).
+
+    Симметрично label-parity: если кто-то вернёт метку одному форматтеру —
+    паритет «без заголовка» сломается молча, этот тест поймает.
+    """
+    out = _all_outputs(_reference_violation())[fmt]
+    for key in VIOLATION_FIELD_KEYS:
+        if FIELD_BY_KEY[key].labeled:
+            continue
+        assert LABELS[key] not in out, (
+            f"{fmt}: поле {key} выводится без метки — {LABELS[key]!r} лишняя"
+        )
 
 
 @pytest.mark.parametrize("fmt", ["docx", "md", "txt"])

@@ -1,9 +1,10 @@
 """Тест-фиксация семантики нарушений в MD/TXT (блочная модель).
 
 Единый цикл по полям реестра в порядке fieldOrder (или стандартном):
-метка включённого поля + блоки по порядку. Правила: mandatory-поля
+метка видимого поля + блоки по порядку. Правила: mandatory-поля
 (Нарушено/Установлено) выводят метку даже при пустом контейнере (#14);
-выключенное или пустое опциональное поле не рендерится; text-блок идёт
+выключенное или пустое опциональное поле не рендерится; поля с
+labeled=False (CM/PM/доп. контент) выводят только контент; text-блок идёт
 через rich-конвертер (HTML→MD / HTML→plain); картинка — формат-специфично
 (#16, MD — markdown-разметка, TXT — строка «Изображение: …»); таблица —
 pipe-table в MD и ASCII в TXT (та же графика, что у таблиц-узлов).
@@ -120,17 +121,52 @@ def test_invalid_field_order_falls_back_to_default():
     assert out.index("Нарушено-X") < out.index("Установлено-Y")
 
 
-def test_new_fields_render_with_labels():
-    """CodeMining/ProcessMining/Описание — обычные поля с метками."""
+def test_description_renders_with_label():
+    """Описание — обычное поле с меткой."""
     v = _violation(
-        codeMining={"enabled": True, "blocks": [_text_block("CM-контент")]},
-        processMining={"enabled": True, "blocks": [_text_block("PM-контент")]},
         description={"enabled": True, "blocks": [_text_block("Опис-контент")]},
     )
     out = _md()._format_violation(v)
-    assert "**CodeMining:**" in out and "CM-контент" in out
-    assert "**ProcessMining:**" in out and "PM-контент" in out
     assert "**Описание:**" in out and "Опис-контент" in out
+
+
+def _unlabeled_violation() -> dict:
+    """Нарушение с заполненными полями без метки (labeled=False)."""
+    return _violation(
+        codeMining={"enabled": True, "blocks": [_text_block("CM-контент")]},
+        processMining={"enabled": True, "blocks": [_text_block("PM-контент")]},
+        additionalContent={"enabled": True, "blocks": [_text_block("Доп-контент")]},
+    )
+
+
+def test_unlabeled_fields_render_content_without_label():
+    """CM/PM/доп. контент: контент есть, строки метки нет (решение владельца)."""
+    v = _unlabeled_violation()
+    for out in (_md()._format_violation(v), _txt()._format_violation(v)):
+        for marker in ("CM-контент", "PM-контент", "Доп-контент"):
+            assert marker in out
+        for label in ("CodeMining", "ProcessMining", "Дополнительный контент"):
+            assert label not in out, f"метка {label!r} не должна выводиться"
+
+
+def test_unlabeled_field_multiple_blocks_all_rendered():
+    """Все блоки поля без метки доходят до вывода по порядку."""
+    v = _violation(codeMining={"enabled": True, "blocks": [
+        _text_block("Первый CM", "text_1"),
+        _text_block("Второй CM", "text_2"),
+    ]})
+    out = _md()._format_violation(v)
+    assert out.index("Первый CM") < out.index("Второй CM")
+
+
+def test_unlabeled_field_disabled_or_empty_still_hidden():
+    """Политика видимости у полей без метки прежняя: выключено/пусто — не рендерим."""
+    v = _violation(
+        codeMining={"enabled": False, "blocks": [_text_block("скрытый CM")]},
+        processMining={"enabled": True, "blocks": []},
+    )
+    out = _md()._format_violation(v)
+    assert "скрытый CM" not in out
 
 
 def test_multiple_blocks_render_in_order():

@@ -27,16 +27,16 @@ import {
 } from '../../static/js/constructor/violation/violation-block-types.js';
 
 const EXPECTED_FIELDS = [
-  { key: 'violated', label: 'Нарушено', defaultOrder: 0, mandatory: true, small: true },
-  { key: 'established', label: 'Установлено', defaultOrder: 1, mandatory: true, small: true },
-  { key: 'description', label: 'Описание', defaultOrder: 2, mandatory: false, small: false },
-  { key: 'codeMining', label: 'CodeMining', defaultOrder: 3, mandatory: false, small: false },
-  { key: 'processMining', label: 'ProcessMining', defaultOrder: 4, mandatory: false, small: false },
-  { key: 'additionalContent', label: 'Дополнительный контент', defaultOrder: 5, mandatory: false, small: true },
-  { key: 'reasons', label: 'Причины', defaultOrder: 6, mandatory: false, small: false },
-  { key: 'measures', label: 'Принятые меры', defaultOrder: 7, mandatory: false, small: false },
-  { key: 'consequences', label: 'Последствия', defaultOrder: 8, mandatory: false, small: false },
-  { key: 'responsible', label: 'Ответственные', defaultOrder: 9, mandatory: false, small: false },
+  { key: 'violated', label: 'Нарушено', defaultOrder: 0, mandatory: true, small: true, labeled: true },
+  { key: 'established', label: 'Установлено', defaultOrder: 1, mandatory: true, small: true, labeled: true },
+  { key: 'description', label: 'Описание', defaultOrder: 2, mandatory: false, small: false, labeled: true },
+  { key: 'codeMining', label: 'CodeMining', defaultOrder: 3, mandatory: false, small: false, labeled: false },
+  { key: 'processMining', label: 'ProcessMining', defaultOrder: 4, mandatory: false, small: false, labeled: false },
+  { key: 'additionalContent', label: 'Дополнительный контент', defaultOrder: 5, mandatory: false, small: false, labeled: false },
+  { key: 'reasons', label: 'Причины', defaultOrder: 6, mandatory: false, small: false, labeled: true },
+  { key: 'measures', label: 'Принятые меры', defaultOrder: 7, mandatory: false, small: false, labeled: true },
+  { key: 'consequences', label: 'Последствия', defaultOrder: 8, mandatory: false, small: false, labeled: true },
+  { key: 'responsible', label: 'Ответственные', defaultOrder: 9, mandatory: false, small: false, labeled: true },
 ];
 
 test('VIOLATION_FIELDS заморожен: и сам массив, и каждое описание поля', () => {
@@ -60,10 +60,21 @@ test('набор полей и их значения закреплены точ
       defaultOrder: f.defaultOrder,
       mandatory: f.mandatory,
       small: f.small,
+      labeled: f.labeled,
     })),
     EXPECTED_FIELDS,
     'VIOLATION_FIELDS обязан совпадать с контрактом бэкенда app/domains/acts/violation_fields.py'
   );
+});
+
+test('labeled: без метки в рендерах — ровно CodeMining/ProcessMining/Дополнительный контент', () => {
+  const unlabeled = VIOLATION_FIELDS.filter(f => !f.labeled).map(f => f.key);
+  assert.deepEqual(unlabeled, ['codeMining', 'processMining', 'additionalContent']);
+});
+
+test('small: 9pt-курсив — ровно Нарушено/Установлено (доп. контент выведен из группы)', () => {
+  const smallKeys = VIOLATION_FIELDS.filter(f => f.small).map(f => f.key);
+  assert.deepEqual(smallKeys, ['violated', 'established']);
 });
 
 test('defaultOrder — позиция поля в реестре', () => {

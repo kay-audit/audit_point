@@ -1,8 +1,9 @@
 """Тесты builder'а нарушений (блочная модель).
 
-Единый цикл по полям реестра в порядке fieldOrder: метка включённого поля +
-блоки по порядку. Первый text-блок идёт inline с меткой («Метка: текст»),
-размер/курсив поля — из флага small дескриптора (9pt курсив / 12pt без).
+Единый цикл по полям реестра в порядке fieldOrder: метка видимого поля +
+блоки по порядку. Первый text-блок идёт inline с меткой («Метка: текст»);
+у полей с labeled=False метки нет вовсе — только контент. Размер/курсив
+поля — из флага small дескриптора (9pt курсив / 12pt без).
 """
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
@@ -110,18 +111,83 @@ def test_optional_group_stays_12pt_non_italic(doc):
         assert not body_run.italic
 
 
-def test_new_fields_are_12pt_non_italic(doc):
-    """Описание/CodeMining/ProcessMining — обычные 12pt (решение владельца)."""
+def test_description_is_12pt_non_italic(doc):
+    """Описание — обычные 12pt с меткой (решение владельца)."""
     build_violation(doc, _v(
         description={"enabled": True, "blocks": [_text_block("Опис")]},
-        codeMining={"enabled": True, "blocks": [_text_block("CM")]},
-        processMining={"enabled": True, "blocks": [_text_block("PM")]},
     ))
-    for label in ("Описание:", "CodeMining:", "ProcessMining:"):
-        label_run, body_run = _runs_for_label(doc, label)
-        assert label_run is not None, f"метка {label} не найдена"
-        assert label_run.font.size == Pt(Sizes.body_pt)
-        assert not label_run.italic
+    label_run, body_run = _runs_for_label(doc, "Описание:")
+    assert label_run is not None, "метка Описание: не найдена"
+    assert label_run.font.size == Pt(Sizes.body_pt)
+    assert not label_run.italic
+
+
+# --- labeled=False: CodeMining/ProcessMining/Дополнительный контент ---
+
+
+def _unlabeled_violation():
+    """Нарушение с заполненными полями без метки (labeled=False)."""
+    return _v(
+        codeMining={"enabled": True, "blocks": [_text_block("CM-контент")]},
+        processMining={"enabled": True, "blocks": [_text_block("PM-контент")]},
+        additionalContent={"enabled": True, "blocks": [_text_block("Доп-контент")]},
+    )
+
+
+def test_unlabeled_fields_render_content_without_label(doc):
+    """CM/PM/доп. контент выводят только контент — заголовка-метки нет."""
+    build_violation(doc, _unlabeled_violation())
+    text = "\n".join(p.text for p in doc.paragraphs)
+    for marker in ("CM-контент", "PM-контент", "Доп-контент"):
+        assert marker in text
+    for label in ("CodeMining", "ProcessMining", "Дополнительный контент"):
+        assert label not in text, f"метка {label!r} не должна выводиться в DOCX"
+
+
+def test_unlabeled_fields_are_12pt_non_italic(doc):
+    """Контент полей без метки — обычный текст листа, включая доп. контент.
+
+    Регрессия решения владельца: additionalContent выведен из 9pt-группы
+    (small=False) — раньше он рендерился 9pt курсивом.
+    """
+    build_violation(doc, _unlabeled_violation())
+    for marker in ("CM-контент", "PM-контент", "Доп-контент"):
+        run = next(
+            r for p in doc.paragraphs for r in p.runs if marker in r.text
+        )
+        assert run.font.size == Pt(Sizes.body_pt), f"{marker}: ожидался 12pt"
+        assert not run.italic, f"{marker}: курсив не ожидается"
+
+
+def test_unlabeled_field_is_not_underlined(doc):
+    """Без метки нет и подчёркнутого label-run'а — контент обычным начертанием."""
+    build_violation(doc, _unlabeled_violation())
+    run = next(r for p in doc.paragraphs for r in p.runs if "CM-контент" in r.text)
+    assert not run.underline
+
+
+def test_unlabeled_field_with_table_first_renders_no_label(doc):
+    """Первый блок — таблица: у поля без метки не появляется и пустой абзац-метка."""
+    v = _v(codeMining={"enabled": True, "blocks": [
+        _table_block([["A"]]),
+        _text_block("после таблицы"),
+    ]})
+    build_violation(doc, v)
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "CodeMining" not in text
+    assert "после таблицы" in text
+    assert len(doc.tables) == 1
+
+
+def test_unlabeled_field_multiple_text_blocks_all_rendered(doc):
+    """Все text-блоки поля без метки рендерятся по порядку (первый не «съеден»)."""
+    v = _v(processMining={"enabled": True, "blocks": [
+        _text_block("Первый PM", "text_1"),
+        _text_block("Второй PM", "text_2"),
+    ]})
+    build_violation(doc, v)
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert text.index("Первый PM") < text.index("Второй PM")
 
 
 def test_mandatory_labels_shown_when_empty(doc):
@@ -213,13 +279,13 @@ def test_table_block_renders_docx_table(doc):
 
 def test_field_with_table_first_renders_label_alone(doc):
     """Если первый блок — таблица, метка выводится отдельным абзацем."""
-    v = _v(codeMining={"enabled": True, "blocks": [
+    v = _v(reasons={"enabled": True, "blocks": [
         _table_block([["A"]]),
         _text_block("после таблицы"),
     ]})
     build_violation(doc, v)
     text = "\n".join(p.text for p in doc.paragraphs)
-    assert "CodeMining:" in text
+    assert "Причины:" in text
     assert "после таблицы" in text
     assert len(doc.tables) == 1
 

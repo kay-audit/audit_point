@@ -17,7 +17,7 @@ import {
     splitTopLevelBlocks,
     PreviewViolationRenderer,
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
-import { VIOLATION_LABELS, VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
+import { VIOLATION_FIELDS, VIOLATION_LABELS, VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
 
 const LONG = 'Очень длинный текст нарушения, который раньше обрезался превью до пары десятков символов. '.repeat(20);
@@ -100,13 +100,68 @@ test('несколько text-блоков: первый инлайнится с
 test('поле, начинающееся с картинки, даёт метку отдельной строкой', () => {
     const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: '', filename: 'x.png', width: 0 };
     const v = makeViolation({
-        additionalContent: { enabled: true, blocks: [image, text('после картинки')] },
+        reasons: { enabled: true, blocks: [image, text('после картинки')] },
     });
     const lines = collectViolationLines(v);
-    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.additionalContent);
+    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.reasons);
     assert.equal(lines[idx].text, '', 'метка без инлайн-текста');
     assert.equal(lines[idx + 1].type, 'image');
     assert.equal(lines[idx + 2].text, 'после картинки');
+});
+
+// --- labeled=false: CodeMining / ProcessMining / Дополнительный контент ---
+
+test('labeled=false: поле выводит только контент, строки-метки нет', () => {
+    const v = makeViolation({
+        codeMining: { enabled: true, blocks: [text('CM-контент')] },
+        processMining: { enabled: true, blocks: [text('PM-контент')] },
+        additionalContent: { enabled: true, blocks: [text('Доп-контент')] },
+    });
+    const lines = collectViolationLines(v);
+    for (const key of ['codeMining', 'processMining', 'additionalContent']) {
+        assert.ok(
+            !lines.some(l => l.label === VIOLATION_LABELS[key]),
+            `метка «${VIOLATION_LABELS[key]}» не должна появляться в превью`
+        );
+    }
+    for (const marker of ['CM-контент', 'PM-контент', 'Доп-контент']) {
+        assert.ok(lines.some(l => l.text === marker), `контент «${marker}» потерян`);
+    }
+});
+
+test('labeled=false: первый text-блок НЕ инлайнится — все блоки идут строками подряд', () => {
+    const v = makeViolation({
+        codeMining: { enabled: true, blocks: [text('первый'), text('второй')] },
+    });
+    const lines = collectViolationLines(v);
+    const first = lines.findIndex(l => l.text === 'первый');
+    assert.ok(first >= 0, 'первый блок потерян');
+    assert.equal(lines[first].label, '', 'у поля без метки строка идёт без label');
+    assert.equal(lines[first + 1].text, 'второй');
+});
+
+test('labeled=false: политика видимости прежняя — выключенное или пустое поле не выводится', () => {
+    const v = makeViolation({
+        codeMining: { enabled: false, blocks: [text('скрытый CM')] },
+        processMining: { enabled: true, blocks: [] },
+    });
+    const lines = collectViolationLines(v);
+    assert.ok(!lines.some(l => (l.text || '').includes('скрытый CM')));
+});
+
+test('labeled=false: поле, начинающееся с картинки, не даёт пустой строки-метки', () => {
+    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: '', filename: 'x.png', width: 0 };
+    const v = makeViolation({
+        additionalContent: { enabled: true, blocks: [image, text('после картинки')] },
+    });
+    const lines = collectViolationLines(v);
+    const idx = lines.findIndex(l => l.type === 'image');
+    assert.ok(idx >= 0, 'image-строка отсутствует');
+    assert.ok(
+        !lines.some(l => l.type === 'line' && l.label === VIOLATION_LABELS.additionalContent),
+        'пустая строка-метка не должна создаваться'
+    );
+    assert.equal(lines[idx + 1].text, 'после картинки');
 });
 
 test('image-блок попадает в модель строк целиком', () => {
@@ -148,10 +203,11 @@ test('№10/#11: ВСЕ подписи полей превью берутся и
         v[key] = { enabled: true, blocks: [text(`значение-${key}`)] };
     }
     const lines = collectViolationLines(v);
-    for (const key of VIOLATION_FIELD_KEYS) {
-        const line = lines.find(l => l.text === `значение-${key}`);
-        assert.ok(line, `строка поля ${key} не найдена`);
-        assert.equal(line.label, VIOLATION_LABELS[key]);
+    for (const field of VIOLATION_FIELDS) {
+        const line = lines.find(l => l.text === `значение-${field.key}`);
+        assert.ok(line, `строка поля ${field.key} не найдена`);
+        // labeled=false → подписи нет вовсе; иначе — ровно строка реестра.
+        assert.equal(line.label, field.labeled ? VIOLATION_LABELS[field.key] : '');
     }
 });
 
@@ -161,8 +217,10 @@ test('small-флаг реестра доходит до строк (9pt-груп
         reasons: { enabled: true, blocks: [text('причина')] },
     });
     const lines = collectViolationLines(v);
-    assert.equal(lines.find(l => l.text === 'доп').small, true, 'additionalContent — small');
+    // Решение владельца: additionalContent выведен из 9pt-группы.
+    assert.equal(lines.find(l => l.text === 'доп').small, false, 'additionalContent — обычный 12pt');
     assert.equal(lines.find(l => l.text === 'причина').small, false, 'reasons — обычный 12pt');
+    assert.equal(lines.find(l => l.label === VIOLATION_LABELS.violated).small, true, 'violated — 9pt-группа');
 });
 
 // --- Task 6: подпись — rich-HTML, рендерится через renderActContent -------
