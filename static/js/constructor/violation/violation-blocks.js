@@ -170,6 +170,17 @@ Object.assign(ViolationManager.prototype, {
             this.setupFileDragAndDrop(itemsContainer, violation, fieldKey, contentContainer);
 
             itemsContainer.addEventListener('contextmenu', (e) => {
+                // Внутри редактируемого текста (contenteditable-хост rich-поля,
+                // textarea/input) отдаём браузеру НАТИВНОЕ меню: только оно умеет
+                // предлагать исправления орфографии (spellcheck) — паритет с
+                // текстблоками акта, которые ПКМ не перехватывают. Капсулы
+                // ссылок/сносок (ce=false) сюда не попадают: isContentEditable
+                // у них false, их меню вешает textblock-links-footnotes.js со
+                // stopPropagation. Меню добавления блоков остаётся на хроме
+                // поля: обёртка блока, ручка ⋮⋮, зазоры и пустая зона.
+                if (e.target.isContentEditable || e.target.closest('textarea, input')) {
+                    return;
+                }
                 e.preventDefault();
                 e.stopPropagation();
 
