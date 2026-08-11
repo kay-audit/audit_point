@@ -10,8 +10,8 @@
 с собственным connection pool (для redis-маршрута соединений нет, но кэш
 всё равно экономит на пересоздании объекта). Если создавать клиент
 per-request, сокеты копятся (особенно при долгих запросах к LLM). Чтобы
-этого избежать, ``build_llm_client`` кэширует клиентов по ключу (profile,
-api_base, api_key, headers, timeout, redis key_prefix);
+этого избежать, клиенты кэшируются: primary и fallback ходят в общий кэш
+через единый ``_cached_client`` и различаются префиксом ключа;
 ``close_cached_clients()`` зовётся из ``on_shutdown`` chat-домена и закрывает
 httpx-клиентов.
 """
@@ -33,44 +33,78 @@ logger = logging.getLogger("audit_workstation.domains.chat.services.llm_client")
 _clients_cache: dict[tuple[Any, ...], Any] = {}
 
 
-def _make_client(settings: ChatDomainSettings):
-    """Создаёт новый LLM-клиент по маршруту профиля (без кэша)."""
-    from app.domains.chat.settings import parse_route
+def _cached_client(
+    *,
+    cache_prefix: str,
+    profile: str,
+    route: tuple[str, str],
+    api_base: str | None,
+    api_key: str | None,
+    headers: dict[str, str],
+    timeout: float | int,
+    key_prefix: str,
+    model: str | None = None,
+):
+    """Клиент маршрута из общего кэша, иначе создаёт и кладёт туда.
 
-    transport, wire_format = parse_route(settings.profile)
+    Единственная точка сборки cache-key и конструирования клиента: primary
+    и fallback отличаются только источником настроек и префиксом ключа
+    (``cache_prefix``), поэтому обе ветки ходят сюда.
+
+    Для redis-транспорта в ключ идут ``key_prefix`` моста и timeout
+    (``api_base``/``api_key`` мосту не нужны — он не ходит в HTTP напрямую),
+    для HTTP — base/key/headers/timeout. ``model`` участвует только
+    в debug-логе.
+    """
+    transport, wire_format = route
+    if transport == "redis":
+        cache_key: tuple[Any, ...] = (cache_prefix, profile, key_prefix, timeout)
+    else:
+        cache_key = (
+            cache_prefix, profile, api_base, api_key,
+            tuple(sorted(headers.items())), timeout,
+        )
+    client = _clients_cache.get(cache_key)
+    if client is not None:
+        return client
+
     if transport == "redis":
         from app.domains.chat.services.redis_bridge_adapter import (
             RedisBridgeClient,
         )
-        return RedisBridgeClient(
-            target=wire_format,
-            key_prefix=settings.redis_bridge.key_prefix,
-            timeout=settings.request_timeout,
+        client = RedisBridgeClient(
+            target=wire_format, key_prefix=key_prefix, timeout=timeout,
         )
-    headers = dict(settings.extra_headers)
-    if wire_format == "gigachat":
+    elif wire_format == "gigachat":
         from app.domains.chat.services.gigachat_adapter import (
             GigaChatAdapterClient,
         )
-        return GigaChatAdapterClient(
-            base_url=settings.api_base,
-            api_key=settings.api_key.get_secret_value(),
+        client = GigaChatAdapterClient(
+            base_url=api_base,
+            api_key=api_key,
             default_headers=headers,
-            timeout=settings.request_timeout,
+            timeout=timeout,
         )
-    return AsyncOpenAI(
-        base_url=settings.api_base,
-        api_key=settings.api_key.get_secret_value(),
-        default_headers=headers,
-        timeout=settings.request_timeout,
+    else:
+        client = AsyncOpenAI(
+            base_url=api_base,
+            api_key=api_key,
+            default_headers=headers,
+            timeout=timeout,
+        )
+    _clients_cache[cache_key] = client
+    logger.debug(
+        "LLM клиент создан (%s): маршрут=%s, base_url=%s, модель=%s, timeout=%s",
+        cache_prefix, profile, api_base, model, timeout,
     )
+    return client
 
 
 def build_llm_client(settings: ChatDomainSettings):
     """Возвращает LLM-клиент из кэша или создаёт нового.
 
-    Один клиент на (profile, api_base, api_key, headers, timeout,
-    redis_bridge.key_prefix) держится в памяти на всё время жизни процесса;
+    Один клиент на набор профильных настроек (состав ключа — см.
+    :func:`_cached_client`) держится в памяти на всё время жизни процесса;
     закрывается через :func:`close_cached_clients` в on_shutdown.
 
     Для большинства профилей — AsyncOpenAI.
@@ -79,27 +113,19 @@ def build_llm_client(settings: ChatDomainSettings):
     Для redis-маршрутов (profile=redis-bridge,*) — RedisBridgeClient поверх
     Redis Streams (см. redis_bridge_adapter.py).
     """
-    headers_key = tuple(sorted(settings.extra_headers.items()))
-    cache_key: tuple[Any, ...] = (
-        settings.profile,
-        settings.api_base,
-        settings.api_key.get_secret_value(),
-        headers_key,
-        settings.request_timeout,
-        settings.redis_bridge.key_prefix,
-    )
-    client = _clients_cache.get(cache_key)
-    if client is not None:
-        return client
+    from app.domains.chat.settings import parse_route
 
-    client = _make_client(settings)
-    _clients_cache[cache_key] = client
-    logger.debug(
-        "LLM клиент создан: профиль=%s, base_url=%s, model=%s, timeout=%s",
-        settings.profile, settings.api_base, settings.model,
-        settings.request_timeout,
+    return _cached_client(
+        cache_prefix="primary",
+        profile=settings.profile,
+        route=parse_route(settings.profile),
+        api_base=settings.api_base,
+        api_key=settings.api_key.get_secret_value(),
+        headers=dict(settings.extra_headers),
+        timeout=settings.request_timeout,
+        key_prefix=settings.redis_bridge.key_prefix,
+        model=settings.model,
     )
-    return client
 
 
 def build_fallback_client(settings: ChatDomainSettings):
@@ -122,78 +148,28 @@ def build_fallback_client(settings: ChatDomainSettings):
 
     from app.domains.chat.settings import parse_route
 
-    transport, wire_format = parse_route(settings.fallback_profile)
-    timeout = settings.request_timeout
-
-    if transport == "redis":
-        cache_key: tuple[Any, ...] = (
-            "fallback",
-            settings.fallback_profile,
-            settings.redis_bridge.key_prefix,
-            timeout,
-        )
-        client = _clients_cache.get(cache_key)
-        if client is not None:
-            return client
-        from app.domains.chat.services.redis_bridge_adapter import (
-            RedisBridgeClient,
-        )
-        client = RedisBridgeClient(
-            target=wire_format,
-            key_prefix=settings.redis_bridge.key_prefix,
-            timeout=timeout,
-        )
-        _clients_cache[cache_key] = client
-        logger.debug(
-            "LLM fallback клиент создан: маршрут=%s", settings.fallback_profile,
-        )
-        return client
-
-    if not settings.fallback_api_base:
-        return None
-    if settings.fallback_api_key is None:
+    route = parse_route(settings.fallback_profile)
+    # HTTP-маршруту нужны base/key; мосту — нет (он не ходит в HTTP напрямую).
+    if route[0] != "redis" and (
+        not settings.fallback_api_base or settings.fallback_api_key is None
+    ):
         return None
 
-    headers = dict(settings.fallback_extra_headers)
-    api_key_value = settings.fallback_api_key.get_secret_value()
-    headers_key = tuple(sorted(headers.items()))
-    cache_key = (
-        "fallback",
-        settings.fallback_profile,
-        settings.fallback_api_base,
-        api_key_value,
-        headers_key,
-        timeout,
+    return _cached_client(
+        cache_prefix="fallback",
+        profile=settings.fallback_profile,
+        route=route,
+        api_base=settings.fallback_api_base,
+        api_key=(
+            settings.fallback_api_key.get_secret_value()
+            if settings.fallback_api_key is not None
+            else None
+        ),
+        headers=dict(settings.fallback_extra_headers),
+        timeout=settings.request_timeout,
+        key_prefix=settings.redis_bridge.key_prefix,
+        model=settings.fallback_model,
     )
-    client = _clients_cache.get(cache_key)
-    if client is not None:
-        return client
-
-    if wire_format == "gigachat":
-        from app.domains.chat.services.gigachat_adapter import (
-            GigaChatAdapterClient,
-        )
-        client = GigaChatAdapterClient(
-            base_url=settings.fallback_api_base,
-            api_key=api_key_value,
-            default_headers=headers,
-            timeout=timeout,
-        )
-    else:
-        client = AsyncOpenAI(
-            base_url=settings.fallback_api_base,
-            api_key=api_key_value,
-            default_headers=headers,
-            timeout=timeout,
-        )
-    _clients_cache[cache_key] = client
-    logger.debug(
-        "LLM fallback клиент создан: профиль=%s, base_url=%s, model=%s",
-        settings.fallback_profile,
-        settings.fallback_api_base,
-        settings.fallback_model,
-    )
-    return client
 
 
 async def close_cached_clients() -> int:

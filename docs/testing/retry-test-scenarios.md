@@ -18,9 +18,14 @@ env-префикс `CHAT__RETRY__`): `on_429=True`, `on_5xx=True`, `max_attempts
 > Колонка «Класс» указывает лимит попыток: **transient** → `max_attempts`, **connect** → `connect_max_attempts`.
 > `APITimeoutError` — подкласс `APIConnectionError`, но является transient-классом и перехватывается первым.
 >
-> Исключение: `BridgeDeadlineError` (redis-мост, подкласс `APITimeoutError`) НЕ ретраится —
-> дедлайн моста равен полному `CHAT__REQUEST_TIMEOUT`, повтор клал бы дубль-заявку в stream;
-> fallback при этом срабатывает как обычно. Тест — `tests/domains/chat/test_redis_bridge_adapter.py::TestDeadlineNotRetried`.
+> Исключение: оба исключения redis-моста, возникающие ПОСЛЕ постановки заявки в stream,
+> НЕ ретраятся, потому что повтор положил бы дубль-заявку с новым `request_id`, которую
+> воркер исполнил бы против LLM; fallback при этом срабатывает как обычно.
+> `BridgeDeadlineError` (подкласс `APITimeoutError`) — истёк дедлайн, равный полному
+> `CHAT__REQUEST_TIMEOUT`. `BridgePollError` (подкласс `APIConnectionError`) — сбой Redis
+> на поллинге ленты ответа. Сбой Redis на самом `xadd` (заявка в stream не попала) остаётся
+> обычным `APIConnectionError` и ретраится как connect-класс.
+> Тесты — `tests/domains/chat/test_redis_bridge_adapter.py::TestBridgeErrorsNotRetried`.
 
 Колонка «Тест» — фактическое покрытие в `tests/domains/chat/test_retry.py`
 (если не указан другой файл); `—` означает, что сценарий описан, но теста на
@@ -58,7 +63,9 @@ env-префикс `CHAT__RETRY__`): `on_429=True`, `on_5xx=True`, `max_attempts
 | 28 | `status_code` не определён | `APIStatusError` с `status_code=None` | — | Без ретрая (защитный кейс) | `test_status_error_with_none_code_does_not_retry` |
 | 29 | 5xx идёт по transient-лимиту | `APIStatusError(500)`, `max_attempts` > `connect_max_attempts` | transient | Попыток ровно `max_attempts` | `test_transient_class_5xx_uses_max_attempts` |
 | 30 | Обрыв, затем успех | `httpx.ConnectError` один раз | **connect** | Успех на второй попытке, счётчик не исчерпан | `test_mixed_connect_then_success` |
-| 31 | Дедлайн redis-моста | `BridgeDeadlineError` (подкласс `APITimeoutError`) | — | Без ретрая, проброс (fallback при этом работает) | `test_redis_bridge_adapter.py::TestDeadlineNotRetried::test_retry_does_not_repeat_bridge_deadline` |
+| 31 | Дедлайн redis-моста | `BridgeDeadlineError` (подкласс `APITimeoutError`) | — | Без ретрая, проброс (fallback при этом работает) | `test_redis_bridge_adapter.py::TestBridgeErrorsNotRetried::test_retry_does_not_repeat_bridge_deadline` |
+| 32 | Сбой Redis на поллинге ответа моста (заявка уже в stream) | `BridgePollError` (подкласс `APIConnectionError`) | — | Без ретрая, проброс (fallback при этом работает); повторного `xadd` нет | `test_redis_bridge_adapter.py::TestBridgeErrorsNotRetried::test_retry_does_not_repeat_bridge_poll_error`, `TestSubmitVersusPollFailure::test_poll_failure_does_not_resubmit_envelope` |
+| 33 | Сбой Redis на постановке заявки моста (заявки в stream нет) | `APIConnectionError` | **connect** | Ретрай — дубля не будет | `test_redis_bridge_adapter.py::TestSubmitVersusPollFailure::test_xadd_failure_stays_retryable_connection_error` |
 
 ## Пример теста
 
@@ -104,10 +111,11 @@ async def test_retries_on_5xx_then_succeeds():
 - `backoff_base=0.0` в тестах — задержка фактически равна jitter `[0, 0.5)`; там, где
   важен сам факт и величина пауз, `asyncio.sleep` мокается, чтобы не тормозить pytest.
 - `_NEVER_RETRY_EXC` (`ChatLimitError`, `ChatFileValidationError`, `ChatRateLimitError`,
-  `BridgeDeadlineError`) ловится ПЕРВЫМ — раньше `APIStatusError`, `APITimeoutError`,
-  `_TRANSIENT_NETWORK_EXC` и `_CONNECT_NETWORK_EXC`. Поэтому подкласс ретраябельного
-  исключения (как `BridgeDeadlineError` от `APITimeoutError`) не ретраится, даже если
-  базовый класс ретраится.
+  `BridgeDeadlineError`, `BridgePollError`) ловится ПЕРВЫМ — раньше `APIStatusError`,
+  `APITimeoutError`, `_TRANSIENT_NETWORK_EXC` и `_CONNECT_NETWORK_EXC`. Поэтому подкласс
+  ретраябельного исключения (`BridgeDeadlineError` от `APITimeoutError`,
+  `BridgePollError` от `APIConnectionError`) не ретраится, даже если базовый класс
+  ретраится.
 
 ## Что НЕ покрыто (намеренно)
 

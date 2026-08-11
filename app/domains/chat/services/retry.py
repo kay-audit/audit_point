@@ -6,8 +6,8 @@
     (ConnectError, ReadTimeout, WriteTimeout, RemoteProtocolError, PoolTimeout).
   - НЕ ретраится: HTTP 400/401/403/404/422 и прочие 4xx, доменные исключения
     чата (ChatLimitError, ChatFileValidationError, ChatRateLimitError и т.п.),
-    BridgeDeadlineError redis-моста (дедлайн = полный request_timeout,
-    повтор породил бы дубль-заявку в stream), любые иные исключения.
+    BridgeDeadlineError и BridgePollError redis-моста (заявка уже в stream,
+    повтор породил бы дубль), любые иные исключения.
 
 Два класса ретраябельных ошибок с разными лимитами попыток:
   - **connect-class** (сервер недоступен, обрыв соединения) — fast-fail с
@@ -42,7 +42,10 @@ from app.domains.chat.exceptions import (
     ChatLimitError,
     ChatRateLimitError,
 )
-from app.domains.chat.services.redis_bridge_adapter import BridgeDeadlineError
+from app.domains.chat.services.redis_bridge_adapter import (
+    BridgeDeadlineError,
+    BridgePollError,
+)
 
 logger = logging.getLogger("audit_workstation.chat.retry")
 
@@ -75,11 +78,18 @@ _TRANSIENT_NETWORK_EXC: tuple[type[BaseException], ...] = (
 #   Ловится ЗДЕСЬ, до APITimeoutError (он её подкласс). Fallback при этом
 #   срабатывает как обычно (llm_call._is_provider_failure видит
 #   APITimeoutError-иерархию).
+# - BridgePollError — сбой Redis на поллинге ответа, когда заявка уже
+#   поставлена в stream: повтор положил бы ВТОРОЙ конверт с новым
+#   request_id, пока воркер исполняет первый. Ловится ЗДЕСЬ, до
+#   APIConnectionError (он её подкласс), fallback тоже срабатывает.
+#   Сбой ДО постановки заявки остаётся обычным APIConnectionError и
+#   ретраится как connect-класс.
 _NEVER_RETRY_EXC: tuple[type[BaseException], ...] = (
     ChatLimitError,
     ChatFileValidationError,
     ChatRateLimitError,
     BridgeDeadlineError,
+    BridgePollError,
 )
 
 
@@ -109,6 +119,9 @@ def retry_on_transient(
         это клиентские ошибки, повтор не поможет.
       - Доменные исключения чата (ChatLimitError, ChatFileValidationError,
         ChatRateLimitError) — НЕ повторяются, это бизнес-ошибки.
+      - Исключения redis-моста после постановки заявки в stream
+        (BridgeDeadlineError, BridgePollError) — НЕ повторяются: повтор
+        положил бы дубль-заявку, которую воркер исполнил бы против LLM.
 
     ВАЖНО: openai.APITimeoutError — подкласс openai.APIConnectionError, но это
     «сервер медленный», поэтому ловится ПЕРВЫМ и идёт по transient-классу

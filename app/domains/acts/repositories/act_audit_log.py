@@ -460,17 +460,19 @@ class ActAuditLogRepository(BaseRepository):
                 f"FROM {self._violations} WHERE act_id = $1",
                 act_id,
             )
-            db_viol_map = {
-                r["violation_id"]: violation_row_mapper.row_to_violation_dict(r)
-                for r in db_viols
-            }
+            # В карте — сырые строки: разбор JSONB (10 полей на нарушение,
+            # блоки с base64-картинками) стоит дорого, поэтому маппер
+            # зовётся лениво — только для тех нарушений, что реально дошли
+            # до сравнения (прошли гейты max_elements и «есть в payload»).
+            db_viol_map = {r["violation_id"]: r for r in db_viols}
 
             for viol_id, new_viol in data.violations.items():
                 if processed >= max_elements:
                     break
-                old = db_viol_map.get(viol_id)
-                if old is None:
+                old_row = db_viol_map.get(viol_id)
+                if old_row is None:
                     continue
+                old = violation_row_mapper.row_to_violation_dict(old_row)
                 changed_fields: dict[str, dict] = {}
                 for field in VIOLATION_FIELDS:
                     empty = {"enabled": field.mandatory, "blocks": []}

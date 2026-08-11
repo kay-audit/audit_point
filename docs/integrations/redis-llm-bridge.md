@@ -130,7 +130,8 @@ text actions) — шина `chat_agent_messages_bus` этим документо
 | Ситуация | Исключение | Реакция системы (существующая) |
 |---|---|---|
 | Heartbeat нет / цель не в списке `targets` | `APIConnectionError` | connect-класс retry (до 2 попыток), circuit breaker, fallback, error-блок |
-| Redis недоступен (сбой команды `GET`/`XADD`/`XRANGE`) | `APIConnectionError` | то же |
+| Redis недоступен ДО постановки заявки (сбой `GET` heartbeat'а или самого `XADD`) | `APIConnectionError` | то же — заявки в стриме нет, повтор безопасен |
+| Redis недоступен ПОСЛЕ постановки заявки (сбой `XRANGE` на поллинге) | `BridgePollError` (подкласс `APIConnectionError`) | БЕЗ retry (конверт уже в стриме, воркер его исполняет; повтор положил бы второй конверт с новым `request_id`), но circuit breaker + fallback срабатывают как обычно |
 | Дедлайн ожидания истёк | `BridgeDeadlineError` (подкласс `APITimeoutError`) | БЕЗ retry (дедлайн = полный `CHAT__REQUEST_TIMEOUT`; повтор клал бы в stream дубль-заявку, воркер исполнял бы её против LLM), но circuit breaker + fallback срабатывают как обычно |
 | Воркер вернул `error` со статусом 5xx / 429 / 408 | `APIStatusError(код)` | ретраится по обычной retry-политике |
 | Воркер вернул `error` со статусом 4xx (кроме 408/429) | `APIStatusError(код)` | пробрасывается без ретраев и без fallback |
