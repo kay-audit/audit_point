@@ -4,7 +4,7 @@
  */
 import { SafeHTML, renderActContent } from '../../shared/sanitize.js';
 import { iterateVisibleCells } from '../../constructor/table/grid-merges.js';
-import { VIOLATION_LABELS } from '../../constructor/violation/violation-fields.js';
+import { VIOLATION_LABELS, getOrderedFieldKeys } from '../../constructor/violation/violation-fields.js';
 import { BLOCK_TYPES } from '../../constructor/violation/violation-block-types.js';
 import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
@@ -403,13 +403,59 @@ export class DiffRenderer {
             this._appendFieldOrderChange(div, violDiff.fieldOrder);
         }
 
-        // Ключи уже в порядке отображения — движок вставляет их в `fields`
-        // через getOrderedFieldKeys (см. DiffEngine._diffViolations).
-        for (const [key, fieldDiff] of Object.entries(violDiff.fields || {})) {
-            this._renderViolationField(div, key, fieldDiff, detailed);
+        if (violDiff.status === 'unchanged') {
+            // diff-engine не кладёт неизменившиеся поля в violDiff.fields (см.
+            // DiffEngine._diffViolations) — при status='unchanged' fields пуст.
+            // Эта ветка достижима, только когда onlyChanges=false (см. условие
+            // вызова в _renderDiffNode), поэтому строим содержимое напрямую из
+            // данных нарушения — паритет с неизменёнными текстблоками/таблицами
+            // (:381), которые в этом режиме тоже показывают содержимое целиком.
+            this._renderUnchangedViolationContent(div, violDiff.newData || violDiff.oldData);
+        } else {
+            // Ключи уже в порядке отображения — движок вставляет их в `fields`
+            // через getOrderedFieldKeys (см. DiffEngine._diffViolations).
+            for (const [key, fieldDiff] of Object.entries(violDiff.fields || {})) {
+                this._renderViolationField(div, key, fieldDiff, detailed);
+            }
         }
 
         container.appendChild(div);
+    }
+
+    /**
+     * Полное содержимое неизменённого нарушения: поля в порядке fieldOrder||
+     * стандартном, только включённые и непустые. Блоки рендерятся тем же
+     * путём, что неизменённые блоки внутри частично изменённого поля
+     * (_renderBlockEntry со status='unchanged') — переиспользуем диспетчер по
+     * типу блока вместо повторной реализации text/image/table-рендера.
+     * Метка поля — навигационная подпись дифа, а не экспортный вывод: в
+     * отличие от labeled=false у codeMining/processMining/additionalContent
+     * в DOCX/MD/TXT (см. violation-fields.js), здесь метка нужна ВСЕМ полям.
+     * Без класса diff-field-changed — амбер-подсветка означала бы «изменено»,
+     * а нарушение целиком не изменилось.
+     */
+    static _renderUnchangedViolationContent(container, violation) {
+        if (!violation) return;
+        for (const key of getOrderedFieldKeys(violation)) {
+            const field = violation[key];
+            if (!field || !field.enabled) continue;
+            const blocks = Array.isArray(field.blocks) ? field.blocks : [];
+            if (!blocks.length) continue;
+
+            const fieldDiv = document.createElement('div');
+            fieldDiv.className = 'diff-violation-field';
+            const labelEl = document.createElement('strong');
+            labelEl.textContent = `${VIOLATION_LABELS[key] || key}: `;
+            fieldDiv.appendChild(labelEl);
+
+            for (const block of blocks) {
+                this._renderBlockEntry(fieldDiv, {
+                    status: 'unchanged', reordered: false,
+                    type: block.type, oldBlock: block, newBlock: block,
+                });
+            }
+            container.appendChild(fieldDiv);
+        }
     }
 
     /** Строка «Порядок полей изменён: <старые метки> → <новые метки>». */

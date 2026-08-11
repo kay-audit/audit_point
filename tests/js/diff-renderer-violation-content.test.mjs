@@ -440,3 +440,68 @@ test('удалённое нарушение: поле только с enabled н
     }));
     assert.ok(!texts.some(t => t.startsWith('Причины')));
 });
+
+// --- неизменённое нарушение в режиме «показать всё» (ревью №7) --------------
+//
+// diff-engine не кладёт неизменившиеся поля в violDiff.fields (fields = {} у
+// unchanged-нарушения) — ветка достижима только при onlyChanges=false
+// (см. условие вызова в diff-renderer._renderDiffNode), поэтому содержимое
+// строится напрямую из newData/oldData через _renderUnchangedViolationContent.
+
+function unchangedViolation(fields) {
+    const base = {};
+    for (const key of VIOLATION_FIELD_KEYS) base[key] = { enabled: false, blocks: [] };
+    return { ...base, ...fields };
+}
+
+test('неизменённое нарушение: полное содержимое включённых полей с блоками', () => {
+    const violation = unchangedViolation({
+        violated: { enabled: true, blocks: [{ id: 'b1', type: 'text', content: '<b>нарушено</b>' }] },
+        codeMining: { enabled: true, blocks: [{ id: 'b2', type: 'text', content: 'SELECT 1' }] },
+    });
+    const collected = renderViolation({ status: 'unchanged', fields: {}, oldData: violation, newData: violation });
+    const texts = allText(collected);
+
+    assert.ok(texts.includes('Нарушено: '), 'метка обязательного поля рисуется');
+    assert.ok(texts.includes('нарушено'), 'содержимое блока показано целиком (видимый текст)');
+    // codeMining в экспортах labeled=false (см. violation-fields.js), но в
+    // диффе метка — навигационная подпись, а не экспортный вывод: оставляем
+    // её ВСЕМ полям (осознанное решение, зеркалит _renderViolationField).
+    assert.ok(texts.includes('CodeMining: '), 'метка codeMining показана и в диффе (в отличие от экспортов)');
+    assert.ok(texts.includes('SELECT 1'), 'содержимое codeMining показано');
+});
+
+test('неизменённое нарушение: выключенные и пустые поля не рисуются', () => {
+    const violation = unchangedViolation({
+        violated: { enabled: true, blocks: [{ id: 'b1', type: 'text', content: 'x' }] },
+        established: { enabled: false, blocks: [{ id: 'b2', type: 'text', content: 'выключено' }] },
+        reasons: { enabled: true, blocks: [] },
+    });
+    const texts = allText(renderViolation({ status: 'unchanged', fields: {}, oldData: violation, newData: violation }));
+    assert.ok(!texts.some(t => t.startsWith('Установлено')), 'выключенное поле не рисуется, даже если в нём остались блоки');
+    assert.ok(!texts.some(t => t.startsWith('Причины')), 'включённое поле без блоков не рисуется');
+});
+
+test('неизменённое нарушение: без амбер-подсветки diff-field-changed (нарушение целиком не изменилось)', () => {
+    const violation = unchangedViolation({
+        violated: { enabled: true, blocks: [{ id: 'b1', type: 'text', content: 'x' }] },
+    });
+    const collected = renderViolation({ status: 'unchanged', fields: {}, oldData: violation, newData: violation });
+    assert.ok(
+        !collected.els.some(el => (el.className || '').includes('diff-field-changed')),
+        'diff-field-changed сигнализирует изменение — для полностью неизменного нарушения его быть не должно',
+    );
+});
+
+test('неизменённое нарушение: порядок полей — violation.fieldOrder, иначе стандартный', () => {
+    const violation = unchangedViolation({
+        violated: { enabled: true, blocks: [{ id: 'b1', type: 'text', content: 'первое' }] },
+        established: { enabled: true, blocks: [{ id: 'b2', type: 'text', content: 'второе' }] },
+        fieldOrder: [...VIOLATION_FIELD_KEYS].map(k => (k === 'violated' ? 'established' : k === 'established' ? 'violated' : k)),
+    });
+    const texts = allText(renderViolation({ status: 'unchanged', fields: {}, oldData: violation, newData: violation }));
+    const iEstablished = texts.indexOf('Установлено: ');
+    const iViolated = texts.indexOf('Нарушено: ');
+    assert.ok(iEstablished !== -1 && iViolated !== -1);
+    assert.ok(iEstablished < iViolated, 'fieldOrder на нарушении переставляет порядок отображения полей');
+});

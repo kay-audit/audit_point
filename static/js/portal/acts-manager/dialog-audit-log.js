@@ -11,6 +11,11 @@ import { DialogBase } from '../../shared/dialog/dialog-base.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 import { FilterEngine } from '../../shared/filter-engine.js';
 import { Notifications } from '../../shared/notifications.js';
+import { VIOLATION_LABELS } from '../../constructor/violation/violation-fields.js';
+
+// Метки полей нарушения в журнале аудита: реестр полей + fieldOrder — атрибут
+// нарушения, а не поле реестра (см. VIOLATION_FIELDS в violation-fields.js).
+const VIOLATION_CHANGE_LABELS = Object.freeze({ ...VIOLATION_LABELS, fieldOrder: 'Порядок полей' });
 
 export class AuditLogDialog extends DialogBase {
     static _actId = null;
@@ -557,14 +562,9 @@ export class AuditLogDialog extends DialogBase {
         }
 
         if (changes.type === 'violation' && changes.fields) {
-            const fieldLabels = {
-                violated: 'Нарушено', established: 'Установлено',
-                reasons: 'Причины', measures: 'Принятые меры', consequences: 'Последствия',
-                responsible: 'Ответственные',
-            };
             const items = Object.entries(changes.fields)
                 .filter(([, v]) => v.changed)
-                .map(([k]) => `<li class="field-change-item">Поле «${fieldLabels[k] || k}»: изменено</li>`)
+                .map(([k]) => `<li class="field-change-item">Поле «${VIOLATION_CHANGE_LABELS[k] || k}»: изменено</li>`)
                 .join('');
             return items ? `<ul class="field-changes-list">${items}</ul>` : '';
         }
