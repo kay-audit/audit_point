@@ -24,8 +24,9 @@ retry (retry.py), circuit breaker и fallback (llm_call.py) их не увидя
 - дедлайн ожидания истёк → BridgeDeadlineError (подкласс APITimeoutError:
   fallback срабатывает, но retry его НЕ повторяет — см. docstring класса);
 - error-конверт воркера → APIStatusError с тем же status_code;
-- невалидное тело final-конверта → APIStatusError 502 (не маскируется
-  под сбой Redis).
+- невалидное тело final-конверта → BridgeSchemaError (подкласс APIStatusError
+  со статусом 502: не маскируется под сбой Redis, тригерит следующий маршрут,
+  но НЕ ретраится — разбор детерминирован, см. docstring класса).
 """
 from __future__ import annotations
 
@@ -89,6 +90,19 @@ class BridgeDeadlineError(APITimeoutError):
     """
 
 
+class BridgeSchemaError(APIStatusError):
+    """Тело final-конверта не разобралось в ChatCompletion.
+
+    status_code=502, поэтому llm_call считает это сбоем провайдера и уходит
+    на следующий маршрут. Но retry_on_transient его НЕ повторяет
+    (см. _NEVER_RETRY_EXC в retry.py): разбор детерминирован — тот же ответ
+    не станет валидным со второй попытки, а каждый повтор клал бы в stream
+    новую заявку, то есть новый реальный (и платный) вызов LLM плюс
+    ожидание rate-limit цели. Ровно это и произошло на ПРОМе 11.08.2026:
+    один невалидный ответ GigaChat превращался в 5 вызовов подряд.
+    """
+
+
 def _status_error(status_code: int, message: str) -> APIStatusError:
     """APIStatusError с заданным кодом (для error-конвертов воркера)."""
     response = httpx.Response(
@@ -97,19 +111,26 @@ def _status_error(status_code: int, message: str) -> APIStatusError:
     return APIStatusError(message, response=response, body=None)
 
 
-async def _ensure_worker_available(
-    target: str, key_prefix: str, *, require_healthy: bool = False,
-) -> None:
-    """Проверяет heartbeat воркера и доступность цели.
+def _schema_error(message: str) -> BridgeSchemaError:
+    """BridgeSchemaError 502 (не ретраится, но тригерит следующий маршрут)."""
+    response = httpx.Response(
+        status_code=502, request=_make_request(), text=message,
+    )
+    return BridgeSchemaError(message, response=response, body=None)
 
-    Ключа нет / цель не заявлена / Redis недоступен → APIConnectionError
-    (connect-класс retry: быстрый отказ, срабатывает fallback).
 
-    require_healthy=True (health probe): дополнительно требует, чтобы воркер
-    не пометил цель нездоровой в ``target_health`` heartbeat'а. Пользовательские
-    запросы (create) этот флаг НЕ используют — ложноотрицательный health-check
-    воркера не должен блокировать реальные вызовы; он лишь мешает probe
-    преждевременно закрыть breaker, пока LLM-бэкенд за воркером лежит.
+async def read_worker_heartbeat(key_prefix: str) -> dict:
+    """Читает и разбирает ``{prefix}worker:alive``.
+
+    Единственное место, которое знает формат heartbeat'а: им пользуются и
+    проверка перед запросом (_ensure_worker_available), и планировщик
+    маршрутов (llm_routing), чтобы не заводить второй разбор того же JSON.
+
+    Ключа нет / Redis недоступен → APIConnectionError (connect-класс retry:
+    быстрый отказ, срабатывает переход на следующий маршрут). Кривой JSON
+    или валидный JSON, но не объект (массив/строка) → пустой dict: контракт
+    модуля обязывает остаться в иерархии openai.*, а не падать
+    AttributeError мимо retry/breaker/fallback.
     """
     from app.core.redis import get_redis
 
@@ -128,12 +149,63 @@ async def _ensure_worker_available(
     try:
         info = json.loads(raw)
     except json.JSONDecodeError:
-        info = {}
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+async def try_read_worker_heartbeat(key_prefix: str) -> dict | None:
+    """Мягкое чтение heartbeat'а: None вместо исключения.
+
+    Для планировщика маршрутов: отсутствие воркера для него — не ошибка,
+    а причина не предлагать redis-маршруты (и написать в лог, почему).
+    """
+    try:
+        return await read_worker_heartbeat(key_prefix)
+    except APIConnectionError as exc:
+        logger.debug("redis-bridge: heartbeat недоступен (%s)", exc)
+        return None
+
+
+def worker_targets(info: dict | None) -> list[str]:
+    """Список целей, заявленных воркером в heartbeat'е."""
     if not isinstance(info, dict):
-        # Валидный JSON, но не объект (массив/строка) — контракт модуля
-        # обязывает остаться в иерархии openai.*, а не упасть AttributeError.
-        info = {}
-    targets = info.get("targets") or []
+        return []
+    targets = info.get("targets")
+    return [t for t in targets if isinstance(t, str)] if isinstance(
+        targets, list,
+    ) else []
+
+
+def target_is_healthy(info: dict | None, target: str) -> bool:
+    """False, только если воркер ЯВНО пометил цель нездоровой.
+
+    Отсутствие поля / не-dict = «здорова» (совместимость со старым воркером,
+    который ещё не публиковал target_health).
+    """
+    if not isinstance(info, dict):
+        return True
+    health = info.get("target_health")
+    if not isinstance(health, dict):
+        return True
+    return health.get(target) is not False
+
+
+async def _ensure_worker_available(
+    target: str, key_prefix: str, *, require_healthy: bool = False,
+) -> None:
+    """Проверяет heartbeat воркера и доступность цели.
+
+    Ключа нет / цель не заявлена / Redis недоступен → APIConnectionError
+    (connect-класс retry: быстрый отказ, срабатывает fallback).
+
+    require_healthy=True (health probe): дополнительно требует, чтобы воркер
+    не пометил цель нездоровой в ``target_health`` heartbeat'а. Пользовательские
+    запросы (create) этот флаг НЕ используют — ложноотрицательный health-check
+    воркера не должен блокировать реальные вызовы; он лишь мешает probe
+    преждевременно закрыть breaker, пока LLM-бэкенд за воркером лежит.
+    """
+    info = await read_worker_heartbeat(key_prefix)
+    targets = worker_targets(info)
     if target not in targets:
         raise APIConnectionError(
             message=(
@@ -142,17 +214,14 @@ async def _ensure_worker_available(
             ),
             request=_make_request(),
         )
-    if require_healthy:
-        health = info.get("target_health")
-        # Отсутствие поля / не-dict = «здорова» (совместимость со старым воркером).
-        if isinstance(health, dict) and health.get(target) is False:
-            raise APIConnectionError(
-                message=(
-                    f"redis-bridge: цель {target!r} нездорова по данным "
-                    "воркера (LLM-бэкенд не отвечает)"
-                ),
-                request=_make_request(),
-            )
+    if require_healthy and not target_is_healthy(info, target):
+        raise APIConnectionError(
+            message=(
+                f"redis-bridge: цель {target!r} нездорова по данным "
+                "воркера (LLM-бэкенд не отвечает)"
+            ),
+            request=_make_request(),
+        )
 
 
 def _build_wire_body(kwargs: dict, *, wire_format: str) -> dict:
@@ -302,8 +371,8 @@ def _handle_terminal(
     try:
         raw = json.loads(fields["body"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise _status_error(
-            502, f"redis-bridge: нечитаемое тело ответа воркера ({exc})",
+        raise _schema_error(
+            f"redis-bridge: нечитаемое тело ответа воркера ({exc})",
         ) from exc
     try:
         completion = ChatCompletion.model_validate(
@@ -325,8 +394,7 @@ def _handle_terminal(
             exc,
         )
         detail = " ".join(str(exc).split())[:_VALIDATION_MESSAGE_LIMIT]
-        raise _status_error(
-            502,
+        raise _schema_error(
             "redis-bridge: тело ответа воркера не соответствует схеме "
             f"ChatCompletion ({type(exc).__name__}: {detail})",
         ) from exc

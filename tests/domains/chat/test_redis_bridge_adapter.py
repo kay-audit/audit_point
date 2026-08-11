@@ -526,3 +526,56 @@ class TestResponseNormalization:
             await task
         assert exc_info.value.status_code == 502
         assert "choices" in str(exc_info.value.message)
+
+
+class TestSchemaErrorNotRetried:
+    async def test_retry_does_not_repeat_bridge_schema_error(self):
+        """retry_on_transient не повторяет BridgeSchemaError, хотя статус 502
+        попал бы под on_5xx: разбор ответа детерминирован, а каждый повтор —
+        новая заявка в stream, то есть новый реальный вызов LLM."""
+        import httpx
+
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeSchemaError,
+        )
+        from app.domains.chat.services.retry import retry_on_transient
+
+        calls = {"n": 0}
+
+        @retry_on_transient(
+            on_429=True, on_5xx=True, max_attempts=5,
+            connect_max_attempts=2, backoff_base=0.0,
+        )
+        async def failing():
+            calls["n"] += 1
+            raise BridgeSchemaError(
+                "схема",
+                response=httpx.Response(
+                    502,
+                    request=httpx.Request("POST", "http://x/chat/completions"),
+                ),
+                body=None,
+            )
+
+        with pytest.raises(BridgeSchemaError):
+            await failing()
+        assert calls["n"] == 1
+
+    async def test_schema_error_is_still_a_provider_failure(self):
+        """…но переход на следующий маршрут работает: 502 остаётся
+        provider-failure, иначе один кривой ответ ронял бы запрос целиком."""
+        import httpx
+
+        from app.domains.chat.services.orchestrator import Orchestrator
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeSchemaError,
+        )
+
+        exc = BridgeSchemaError(
+            "схема",
+            response=httpx.Response(
+                502, request=httpx.Request("POST", "http://x/chat/completions"),
+            ),
+            body=None,
+        )
+        assert Orchestrator._is_provider_failure(exc) is True

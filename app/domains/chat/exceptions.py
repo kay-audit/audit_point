@@ -46,6 +46,22 @@ class ChatFeedbackValidationError(AppError):
     code: ClassVar[str] = "chat-feedback-validation"
 
 
+class ChatLLMUnavailableError(AppError):
+    """Ни один маршрут LLM не доступен — запрос даже не отправлялся.
+
+    Бросается планировщиком маршрутов (``llm_routing.plan_routes`` →
+    ``llm_call``), когда ни primary, ни fallback не прошли проверку
+    доступности: например, ``CHAT__PROFILE=redis-bridge,gigachat``, а воркер
+    на DataLab не запущен. Отличается от «провайдер ответил ошибкой»: там
+    были реальные попытки, ретраи и circuit breaker, здесь пробовать нечего.
+
+    Техническая причина по каждому маршруту уходит в лог; пользователю —
+    только нейтральный текст.
+    """
+    status_code = 503
+    code: ClassVar[str] = "chat-llm-unavailable"
+
+
 class AgentChannelUnavailableError(AppError):
     """Канал к внешнему агенту отклонил запрос.
 

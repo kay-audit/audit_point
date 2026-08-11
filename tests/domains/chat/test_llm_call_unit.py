@@ -15,9 +15,31 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.domains.chat.exceptions import ChatLLMUnavailableError
 from app.domains.chat.services.llm_call import call_llm_with_fallback
 from app.domains.chat.services.orchestrator import Orchestrator
 from app.domains.chat.settings import ChatDomainSettings
+
+
+def _http_settings(
+    *, has_fallback: bool, fallback_profile: str = "gigachat",
+) -> ChatDomainSettings:
+    """Настройки с HTTP-маршрутами: планировщик не ходит в Redis.
+
+    Доступность маршрута теперь определяется настройками (``plan_routes``),
+    а не флагом ``_has_fallback``, поэтому заглушке нужны настоящие
+    ``ChatDomainSettings``. HTTP-маршруты выбраны намеренно: их доступность
+    = «сконфигурирован», без обращения к heartbeat'у воркера — тесты
+    остаются чистыми unit-тестами.
+    """
+    return ChatDomainSettings(
+        profile="openai",
+        api_base="http://primary:8000/v1",
+        api_key="primary-key",
+        fallback_profile=fallback_profile if has_fallback else None,
+        fallback_api_base="http://fallback:8000/v1" if has_fallback else None,
+        fallback_api_key="fallback-key" if has_fallback else None,
+    )
 
 
 def _make_orch_stub(
@@ -31,7 +53,9 @@ def _make_orch_stub(
     """Минимальная заглушка оркестратора для ``call_llm_with_fallback``.
 
     Не используем ``Orchestrator`` чтобы не тянуть build_llm_client,
-    settings_registry и прочую тяжёлую обвязку. Дюк-тайпинг работает.
+    settings_registry и прочую тяжёлую обвязку. Дюк-тайпинг работает —
+    кроме ``settings``: их читает планировщик маршрутов, поэтому они
+    настоящие.
     """
     orch = MagicMock()
 
@@ -41,7 +65,6 @@ def _make_orch_stub(
     breaker.record_success = AsyncMock()
     orch._get_circuit_breaker = MagicMock(return_value=breaker)
 
-    orch._has_fallback = MagicMock(return_value=has_fallback)
     orch._get_fallback_client = MagicMock(return_value=fallback_client)
     orch._is_provider_failure = MagicMock(return_value=is_provider_failure_result)
     orch._adjust_kwargs_for_fallback = MagicMock(
@@ -49,8 +72,9 @@ def _make_orch_stub(
     )
     orch._completions_create = AsyncMock()
 
-    orch.settings = MagicMock()
-    orch.settings.fallback_profile = fallback_profile
+    orch.settings = _http_settings(
+        has_fallback=has_fallback, fallback_profile=fallback_profile,
+    )
 
     return orch, breaker
 
@@ -350,3 +374,74 @@ class TestRouteAwareFallback:
         )
         orch = make_orchestrator(settings)
         assert orch._fallback_is_gigachat() is False
+
+
+# ---------------------------------------------------------------------------
+# План маршрутов: работаем только с реально доступными
+# ---------------------------------------------------------------------------
+
+
+class TestRoutePlanDrivesTheCall:
+    """Маршрут, которого нет, не пробуется; единственный живой — используется."""
+
+    @staticmethod
+    def _orch(settings: ChatDomainSettings, *, fallback_client=None):
+        orch, breaker = _make_orch_stub(fallback_client=fallback_client)
+        orch.settings = settings
+        return orch, breaker
+
+    async def test_no_available_routes_raises_llm_unavailable(self):
+        """Primary не сконфигурирован, fallback не задан → запрос не уходит."""
+        settings = ChatDomainSettings(profile="openai")  # ни api_base, ни ключа
+        orch, breaker = self._orch(settings)
+
+        with pytest.raises(ChatLLMUnavailableError):
+            await call_llm_with_fallback(orch, MagicMock(name="primary"))
+
+        orch._completions_create.assert_not_awaited()
+        breaker.record_failure.assert_not_awaited()
+
+    async def test_only_fallback_available_is_used_without_primary_failure(self):
+        """Primary недоступен (нет ключа), fallback сконфигурирован — идём
+        сразу на fallback: это не «сбой primary», а единственный живой маршрут,
+        поэтому счётчик breaker'а не трогаем."""
+        settings = ChatDomainSettings(
+            profile="openai",                       # api_base/api_key пустые
+            fallback_profile="gigachat",
+            fallback_api_base="http://fallback:8000/v1",
+            fallback_api_key="fallback-key",
+        )
+        fb = MagicMock(name="fb")
+        expected = MagicMock(name="response")
+        orch, breaker = self._orch(settings, fallback_client=fb)
+        orch._completions_create = AsyncMock(return_value=expected)
+
+        result, fb_used, active = await call_llm_with_fallback(
+            orch, MagicMock(name="primary"),
+        )
+
+        assert result is expected
+        assert fb_used is True
+        assert active is fb
+        orch._completions_create.assert_awaited_once()
+        assert orch._completions_create.await_args.args[0] is fb
+        breaker.record_failure.assert_not_awaited()
+        breaker.record_success.assert_not_awaited()
+
+    async def test_unavailable_fallback_is_not_tried_after_primary_failure(self):
+        """Fallback не сконфигурирован как маршрут → после сбоя primary
+        исключение пробрасывается, второй попытки нет."""
+        settings = ChatDomainSettings(
+            profile="openai",
+            api_base="http://primary:8000/v1",
+            api_key="primary-key",
+            fallback_profile="gigachat",   # без FALLBACK_API_BASE/KEY — не маршрут
+        )
+        orch, breaker = self._orch(settings, fallback_client=MagicMock(name="fb"))
+        orch._completions_create = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await call_llm_with_fallback(orch, MagicMock(name="primary"))
+
+        assert orch._completions_create.await_count == 1
+        breaker.record_failure.assert_awaited_once()
