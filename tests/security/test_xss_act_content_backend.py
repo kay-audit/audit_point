@@ -490,6 +490,17 @@ class TestSanitizeBlockDispatch:
         _sanitize_block(block)
         assert block["content"] == "<script>x</script>"
 
+    def test_non_string_type_left_untouched(self):
+        """Нестроковый (в т.ч. нехешируемый) type — пропуск, а не TypeError.
+
+        Диспетчер ищет атрибут блока в карте _RICH_ATTR_BY_BLOCK_TYPE; на
+        восстановлении версии type приходит произвольным JSON из БД, и список
+        уронил бы поиск по ключу.
+        """
+        block = {"id": "b1", "type": ["text"], "content": "<script>x</script>"}
+        _sanitize_block(block)
+        assert block["content"] == "<script>x</script>"
+
     def test_none_block_does_not_raise(self):
         _sanitize_block(None)  # не упало — достаточно
 

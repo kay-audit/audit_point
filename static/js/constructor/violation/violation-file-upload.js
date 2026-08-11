@@ -21,17 +21,6 @@ Object.assign(ViolationManager.prototype, {
         // в RO createBlocksField этот метод уже не вызывает.
         if (AppConfig.readOnlyMode?.isReadOnly) return;
 
-        // Повторная установка полей того же нарушения снимает прежний
-        // document-слушатель drop — иначе он накапливался на каждый ре-рендер
-        // и удерживал отсоединённые контейнеры. Abort также дергают
-        // removeViolation (удаление узла) и destroy() (switch акта).
-        // Ключ — нарушение+поле: у карточки десять независимых зон приёма.
-        const controllerKey = `${violation.id}:${fieldKey}`;
-        const prevController = this._fileDropControllers.get(controllerKey);
-        if (prevController) prevController.abort();
-        const dropController = new AbortController();
-        this._fileDropControllers.set(controllerKey, dropController);
-
         // Счетчик для отслеживания входов/выходов (для вложенных элементов)
         let dragCounter = 0;
         // Флаг активного файлового drag
@@ -178,13 +167,11 @@ Object.assign(ViolationManager.prototype, {
 
         itemsContainer.addEventListener('dragend', resetDragState);
 
-        // Сброс при потере фокуса или других событиях.
-        // Слушатель живёт до abort'а контроллера (см. начало метода).
-        document.addEventListener('drop', (e) => {
-            // Если drop произошел вне нашего контейнера
-            if (!itemsContainer.contains(e.target)) {
-                resetDragState();
-            }
-        }, { signal: dropController.signal });
+        // Сброс при промахе мимо зоны (drop где-то ещё на странице) —
+        // общий на весь менеджер document-слушатель, а не свой на каждое
+        // поле (#16). Ключ — нарушение+поле: у карточки десять независимых
+        // зон приёма, повторная установка поля перезаписывает свою запись.
+        // Снятие зон — removeViolation (удаление узла) и destroy() (switch акта).
+        this._registerFileDropZone(`${violation.id}:${fieldKey}`, itemsContainer, resetDragState);
     }
 });

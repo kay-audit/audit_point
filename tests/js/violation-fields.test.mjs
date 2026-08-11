@@ -17,10 +17,13 @@ import {
   VIOLATION_LABELS,
   VIOLATION_FIELD_KEYS,
   MANDATORY_FIELD_KEYS,
+  FIELD_BY_KEY,
   getOrderedFieldKeys,
+  isValidFieldOrder,
 } from '../../static/js/constructor/violation/violation-fields.js';
 import {
   BLOCK_TYPES,
+  BLOCK_TYPE_META,
   createTextBlock,
   createImageBlock,
   createTableBlock,
@@ -114,6 +117,57 @@ test('getOrderedFieldKeys: неполный, дублирующий или чу�
   assert.deepEqual(getOrderedFieldKeys({ fieldOrder: withAlien }), [...VIOLATION_FIELD_KEYS], 'чужой ключ игнорируется');
 });
 
+test('FIELD_BY_KEY: заморожен, покрывает весь реестр и отдаёт те же дескрипторы', () => {
+  assert.equal(Object.isFrozen(FIELD_BY_KEY), true);
+  assert.deepEqual(Object.keys(FIELD_BY_KEY), [...VIOLATION_FIELD_KEYS]);
+  for (const field of VIOLATION_FIELDS) {
+    assert.equal(FIELD_BY_KEY[field.key], field, `FIELD_BY_KEY['${field.key}'] — тот же объект реестра`);
+  }
+});
+
+test('isValidFieldOrder: перестановка всех ключей — единственный валидный вход', () => {
+  assert.equal(isValidFieldOrder([...VIOLATION_FIELD_KEYS]), true, 'стандартный порядок валиден');
+  assert.equal(isValidFieldOrder([...VIOLATION_FIELD_KEYS].reverse()), true, 'любая перестановка валидна');
+
+  assert.equal(isValidFieldOrder(null), false);
+  assert.equal(isValidFieldOrder(undefined), false);
+  assert.equal(isValidFieldOrder('violated'), false, 'не массив');
+  assert.equal(isValidFieldOrder(VIOLATION_FIELD_KEYS.slice(1)), false, 'неполный');
+  assert.equal(
+    isValidFieldOrder([...VIOLATION_FIELD_KEYS, 'violated']),
+    false,
+    'лишний элемент'
+  );
+  assert.equal(
+    isValidFieldOrder([...VIOLATION_FIELD_KEYS.slice(0, 9), 'violated']),
+    false,
+    'дубль вместо пропущенного ключа'
+  );
+  assert.equal(
+    isValidFieldOrder([...VIOLATION_FIELD_KEYS.slice(0, 9), 'unknownField']),
+    false,
+    'чужой ключ'
+  );
+});
+
+test('getOrderedFieldKeys и isValidFieldOrder судят по одному критерию', () => {
+  const cases = [
+    null,
+    [...VIOLATION_FIELD_KEYS].reverse(),
+    VIOLATION_FIELD_KEYS.slice(1),
+    [...VIOLATION_FIELD_KEYS.slice(0, 9), 'violated'],
+    [...VIOLATION_FIELD_KEYS.slice(0, 9), 'unknownField'],
+  ];
+  for (const fieldOrder of cases) {
+    const usedCustomOrder = getOrderedFieldKeys({ fieldOrder }) !== VIOLATION_FIELD_KEYS;
+    assert.equal(
+      usedCustomOrder,
+      isValidFieldOrder(fieldOrder),
+      `порядок ${JSON.stringify(fieldOrder)}: читатель и предикат обязаны совпадать`
+    );
+  }
+});
+
 test('BLOCK_TYPES: ровно text/image/table (синхрон с Literal-типами бэка)', () => {
   assert.equal(Object.isFrozen(BLOCK_TYPES), true);
   assert.deepEqual(BLOCK_TYPES, { TEXT: 'text', IMAGE: 'image', TABLE: 'table' });
@@ -143,6 +197,55 @@ test('фабрики блоков создают релевантные типу
 
   const ids = new Set([text.id, image.id, table.id, createTextBlock().id]);
   assert.equal(ids.size, 4, 'id блоков уникальны');
+});
+
+test('BLOCK_TYPE_META: дескриптор на КАЖДЫЙ тип блока, все поля заполнены', () => {
+  // Страж ревью №17: новый тип в BLOCK_TYPES без записи в реестре метаданных
+  // валит тест — иначе он молча остался бы без подписи в тулбаре, меню,
+  // миниатюре перетаскивания и заголовке диффа.
+  assert.equal(Object.isFrozen(BLOCK_TYPE_META), true);
+  assert.deepEqual(
+    Object.keys(BLOCK_TYPE_META).sort(),
+    Object.values(BLOCK_TYPES).sort(),
+    'реестр метаданных обязан покрывать все типы блоков'
+  );
+
+  for (const [type, meta] of Object.entries(BLOCK_TYPE_META)) {
+    assert.equal(Object.isFrozen(meta), true, `дескриптор '${type}' должен быть frozen`);
+    assert.equal(meta.type, type, `meta.type '${type}' совпадает с ключом реестра`);
+    for (const prop of ['label', 'shortLabel', 'menuLabel', 'icon', 'dragIcon']) {
+      assert.equal(typeof meta[prop], 'string', `'${type}'.${prop} — строка`);
+      assert.ok(meta[prop].length > 0, `'${type}'.${prop} не пустой`);
+    }
+    assert.equal(typeof meta.create, 'function', `'${type}'.create — фабрика`);
+    assert.equal(meta.create({}).type, type, `'${type}'.create() создаёт блок своего типа`);
+  }
+});
+
+test('BLOCK_TYPE_META: подписи и порядок типов в UI закреплены литералом', () => {
+  // Порядок ключей реестра = порядок кнопок тулбара и пунктов контекст-меню.
+  assert.deepEqual(Object.keys(BLOCK_TYPE_META), ['text', 'table', 'image']);
+  assert.deepEqual(
+    Object.values(BLOCK_TYPE_META).map(m => [m.label, m.shortLabel, m.menuLabel, m.icon, m.dragIcon]),
+    [
+      ['Текст', 'Текст', 'Добавить текст', '📄', '📝'],
+      ['Таблица', 'Таблица', 'Добавить таблицу', '📊', '📊'],
+      ['Изображение', 'Картинка', 'Добавить изображение', '🖼️', '🖼️'],
+    ]
+  );
+});
+
+test('BLOCK_TYPE_META.create: единая сигнатура create(extraData) для всех типов', () => {
+  const text = BLOCK_TYPE_META[BLOCK_TYPES.TEXT].create({ content: '<p>x</p>' });
+  assert.equal(text.content, '<p>x</p>');
+  assert.equal(BLOCK_TYPE_META[BLOCK_TYPES.TEXT].create().content, '', 'без extraData — пустой текст');
+
+  const image = BLOCK_TYPE_META[BLOCK_TYPES.IMAGE].create({ url: 'data:image/png;base64,AAA', filename: 'a.png' });
+  assert.equal(image.url, 'data:image/png;base64,AAA');
+  assert.equal(image.filename, 'a.png');
+
+  const table = BLOCK_TYPE_META[BLOCK_TYPES.TABLE].create();
+  assert.equal(table.table.grid.length, 2, 'таблица создаётся стартовой сеткой 2×2');
 });
 
 test('защита от prototype-pollution: ключи Object.prototype не входят в VIOLATION_LABELS', () => {

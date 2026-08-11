@@ -5,17 +5,10 @@
 import { SafeHTML, renderActContent } from '../../shared/sanitize.js';
 import { iterateVisibleCells } from '../../constructor/table/grid-merges.js';
 import { VIOLATION_LABELS, getOrderedFieldKeys } from '../../constructor/violation/violation-fields.js';
-import { BLOCK_TYPES } from '../../constructor/violation/violation-block-types.js';
+import { BLOCK_TYPES, BLOCK_TYPE_META } from '../../constructor/violation/violation-block-types.js';
 import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
 import { renderImageWithFallback, buildImagePlaceholder } from '../../constructor/violation/violation-image-render.js';
-
-// Подписи блоков в дифе нарушения: заголовок секции блока.
-const BLOCK_TYPE_LABELS = Object.freeze({
-    [BLOCK_TYPES.TEXT]: 'Текст',
-    [BLOCK_TYPES.IMAGE]: 'Картинка',
-    [BLOCK_TYPES.TABLE]: 'Таблица',
-});
 
 // Подписи изменённых атрибутов блоков (картинка и таблица). url в списке нет
 // намеренно — смена картинки показывается превью «Было/Стало», а не текстом.
@@ -603,7 +596,10 @@ export class DiffRenderer {
     static _renderBlockEntry(container, entry) {
         const itemDiv = document.createElement('div');
         itemDiv.className = `diff-violation-item diff-${entry.status}`;
-        this._appendBlockHeader(itemDiv, BLOCK_TYPE_LABELS[entry.type] || BLOCK_TYPE_LABELS[BLOCK_TYPES.TEXT], entry);
+        // Заголовок секции блока — короткая подпись из реестра типов; у
+        // неизвестного типа падаем на текстовую (как и рендер ниже).
+        const meta = BLOCK_TYPE_META[entry.type] || BLOCK_TYPE_META[BLOCK_TYPES.TEXT];
+        this._appendBlockHeader(itemDiv, meta.shortLabel, entry);
 
         if (entry.type === BLOCK_TYPES.IMAGE) {
             this._renderImageEntry(itemDiv, entry);

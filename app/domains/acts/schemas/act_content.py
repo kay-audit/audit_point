@@ -554,11 +554,19 @@ class ViolationSchema(BaseModel):
     @field_validator("fieldOrder")
     @classmethod
     def validate_field_order(cls, v: list[str] | None) -> list[str] | None:
-        """Порядок обязан быть перестановкой ВСЕХ ключей реестра (без дублей)."""
+        """Порядок обязан быть перестановкой ВСЕХ ключей реестра (без дублей).
+
+        Предикат — общий с ``ordered_fields`` (violation_fields.py); отличается
+        только реакция: рендеры молча падают на стандартный порядок, схема
+        отклоняет запись.
+        """
         if v is None:
             return v
-        from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
-        if len(v) != len(VIOLATION_FIELD_KEYS) or set(v) != set(VIOLATION_FIELD_KEYS):
+        from app.domains.acts.violation_fields import (
+            VIOLATION_FIELD_KEYS,
+            is_valid_field_order,
+        )
+        if not is_valid_field_order(v):
             raise ValueError(
                 "Порядок полей нарушения должен содержать каждый из ключей "
                 f"({', '.join(VIOLATION_FIELD_KEYS)}) ровно один раз."

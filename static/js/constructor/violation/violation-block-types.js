@@ -1,5 +1,5 @@
 /**
- * Типы и фабрики блоков полей нарушения (блочная модель).
+ * Типы, метаданные и фабрики блоков полей нарушения (блочная модель).
  *
  * Единственный источник строк-типов block.type на фронте. Значения
  * сериализуются в содержимое акта и зеркалят Literal-типы union'а
@@ -8,6 +8,11 @@
  * ViolationTableBlockSchema) — менять только синхронно с бэком.
  * Пин синхронизации — tests/domains/acts/test_violation_fields_guard.py
  * (TestBlockTypesSync парсит этот файл).
+ *
+ * Здесь же — реестр BLOCK_TYPE_META: подписи, иконки и фабрика каждого типа
+ * одним объектом. До ревью №17 эти метаданные лежали пятью независимыми
+ * копиями (миниатюра drag, подписи диффа, пункты контекст-меню, кнопки
+ * тулбара, обёртки блоков) и расходились при любой правке.
  *
  * Модуль без DOM и импортов приложения — тестируется под node:test.
  */
@@ -102,7 +107,51 @@ export function createTableBlock(table = null) {
     };
 }
 
-// Window-globals для совместимости с inline-скриптами в шаблонах.
-if (typeof window !== 'undefined') {
-    window.BLOCK_TYPES = BLOCK_TYPES;
-}
+/**
+ * Метаданные типов блоков: всё, что потребителям нужно знать о типе, кроме
+ * самого рендеринга. Порядок ключей — порядок типов в UI (тулбар поля и
+ * контекст-меню обходят `Object.values`), поэтому реестр объявлен в нём:
+ * текст, таблица, картинка.
+ *
+ * Поля дескриптора:
+ *  - `type`      — значение block.type (оно же ключ реестра);
+ *  - `label`     — подпись обёртки блока в форме и миниатюры перетаскивания;
+ *  - `shortLabel`— кнопка тулбара «+ …» и заголовок блока в диффе версий;
+ *  - `menuLabel` — пункт контекст-меню (винительный падеж, из `label` не выводится);
+ *  - `icon`      — эмодзи пункта контекст-меню;
+ *  - `dragIcon`  — эмодзи миниатюры перетаскивания;
+ *  - `create`    — фабрика блока с единой сигнатурой `(extraData) => block`.
+ *
+ * `label` ≠ `shortLabel` только у картинки («Изображение» в форме,
+ * «Картинка» в тулбаре и диффе) — обе подписи пользовательские и живут в
+ * рендерах давно, реестр их фиксирует, а не унифицирует.
+ */
+export const BLOCK_TYPE_META = Object.freeze({
+    [BLOCK_TYPES.TEXT]: Object.freeze({
+        type: BLOCK_TYPES.TEXT,
+        label: 'Текст',
+        shortLabel: 'Текст',
+        menuLabel: 'Добавить текст',
+        icon: '📄',
+        dragIcon: '📝',
+        create: (extraData = {}) => createTextBlock(extraData.content || ''),
+    }),
+    [BLOCK_TYPES.TABLE]: Object.freeze({
+        type: BLOCK_TYPES.TABLE,
+        label: 'Таблица',
+        shortLabel: 'Таблица',
+        menuLabel: 'Добавить таблицу',
+        icon: '📊',
+        dragIcon: '📊',
+        create: () => createTableBlock(),
+    }),
+    [BLOCK_TYPES.IMAGE]: Object.freeze({
+        type: BLOCK_TYPES.IMAGE,
+        label: 'Изображение',
+        shortLabel: 'Картинка',
+        menuLabel: 'Добавить изображение',
+        icon: '🖼️',
+        dragIcon: '🖼️',
+        create: (extraData = {}) => createImageBlock(extraData),
+    }),
+});

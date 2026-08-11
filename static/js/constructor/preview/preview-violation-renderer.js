@@ -19,7 +19,7 @@ import { renderActContent } from '../../shared/sanitize.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
 import { BLOCK_TYPES } from '../violation/violation-block-types.js';
 import {
-    VIOLATION_FIELDS,
+    FIELD_BY_KEY,
     VIOLATION_LABELS,
     getOrderedFieldKeys,
 } from '../violation/violation-fields.js';
@@ -40,8 +40,6 @@ const PAGE_MARGIN_VERTICAL_MM = 10;
  */
 const USABLE_HEIGHT_MM = SHEET_HEIGHT_MM - 2 * PAGE_MARGIN_VERTICAL_MM;
 
-const _FIELD_BY_KEY = Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f]));
-
 /**
  * Чистая модель строк нарушения — полные тексты, как в DOCX.
  *
@@ -57,7 +55,7 @@ export function collectViolationLines(violation) {
     const lines = [];
 
     for (const key of getOrderedFieldKeys(violation)) {
-        const field = _FIELD_BY_KEY[key];
+        const field = FIELD_BY_KEY[key];
         const container = violation?.[key] || {};
         const blocks = Array.isArray(container.blocks) ? [...container.blocks] : [];
 

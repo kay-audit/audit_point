@@ -8,17 +8,10 @@
  */
 
 import { ViolationManager } from './violation-core.js';
-import { BLOCK_TYPES } from './violation-block-types.js';
+import { BLOCK_TYPE_META } from './violation-block-types.js';
 
 /** MIME-тип полезной нагрузки внутреннего перетаскивания блока. */
 const DRAG_PAYLOAD_TYPE = 'application/x-violation-block';
-
-/** Подписи и иконки миниатюры по типу блока. */
-const DRAG_MINIATURE = {
-    [BLOCK_TYPES.TEXT]: ['📝', 'Текст'],
-    [BLOCK_TYPES.IMAGE]: ['🖼️', 'Изображение'],
-    [BLOCK_TYPES.TABLE]: ['📊', 'Таблица'],
-};
 
 /**
  * Читает полезную нагрузку перетаскивания: из dataTransfer (drop), иначе — из
@@ -98,8 +91,8 @@ Object.assign(ViolationManager.prototype, {
         const miniature = document.createElement('div');
         miniature.className = 'drag-miniature';
 
-        const [icon, label] = DRAG_MINIATURE[block.type] || ['', ''];
-        miniature.innerHTML = `${icon} ${label}`;
+        const meta = BLOCK_TYPE_META[block.type];
+        miniature.innerHTML = meta ? `${meta.dragIcon} ${meta.label}` : ' ';
         return miniature;
     },
 

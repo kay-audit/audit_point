@@ -358,56 +358,57 @@ def sanitize_tree_nodes(node: dict) -> None:
             sanitize_tree_nodes(child)
 
 
-def _sanitize_text_block(block) -> None:
-    """Текст-блок (``type: "text"``): ``content`` — rich-HTML.
+# Единственный атрибут блока, несущий rich-HTML, по типу блока.
+#
+# ``text`` → ``content``, ``image`` → ``caption``: обоим нужна ровно одна и та
+# же обработка, различалось только имя атрибута (V20 — две побайтово
+# одинаковые функции).
+#
+# Чего в карте НЕТ и почему:
+#  - ``table`` — ячейки встроенной таблицы хранятся дословно, тот же инвариант
+#    B8, что у больших таблиц акта (см. TestSaveContentTableCellsStoredVerbatim
+#    в tests/security/test_xss_act_content_backend.py): все потребители
+#    рендерят ячейку как текст (textContent/add_run), а не как HTML, поэтому
+#    санитизация была бы не нужна и вредна (портила бы легитимные "<", "&");
+#  - ``url``/``filename`` image-блока — plain-текст, нигде не рендерятся как
+#    innerHTML (DOCX — add_run литерально), формат url валидирует схема;
+#    санитайзер исказил бы base64-данные.
+_RICH_ATTR_BY_BLOCK_TYPE = {"text": "content", "image": "caption"}
+
+
+def _sanitize_rich_attr(block, attr: str) -> None:
+    """Чистит один rich-HTML-атрибут блока — общий для объектной и dict-формы.
 
     dict-форма: отсутствующий ключ не появляется, явный None не подменяется
     на '' (V18/#11 — легитимное отсутствие значения не должно маскироваться
-    санитайзером). obj-форма (Pydantic ``ViolationTextBlockSchema``) шлёт
-    ``content`` уже строкой (дефолт ""), None там не встречается — гард на
-    этом пути защитный, на случай прямого вызова с сырым объектом.
+    санитайзером). obj-форма (Pydantic ``ViolationTextBlockSchema`` /
+    ``ViolationImageBlockSchema``) шлёт значение уже строкой (дефолт ""),
+    None там не встречается — гард на этом пути защитный, на случай прямого
+    вызова с сырым объектом.
     """
     if isinstance(block, dict):
-        if "content" in block and block.get("content") is not None:
-            block["content"] = sanitize_rich_html(block.get("content"))
+        if attr in block and block.get(attr) is not None:
+            block[attr] = sanitize_rich_html(block.get(attr))
     else:
-        if block.content is not None:
-            block.content = sanitize_rich_html(block.content)
-
-
-def _sanitize_image_block(block) -> None:
-    """Блок-картинка (``type: "image"``): ``caption`` — rich-HTML.
-
-    ``url``/``filename`` — plain-текст, санитайзер их не трогает (нигде не
-    рендерятся как innerHTML; DOCX — add_run литерально, формат url валидирует
-    схема). Гард на caption — тот же V18/#11: отсутствующий ключ не
-    появляется, явный None не подменяется на ''.
-    """
-    if isinstance(block, dict):
-        if "caption" in block and block.get("caption") is not None:
-            block["caption"] = sanitize_rich_html(block.get("caption"))
-    else:
-        if block.caption is not None:
-            block.caption = sanitize_rich_html(block.caption)
+        value = getattr(block, attr, None)
+        if value is not None:
+            setattr(block, attr, sanitize_rich_html(value))
 
 
 def _sanitize_block(block) -> None:
     """Диспетчер по типу блока поля нарушения (text/image/table).
 
-    table — не трогаем: ячейки встроенной таблицы хранятся дословно, тот же
-    инвариант B8, что у больших таблиц акта (см.
-    TestSaveContentTableCellsStoredVerbatim в
-    tests/security/test_xss_act_content_backend.py) — все потребители
-    рендерят содержимое ячейки как текст (textContent/add_run), а не как
-    HTML, поэтому санитизация была бы не нужна и вредна (портила бы
-    легитимные "<", "&" в данных). Неизвестный type — пропуск без изменений:
-    422 на такой блок отбивает схема раньше, санитайзер не место для валидации.
+    Тип → атрибут по карте ``_RICH_ATTR_BY_BLOCK_TYPE`` (там же — почему
+    table и plain-поля картинки не чистятся). Тип вне карты — пропуск без
+    изменений: 422 на такой блок отбивает схема раньше, санитайзер не место
+    для валидации.
     """
     block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-    if block_type == "text":
-        _sanitize_text_block(block)
-    elif block_type == "image":
-        _sanitize_image_block(block)
+    # isinstance-гард: в dict-форме (restore из БД) type — произвольный JSON,
+    # а нехешируемое значение уронило бы .get() на TypeError.
+    attr = _RICH_ATTR_BY_BLOCK_TYPE.get(block_type) if isinstance(block_type, str) else None
+    if attr is not None:
+        _sanitize_rich_attr(block, attr)
 
 
 def _sanitize_violation_common(v) -> None:

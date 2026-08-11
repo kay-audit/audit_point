@@ -21,7 +21,7 @@
 import { PreviewManager } from '../preview/preview.js';
 import { ViolationManager } from './violation-core.js';
 import { ValidationCore } from '../validation/validation-core.js';
-import { VIOLATION_FIELD_KEYS, MANDATORY_FIELD_KEYS } from './violation-fields.js';
+import { MANDATORY_FIELD_KEYS, isValidFieldOrder } from './violation-fields.js';
 
 /**
  * Планирует превью для нарушения: typing (декоративный debounce печати) либо
@@ -80,16 +80,10 @@ export const violationMutations = {
     setFieldOrder(violation, orderOrNull) {
         if (ValidationCore.requireWrite('cannotEdit')) return false;
 
-        if (orderOrNull !== null) {
-            if (!Array.isArray(orderOrNull)) return false;
-            if (orderOrNull.length !== VIOLATION_FIELD_KEYS.length) return false;
-            const known = new Set(VIOLATION_FIELD_KEYS);
-            const seen = new Set();
-            for (const key of orderOrNull) {
-                if (!known.has(key) || seen.has(key)) return false;
-                seen.add(key);
-            }
-        }
+        // Критерий валидности — общий с чтением (getOrderedFieldKeys), но
+        // реакция разная: читатель молча падает на стандартный порядок,
+        // мутатор отказывает в записи.
+        if (orderOrNull !== null && !isValidFieldOrder(orderOrNull)) return false;
 
         violation.fieldOrder = orderOrNull === null ? null : [...orderOrNull];
         _schedulePreview(violation.id, true);
@@ -201,5 +195,4 @@ Object.assign(ViolationManager.prototype, violationMutations);
 // Window-globals для совместимости с inline-скриптами в шаблонах.
 if (typeof window !== 'undefined') {
     window.violationMutations = violationMutations;
-    window.findViolationBlock = findBlock;
 }

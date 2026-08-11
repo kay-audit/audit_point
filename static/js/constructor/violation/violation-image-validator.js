@@ -16,6 +16,7 @@ import { AppConfig } from '../../shared/app-config.js';
 import { applyActsAllowlist } from '../../shared/sanitize.js';
 import { formatMb } from '../../shared/format-units.js';
 import { VIOLATION_FIELD_KEYS } from './violation-fields.js';
+import { BLOCK_TYPES } from './violation-block-types.js';
 
 /** Дефолтные лимиты — зеркало ImagesSettings (app/domains/acts/settings.py). */
 export const DEFAULT_IMAGE_LIMITS = {
@@ -170,7 +171,7 @@ export function estimateActImageBytes(violations) {
             const blocks = violation?.[fieldKey]?.blocks;
             if (!Array.isArray(blocks)) continue;
             for (const block of blocks) {
-                if (block && block.type === 'image' && block.url) {
+                if (block && block.type === BLOCK_TYPES.IMAGE && block.url) {
                     total += estimateDataUrlBytes(block.url);
                 }
             }

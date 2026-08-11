@@ -38,6 +38,13 @@ export const VIOLATION_LABELS = Object.freeze(
   Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f.label]))
 );
 
+// Дескриптор поля по ключу — реестр закрыт, карту строим один раз.
+// Зеркало FIELD_BY_KEY из violation_fields.py; потребители (форма нарушения,
+// превью) читают её отсюда, а не собирают свою копию (ревью №21).
+export const FIELD_BY_KEY = Object.freeze(
+  Object.fromEntries(VIOLATION_FIELDS.map(f => [f.key, f]))
+);
+
 // Ключи всех 10 полей в стандартном порядке.
 export const VIOLATION_FIELD_KEYS = Object.freeze(
   VIOLATION_FIELDS.map(f => f.key)
@@ -49,6 +56,27 @@ export const MANDATORY_FIELD_KEYS = Object.freeze(
 );
 
 /**
+ * Валиден ли пользовательский порядок полей: перестановка ВСЕХ ключей реестра
+ * ровно по разу. Единый предикат для чтения (getOrderedFieldKeys) и записи
+ * (мутатор setFieldOrder) — реакция на невалидный порядок у них разная
+ * (молча дефолт против отказа записи), а критерий обязан быть один.
+ * Зеркало is_valid_field_order из violation_fields.py.
+ * @param {*} order - Проверяемое значение (обычно violation.fieldOrder)
+ * @returns {boolean}
+ */
+export function isValidFieldOrder(order) {
+  if (!Array.isArray(order)) return false;
+  if (order.length !== VIOLATION_FIELD_KEYS.length) return false;
+  const known = new Set(VIOLATION_FIELD_KEYS);
+  const seen = new Set();
+  for (const key of order) {
+    if (!known.has(key) || seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+/**
  * Порядок отображения полей нарушения: violation.fieldOrder, если задан и
  * валиден (перестановка ВСЕХ ключей реестра), иначе стандартный порядок.
  * Невалидный fieldOrder (после смены состава полей и т.п.) молча
@@ -58,15 +86,7 @@ export const MANDATORY_FIELD_KEYS = Object.freeze(
  */
 export function getOrderedFieldKeys(violation) {
   const order = violation && violation.fieldOrder;
-  if (!Array.isArray(order)) return VIOLATION_FIELD_KEYS;
-  if (order.length !== VIOLATION_FIELD_KEYS.length) return VIOLATION_FIELD_KEYS;
-  const known = new Set(VIOLATION_FIELD_KEYS);
-  const seen = new Set();
-  for (const key of order) {
-    if (!known.has(key) || seen.has(key)) return VIOLATION_FIELD_KEYS;
-    seen.add(key);
-  }
-  return order;
+  return isValidFieldOrder(order) ? order : VIOLATION_FIELD_KEYS;
 }
 
 // Window-globals для совместимости с inline-скриптами в шаблонах.

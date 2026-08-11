@@ -12,7 +12,7 @@
 
 import { ViolationManager } from './violation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
-import { BLOCK_TYPES } from './violation-block-types.js';
+import { BLOCK_TYPES, BLOCK_TYPE_META } from './violation-block-types.js';
 import { renderImageWithFallback } from './violation-image-render.js';
 import { createTableElement } from '../table/table-render.js';
 import { makeEmbeddedTableId } from '../table/table-store.js';
@@ -114,7 +114,7 @@ Object.assign(ViolationManager.prototype, {
      * @returns {HTMLElement} Обёртка блока
      */
     createTextBlockElement(violation, fieldKey, block, isReadOnly = false) {
-        const { wrapper, body } = this._createBlockWrapper('Текст');
+        const { wrapper, body } = this._createBlockWrapper(BLOCK_TYPE_META[BLOCK_TYPES.TEXT].label);
         // Подсветка пустого блока (#9-Г): не блокирует ввод, только визуальный
         // сигнал. Единый предикат с live-тумблером ниже — toggleEmptyClass.
         toggleEmptyClass(wrapper, 'content-item-wrapper--empty', block.content);
@@ -146,7 +146,7 @@ Object.assign(ViolationManager.prototype, {
      * @returns {HTMLElement} Обёртка блока
      */
     createImageBlockElement(violation, fieldKey, block, isReadOnly = false) {
-        const { wrapper, body } = this._createBlockWrapper('Изображение');
+        const { wrapper, body } = this._createBlockWrapper(BLOCK_TYPE_META[BLOCK_TYPES.IMAGE].label);
         body.className = 'image-item';
 
         // Контейнер с фиксированной высотой для изображения
@@ -239,7 +239,7 @@ Object.assign(ViolationManager.prototype, {
      * @returns {HTMLElement} Обёртка блока
      */
     createTableBlockWrapper(violation, fieldKey, block, isReadOnly = false) {
-        const { wrapper, body } = this._createBlockWrapper('Таблица');
+        const { wrapper, body } = this._createBlockWrapper(BLOCK_TYPE_META[BLOCK_TYPES.TABLE].label);
         body.className = 'content-item content-item--table';
 
         const tableId = makeEmbeddedTableId(violation.id, fieldKey, block.id);

@@ -10,6 +10,9 @@ python-union ↔ фронтовые константы violation-block-types.js.
 import re
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from app.domains.acts.schemas.act_content import ViolationSchema
 from app.domains.acts.violation_fields import (
     FIELD_BY_KEY,
@@ -19,6 +22,8 @@ from app.domains.acts.violation_fields import (
     VIOLATION_FIELD_KEYS,
     VIOLATION_FIELDS,
     field_label_for_render,
+    is_valid_field_order,
+    ordered_fields,
     should_render_field,
 )
 
@@ -177,6 +182,60 @@ class TestColumnNames:
         }
         actual = {f.key: f.column for f in VIOLATION_FIELDS}
         assert actual == expected
+
+
+# Невалидные порядки полей: описание → значение fieldOrder.
+_INVALID_ORDERS = {
+    "не список": "violated",
+    "None": None,
+    "неполный": list(VIOLATION_FIELD_KEYS[1:]),
+    "лишний элемент": [*VIOLATION_FIELD_KEYS, "violated"],
+    "дубль вместо ключа": [*VIOLATION_FIELD_KEYS[:9], "violated"],
+    "чужой ключ": [*VIOLATION_FIELD_KEYS[:9], "unknownField"],
+}
+
+
+class TestFieldOrderPredicate:
+    """`is_valid_field_order` — единый критерий валидности fieldOrder.
+
+    Реакция потребителей разная (рендеры молча падают на стандартный порядок,
+    схема отклоняет запись), критерий — один.
+    """
+
+    def test_permutation_of_all_keys_is_valid(self):
+        assert is_valid_field_order(list(VIOLATION_FIELD_KEYS)) is True
+        assert is_valid_field_order(list(reversed(VIOLATION_FIELD_KEYS))) is True
+
+    @pytest.mark.parametrize("case", list(_INVALID_ORDERS), ids=list(_INVALID_ORDERS))
+    def test_invalid_orders_rejected(self, case):
+        assert is_valid_field_order(_INVALID_ORDERS[case]) is False
+
+    @pytest.mark.parametrize("case", list(_INVALID_ORDERS), ids=list(_INVALID_ORDERS))
+    def test_ordered_fields_falls_back_silently(self, case):
+        """Рендеры: невалидный порядок молча заменяется стандартным."""
+        assert ordered_fields({"fieldOrder": _INVALID_ORDERS[case]}) == VIOLATION_FIELDS
+
+    def test_ordered_fields_applies_valid_permutation(self):
+        order = list(reversed(VIOLATION_FIELD_KEYS))
+        assert [f.key for f in ordered_fields({"fieldOrder": order})] == order
+
+    @pytest.mark.parametrize("case", list(_INVALID_ORDERS), ids=list(_INVALID_ORDERS))
+    def test_schema_rejects_invalid_order(self, case):
+        """Схема: тот же критерий, но невалидный порядок — отказ, не дефолт.
+
+        None — легитимное значение поля (стандартный порядок), проверяется
+        отдельно ниже.
+        """
+        order = _INVALID_ORDERS[case]
+        if order is None:
+            return
+        with pytest.raises(ValidationError):
+            ViolationSchema(id="v1", nodeId="n1", fieldOrder=order)
+
+    def test_schema_accepts_none_and_valid_permutation(self):
+        assert ViolationSchema(id="v1", nodeId="n1", fieldOrder=None).fieldOrder is None
+        order = list(reversed(VIOLATION_FIELD_KEYS))
+        assert ViolationSchema(id="v1", nodeId="n1", fieldOrder=order).fieldOrder == order
 
 
 class TestBlockTypesSync:

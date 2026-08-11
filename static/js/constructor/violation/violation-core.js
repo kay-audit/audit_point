@@ -12,14 +12,11 @@ import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
 import { SafeHTML } from '../../shared/sanitize.js';
 import {
-    VIOLATION_FIELDS, VIOLATION_FIELD_KEYS, getOrderedFieldKeys,
+    FIELD_BY_KEY, VIOLATION_FIELD_KEYS, getOrderedFieldKeys,
 } from './violation-fields.js';
 import { createTextBlock } from './violation-block-types.js';
 import { openFieldOrderDialog } from './violation-field-order-dialog.js';
 import { loadImageLimits } from './violation-image-validator.js';
-
-/** Дескриптор поля по ключу — реестр закрыт, карту строим один раз. */
-const FIELD_BY_KEY = new Map(VIOLATION_FIELDS.map(f => [f.key, f]));
 
 /**
  * Ключи ответа формализатора, которые применимы к карточке: пересечение ключей
@@ -70,11 +67,16 @@ export class ViolationManager {
         // removeViolation при разрушении узла дерева — без этого Map рос
         // бесконтрольно при switch'е между актами / удалении нарушений.
         this.activeViolations = new Map();
-        // AbortController'ы document-слушателей drop по violation.id
-        // (см. setupFileDragAndDrop): abort при повторной установке поля,
-        // удалении нарушения и destroy() — иначе слушатели копились
-        // на каждый ре-рендер контейнера блоков.
-        this._fileDropControllers = new Map();
+        // Зоны приёма файлов по ключу `<violationId>:<fieldKey>` (у карточки
+        // их десять — по одной на поле): {itemsContainer, reset}. Запись
+        // добавляет setupFileDragAndDrop, снимают removeViolation (удаление
+        // узла) и destroy() (switch акта).
+        this._fileDropZones = new Map();
+        // AbortController ЕДИНСТВЕННОГО document-слушателя drop, общего на все
+        // зоны (#16): раньше слушатель вешался на каждое поле, и карточка
+        // нарушения давала десять одинаковых слушателей на document.
+        // Ставится лениво при первой зоне, снимается в destroy().
+        this._documentDropController = null;
         // Текущий активный контейнер для paste (только когда мышь внутри)
         this.currentActiveContainer = null;
         // Позиция курсора для вставки (null означает конец списка)
@@ -91,6 +93,44 @@ export class ViolationManager {
     initialize() {
         // Настраиваем глобальный обработчик вставки
         this.setupPasteHandler();
+    }
+
+    /**
+     * Регистрирует зону приёма файлов поля и — при первой зоне — вешает
+     * ЕДИНСТВЕННЫЙ document-слушатель drop на весь менеджер (#16).
+     *
+     * Зона отдаёт свой контейнер блоков и функцию сброса подсветки; слушатель
+     * пробегает по всем живым зонам и сбрасывает те, мимо которых промахнулись.
+     * Повторная установка того же поля (ре-рендер контейнера) перезаписывает
+     * запись по ключу, поэтому зоны не копятся.
+     *
+     * @param {string} zoneKey - Ключ `<violationId>:<fieldKey>`
+     * @param {HTMLElement} itemsContainer - Контейнер блоков поля
+     * @param {Function} reset - Сброс состояния файлового drag этой зоны
+     */
+    _registerFileDropZone(zoneKey, itemsContainer, reset) {
+        this._fileDropZones.set(zoneKey, { itemsContainer, reset });
+
+        if (this._documentDropController) return;
+        this._documentDropController = new AbortController();
+        document.addEventListener('drop', (e) => {
+            for (const zone of this._fileDropZones.values()) {
+                // Drop произошёл вне зоны — снимаем её подсветку и индикаторы.
+                if (!zone.itemsContainer.contains(e.target)) zone.reset();
+            }
+        }, { signal: this._documentDropController.signal });
+    }
+
+    /**
+     * Снимает document-слушатель drop и забывает все зоны приёма файлов.
+     * Идемпотентен; следующий setupFileDragAndDrop поставит слушатель заново.
+     */
+    _teardownFileDropZones() {
+        this._fileDropZones.clear();
+        if (this._documentDropController) {
+            this._documentDropController.abort();
+            this._documentDropController = null;
+        }
     }
 
     /**
@@ -145,12 +185,13 @@ export class ViolationManager {
         // домешивания rich-хелперов (violation-field-surface.js) в изоляции.
         this._teardownActiveRichField?.(violationId);
         this.activeViolations.delete(violationId);
-        // Зон приёма файлов у карточки десять (по одной на поле) — ключ
-        // контроллера составной `<violationId>:<fieldKey>`, снимаем все.
-        for (const [key, controller] of [...this._fileDropControllers]) {
+        // Зон приёма файлов у карточки десять (по одной на поле) — ключ зоны
+        // составной `<violationId>:<fieldKey>`, забываем все. Общий
+        // document-слушатель остаётся жить до destroy(): он один на менеджер
+        // и без зон ничего не делает.
+        for (const key of [...this._fileDropZones.keys()]) {
             if (key.startsWith(`${violationId}:`)) {
-                controller.abort();
-                this._fileDropControllers.delete(key);
+                this._fileDropZones.delete(key);
             }
         }
 
@@ -169,8 +210,7 @@ export class ViolationManager {
      */
     destroy() {
         this.activeViolations.clear();
-        this._fileDropControllers.forEach(controller => controller.abort());
-        this._fileDropControllers.clear();
+        this._teardownFileDropZones();
         this._resetActiveZone();
         this.selectedViolation = null;
         this.lastDragOverIndex = null;
@@ -210,7 +250,7 @@ export class ViolationManager {
         fieldsContainer.className = 'violation-fields';
 
         for (const key of getOrderedFieldKeys(violation)) {
-            const descriptor = FIELD_BY_KEY.get(key);
+            const descriptor = FIELD_BY_KEY[key];
             if (!descriptor) continue;
             fieldsContainer.appendChild(
                 this.createBlocksField(violation, descriptor, isReadOnly));

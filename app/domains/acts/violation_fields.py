@@ -140,20 +140,32 @@ def field_label_for_render(field: ViolationFieldDescriptor) -> str | None:
     return field.label if field.labeled else None
 
 
-def ordered_fields(violation_data: dict | None) -> tuple[ViolationFieldDescriptor, ...]:
-    """Дескрипторы полей в порядке отображения конкретного нарушения.
+def is_valid_field_order(order) -> bool:
+    """Валиден ли пользовательский порядок полей.
 
-    fieldOrder нарушения применяется, если он — перестановка ВСЕХ ключей
-    реестра; иначе (None, повреждён, устарел после смены состава) молча
-    возвращается стандартный порядок — зеркало фронтового
-    getOrderedFieldKeys (violation-fields.js). Единая точка для DOCX/MD/TXT-
-    рендеров: порядок полей в экспорте == порядок в форме.
+    Критерий один: список — перестановка ВСЕХ ключей реестра ровно по разу
+    (равные длина и множество дублей не оставляют). Общий для чтения
+    (``ordered_fields``) и для валидации схемы
+    (``ViolationSchema.validate_field_order``) — реакция у них разная (молча
+    дефолт против 422), а критерий обязан быть один. Зеркало фронтового
+    ``isValidFieldOrder`` (violation-fields.js).
     """
-    order = (violation_data or {}).get("fieldOrder")
-    if (
+    return (
         isinstance(order, list)
         and len(order) == len(VIOLATION_FIELD_KEYS)
         and set(order) == set(VIOLATION_FIELD_KEYS)
-    ):
+    )
+
+
+def ordered_fields(violation_data: dict | None) -> tuple[ViolationFieldDescriptor, ...]:
+    """Дескрипторы полей в порядке отображения конкретного нарушения.
+
+    fieldOrder нарушения применяется, если он валиден; иначе (None, повреждён,
+    устарел после смены состава) молча возвращается стандартный порядок —
+    зеркало фронтового getOrderedFieldKeys (violation-fields.js). Единая точка
+    для DOCX/MD/TXT-рендеров: порядок полей в экспорте == порядок в форме.
+    """
+    order = (violation_data or {}).get("fieldOrder")
+    if is_valid_field_order(order):
         return tuple(FIELD_BY_KEY[key] for key in order)
     return VIOLATION_FIELDS

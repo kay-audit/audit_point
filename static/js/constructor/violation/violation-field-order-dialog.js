@@ -245,8 +245,3 @@ export async function openFieldOrderDialog({ violation, manager, onApplied }) {
     if (typeof onApplied === 'function') onApplied();
     return true;
 }
-
-// Window-globals для совместимости с inline-скриптами в шаблонах.
-if (typeof window !== 'undefined') {
-    window.openViolationFieldOrderDialog = openFieldOrderDialog;
-}

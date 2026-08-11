@@ -27,7 +27,7 @@ import {
     validateImageType,
     validateImageBytes,
 } from './violation-image-validator.js';
-import { BLOCK_TYPES, createTextBlock, createImageBlock, createTableBlock } from './violation-block-types.js';
+import { BLOCK_TYPES, BLOCK_TYPE_META, createImageBlock } from './violation-block-types.js';
 import { sniffImageMagic, RECOGNIZED_IMAGE_FORMATS } from './violation-file-reading.js';
 import { downscaleImage, resolveActualFilename } from './violation-image-resize.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
@@ -206,6 +206,7 @@ Object.assign(ViolationManager.prototype, {
 
     /**
      * Тулбар добавления блоков поля: «+ Текст | + Таблица | + Картинка».
+     * Подписи и порядок кнопок — из реестра типов блоков (BLOCK_TYPE_META).
      * Вставка идёт в КОНЕЦ поля (позиционная вставка — через ПКМ-меню).
      *
      * @param {Object} violation - Объект нарушения
@@ -217,24 +218,23 @@ Object.assign(ViolationManager.prototype, {
         const toolbar = document.createElement('div');
         toolbar.className = 'violation-blocks-toolbar';
 
-        const buttons = [
-            ['+ Текст', () => this.addBlockAtPosition(
-                violation, fieldKey, BLOCK_TYPES.TEXT, contentContainer,
-                fieldBlocks(violation, fieldKey).length)],
-            ['+ Таблица', () => this.addBlockAtPosition(
-                violation, fieldKey, BLOCK_TYPES.TABLE, contentContainer,
-                fieldBlocks(violation, fieldKey).length)],
-            ['+ Картинка', () => this.triggerImageUploadAtPosition(
-                violation, fieldKey, contentContainer,
-                fieldBlocks(violation, fieldKey).length)],
-        ];
-
-        for (const [label, handler] of buttons) {
+        for (const meta of Object.values(BLOCK_TYPE_META)) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'violation-blocks-add-btn';
-            btn.textContent = label;
-            btn.addEventListener('click', handler);
+            btn.textContent = `+ ${meta.shortLabel}`;
+            btn.addEventListener('click', () => {
+                // Картинка идёт своим конвейером (выбор файлов → качество →
+                // ресайз), остальные типы создаются пустым блоком.
+                const insertIndex = fieldBlocks(violation, fieldKey).length;
+                if (meta.type === BLOCK_TYPES.IMAGE) {
+                    this.triggerImageUploadAtPosition(
+                        violation, fieldKey, contentContainer, insertIndex);
+                } else {
+                    this.addBlockAtPosition(
+                        violation, fieldKey, meta.type, contentContainer, insertIndex);
+                }
+            });
             toolbar.appendChild(btn);
         }
 
@@ -329,16 +329,11 @@ Object.assign(ViolationManager.prototype, {
      * @returns {boolean} true при успешной вставке
      */
     addBlockAtPosition(violation, fieldKey, type, container, insertIndex, extraData = {}) {
-        let block;
-        if (type === BLOCK_TYPES.TEXT) {
-            block = createTextBlock(extraData.content || '');
-        } else if (type === BLOCK_TYPES.TABLE) {
-            block = createTableBlock();
-        } else if (type === BLOCK_TYPES.IMAGE) {
-            block = createImageBlock(extraData);
-        } else {
-            return false;
-        }
+        // Фабрика — из реестра типов (единая сигнатура create(extraData));
+        // неизвестный тип отказ, как и раньше.
+        const meta = BLOCK_TYPE_META[type];
+        if (!meta) return false;
+        const block = meta.create(extraData);
         return this._insertBlocksBulk(violation, fieldKey, container, insertIndex, [block]) > 0;
     },
 

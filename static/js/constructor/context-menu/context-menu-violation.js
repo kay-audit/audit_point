@@ -2,7 +2,7 @@
  * Обработчик контекстного меню для блоков поля нарушения
  */
 import { ContextMenuManager } from './context-menu-core.js';
-import { BLOCK_TYPES } from '../violation/violation-block-types.js';
+import { BLOCK_TYPES, BLOCK_TYPE_META } from '../violation/violation-block-types.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
 
 export class ViolationContextMenu {
@@ -50,23 +50,17 @@ export class ViolationContextMenu {
             font-family: inherit;
         `;
 
-        // action — тип блока из violation-block-types.js (один источник строк,
-        // без ручного маппинга подписи в тип).
-        const addItems = [
-            {label: '📄 Добавить текст', action: BLOCK_TYPES.TEXT},
-            {label: '📊 Добавить таблицу', action: BLOCK_TYPES.TABLE},
-            {label: '🖼️ Добавить изображение', action: BLOCK_TYPES.IMAGE}
-        ];
-
         // Единый гейт лимита (#4): при достижении лимита ПО ПОЛЮ пункты
         // добавления строятся в disabled-виде — реальный отказ всё равно
         // проверяется в _insertBlocksBulk, здесь только UX-подсказка заранее.
         const blocksCount = violation[fieldKey]?.blocks?.length || 0;
         const limitReached = blocksCount >= getImageLimits().maxItemsPerViolation;
 
-        addItems.forEach(item => {
-            menu.appendChild(this.createMenuItem(item.label, () => {
-                this.handleAddBlock(violation, fieldKey, item.action, contentContainer, insertPosition);
+        // Пункты добавления — обход реестра типов блоков: подписи, иконки и
+        // порядок оттуда же, что у тулбара поля и миниатюры перетаскивания.
+        Object.values(BLOCK_TYPE_META).forEach(meta => {
+            menu.appendChild(this.createMenuItem(`${meta.icon} ${meta.menuLabel}`, () => {
+                this.handleAddBlock(violation, fieldKey, meta.type, contentContainer, insertPosition);
                 this.removeExistingMenu();
                 ContextMenuManager.hide();
             }, false, limitReached));
