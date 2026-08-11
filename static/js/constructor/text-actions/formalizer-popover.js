@@ -253,9 +253,11 @@ export const FormalizerPopover = {
         try {
             const fields = await formalizeViolation(text, { signal: this._controller.signal });
             this._fields = fields;
-            this._renderPreview(fields);
+            const filled = this._renderPreview(fields);
             this._renderRecommendations(fields.recommendations);
-            this._els.accept.disabled = false;
+            // Пустой ответ применять нечего — «Применить» остаётся заблокированной,
+            // статус в превью объясняет, почему (ревью №3).
+            this._els.accept.disabled = filled === 0;
         } catch (e) {
             if (e && e.name === 'AbortError') return;
             this._fields = null;
@@ -270,10 +272,29 @@ export const FormalizerPopover = {
         }
     },
 
+    /**
+     * Рисует превью извлечённых полей. Значения — готовый HTML (контракт
+     * `FormalizeResponse`), поэтому идут в превью санитизированной разметкой
+     * профилем 'acts': списки видны списками, а не строкой с тегами `<ul><li>`
+     * (ревью №3). Ни одного непустого поля — вместо шести «— не извлечено»
+     * один внятный статус.
+     * @param {Object} fields - Ответ формализатора
+     * @returns {number} Сколько полей ответа непусты
+     */
     _renderPreview(fields) {
         this._els.preview.innerHTML = '';
-        for (const [key, label] of _PREVIEW_FIELDS) {
-            const value = (fields[key] || '').trim();
+        const values = _PREVIEW_FIELDS.map(
+            ([key, label]) => [label, String(fields?.[key] ?? '').trim()],
+        );
+        const filled = values.filter(([, value]) => value).length;
+        if (!filled) {
+            const msg = document.createElement('div');
+            msg.className = 'corrector-status';
+            msg.textContent = 'Модель ничего не извлекла из текста';
+            this._els.preview.appendChild(msg);
+            return 0;
+        }
+        for (const [label, value] of values) {
             const row = document.createElement('div');
             row.className = 'formalizer-field' + (value ? '' : ' formalizer-field-empty');
             const lab = document.createElement('span');
@@ -281,11 +302,13 @@ export const FormalizerPopover = {
             lab.textContent = label;
             const val = document.createElement('div');
             val.className = 'formalizer-field-value';
-            val.textContent = value || '— не извлечено';
+            if (value) SafeHTML.set(val, value, 'acts');
+            else val.textContent = '— не извлечено';
             row.appendChild(lab);
             row.appendChild(val);
             this._els.preview.appendChild(row);
         }
+        return filled;
     },
 
     /**
@@ -321,9 +344,20 @@ export const FormalizerPopover = {
         this._els.recs.classList.add('hidden');
     },
 
+    /**
+     * «Применить»: раскладывает извлечённые поля по карточке. Успех объявляем
+     * только по факту записи — `apply` возвращает число заполненных полей, и
+     * ноль (карточка в режиме просмотра, писать не дали) больше не показывает
+     * success и не закрывает окно: раньше уведомление «Поля карточки заполнены»
+     * выдавалось безусловно, даже когда в карточку не уехало ничего.
+     */
     _accept() {
         if (!this._fields || typeof this._apply !== 'function') { this.close(); return; }
-        this._apply(this._fields);
+        const applied = this._apply(this._fields);
+        if (!applied) {
+            Notifications.info('Поля карточки не заполнены — применять было нечего');
+            return;   // окно оставляем открытым: результат ещё перед глазами
+        }
         Notifications.success('Поля карточки заполнены');
         // Есть рекомендации → окно остаётся открытым только с этим блоком.
         // Нет — закрываемся, показывать нечего.

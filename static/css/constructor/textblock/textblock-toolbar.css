@@ -502,11 +502,18 @@
     letter-spacing: 0.03em;
 }
 
+/* Значение — готовый HTML ответа (переносы уже <br>, перечисления — <ul>),
+   поэтому pre-wrap не нужен: он бы только растягивал пробелы разметки. */
 .formalizer-field-value {
-    white-space: pre-wrap;
     word-break: break-word;
     font-size: var(--font-size-sm);
     line-height: 1.4;
+}
+
+.formalizer-field-value ul,
+.formalizer-field-value ol {
+    margin: 2px 0 0;
+    padding-left: 18px;
 }
 
 .formalizer-field-empty .formalizer-field-value {

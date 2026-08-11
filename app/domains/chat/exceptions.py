@@ -105,3 +105,15 @@ class TextActionValidationError(AppError):
     """Текст для text-action не проходит валидацию (пустой или слишком длинный)."""
     status_code = 422
     code: ClassVar[str] = "text-action-validation"
+
+
+class TextActionUnavailableError(AppError):
+    """LLM-провайдер не ответил ни на один вызов text-action.
+
+    Отделяет «модель ничего не нашла» (валидный пустой результат) от отказа
+    провайдера. Без неё недоступный LLM выглядел как успешная формализация с
+    пустыми полями: HTTP 200, пустая карточка и success-уведомление на фронте —
+    пользователю нечем отличить «нечего извлекать» от «сервис лежит».
+    """
+    status_code = 503
+    code: ClassVar[str] = "text-action-unavailable"

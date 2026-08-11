@@ -18,7 +18,10 @@ from app.domains.chat.deps import (
     get_text_corrector_service,
     get_violation_formalizer_service,
 )
-from app.domains.chat.exceptions import TextActionValidationError
+from app.domains.chat.exceptions import (
+    TextActionUnavailableError,
+    TextActionValidationError,
+)
 from app.domains.chat.schemas.text_actions import FormalizeResponse
 
 
@@ -117,6 +120,26 @@ def test_formalize_ok():
     assert body["established"] == "факт"
     assert body["responsible"] == "Иванов"
     assert body["reasons"] == ""  # не извлечено → пусто
+
+
+def test_formalize_provider_down_503_with_friendly_detail():
+    """Отказ LLM едет пользователю как 503 с сообщением, а не как пустой ответ 200.
+
+    Фронт показывает именно ``detail`` (см. formalizeViolation в
+    text-actions-client.js), поэтому envelope важен, а не только статус.
+    """
+    svc = MagicMock()
+    svc.formalize = AsyncMock(
+        side_effect=TextActionUnavailableError("ИИ-сервис недоступен, повторите попытку позже"),
+    )
+    with TestClient(_app(svc)) as c:
+        r = c.post(
+            "/api/v1/chat/text-actions/formalize-violation",
+            json={"text": "сырой текст нарушения"},
+        )
+    assert r.status_code == 503
+    assert r.json()["code"] == "text-action-unavailable"
+    assert r.json()["detail"] == "ИИ-сервис недоступен, повторите попытку позже"
 
 
 def test_formalize_empty_text_rejected_by_dto():

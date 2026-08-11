@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.domains.chat.exceptions import TextActionValidationError
+from app.domains.chat.exceptions import (
+    TextActionUnavailableError,
+    TextActionValidationError,
+)
 from app.domains.chat.services.text_actions.formalizer_service import (
     ViolationFormalizerService,
 )
@@ -71,11 +74,11 @@ async def test_formalize_maps_all_fields():
     ):
         out = await ViolationFormalizerService(_settings()).formalize("сырой текст")
 
-    assert out.violated == "П. 3.1 Регламента"  # скаляр — как есть, без обёртки
+    assert out.violated == "П. 3.1 Регламента"  # скаляр — экранированный текст
     assert out.established == (
-        "Кредит выдан без проверки\n"
+        "Кредит выдан без проверки"
         "<ul><li>сумма 5 млн руб.</li><li>дата 01.02.2025</li></ul>"
-    )  # суть — абзацем, метрики — честным HTML-списком
+    )  # суть — текстом, метрики — честным HTML-списком, без голого \n между ними
     assert out.reasons == (
         "<ul><li>отсутствие проверки</li><li>нет контроля лимитов</li></ul>"
     )
@@ -157,6 +160,74 @@ async def test_formalize_extractor_failure_leaves_field_empty():
     assert out.responsible == ""
     assert out.violated == "П. 3.1 Регламента"  # остальные не пострадали
     assert out.consequences == "Финансовый ущерб 5 млн руб."
+
+
+async def test_formalize_all_extractors_failed_raises_unavailable():
+    """Сорвались ВСЕ экстракторы (провайдер лежит) → 503, а не пустой ответ.
+
+    Пустой FormalizeResponse с HTTP 200 неотличим от «модель ничего не нашла» —
+    именно так отказ LLM выглядел как «формализатор всегда возвращает пусто».
+    """
+    fake = AsyncMock()
+    # Не-transient ошибка: retry её не повторяет, тест не ждёт backoff.
+    fake.chat.completions.create = AsyncMock(
+        side_effect=RuntimeError("LLM-провайдер недоступен"),
+    )
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
+        return_value=fake,
+    ):
+        with pytest.raises(TextActionUnavailableError) as exc_info:
+            await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert exc_info.value.status_code == 503
+    assert "недоступен" in str(exc_info.value)
+    # 4 экстрактора и ни одного вызова рекомендаций: 2-й этап не запускается,
+    # раз извлекать оказалось нечего.
+    assert fake.chat.completions.create.call_count == 4
+
+
+async def test_formalize_partial_failure_returns_partial_result():
+    """Упали 3 экстрактора из 4 — это ещё не авария: отдаём частичный результат."""
+    client = _client_by_prompt({
+        "аналитик нормативных нарушений": "не json",
+        "эксперт по расследованию инцидентов": "не json",
+        "аналитик корректирующих мер": "не json",
+    })
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
+        return_value=client,
+    ):
+        out = await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert out.consequences == "Финансовый ущерб 5 млн руб."  # уцелевший экстрактор
+    assert out.violated == ""
+    assert out.established == ""
+    assert out.reasons == ""
+    assert out.measures == ""
+
+
+async def test_formalize_scalar_fields_escaped_and_newlines_to_br():
+    """Скаляр LLM — текст, не разметка: `<`/`&` экранируются, `\\n` → `<br>`."""
+    client = _client_by_prompt({
+        "аналитик нормативных нарушений": json.dumps({
+            "essence": "Порог <b> превышен\nвторая строка",
+            "norm_doc": "П. 3.1 «Ромашка & Ко»",
+            "metrics": [],
+        }),
+        "Каждое последствие": json.dumps({
+            "consequences": "Ущерб <critical>\nи ещё строка",
+        }),
+    })
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
+        return_value=client,
+    ):
+        out = await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert out.violated == "П. 3.1 «Ромашка &amp; Ко»"
+    assert out.established == "Порог &lt;b&gt; превышен<br>вторая строка"
+    assert out.consequences == "Ущерб &lt;critical&gt;<br>и ещё строка"
 
 
 async def test_formalize_recommendations_failure_returns_empty():

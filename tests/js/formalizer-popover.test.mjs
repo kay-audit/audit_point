@@ -150,3 +150,151 @@ test('tableToMarkdown: пустая/вырожденная/бесконтент�
   assert.equal(tableToMarkdown({ grid: [] }), '');
   assert.equal(tableToMarkdown({ grid: [[{ content: '' }], [{ content: '  ' }]] }), '');
 });
+
+// --- _renderPreview / _accept: показ результата и объявление успеха (ревью №3) ---
+//
+// Значения ответа — готовый HTML (контракт FormalizeResponse), превью рендерит их
+// санитизированной разметкой, а не строкой с тегами. Пустой ответ «Применить» не
+// разблокирует. Успех объявляется только по факту записи в карточку.
+//
+// Стаб _browser-stub не хранит состояние элементов — ниже свой фейк-элемент с
+// отслеживаемыми детьми; DOMPurify в node не поднимается, фейк пропускает
+// разрешённые профилем теги.
+
+import { Notifications } from '../../static/js/shared/notifications.js';
+
+function makeEl() {
+  const classes = new Set();
+  return {
+    className: '', textContent: '', innerHTML: '', disabled: false, value: '',
+    children: [],
+    classList: {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+    },
+    appendChild(child) { this.children.push(child); return child; },
+  };
+}
+
+globalThis.window.DOMPurify = {
+  sanitize: (html, cfg) => String(html).replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (m, tag) => (
+    cfg && Array.isArray(cfg.ALLOWED_TAGS) && cfg.ALLOWED_TAGS.includes(tag.toLowerCase()) ? m : ''
+  )),
+};
+
+/** Подставляет фейковые _el/_els и makeEl-фабрику на время fn. */
+function withFakeDom(fn) {
+  const orig = {
+    el: FormalizerPopover._el,
+    els: FormalizerPopover._els,
+    create: globalThis.document.createElement,
+    success: Notifications.success,
+    info: Notifications.info,
+  };
+  const notes = [];
+  globalThis.document.createElement = () => makeEl();
+  Notifications.success = (m) => notes.push({ kind: 'success', m });
+  Notifications.info = (m) => notes.push({ kind: 'info', m });
+  FormalizerPopover._el = makeEl();
+  FormalizerPopover._els = {
+    preview: makeEl(), recs: makeEl(), accept: makeEl(),
+    reject: makeEl(), source: makeEl(),
+  };
+  FormalizerPopover._els.recs.classList.add('hidden');
+  try {
+    return fn(notes);
+  } finally {
+    FormalizerPopover._el = orig.el;
+    FormalizerPopover._els = orig.els;
+    globalThis.document.createElement = orig.create;
+    Notifications.success = orig.success;
+    Notifications.info = orig.info;
+  }
+}
+
+test('_renderPreview: все поля пусты → один статус, ничего не извлечено', () => {
+  withFakeDom(() => {
+    const filled = FormalizerPopover._renderPreview({ recommendations: [] });
+    const preview = FormalizerPopover._els.preview;
+
+    assert.equal(filled, 0, 'непустых полей нет');
+    assert.equal(preview.children.length, 1, 'один статус вместо шести «— не извлечено»');
+    assert.equal(preview.children[0].textContent, 'Модель ничего не извлекла из текста');
+  });
+});
+
+test('_renderPreview: непустое значение рендерится разметкой, пустое — плашкой', () => {
+  withFakeDom(() => {
+    const filled = FormalizerPopover._renderPreview({
+      violated: 'П. 3.1 Регламента',
+      reasons: '<ul><li>отсутствие контроля</li></ul>',
+    });
+    const rows = FormalizerPopover._els.preview.children;
+
+    assert.equal(filled, 2);
+    assert.equal(rows.length, 6, 'строка на каждое поле карточки');
+    // Порядок _PREVIEW_FIELDS: violated, established, reasons, …
+    assert.equal(rows[0].children[1].innerHTML, 'П. 3.1 Регламента');
+    assert.equal(
+      rows[2].children[1].innerHTML,
+      '<ul><li>отсутствие контроля</li></ul>',
+      'список остался списком, а не текстом с тегами',
+    );
+    assert.equal(rows[1].children[1].textContent, '— не извлечено', 'established пуст');
+  });
+});
+
+test('_renderPreview: разметка вне профиля acts вырезается', () => {
+  withFakeDom(() => {
+    FormalizerPopover._renderPreview({
+      violated: '<img src="http://evil.example/p.gif" onerror="alert(1)">текст',
+    });
+    const value = FormalizerPopover._els.preview.children[0].children[1].innerHTML;
+
+    assert.ok(!value.includes('<img'), 'img не в allowlist профиля acts');
+    assert.ok(value.includes('текст'));
+  });
+});
+
+test('_accept: применено 0 полей → info, окно не закрывается, success нет', () => {
+  withFakeDom((notes) => {
+    FormalizerPopover._fields = { violated: 'н' };
+    FormalizerPopover._apply = () => 0;
+
+    FormalizerPopover._accept();
+
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].kind, 'info', 'успех не объявляется');
+    assert.ok(!FormalizerPopover._el.classList.contains('hidden'), 'окно осталось открытым');
+    assert.ok(FormalizerPopover._fields, 'результат не сброшен — он ещё перед глазами');
+  });
+});
+
+test('_accept: применены поля → success и закрытие (рекомендаций нет)', () => {
+  withFakeDom((notes) => {
+    FormalizerPopover._fields = { violated: 'н', reasons: 'п' };
+    FormalizerPopover._apply = () => 2;
+    const closed = FormalizerPopover._el;
+
+    FormalizerPopover._accept();
+
+    assert.deepEqual(notes.map((n) => n.kind), ['success']);
+    assert.ok(closed.classList.contains('hidden'), 'окно закрыто');
+  });
+});
+
+test('_accept: применены поля + есть рекомендации → окно остаётся в режиме подсказок', () => {
+  withFakeDom((notes) => {
+    FormalizerPopover._els.recs.classList.remove('hidden');
+    FormalizerPopover._fields = { violated: 'н' };
+    FormalizerPopover._apply = () => 1;
+
+    FormalizerPopover._accept();
+
+    assert.deepEqual(notes.map((n) => n.kind), ['success']);
+    assert.ok(!FormalizerPopover._el.classList.contains('hidden'), 'окно не закрыто');
+    assert.ok(FormalizerPopover._el.classList.contains('formalizer-applied'));
+    assert.equal(FormalizerPopover._els.reject.textContent, 'Закрыть');
+  });
+});

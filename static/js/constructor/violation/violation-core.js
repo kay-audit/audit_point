@@ -10,8 +10,10 @@ import { EscapeStack } from '../../shared/escape-stack.js';
 import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
-import { plainToRichHtml } from '../../shared/html-text.js';
-import { VIOLATION_FIELDS, getOrderedFieldKeys } from './violation-fields.js';
+import { SafeHTML } from '../../shared/sanitize.js';
+import {
+    VIOLATION_FIELDS, VIOLATION_FIELD_KEYS, getOrderedFieldKeys,
+} from './violation-fields.js';
 import { createTextBlock } from './violation-block-types.js';
 import { openFieldOrderDialog } from './violation-field-order-dialog.js';
 import { loadImageLimits } from './violation-image-validator.js';
@@ -20,12 +22,19 @@ import { loadImageLimits } from './violation-image-validator.js';
 const FIELD_BY_KEY = new Map(VIOLATION_FIELDS.map(f => [f.key, f]));
 
 /**
- * Поля, которые заполняет формализатор (контракт FormalizeResponse — шесть
- * строк). CodeMining/ProcessMining он не трогает (спека §3.5).
+ * Ключи ответа формализатора, которые применимы к карточке: пересечение ключей
+ * ответа с реестром полей нарушения. Состав задаёт бэк (FormalizeResponse — шесть
+ * строк + recommendations), фронт больше не держит четвёртую копию этого списка
+ * (ревью №22): `recommendations` не ключ реестра и отсеивается сам — важно, т.к.
+ * это массив, и `.trim()` на нём бросил бы исключение.
+ * @param {Object} fields - Ответ формализатора
+ * @returns {string[]} Ключи полей реестра, присутствующие в ответе
  */
-const FORMALIZED_FIELD_KEYS = [
-    'violated', 'established', 'reasons', 'measures', 'consequences', 'responsible',
-];
+function formalizedFieldKeys(fields) {
+    if (!fields || typeof fields !== 'object') return [];
+    const known = new Set(VIOLATION_FIELD_KEYS);
+    return Object.keys(fields).filter(key => known.has(key));
+}
 
 /**
  * Пересоздаёт секцию нарушения существующим путём обновления (ItemsRenderer
@@ -271,35 +280,40 @@ export class ViolationManager {
      * значение уходит НОВЫМ текст-блоком в конец своего поля (существующие
      * блоки не перезаписываются), поле при этом включается.
      *
-     * Значение может прийти готовым HTML (формализатор отдаёт списки
-     * `<ul><li>…</li></ul>`, спека §3.5) — тогда берём как есть; плоскую
-     * строку переводим в rich HTML (экранирование + перенос строки в `<br>`).
+     * Значение ВСЕГДА готовый HTML — так его отдаёт бэк (контракт
+     * `FormalizeResponse`: текст модели уже экранирован, `\n` переведены в `<br>`,
+     * перечисления пришли `<ul><li>…</li></ul>`). Прежняя эвристика
+     * «есть `<` → это разметка» (ревью №2) съедала текст вида «Порог <b» и теряла
+     * переносы строк; теперь фронт только санитизирует значение профилем 'acts' —
+     * тем же, которым рендерится содержимое поля.
      *
      * @param {Object} violation - Объект нарушения
-     * @param {Object} fields - Ответ формализатора (шесть строковых полей)
+     * @param {Object} fields - Ответ формализатора (шесть полей готового HTML)
+     * @returns {number} Сколько полей карточки реально заполнено
      */
     _applyFormalized(violation, fields) {
-        let applied = false;
+        let applied = 0;
 
-        for (const key of FORMALIZED_FIELD_KEYS) {
-            const value = (fields?.[key] || '').trim();
+        for (const key of formalizedFieldKeys(fields)) {
+            const value = String(fields[key] ?? '').trim();
             if (!value) continue;   // не извлечено — поле не трогаем
 
             // Включаем поле (у mandatory-полей мутатор и так держит enabled).
             this.setFieldEnabled(violation, key, true);
 
-            const html = value.includes('<') ? value : plainToRichHtml(value);
+            const html = SafeHTML.sanitize(value, 'acts');
             if (this.addBlock(violation, key, createTextBlock(html))) {
-                applied = true;
+                applied++;
             }
         }
 
-        if (!applied) return;
+        if (!applied) return 0;
 
         // Секция пересобирается целиком: у полей могли смениться и состав
         // блоков, и состояние чекбокса.
         rerenderViolationSection(violation.id);
         PreviewManager.updateBlock('violation', violation.id);
+        return applied;
     }
 }
 
