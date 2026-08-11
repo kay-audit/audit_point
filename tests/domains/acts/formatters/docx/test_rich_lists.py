@@ -8,7 +8,7 @@
 уровень с сохранением текста и типа своего списка.
 """
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt, Twips
+from docx.shared import Pt
 
 from app.domains.acts.formatters.docx import DocxFormatter
 from app.domains.acts.formatters.docx.builders.inline import (
@@ -84,6 +84,55 @@ def test_li_own_text_align_kept():
     assert split_block_segments('<ol><li style="text-align: right">пункт</li></ol>') == [
         BlockSegment("right", "пункт", "List Number"),
     ]
+
+
+# --- ревью №9: <li> наследует text-align объемлющего div/p ------------------
+
+def test_li_inherits_align_from_enclosing_div():
+    """Список без своего align внутри выровненного div — пункт получает
+    align объемлющего контейнера, а не дефолт (было: терялось в None)."""
+    html = '<div style="text-align:center"><ul><li>перв</li></ul></div>'
+    assert split_block_segments(html) == [
+        BlockSegment("center", "перв", "List Bullet"),
+    ]
+
+
+def test_li_own_align_overrides_inherited():
+    """Собственный text-align <li> приоритетнее унаследованного от div."""
+    html = (
+        '<div style="text-align:center">'
+        '<ol><li style="text-align: right">пункт</li></ol></div>'
+    )
+    assert split_block_segments(html) == [
+        BlockSegment("right", "пункт", "List Number"),
+    ]
+
+
+def test_li_without_enclosing_div_stays_unaligned():
+    """Без объемлющего align-контейнера поведение не меняется (align=None)."""
+    assert split_block_segments("<ul><li>перв</li></ul>") == [
+        BlockSegment(None, "перв", "List Bullet"),
+    ]
+
+
+def test_nested_li_inherits_align_through_outer_li():
+    """Вложенный пункт тоже наследует align — через уже унаследованный align
+    родительского пункта (каскад, как в браузере)."""
+    html = (
+        '<div style="text-align:center">'
+        '<ul><li>верх<ul><li>вложен</li></ul></li></ul></div>'
+    )
+    assert split_block_segments(html) == [
+        BlockSegment("center", "верх", "List Bullet"),
+        BlockSegment("center", "вложен", "List Bullet"),
+    ]
+
+
+def test_render_list_item_inherits_align_from_enclosing_div(doc):
+    """Точка входа рендера: наследованный align применяется к абзацу Word."""
+    html = '<div style="text-align:center"><ul><li>перв</li></ul></div>'
+    paragraphs = _render(doc, html)
+    assert paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
 # --- рендер: пункт = абзац со стилем списка ----------------------------------
@@ -236,25 +285,3 @@ def test_numbered_list_in_violation_rich_field(doc):
     paragraphs = doc.paragraphs[before:]
     assert _texts(paragraphs) == ["Причины: вступление", "раз"]
     assert _styles(paragraphs) == ["Normal", "List Number"]
-
-
-# --- регрессия: стиль ХОСТА (пункты descriptionList) не сломан ---------------
-
-def test_host_paragraph_style_still_first_only(doc):
-    """Хост-стиль (paragraph_style) по-прежнему только на первом абзаце,
-    продолжение — обычный абзац с отступом под текст маркера."""
-    paragraphs = _render(
-        doc, "<div>первая</div><div>вторая</div>", paragraph_style="List Bullet"
-    )
-    assert _styles(paragraphs) == ["List Bullet", "Normal"]
-    assert paragraphs[1].paragraph_format.left_indent == Twips(360)
-
-
-def test_own_list_style_wins_over_host_style(doc):
-    """Список из самого HTML сильнее хост-стиля: маркер у каждого пункта,
-    и продолжению-пункту не навешивается отступ хоста (он в стиле списка)."""
-    paragraphs = _render(
-        doc, "<ul><li>раз</li><li>два</li></ul>", paragraph_style="List Bullet"
-    )
-    assert _styles(paragraphs) == ["List Bullet", "List Bullet"]
-    assert all(p.paragraph_format.left_indent is None for p in paragraphs)

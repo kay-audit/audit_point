@@ -93,6 +93,76 @@ class TestBlockBoundaries:
         assert func(src) == expected
 
 
+class TestLists:
+    """Ревью #4: <ul>/<ol>/<li> больше не склеиваются («перввтор») — каждый
+    пункт на своей строке с маркером (clean_html: "- "/"N. "; html_to_markdown:
+    полноценный markdown-список, обёрнутый пустой строкой от соседнего
+    контента). Вложенные списки сплющиваются (см. _convert_lists)."""
+
+    def test_clean_html_bullet_items_on_own_lines(self):
+        assert HTMLUtils.clean_html("<ul><li>перв</li><li>втор</li></ul>") == "- перв\n- втор"
+
+    def test_clean_html_numbered_items_honest_numbering(self):
+        assert HTMLUtils.clean_html("<ol><li>перв</li><li>втор</li></ol>") == "1. перв\n2. втор"
+
+    def test_clean_html_orphan_li_stays_raw(self):
+        """<li> вне <ul>/<ol> — не пункт: маркер не ставится (сырой текст)."""
+        assert HTMLUtils.clean_html("<li>сирота</li>") == "сирота"
+
+    def test_clean_html_whitespace_between_list_tags_ignored(self):
+        src = "<ul>\n  <li>раз</li>\n  <li>два</li>\n</ul>"
+        assert HTMLUtils.clean_html(src) == "- раз\n- два"
+
+    def test_clean_html_unclosed_li_closed_by_sibling(self):
+        assert HTMLUtils.clean_html("<ul><li>раз<li>два</ul>") == "- раз\n- два"
+
+    def test_clean_html_nested_list_flattened_with_own_numbering(self):
+        """Вложенный список сплющивается в тот же уровень: свой маркер по
+        типу СВОЕГО списка, нумерация вложенного <ol> начинается заново."""
+        src = "<ul><li>маркер<ol><li>номер</li></ol></li></ul>"
+        assert HTMLUtils.clean_html(src) == "- маркер\n1. номер"
+
+    def test_clean_html_inline_formatting_inside_item_stripped(self):
+        src = "<ul><li><b>жирно</b> текст</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- жирно текст"
+
+    def test_clean_html_list_no_blank_lines_around(self):
+        """TXT не оборачивает список пустыми строками (не markdown)."""
+        src = "<div>интро</div><ul><li>раз</li></ul><div>хвост</div>"
+        assert HTMLUtils.clean_html(src) == "интро\n- раз\nхвост"
+
+    def test_markdown_bullet_items_are_real_list_syntax(self):
+        out = HTMLUtils.html_to_markdown("<ul><li>перв</li><li>втор</li></ul>")
+        assert out == "- перв  \n- втор"
+
+    def test_markdown_numbered_items_honest_numbering(self):
+        out = HTMLUtils.html_to_markdown("<ol><li>перв</li><li>втор</li></ol>")
+        assert out == "1. перв  \n2. втор"
+
+    def test_markdown_list_wrapped_in_blank_lines(self):
+        """Markdown-конвенция: список обособлен пустой строкой от соседних
+        абзацев по обе стороны — иначе рендерер может не распознать список."""
+        src = "<div>интро</div><ul><li>раз</li><li>два</li></ul><div>хвост</div>"
+        out = HTMLUtils.html_to_markdown(src)
+        assert out == "интро  \n  \n- раз  \n- два  \n  \nхвост"
+
+    def test_markdown_list_alone_has_no_stray_blank_lines(self):
+        """Список без соседнего контента не обрастает лишними пустыми строками."""
+        assert HTMLUtils.html_to_markdown("<ul><li>раз</li></ul>") == "- раз"
+
+    def test_markdown_nested_list_flattened_with_own_numbering(self):
+        src = "<ul><li>маркер<ol><li>номер</li></ol></li></ul>"
+        assert HTMLUtils.html_to_markdown(src) == "- маркер  \n1. номер"
+
+    def test_markdown_inline_formatting_inside_item_survives(self):
+        src = "<ul><li><b>жирно</b> текст</li></ul>"
+        assert HTMLUtils.html_to_markdown(src) == "- **жирно** текст"
+
+    def test_markdown_link_capsule_inside_item_survives(self):
+        src = f'<ul><li>{_LINK}текст</span></li></ul>'
+        assert HTMLUtils.html_to_markdown(src) == "- [текст](https://x.ru/d)"
+
+
 class TestSimpleCasesUnchanged:
     def test_plain_link_without_nesting(self):
         src = f'{_LINK}текст</span>'

@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 
 from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.shared import Pt, Twips
+from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -605,8 +605,16 @@ class _TopLevelSplitter(HTMLParser):
             if tag == "li" and self._list_stack:
                 # Пункт — свой абзац со стилем БЛИЖАЙШЕГО списка: вложенный
                 # список сплющивается в тот же уровень (см. split_block_segments).
+                # Собственный text-align <li> приоритетнее; при его отсутствии
+                # наследуется align объемлющего контейнера (открытого div/p с
+                # align — только такие контейнеры и попадают в _ctx_stack, см.
+                # ветку "div"/"p" ниже), как в браузере (text-align наследуется).
+                own_align = _extract_text_align(dict(attrs))
+                inherited_align = own_align if own_align is not None else (
+                    self._ctx_stack[-1][0] if self._ctx_stack else None
+                )
                 self._open_container(
-                    _extract_text_align(dict(attrs)),
+                    inherited_align,
                     list_style=self._list_stack[-1][0],
                 )
                 return
@@ -731,18 +739,6 @@ def _extract_text_align(attrs: dict) -> str | None:
 # (текстблок, скалярные rich-поля нарушения, подпись картинки, пункты списка).
 # ---------------------------------------------------------------------------
 
-# Отступ ТЕКСТА маркированной строки стиля "List Bullet" (built-in стиль
-# дефолтного шаблона python-docx, docx/templates/default.docx). Сам стиль
-# несёт только w:numPr numId=1 без своего w:ind — реальный отступ живёт в
-# определении уровня нумерации (numbering.xml: numId=1 → abstractNumId=8 →
-# w:lvl[ilvl=0]/w:pPr/w:ind left="360" hanging="360"). hanging=360 отодвигает
-# МАРКЕР первой строки на позицию 0, а текст строки — на left=360. Продолжение
-# многосегментного пункта (обычный абзац без стиля/маркера) получает тот же
-# left_indent, чтобы визуально начинаться под текстом первой строки, а не под
-# маркером (иначе вторая строка «проваливается» на 0.25" левее первой).
-_LIST_BULLET_TEXT_INDENT = Twips(360)
-
-
 def render_block_segments(
     doc: Document,
     html: str,
@@ -750,7 +746,6 @@ def render_block_segments(
     base_size_pt: float,
     base_italic: bool = False,
     default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-    paragraph_style: str | None = None,
     first_paragraph: Paragraph | None = None,
 ) -> list[Paragraph]:
     """HTML → абзацы документа: единая геометрия рендера для всех хостов.
@@ -763,19 +758,10 @@ def render_block_segments(
     последний — без прямого форматирования (наследует Normal), как у
     прежней одноабзацной модели.
 
-    paragraph_style применяется ТОЛЬКО к первому абзацу — маркер списка
-    ("List Bullet") или иной стиль хоста не повторяется на продолжениях
-    (зеркало «метка на первом абзаце», см. first_paragraph); игнорируется,
-    если передан first_paragraph. Для "List Bullet" продолжения получают
-    left_indent, совпадающий с текстовой позицией маркированной строки
-    (_LIST_BULLET_TEXT_INDENT) — иначе вторая строка пункта визуально
-    выпадает левее текста первой.
-
-    Список из самого HTML (V14.1, <ul>/<ol>) сильнее стиля хоста: сегмент-пункт
-    получает СВОЙ list_style на любой позиции, включая first_paragraph (метка
-    поля «Причины:» тогда стоит внутри первого пункта — маркер у всех пунктов
-    списка одинаковый). Свой отступ такому абзацу не нужен: его несёт стиль
-    списка, поэтому продолжение-left_indent на пункты не ставится.
+    Список из самого HTML (V14.1, <ul>/<ol>) — сегмент-пункт получает СВОЙ
+    list_style на любой позиции, включая first_paragraph (метка поля
+    «Причины:» тогда стоит внутри первого пункта — маркер у всех пунктов
+    списка одинаковый).
 
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
@@ -787,7 +773,7 @@ def render_block_segments(
         # Нет верхнеуровневых сегментов (пустой/пробельный html) — единственный
         # абзац с дефолтным выравниванием; apply_inline_html на исходном html
         # безопасен (no-op на пустой строке).
-        para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        para = first_paragraph if first_paragraph is not None else doc.add_paragraph()
         para.alignment = default_alignment
         apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
         return [para]
@@ -800,13 +786,9 @@ def render_block_segments(
                 if segment.list_style:
                     para.style = segment.list_style
             else:
-                para = doc.add_paragraph(style=segment.list_style or paragraph_style)
+                para = doc.add_paragraph(style=segment.list_style)
         else:
             para = doc.add_paragraph(style=segment.list_style)
-            if segment.list_style is None and paragraph_style == "List Bullet":
-                # Маркер только на первом сегменте (см. докстринг) — но текст
-                # продолжения должен стоять под текстом маркированной строки.
-                para.paragraph_format.left_indent = _LIST_BULLET_TEXT_INDENT
         para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
         apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
         paragraphs.append(para)
