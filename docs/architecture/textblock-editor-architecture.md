@@ -1337,7 +1337,7 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
 `violation-rich-fields.test.mjs`, `violation-rich-surface.test.mjs`,
 `violation-single-commit.test.mjs`, `violation-field-empty.test.mjs`,
 `corrector-persist-surface.test.mjs`, `formalizer-apply-surface.test.mjs`,
-`formalizer-rich-adapters.test.mjs`, `html-text.test.mjs`,
+`formalizer-rich-adapters.test.mjs`,
 `rich-text.test.mjs`. E2E (Playwright) — спеки
 `24-violation-field-drop`/`25-violation-find-replace`/`26-corrector-ownership`
 + дополненная `16-capsule-integrity`. Стаб DOM — `_browser-stub.mjs`; zero-width
@@ -1476,9 +1476,10 @@ Teardown при пересоздании DOM — `_teardownActiveRichField(viola
 Корректор коммитит в поверхность-владельца (§6). Формализатор НЕ пишет через
 существующую поверхность: `ViolationManager._applyFormalized`
 (`violation-core.js`) добавляет НОВЫЙ text-блок в конец каждого извлечённого
-поля через мутатор `addBlock` — готовый HTML от LLM (списки `<ul><li>`)
-берётся как есть, плоская строка переводится `plainToRichHtml`
-(`shared/html-text.js`). Поиск/замена видит text-блоки/caption'ы нарушения
+поля через мутатор `addBlock` — по контракту бэкенд отдаёт все поля готовым
+безопасным HTML (скаляры экранированы + `<br>`, списки `<ul><li>`), фронт
+только санитизирует `SafeHTML.sanitize(value, 'acts')`, эвристики
+«HTML или plain» нет. Поиск/замена видит text-блоки/caption'ы нарушения
 как `ViolationFieldSearchTarget` (§12.1) с параллельным undo-снимком
 поверхностей (§12.7).
 

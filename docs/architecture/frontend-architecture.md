@@ -86,10 +86,11 @@ static/js/
     ├── search/       # FindBar (Ctrl+F) + ActSearchEngine/Highlight/Replace —
     │                 #   поиск/замена по текстблокам и rich-полям нарушений,
     │                 #   deep-dive §12 в textblock-editor-architecture.md
-    ├── violation/    # ViolationManager (21 файл, включая
+    ├── violation/    # ViolationManager (20 файлов, включая
     │                 #   violation-field-surface.js — ViolationBlockSurface,
-    │                 #   violation-blocks.js — контейнер блоков поля,
-    │                 #   violation-table-block.js — редактор встроенной таблицы)
+    │                 #   violation-blocks.js — контейнер блоков поля; встроенные
+    │                 #   таблицы обслуживает общая машинерия table/ через
+    │                 #   резолвер table-store.js, отдельного редактора нет)
     ├── preview/      # PreviewManager + per-type renderer'ы
     ├── dialog/       # HelpManager, InvoiceDialog
     ├── context-menu/ # 5 файлов (tree, cells, violation, links-footnotes, core)
