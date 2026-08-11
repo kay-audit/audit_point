@@ -395,3 +395,134 @@ class TestCreateGigachat:
             "query": "КМ-25",
         }
         assert result.choices[0].finish_reason == "tool_calls"
+
+
+# Реальный ответ GigaChat через мост (прод, 11.08.2026): поля "id" нет —
+# схема ChatCompletion требует его, строгая валидация падала, ошибка уходила
+# как 502 → 5 ретраев → circuit breaker → «Временная ошибка AI-сервиса».
+GIGACHAT_RESPONSE_WITHOUT_ID = {
+    "choices": [{
+        "message": {
+            "content": "Привет! Да, я GigaChat. Чем могу помочь?",
+            "role": "assistant",
+        },
+        "index": 0,
+        "finish_reason": "stop",
+    }],
+    "created": 1754912146,
+    "model": "GigaChat-3-Ultra:32.3.7.3",
+    "object": "chat.completion",
+    "usage": {"prompt_tokens": 914, "completion_tokens": 15,
+              "total_tokens": 929},
+}
+
+
+class TestResponseNormalization:
+    """Дозаполнение обязательных полей схемы ChatCompletion.
+
+    Прямой HTTP-маршрут разбирает ответ ленивым конструктором openai-SDK и
+    отсутствие поля прощает; мост валидирует строго. Нормализация выравнивает
+    поведение маршрутов, НЕ подменяя присланное бэкендом.
+    """
+
+    async def _create(self, fake_redis, target: str, body: dict):
+        await put_heartbeat(fake_redis, [target])
+        client = make_client(target, timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "q"}],
+            tools=NOT_GIVEN, temperature=0.1,
+        ))
+        fields = await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200", "body": json.dumps(body)},
+        )
+        return await task, fields
+
+    async def test_gigachat_response_without_id_is_accepted(self, fake_redis):
+        """Регресс на инцидент: ответ GigaChat без "id" — успешный ответ."""
+        result, fields = await self._create(
+            fake_redis, "gigachat", GIGACHAT_RESPONSE_WITHOUT_ID,
+        )
+        assert result.choices[0].message.content == (
+            "Привет! Да, я GigaChat. Чем могу помочь?"
+        )
+        assert result.usage.total_tokens == 929
+        # Синтетический id привязан к request_id моста: логи СДП и воркера
+        # связываются по нему глазами.
+        assert result.id == "redis-bridge-" + fields["id"]
+
+    async def test_backend_fields_are_not_overwritten(self, fake_redis):
+        """Дозаполняем только отсутствующее: model/created/id из ответа живы."""
+        result, _fields = await self._create(
+            fake_redis, "openai", OPENAI_RESPONSE_BODY,
+        )
+        assert result.id == "chatcmpl-1"
+        assert result.model == "qwen-8b"
+        assert result.created == 1700000000
+
+    async def test_gigachat_model_survives_normalization(self, fake_redis):
+        """Имя модели берётся из ответа бэкенда, а не из констант адаптера."""
+        result, _fields = await self._create(
+            fake_redis, "gigachat", GIGACHAT_RESPONSE_WITHOUT_ID,
+        )
+        assert result.model == "GigaChat-3-Ultra:32.3.7.3"
+        assert result.created == 1754912146
+
+    async def test_blacklist_finish_reason_coerced_not_rejected(
+        self, fake_redis,
+    ):
+        """finish_reason="blacklist" (цензор GigaChat) вне Literal схемы
+        openai: приводим к content_filter, а не роняем ответ в 502."""
+        body = json.loads(json.dumps(GIGACHAT_RESPONSE_WITHOUT_ID))
+        body["choices"][0]["finish_reason"] = "blacklist"
+        result, _fields = await self._create(fake_redis, "gigachat", body)
+        assert result.choices[0].finish_reason == "content_filter"
+
+    async def test_minimal_choice_gets_defaults(self, fake_redis):
+        """Минимальный ответ без index/role/finish_reason/object/created."""
+        result, _fields = await self._create(
+            fake_redis, "openai",
+            {"choices": [{"message": {"content": "ок"}}]},
+        )
+        assert result.choices[0].index == 0
+        assert result.choices[0].message.role == "assistant"
+        assert result.choices[0].finish_reason == "stop"
+        assert result.object == "chat.completion"
+        assert result.created > 0
+        assert result.id.startswith("redis-bridge-")
+
+    async def test_blank_status_code_in_error_envelope_defaults_to_502(
+        self, fake_redis,
+    ):
+        """Пустой status_code в error-конверте — 502, а не голый ValueError
+        мимо иерархии openai.* (её видят retry / breaker / fallback)."""
+        await put_heartbeat(fake_redis, ["openai"])
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="error",
+            extra={"status_code": "", "message": "воркер приуныл"},
+        )
+        with pytest.raises(APIStatusError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 502
+
+    async def test_validation_error_message_names_the_field(self, fake_redis):
+        """В тексте 502 — деталь pydantic (какое поле не сошлось): иначе
+        причину не видно из логов СДП, как и было в инциденте."""
+        await put_heartbeat(fake_redis, ["openai"])
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200",
+                   "body": json.dumps({"совсем": "не ChatCompletion"})},
+        )
+        with pytest.raises(APIStatusError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 502
+        assert "choices" in str(exc_info.value.message)

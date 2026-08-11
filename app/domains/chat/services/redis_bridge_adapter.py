@@ -6,6 +6,18 @@ Jupyter DataLab (scripts/llm_redis_worker.ipynb) исполняет его пр�
 целевого LLM-бэкенда и пишет ответ в stream ответа. Протокол —
 docs/integrations/redis-llm-bridge.md.
 
+Тело final-конверта — сырой ответ бэкенда, поэтому перед валидацией оно
+нормализуется (_normalize_completion_payload). Прямой HTTP-маршрут разбирает
+ответ ленивым конструктором openai-SDK и переживает отсутствие полей,
+обязательных по схеме, но необязательных для бэкенда; ChatCompletion —
+нет. GigaChat, например, не присылает "id" и умеет finish_reason="blacklist":
+без нормализации штатный успешный ответ падал бы как «не соответствует
+схеме», ретраился как 5xx и открывал circuit breaker.
+
+Нормализация только ДОЗАПОЛНЯЕТ отсутствующее и приводит значения вне схемы:
+поля, реально присланные бэкендом (model, created, id), сохраняются как есть —
+иначе в ответе оказались бы выдуманные данные.
+
 Ошибки транслируются в иерархию ``openai.*`` — иначе существующие
 retry (retry.py), circuit breaker и fallback (llm_call.py) их не увидят:
 - воркер мёртв / цель недоступна / Redis лёг → APIConnectionError;
@@ -19,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from typing import Any
@@ -26,6 +39,10 @@ from typing import Any
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 from openai.types.chat import ChatCompletion
+
+logger = logging.getLogger(
+    "audit_workstation.domains.chat.services.redis_bridge_adapter",
+)
 
 # Версия конверта. v2 зарезервирована под по-кусочный стриминг (kind=chunk).
 ENVELOPE_VERSION = "1"
@@ -39,6 +56,20 @@ REQUEST_STREAM_MAXLEN = 1000
 RESP_TTL_SEC = 300
 # Имя consumer group воркеров — здесь для справки и тестов; группу создаёт воркер.
 CONSUMER_GROUP = "llm-workers"
+
+# --- Нормализация тела final-конверта ---
+# finish_reason, допустимые схемой openai. GigaChat отдаёт сверх этого
+# "blacklist" (сработал цензор) и "error"; неизвестное значение приводим
+# к допустимому, а не роняем из-за него весь ответ.
+_ALLOWED_FINISH_REASONS = frozenset({
+    "stop", "length", "tool_calls", "content_filter", "function_call",
+})
+_FINISH_REASON_ALIASES = {"blacklist": "content_filter", "error": "stop"}
+_FINISH_REASON_DEFAULT = "stop"
+# Длина детали ошибки валидации в сообщении APIStatusError: полный вывод
+# pydantic многострочный и уходит в лог целиком, а в сообщении нужен
+# опознаваемый хвост (имя поля), а не простыня.
+_VALIDATION_MESSAGE_LIMIT = 300
 
 
 def _make_request() -> httpx.Request:
@@ -158,15 +189,109 @@ def _find_terminal(entries: list[tuple[str, dict]]) -> dict | None:
     return None
 
 
-def _handle_terminal(fields: dict, *, wire_format: str):
+def _normalize_message(message: dict, *, wire_format: str) -> dict:
+    """Копия message с дозаполненным role и строковым function_call.arguments.
+
+    GigaChat отдаёт arguments как dict, а SDK ожидает строку. Конвертируем
+    ДО валидации, чтобы дальше _translate_response получил строку
+    (он умеет обе).
+    """
+    out = dict(message)
+    if not out.get("role"):
+        out["role"] = "assistant"
+    fc = out.get("function_call")
+    if (
+        wire_format == "gigachat"
+        and isinstance(fc, dict)
+        and not isinstance(fc.get("arguments"), str)
+    ):
+        out["function_call"] = {
+            **fc,
+            "arguments": json.dumps(
+                fc.get("arguments") or {}, ensure_ascii=False,
+            ),
+        }
+    return out
+
+
+def _normalize_choice(choice: Any, *, index: int, wire_format: str) -> Any:
+    """Копия choice с дозаполненным index и допустимым схемой finish_reason."""
+    if not isinstance(choice, dict):
+        return choice
+    out = dict(choice)
+    if not isinstance(out.get("index"), int):
+        out["index"] = index
+    reason = out.get("finish_reason")
+    if reason not in _ALLOWED_FINISH_REASONS:
+        out["finish_reason"] = _FINISH_REASON_ALIASES.get(
+            reason, _FINISH_REASON_DEFAULT,
+        )
+        logger.warning(
+            "redis-bridge: finish_reason=%r вне схемы openai, приведён к %r",
+            reason, out["finish_reason"],
+        )
+    message = out.get("message")
+    if isinstance(message, dict):
+        out["message"] = _normalize_message(message, wire_format=wire_format)
+    return out
+
+
+def _normalize_completion_payload(
+    raw: Any, *, wire_format: str, request_id: str | None,
+) -> Any:
+    """Возвращает копию тела ответа, пригодную для валидации ChatCompletion.
+
+    Дозаполняются ТОЛЬКО отсутствующие/непригодные по типу поля — присланное
+    бэкендом (model, created, id) сохраняется: иначе в ответе оказались бы
+    выдуманные данные, а логи и метрики врали бы про модель.
+
+    - ``id`` — GigaChat его не возвращает; синтезируем из request_id моста,
+      заодно получая сквозную корреляцию логов СДП ↔ воркер;
+    - ``object`` / ``created`` / ``model`` — подставляются, если их нет;
+    - ``choices[].index`` / ``finish_reason`` / ``message.role`` —
+      см. _normalize_choice.
+
+    Не-dict возвращается как есть: подменять форму ответа не наша задача,
+    пусть падает на валидации с внятной ошибкой.
+    """
+    if not isinstance(raw, dict):
+        return raw
+
+    out = dict(raw)
+    if not isinstance(out.get("id"), str) or not out["id"]:
+        out["id"] = f"redis-bridge-{request_id or uuid.uuid4().hex}"
+    if not isinstance(out.get("object"), str) or not out["object"]:
+        out["object"] = "chat.completion"
+    if not isinstance(out.get("model"), str):
+        out["model"] = ""
+    if not isinstance(out.get("created"), int):
+        try:
+            out["created"] = int(out["created"])
+        except (KeyError, TypeError, ValueError):
+            out["created"] = int(time.time())
+    if isinstance(out.get("choices"), list):
+        out["choices"] = [
+            _normalize_choice(choice, index=index, wire_format=wire_format)
+            for index, choice in enumerate(out["choices"])
+        ]
+    return out
+
+
+def _handle_terminal(
+    fields: dict, *, wire_format: str, request_id: str | None = None,
+):
     """Терминальный кусок → ChatCompletion либо APIStatusError.
 
     Нечитаемое/несовместимое со схемой тело final-конверта — это ответ
     LLM-бэкенда, а не сбой транспорта, поэтому APIStatusError 502
     (server-класс: ретраится по on_5xx, тригерит fallback), а не
     APIConnectionError с вводящим в заблуждение текстом про Redis.
+    В сообщение попадает деталь ошибки валидации (какое поле не сошлось):
+    без неё по логам СДП причина неотличима от любого другого сбоя схемы.
     """
     if fields.get("kind") == "error":
+        # status_code воркера — строка из stream'а; пустая/кривая не должна
+        # ронять адаптер голым ValueError мимо иерархии openai.*.
         try:
             code = int(fields.get("status_code") or 502)
         except (TypeError, ValueError):
@@ -181,28 +306,29 @@ def _handle_terminal(fields: dict, *, wire_format: str):
             502, f"redis-bridge: нечитаемое тело ответа воркера ({exc})",
         ) from exc
     try:
-        if wire_format == "gigachat":
-            # Нормализация: GigaChat отдаёт function_call.arguments как dict,
-            # но SDK ожидает строку. Преобразуем dict в JSON-строку ДО
-            # model_validate, затем _translate_response получит строку
-            # (он умеет обе).
-            for choice in raw.get("choices") or []:
-                fc = (choice.get("message") or {}).get("function_call")
-                if fc and not isinstance(fc.get("arguments"), str):
-                    fc["arguments"] = json.dumps(
-                        fc.get("arguments") or {}, ensure_ascii=False,
-                    )
-        completion = ChatCompletion.model_validate(raw)
+        completion = ChatCompletion.model_validate(
+            _normalize_completion_payload(
+                raw, wire_format=wire_format, request_id=request_id,
+            ),
+        )
         if wire_format == "gigachat":
             from app.domains.chat.services.gigachat_adapter import (
                 _translate_response,
             )
             completion = _translate_response(completion)
     except Exception as exc:
+        logger.warning(
+            "redis-bridge: тело ответа воркера не прошло валидацию "
+            "(request_id=%s, формат=%s, поля тела=%s): %s",
+            request_id, wire_format,
+            sorted(raw) if isinstance(raw, dict) else type(raw).__name__,
+            exc,
+        )
+        detail = " ".join(str(exc).split())[:_VALIDATION_MESSAGE_LIMIT]
         raise _status_error(
             502,
             "redis-bridge: тело ответа воркера не соответствует схеме "
-            f"ChatCompletion ({type(exc).__name__})",
+            f"ChatCompletion ({type(exc).__name__}: {detail})",
         ) from exc
     return completion
 
@@ -259,7 +385,9 @@ class _Completions:
             ) from exc
         if terminal is None:
             raise BridgeDeadlineError(request=_make_request())
-        return _handle_terminal(terminal, wire_format=client._target)
+        return _handle_terminal(
+            terminal, wire_format=client._target, request_id=request_id,
+        )
 
 
 class _Chat:
