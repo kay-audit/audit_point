@@ -69,8 +69,8 @@ def _client_by_prompt(overrides: dict[str, str] | None = None):
 
 async def test_formalize_maps_all_fields():
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=_client_by_prompt(),
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(_client_by_prompt(), "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("сырой текст")
 
@@ -103,8 +103,8 @@ async def test_formalize_list_items_escape_html():
         }),
     })
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -124,8 +124,8 @@ async def test_formalize_established_without_metrics_has_no_list():
         }),
     })
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -135,8 +135,8 @@ async def test_formalize_established_without_metrics_has_no_list():
 async def test_formalize_temperature_deterministic():
     client = _client_by_prompt()
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         await ViolationFormalizerService(_settings()).formalize("текст")
     # 4 экстрактора параллельно + 2-й этап рекомендаций.
@@ -151,8 +151,8 @@ async def test_formalize_extractor_failure_leaves_field_empty():
         {"эксперт по расследованию инцидентов": "не json вообще"},
     )
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -174,8 +174,8 @@ async def test_formalize_all_extractors_failed_raises_unavailable():
         side_effect=RuntimeError("LLM-провайдер недоступен"),
     )
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=fake,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(fake, "m")),
     ):
         with pytest.raises(TextActionUnavailableError) as exc_info:
             await ViolationFormalizerService(_settings()).formalize("текст")
@@ -195,8 +195,8 @@ async def test_formalize_partial_failure_returns_partial_result():
         "аналитик корректирующих мер": "не json",
     })
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -220,8 +220,8 @@ async def test_formalize_scalar_fields_escaped_and_newlines_to_br():
         }),
     })
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -234,8 +234,8 @@ async def test_formalize_recommendations_failure_returns_empty():
     """Сбой рекомендаций → пустой список, поля карточки не страдают."""
     client = _client_by_prompt({"аудитор процессов": "не json вообще"})
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -249,8 +249,8 @@ async def test_formalize_recommendations_cleaned_and_capped():
         "recommendations": ["", "  ", "r1", "r2", "r3", "r4", "r5", "r6", "r7"],
     })})
     with patch(
-        "app.domains.chat.services.text_actions.formalizer_service.build_llm_client",
-        return_value=client,
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "m")),
     ):
         out = await ViolationFormalizerService(_settings()).formalize("текст")
 
@@ -277,3 +277,31 @@ def test_extract_json_strips_think_and_grabs_object():
 def test_extract_json_raises_without_object():
     with pytest.raises(ValueError):
         extract_json("нет json")
+
+
+async def test_formalize_reports_unavailable_when_no_routes():
+    """Нет доступных маршрутов → 503 и ни одного запроса к провайдеру.
+
+    Отличие от «сорвались все экстракторы»: там четыре вызова всё-таки ушли,
+    здесь мы знаем заранее, что идти некуда.
+    """
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=None),
+    ):
+        with pytest.raises(TextActionUnavailableError):
+            await ViolationFormalizerService(_settings()).formalize("текст")
+
+
+async def test_formalize_uses_model_from_resolved_route():
+    """Все 5 вызовов уходят с моделью выбранного маршрута."""
+    client = _client_by_prompt()
+    with patch(
+        "app.domains.chat.services.text_actions.formalizer_service.resolve_target",
+        AsyncMock(return_value=(client, "route-model")),
+    ):
+        await ViolationFormalizerService(_settings()).formalize("текст")
+
+    assert client.chat.completions.create.call_count == 5
+    for call in client.chat.completions.create.call_args_list:
+        assert call.kwargs["model"] == "route-model"

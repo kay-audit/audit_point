@@ -124,6 +124,7 @@ always / forward: submit вопроса в шину + черновик (status='
 | `LLMHealthProbe` | `llm_health_probe.py` | Process-level фоновый probe primary-LLM при открытом circuit breaker: adaptive-backoff, пингует `client.models.list()` (для redis-маршрута это чтение heartbeat'а воркера с `require_healthy=True`), закрывает breaker через `probe_succeeded()` при восстановлении — перепроверка уходит из пути пользователя в фон |
 | `TextCorrectorService` | `text_actions/corrector_service.py` | Фича «Корректор»: один синхронный LLM-вызов над выделенным текстом в режиме `fix` / `readability` (см. [7.10](#710-text-actions-корректор-и-формализация-нарушения)) |
 | `ViolationFormalizerService` | `text_actions/formalizer_service.py` | Формализация нарушения: 4 параллельных JSON-экстрактора + этап рекомендаций → поля карточки нарушения |
+| `resolve_target` | `text_actions/llm_route.py` | Выбор клиента и модели для text-action по плану доступных маршрутов (тот же план, что у чата) |
 | `route_classifier` | `route_classifier.py` | Чистые функции классификации маршрута/исхода ответа ассистента: `classify_route` (`kb_agent`/`non_kb_llm`/`smalltalk`/`unknown`) и `outcome` (`ok`/`error`) — восстанавливаются из сохранённого сообщения без изменения hot-path оркестратора |
 
 **Persistence:** `chat_conversations`, `chat_messages` (+ колонка `agent_ref`), `chat_files`, bus-таблица `chat_agent_messages_bus` (см. §11.5).
@@ -820,14 +821,18 @@ async def open_act_page_handler(
 
 ### 7.10 Text actions: «Корректор» и «Формализация нарушения»
 
-Две фичи домена чата, живущие **вне** agent loop'а: беседы, истории и tool'ов у них нет — это прямые one-shot вызовы LLM над выделенным текстом. Код — `app/domains/chat/services/text_actions/`, API — `app/domains/chat/api/text_actions.py` (префикс `/api/v1/chat/text-actions`, доступ через `require_domain_access("chat")`). Инфраструктуру берут общую: `build_llm_client(settings)` (тот же маршрут `CHAT__PROFILE`) + `retry_on_transient` с той же `CHAT__RETRY__*`-политикой.
+Две фичи домена чата, живущие **вне** agent loop'а: беседы, истории и tool'ов у них нет — это прямые one-shot вызовы LLM над выделенным текстом. Код — `app/domains/chat/services/text_actions/`, API — `app/domains/chat/api/text_actions.py` (префикс `/api/v1/chat/text-actions`, доступ через `require_domain_access("chat")`). Инфраструктуру берут общую: выбор маршрута через `llm_route.resolve_target` (тот же план доступных провайдеров, что и у чата — см. [7.4a](#74a-resilience-retry--circuit-breaker--fallback)) + `retry_on_transient` с той же `CHAT__RETRY__*`-политикой.
 
 | Эндпоинт | Сервис | Что делает |
 |---|---|---|
 | `POST /text-actions/correct` | `TextCorrectorService.correct(text, mode)` | `mode="fix"` — орфография/пунктуация (`AUDITOR_SYSTEM_PROMPT`, температура `CORRECTOR_TEMPERATURE` = 0.1); `mode="readability"` — читаемость/структура (`READABILITY_SYSTEM_PROMPT`, `READABILITY_TEMPERATURE` = 0.3). Один вызов, ответ — исправленный текст |
 | `POST /text-actions/formalize-violation` | `ViolationFormalizerService.formalize(text)` | 4 JSON-экстрактора параллельно (`asyncio.gather`: суть/нормдок, причины+ответственные, последствия, меры) + 2-й этап «рекомендации, чего не хватает». Сбой отдельного экстрактора → пустое поле, а не 500 |
 
-Настройки — группа `CHAT__TEXT_ACTIONS__*` (`ChatDomainSettings.text_actions`): `CORRECTOR_MODEL` / `FORMALIZER_MODEL` (`None` → основная `CHAT__MODEL`), три температуры, `PER_CALL_TIMEOUT_SEC` (60), `MAX_INPUT_CHARS` (20000). Пустой ввод, превышение `MAX_INPUT_CHARS` и неизвестный `mode` → `TextActionValidationError` (422). Поле `recommendations` формализатора — дисплей-онли подсказка аналитику, в карточку нарушения и экспорт не идёт.
+**Маршрут выбирается, а не берётся из настроек.** `resolve_target` строит тот же план доступных маршрутов, что и чат, и отдаёт клиента с моделью первого живого. Без этого text-actions всегда били бы в `CHAT__PROFILE`: при `redis-bridge,openai` и воркере, поднятом только под gigachat, чат отвечал через fallback, а корректор на том же стенде отдавал 503. Если живых маршрутов нет, запрос не уходит вовсе — сразу `TextActionUnavailableError` (503).
+
+На fallback-маршруте модель берётся из `CHAT__FALLBACK_MODEL`, а `CORRECTOR_MODEL` / `FORMALIZER_MODEL` не переносятся: они названы под основного провайдера, и у другого их обычно нет.
+
+Настройки — группа `CHAT__TEXT_ACTIONS__*` (`ChatDomainSettings.text_actions`): `CORRECTOR_MODEL` / `FORMALIZER_MODEL` (`None` → модель выбранного маршрута), три температуры, `PER_CALL_TIMEOUT_SEC` (60), `MAX_INPUT_CHARS` (20000). Пустой ввод, превышение `MAX_INPUT_CHARS` и неизвестный `mode` → `TextActionValidationError` (422). Поле `recommendations` формализатора — дисплей-онли подсказка аналитику, в карточку нарушения и экспорт не идёт.
 
 ---
 

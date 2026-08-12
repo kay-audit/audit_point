@@ -15,6 +15,10 @@
 что не смогла — пусто»). Но отказ ВСЕХ экстракторов — это не пустой результат, а
 недоступный LLM: такой случай отдаётся ``TextActionUnavailableError`` (503), иначе
 лежащий провайдер неотличим от «модель ничего не нашла».
+
+Цель вызова (клиент + модель) выбирается по плану доступных маршрутов —
+``llm_route.resolve_target``, как и в чате: иначе формализатор отказывал бы там,
+где чат работает через fallback-маршрут.
 """
 
 import asyncio
@@ -29,8 +33,8 @@ from app.domains.chat.exceptions import (
     TextActionValidationError,
 )
 from app.domains.chat.schemas.text_actions import FormalizeResponse
-from app.domains.chat.services.llm_client import build_llm_client
 from app.domains.chat.services.retry import retry_on_transient
+from app.domains.chat.services.text_actions.llm_route import resolve_target
 from app.domains.chat.services.text_actions.formalizer_prompts import (
     CAUSES_SYSTEM,
     CONSEQUENCES_SYSTEM,
@@ -120,8 +124,8 @@ class ViolationFormalizerService:
     def __init__(self, settings: ChatDomainSettings) -> None:
         self._settings = settings
         ta = settings.text_actions
-        # None → основная модель профиля чата.
-        self._model = ta.formalizer_model or settings.model
+        # None → модель того маршрута, который выберет resolve_target.
+        self._preferred_model = ta.formalizer_model
         self._temperature = ta.formalizer_temperature
         self._timeout = ta.per_call_timeout_sec
         self._max_chars = ta.max_input_chars
@@ -136,8 +140,9 @@ class ViolationFormalizerService:
 
     async def formalize(self, text: str) -> FormalizeResponse:
         """Разложить текст по полям карточки. Кидает ``TextActionValidationError``
-        на пустой/слишком длинный ввод и ``TextActionUnavailableError``, когда
-        сорвались ВСЕ экстракторы (отказ LLM-провайдера). Сбой ЧАСТИ экстракторов
+        на пустой/слишком длинный ввод и ``TextActionUnavailableError`` в двух
+        случаях: не осталось доступных LLM-маршрутов (тогда не уходит ни одного
+        запроса) либо сорвались ВСЕ экстракторы. Сбой ЧАСТИ экстракторов
         толерантен: их поля останутся пустыми, остальные заполнятся.
 
         После 4 экстракторов — 2-й этап: рекомендации «чего не хватает» по уже
@@ -151,7 +156,12 @@ class ViolationFormalizerService:
             raise TextActionValidationError(
                 f"Текст длиннее {self._max_chars} символов — сократите выделение",
             )
-        client = build_llm_client(self._settings)
+        target = await resolve_target(
+            self._settings, preferred_model=self._preferred_model,
+        )
+        if target is None:
+            raise TextActionUnavailableError(_UNAVAILABLE_MESSAGE)
+        client, model = target
         extractors = (
             (EssenceParsed, ESSENCE_SYSTEM),
             (CausesParsed, CAUSES_SYSTEM),
@@ -162,7 +172,7 @@ class ViolationFormalizerService:
         # разбираем результаты ниже, чтобы отличить пустой разбор от отказа вызова.
         results = await asyncio.gather(
             *(
-                self._extract(client, schema_cls, system, text)
+                self._extract(client, model, schema_cls, system, text)
                 for schema_cls, system in extractors
             ),
             return_exceptions=True,
@@ -187,7 +197,7 @@ class ViolationFormalizerService:
             raise TextActionUnavailableError(_UNAVAILABLE_MESSAGE)
         essence, causes, consequences, measures = parsed
         recommendations = await self._recommend(
-            client, essence, causes, consequences, measures,
+            client, model, essence, causes, consequences, measures,
         )
         return FormalizeResponse(
             violated=_text_to_html(essence.norm_doc),
@@ -199,13 +209,13 @@ class ViolationFormalizerService:
             recommendations=recommendations,
         )
 
-    async def _extract(self, client, schema_cls, system: str, text: str):
+    async def _extract(self, client, model: str, schema_cls, system: str, text: str):
         """Один экстрактор: JSON-вызов + валидация. Сбой вызова/разбора отдаётся
         исключением — решение «пустое поле или авария» принимает ``formalize``,
         которому видно, упал ли один экстрактор или все сразу."""
         raw = await run_json_call(
             client,
-            model=self._model,
+            model=model,
             temperature=self._temperature,
             system=system,
             user=text,
@@ -217,6 +227,7 @@ class ViolationFormalizerService:
     async def _recommend(
         self,
         client,
+        model: str,
         essence: EssenceParsed,
         causes: CausesParsed,
         consequences: ConsequencesParsed,
@@ -239,7 +250,7 @@ class ViolationFormalizerService:
         try:
             raw = await run_json_call(
                 client,
-                model=self._model,
+                model=model,
                 temperature=self._temperature,
                 system=RECOMMENDATIONS_SYSTEM,
                 user=user,
