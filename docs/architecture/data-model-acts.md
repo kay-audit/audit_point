@@ -211,58 +211,38 @@ underline}` **вырезан целиком** (директива владель
 настроек (`ACTS__TEXTBLOCKS__FONT_SIZE_*`, экранные 16px → 12pt ×0.75), не
 хранится per-block. Deep-dive — [`textblock-editor-architecture.md`](textblock-editor-architecture.md) §2/§10.
 
-`ViolationSchema` (`act_content.py::ViolationSchema`) — нарушение, прикреплённое к узлу:
+`ViolationSchema` (`act_content.py::ViolationSchema`) — нарушение, прикреплённое к узлу; блочная модель (полный дизайн реестра — §13):
 
-| Поле                  | Тип                                       | Назначение                                                  |
-|-----------------------|-------------------------------------------|-------------------------------------------------------------|
-| `id`                  | str                                       | ID нарушения                                                 |
-| `nodeId`              | str                                       | ID узла-носителя                                             |
-| `violated`            | str, default `""`                         | секция «Нарушено» — **rich-HTML** (см. ниже)                 |
-| `established`         | str, default `""`                         | секция «Установлено» — **rich-HTML**                         |
-| `descriptionList`     | `ViolationDescriptionListSchema`          | `{enabled: bool, items: list[str]}` — каждый пункт **rich-HTML** |
-| `additionalContent`   | `ViolationAdditionalContentSchema`        | `{enabled: bool, items: list[ViolationContentItemSchema]}`   |
-| `reasons`             | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Причины», content **rich-HTML** |
-| `measures`            | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Принятые меры» (под «Причинами»), content **rich-HTML** |
-| `consequences`        | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Последствия», content **rich-HTML** |
-| `responsible`         | `ViolationOptionalFieldSchema`            | `{enabled: bool, content: str}` — «Ответственные», content **rich-HTML** |
+| Поле         | Тип                    | Назначение                                                  |
+|--------------|-------------------------|---------------------------------------------------------------|
+| `id`         | str                     | ID нарушения                                                 |
+| `nodeId`     | str                     | ID узла-носителя                                             |
+| `fieldOrder` | `list[str] \| None`     | Пользовательский порядок отображения 10 полей; `None` (дефолт) — стандартный порядок (`default_order` реестра). Валидатор `validate_field_order` требует перестановку ВСЕХ ключей реестра ровно по разу (ловит дубли/пропуски/чужие ключи) |
+| `violated`, `established`, `description`, `codeMining`, `processMining`, `additionalContent`, `reasons`, `measures`, `consequences`, `responsible` | `ViolationFieldSchema` (×10) | Поля-контейнеры; состав, колонки БД, метки и флаги `mandatory`/`small` задаёт реестр `app/domains/acts/violation_fields.py` (§13) |
 
-С PR #37 (`rich-editor-integration`) текстовые поля нарушения — **rich-HTML**
-по образцу `TextBlockSchema.content` (формат, выравнивание, размер,
-капсулы-ссылки; сноски запрещены политикой). Канон состава — реестр
-`app/domains/acts/violation_fields.py` (флаг `rich=True` у 7 дескрипторов) +
-фронт-зеркало `violation-fields.js`; guard-тесты пиннят флаги. Полный контракт
-полей — §13. На save rich-поля санитизируются `sanitize_rich_html` (nh3;
-текстблоки — bleach, общий allowlist `ACTS__SANITIZER__*`) — deep-dive §9.3/§15 в
-[`textblock-editor-architecture.md`](textblock-editor-architecture.md).
+`ViolationFieldSchema` — единая форма у всех десяти полей: `{enabled: bool, blocks: list[ViolationBlock]}`. У mandatory-полей (`violated`/`established`) чекбокса в UI нет — `enabled` принудительно `True` (`ViolationSchema.enforce_mandatory_enabled`, model_validator). Лимит числа блоков в поле — `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` (валидатор `validate_blocks_count` НА МОДЕЛИ контейнера, не Field-аннотацией на списке: комбинация `Len`-аннотации с внутренним дискриминатором ломала сборку схемы на отдельных версиях pydantic — issues #9503/#10352).
 
-Текстовые поля нарушения (`violated`/`established`/`reasons`/`responsible`/
-`consequences`/`measures`) можно автозаполнить из свободного описания — кнопка
-«✨ Формализовать текст» на карточке нарушения зовёт формализатор
+**Блоки** — плоский payload (по образцу Portable Text/BlockNote, без Notion-вложенности), дискриминированный union `ViolationBlock` по строковому полю `type` (прямой lookup по тегу, без callable Tag/Discriminator). Стабильный `id = str(uuid4())` на весь жизненный цикл блока (нужен диффу версий и DnD). Неизвестный `type` → HTTP 422, fallback'а сознательно нет:
+
+| Схема | Поля | Назначение |
+|---|---|---|
+| `ViolationTextBlockSchema` | `id`, `type: "text"`, `content` | Rich-HTML текст-блок — та же rich-поверхность и allowlist, что у `TextBlockSchema.content` (форматирование, выравнивание, размер, капсулы-ссылки, списки `<ul>/<ol>/<li>`; сноски запрещены политикой) |
+| `ViolationImageBlockSchema` | `id`, `type: "image"`, `url`, `caption`, `filename`, `width` | Inline-картинка: `url` — data:image-URL разрешённого растрового формата (whitelist из `ACTS__IMAGES__ALLOWED_MIME_TYPES`, валидатор `validate_image_url`, лимит длины `VIOLATION_IMAGE_URL_MAX_LENGTH`); `caption` — rich-HTML; `filename`/`url` — plain/verbatim; `width` 0–100 (% полезной ширины страницы, `0` — авто) |
+| `ViolationTableBlockSchema` | `id`, `type: "table"`, `table: EmbeddedTableSchema` | Обычная таблица. `EmbeddedTableSchema` — сиблинг `TableSchema` (оба наследуют `TableGridSchema`, см. выше): та же сетка/`colWidths`/структурные инварианты, но без `id`/`nodeId`/`protected`/`deletable`/`kind` (адресация — по id блока-обёртки; подвид всегда «обычная» таблица — metrics/risk-подвиды, пины и каскады metrics↔risk — семантика дерева, к нарушению не относится). Ячейки хранятся дословно (plain-текст, тот же инвариант B8, что у больших таблиц узла) |
+
+Лимиты картинок (число, байты на файл, байты на акт) считаются по ВСЕМ полям нарушения совокупно, а не по отдельному полю — зеркалятся на фронте (`_validateSubtreeContentItems` в `validation-tree.js`, `estimateActImageBytes`). При сохранении rich-содержимое (`text.content`, `image.caption`) санитизируется `sanitize_rich_html` (nh3; текстблоки — bleach, общий allowlist `ACTS__SANITIZER__*`); ячейки table-блоков — verbatim, не трогаются. Деталь санитайзера — §13, deep-dive §9.3/§15 в [`textblock-editor-architecture.md`](textblock-editor-architecture.md).
+
+Шесть текстовых полей нарушения (`violated`/`established`/`reasons`/`measures`/`consequences`/`responsible`) можно автозаполнить из свободного описания — кнопка
+«✨ Формализовать из текста» на карточке нарушения зовёт формализатор
 (`app/domains/chat/services/text_actions/formalizer_service.py`, эндпоинт
 `POST /api/v1/chat/text-actions/formalize-violation`): 4 экстрактора D17 разбирают
-текст параллельно и раскладывают его по полям (что не извлеклось — поле пустое; уже
-заполненное поле пустым ответом не затирается). Плоские строки LLM пишутся в
-rich-поля через `plainToRichHtml` (`static/js/shared/html-text.js`: escape +
-`\n`→`<br>`) и `surface.setContent`; чтение полей в промпт — через экстрактор
-видимого текста (`_richToPlain` в
-`static/js/constructor/text-actions/formalizer-popover.js`). Заголовок панели
+текст параллельно и раскладывают его по полям (что не извлеклось — контейнер не трогается; уже
+заполненное поле пустым ответом не затирается). CodeMining/ProcessMining формализатор не заполняет — гарантия держится составом полей `FormalizeResponse` (фронт применяет пересечение ключей ответа с реестром, `formalizedFieldKeys`). Каждое непустое значение ответа уходит НОВЫМ text-блоком в конец своего поля (`ViolationManager._applyFormalized`, `violation-core.js`) с автовключением чекбокса поля. Контракт ответа: ВСЕ поля — готовый безопасный HTML (бэкенд экранирует скаляры + `\n`→`<br>`, списки — `<ul><li>`), фронт только санитизирует `SafeHTML.sanitize(value, 'acts')` — эвристики «HTML или plain» нет. Провал всех экстракторов → 503 `TextActionUnavailableError` («ИИ-сервис недоступен»), а не пустой успех; частичный провал даёт частичный результат. Заголовок панели
 подставляет реальный
 номер родительского пункта, свободный текст предзаполняется текущими полями карточки.
 Вторым этапом (по извлечённым полям) формализатор возвращает `recommendations` —
 дисплей-онли подсказки «чего не хватает в описании»: показываются в панели рядом с
 превью, но в карточку и экспорт НЕ пишутся (кнопка «Применить» их не трогает).
-
-`ViolationContentItemSchema` (`act_content.py::ViolationContentItemSchema`) — элемент additionalContent:
-
-| Поле       | Тип                                | Назначение                                |
-|------------|------------------------------------|-------------------------------------------|
-| `id`       | str                                | ID элемента                               |
-| `type`     | `"case" | "image" | "freeText"`    | тип                                       |
-| `content`  | str, default `""`                  | текст (для `case`, `freeText`) — **rich-HTML**, санитизируется по типу item'а |
-| `url`      | str, default `""`                  | URL изображения (для `image`) — plain/verbatim (base64 data-URL, свой валидатор) |
-| `caption`  | str, default `""`                  | подпись изображения — **rich-HTML**       |
-| `filename` | str, default `""`                  | имя файла — plain/verbatim                |
-| `width`    | int 0–100, default `0`             | ширина картинки, % полезной ширины листа (0 = авто: натуральный размер с потолком по ширине) |
 
 ---
 
@@ -526,26 +506,36 @@ API истории и восстановления — роутер `app/domains
 
 ## 13. Карточка нарушения: контракт полей и рендер
 
-**Контракт полей — `app/domains/acts/violation_fields.py`.** Single source of truth: `VIOLATION_FIELDS` — кортеж `ViolationFieldDescriptor(key, label, order, kind, small, show_label_in_preview, rich)` для 8 полей контента нарушения (`id`/`nodeId` — метаданные, не входят):
+**Контракт полей — `app/domains/acts/violation_fields.py`.** Single source of truth: `VIOLATION_FIELDS` — кортеж `ViolationFieldDescriptor(key, column, label, default_order, mandatory, small, labeled)` для всех 10 полей нарушения (`id`/`nodeId`/`fieldOrder` — метаданные нарушения, не входят в реестр):
 
-| `key` | `label` | `order` | `kind` | `small` | `rich` |
-|---|---|---|---|---|---|
-| `violated` | «Нарушено» | 0 | `pair` | ✔ | ✔ |
-| `established` | «Установлено» | 1 | `pair` | ✔ | ✔ |
-| `descriptionList` | — (без подписи, решение #12) | 2 | `list` | ✔ | ✔ |
-| `additionalContent` | — (без подписи) | 3 | `additional` | ✔ | ✘ |
-| `reasons` | «Причины» | 4 | `optional_text` | ✘ | ✔ |
-| `measures` | «Принятые меры» | 5 | `optional_text` | ✘ | ✔ |
-| `consequences` | «Последствия» | 6 | `optional_text` | ✘ | ✔ |
-| `responsible` | «Ответственные» (канон #11 — не «Ответственный») | 7 | `optional_text` | ✘ | ✔ |
+| `key` | `column` | `label` | `default_order` | `mandatory` | `small` | `labeled` |
+|---|---|---|---|---|---|---|
+| `violated` | `violated` | «Нарушено» | 0 | ✔ | ✔ | ✔ |
+| `established` | `established` | «Установлено» | 1 | ✔ | ✔ | ✔ |
+| `description` | `description` | «Описание» | 2 | ✘ | ✘ | ✔ |
+| `codeMining` | `code_mining` | «CodeMining» | 3 | ✘ | ✘ | ✘ |
+| `processMining` | `process_mining` | «ProcessMining» | 4 | ✘ | ✘ | ✘ |
+| `additionalContent` | `additional_content` | «Дополнительный контент» | 5 | ✘ | ✘ | ✘ |
+| `reasons` | `reasons` | «Причины» | 6 | ✘ | ✘ | ✔ |
+| `measures` | `measures` | «Принятые меры» | 7 | ✘ | ✘ | ✔ |
+| `consequences` | `consequences` | «Последствия» | 8 | ✘ | ✘ | ✔ |
+| `responsible` | `responsible` | «Ответственные» (канон #11 — не «Ответственный») | 9 | ✘ | ✘ | ✔ |
 
-`small=True` → 9pt (`Sizes.violation_pt`), `small=False` → 12pt (`Sizes.body_pt`; закреплено `test_reasons_block_stays_12pt_non_italic`). `rich=True` у семи полей — они редактируются rich-редактором и санитизируются как HTML (`sanitize_rich_html`, nh3) на сохранении; у `descriptionList` санитайзер идёт по каждому пункту `items[]` отдельно (ветка `kind == "list"` в walker'е `_sanitize_violation_obj`/`_sanitize_violation_dict`). `additionalContent` — `rich=False` (контейнер: сам флаг контейнера не читается, но case/freeText-элементы и caption картинок чистятся по типу item в том же walker'е, минуя флаг; `filename`/`url` остаются дословными).
+`mandatory=True` (`violated`/`established`) — чекбокса в UI нет, `enabled` принудительно `True` (`ViolationSchema.enforce_mandatory_enabled`). `small=True` (`violated`/`established`) → 9pt (`Sizes.violation_pt`) в DOCX + курсив; `small=False` → 12pt (`Sizes.body_pt`, обычное начертание; закреплено `test_reasons_block_stays_12pt_non_italic`). `labeled=False` (`codeMining`/`processMining`/`additionalContent`, решение владельца) — в экспортах и превью поле выводится БЕЗ заголовка-метки, одним контентом подряд, как текстблок; в форме конструктора подпись и чекбокс поля остаются. Поля `kind`/`rich` старого реестра (виды `pair`/`list`/`additional`/`optional_text` + флаг `rich` per-поле) удалены — все 10 полей одной формы `{enabled, blocks}`, «богатость» контента определяется типом блока (text/image/table), а не полем-контейнером.
 
-Реестр синхронизируется **ВРУЧНУЮ** с фронтовым зеркалом `static/js/constructor/violation/violation-fields.js` (как `block_types.py` ↔ `block-types.js`, `chat/names.py` ↔ `chat-client-actions.js` — фронт Python не импортирует). Два теста-стража держат соответствие: `tests/domains/acts/test_violation_fields_guard.py` (бэк) и `tests/js/violation-fields.test.mjs` (фронт, точные строки меток).
+**Политика рендеров централизована в реестре** (там же, `violation_fields.py`): `should_render_field(field, enabled, has_blocks)` — выводить ли поле (mandatory всегда, опциональное — при `enabled` и непустом контейнере) и `field_label_for_render(field)` — метка либо `None` при `labeled=False`. Оба Python-рендера (DOCX и MD/TXT) ОБЯЗАНЫ звать эти предикаты, а не повторять условия у себя; фронтовое превью (`preview-violation-renderer.js`) остаётся ручным зеркалом, как и весь реестр. Семантику предикатов пинит `TestRenderPolicy` в страже реестра, паритет трёх форматов — `test_violation_parity.py` (метки `labeled=True` обязаны быть в каждом выводе, метки `labeled=False` — отсутствовать в каждом).
 
-**Общий рендер MD/TXT — `formatters/violation_render.py`.** TXT- и MD-форматтеры делегируют сюда общие функции рендера полей нарушения (композиция, не наследование — параметризованный хелпер, а не базовый класс): `format_violation`, `add_required_pair`, `add_labeled_section`, `add_description_list`, `add_case`, `add_free_text`, `add_additional_content`; `wrap_bold`/`wrap_plain` — единственная точка расхождения по формату (передаётся параметром). Раньше рендер дублировался по формату. `_add_image` НЕ вынесен — рендер картинки реально расходится между MD и TXT. Экранирование инлайн-спецсимволов Markdown — `formatters/utils/markdown_utils.py::MarkdownUtils.escape_inline` (экранирует `\` ПЕРВЫМ, затем остальные спецсимволы — иначе пользовательский `\` перед спецсимволом «съедал» бы экранирование).
+Реестр синхронизируется **ВРУЧНУЮ** с фронтовым зеркалом `static/js/constructor/violation/violation-fields.js` (как `block_types.py` ↔ `block-types.js`, `chat/names.py` ↔ `chat-client-actions.js` — фронт Python не импортирует). Два теста-стража держат соответствие: `tests/domains/acts/test_violation_fields_guard.py` (бэк) и `tests/js/violation-fields.test.mjs` (фронт, точные строки меток). `ordered_fields(violation_data)` (`violation_fields.py`) — единая точка порядка отображения: `fieldOrder` нарушения, если он валиден (перестановка ВСЕХ ключей реестра), иначе `VIOLATION_FIELDS` как есть; читают DOCX/MD/TXT-рендеры и фронтовый `getOrderedFieldKeys` (`violation-fields.js`).
 
-**Фронт: нумерация и changelog.** `violation-numbering.js::computeAdditionalContentNumbers` — нумерация кейсов/картинок в `additionalContent` (заменил приватный метод `calculateCaseNumbers`; читают `violation-rendering.js` и `violation-drag-drop.js`). `violation-audit.js::ViolationAudit` — снимок для дифф-аудита двухфазный: `synthesize()` кладёт фингерпринты в статический `_pendingSnapshot` (не коммитит), `confirmSave()` промотирует его в `_snapshot` только ПОСЛЕ подтверждённого успешного сохранения (вызывается из `shared/api.js` — `saveActContent`/`forceSaveToDb` — и `constructor/lock-manager.js` — `_initiateExit` — в ветке успеха). Раньше снимок коммитился независимо от результата сохранения, что могло зафиксировать несохранённое состояние как базу для следующего диффа.
+**Хранение — колонка на поле.** Таблица `act_violations` (`migrations/{postgresql,greenplum}/schema.sql`) хранит все 10 полей JSONB-колонками по имени `column` реестра (`violated`, `established`, `description`, `code_mining`, `process_mining`, `additional_content`, `reasons`, `measures`, `consequences`, `responsible`) + `field_order JSONB` (пользовательский порядок; `NULL` — стандартный). Каждая полевая колонка несёт CHECK `check_<column>_is_object_or_null` (`jsonb_typeof(...) = 'object'`), `field_order` — `check_field_order_is_array_or_null`. Единственное место знания «строка БД ↔ документ нарушения» — `app/domains/acts/repositories/violation_row_mapper.py`: `select_columns_sql`/`insert_sql`/`copy_sql` строятся циклом по `VIOLATION_FIELDS`, `row_to_violation_dict`/`violation_insert_args` конвертируют строку в JSON и обратно (NULL-колонка → дефолтный контейнер, mandatory-поля — включённые). Потребители — загрузка/сохранение (`act_content.py`), копирование акта (`act_crud.py`, INSERT…SELECT). Страж состава колонок — `tests/domains/acts/test_violation_schema_columns_guard.py` (обе schema.sql ↔ реестр), маппера — `tests/domains/acts/test_violation_row_mapper.py`.
+
+**Санитайзер — `utils/html_sanitizer.py`.** Единый цикл `_sanitize_violation_common` (общий для obj- и dict-формы) — по всем 10 полям реестра → по блокам поля → диспетчер `_sanitize_block` по `type`: `text` → `content` через `sanitize_rich_html` (nh3); `image` → `caption` через `sanitize_rich_html`, `url`/`filename` — plain, не трогаются; `table` — не трогается (ячейки хранятся дословно, тот же инвариант B8, что у больших таблиц узла). Отсутствующее/`None`-поле или `blocks` не-список пропускаются без исключения.
+
+**Общий рендер MD/TXT — `formatters/violation_render.py::format_violation`.** Единый цикл по `ordered_fields(violation_data)`; видимость поля и его метка — через предикаты реестра (`should_render_field`/`field_label_for_render`, см. выше): у mandatory-поля метка выводится всегда (даже при пустом контейнере — паритет с DOCX), у остальных — только при `enabled` и хотя бы одном блоке, у `labeled=False` строка метки не выводится вовсе. Внутри поля — по блокам: `text` → `text_conv(content)` (колбэк HTML→Markdown/plain от вызывающего форматтера), `image`/`table` → колбэки `add_image`/`add_table`. `bold_wrap`/`wrap_plain` — единственная точка расхождения MD/TXT по оформлению метки. Прежний зоопарк per-kind функций (`add_required_pair`/`add_description_list`/`add_case`/`add_additional_content`/…) убран вместе со старой моделью полей.
+
+**DOCX — `formatters/docx/builders/violation.py::build_violation`.** Тот же цикл по `ordered_fields` и те же предикаты видимости/метки: размер шрифта поля — `Sizes.violation_pt` при `small=True`, иначе `Sizes.body_pt` (вместо позиционного хардкода «первые четыре поля мелкие»); у поля С МЕТКОЙ первый text-блок идёт inline с ней («Метка: текст» — привычный вид), остальные блоки — своими абзацами/shape'ами; у поля с `labeled=False` абзац-метка не создаётся вовсе (в том числе пустой, когда поле начинается с картинки или таблицы) — все блоки рендерятся напрямую; `image` → `_add_image`/`_scale_picture`, `table` → общий `build_table` через `EmbeddedTableSchema`. Списки (`<ul>/<ol>/<li>`) конвертируются в стили Word «List Bullet»/«List Number» на общем пути `render_block_segments` (`docx/builders/inline.py`) — рендерятся одинаково и из текстблоков, и из любого rich-поля нарушения (§9.3/§15 в [`textblock-editor-architecture.md`](textblock-editor-architecture.md)).
+
+**Фронт: контейнер блоков и аудит.** `violation-blocks.js::createBlocksField` — единый компонент секции ОДНОГО поля (заголовок/чекбокс, тулбар «+ Текст | + Таблица | + Картинка», зона вставки с контекстным меню и приёмом файлов) для всех 10 полей реестра — «Дополнительный контент» перестал быть особым случаем. Записи в модель — только через мутаторы `violation-mutations.js` (`setFieldEnabled`/`setFieldOrder`/`setBlockField`/`addBlock`/`removeBlock`/`moveBlock`); исключение — ячейки встроенных таблиц: их правит общая машинерия таблиц напрямую в `blocks[].table.grid` через резолвер `table-store.js` (запись ловит Proxy состояния, read-only отсекают гейты самой машинерии). `violation-audit.js::ViolationAudit` — снимок для дифф-аудита двухфазный: `synthesize()` кладёт фингерпринты (по реестру, блок-за-блоком; картинки — без `url`, таблицы — только содержимое ячеек) в статический `_pendingSnapshot` (не коммитит), `confirmSave()` промотирует его в `_snapshot` только ПОСЛЕ подтверждённого успешного сохранения (вызывается из `shared/api.js` — `saveActContent`/`forceSaveToDb` — и `constructor/lock-manager.js` — `_initiateExit` — в ветке успеха). Раньше снимок коммитился независимо от результата сохранения, что могло зафиксировать несохранённое состояние как базу для следующего диффа.
 
 ---
 
@@ -600,7 +590,7 @@ API истории и восстановления — роутер `app/domains
 5. Метод создания `addChartToNode()` в `state-content.js` + render-метод и запись в `ItemsRenderer._leafRenderers` (`items-renderer.js:252`).
 6. Preview-рендерер: `preview-chart-renderer.js` + диспетч в `preview.js`.
 7. Три форматтера экспорта: обход у всех общий — `formatters/tree_walker.py` (`walk(tree, visitor, blocks)` сам диспетчит leaf-типы по `LEAF_BLOCK_REFS`, включая «item с прикреплённой таблицей»), поэтому достаточно по **одному визитор-методу `on_chart` на формат**: `_TextTreeVisitor` (`text_formatter.py`), `_MarkdownTreeVisitor` (`markdown_formatter.py`), `_DocxTreeVisitor` (`docx/formatter.py`, + builder).
-8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py:478` и `:509`). Санитайзера два: `sanitize_html` (bleach — текстблоки/дерево) и `sanitize_rich_html` (nh3 — rich-поля нарушений, состав по флагу `rich` реестра `violation_fields.py`); для нового блока выбери движок сознательно и задокументируй выбор. Пропуск = молчаливая XSS-дыра.
+8. Санитайзер: если у блока есть HTML-поля — обработка в `sanitize_act_data` И `sanitize_act_content_dict` (`utils/html_sanitizer.py:478` и `:509`). Санитайзера два: `sanitize_html` (bleach — текстблоки/дерево) и `sanitize_rich_html` (nh3 — rich-содержимое блоков нарушения: `text.content`, `image.caption`, диспетчер `_sanitize_block` по всем 10 полям реестра `violation_fields.py`); для нового блока выбери движок сознательно и задокументируй выбор. Пропуск = молчаливая XSS-дыра.
 9. Фикстура типа в `_BLOCK_PAYLOADS` тест-стража (`test_block_types_guard.py`) — параметризация по `LEAF_BLOCK_TYPES` сама потребует её.
 10. Иконка типа в `AppConfig.tree.icons` и, при необходимости, названия в `typeNames` / `limitNames` (`app-config.js`).
 

@@ -130,7 +130,8 @@ text actions) — шина `chat_agent_messages_bus` этим документо
 | Ситуация | Исключение | Реакция системы (существующая) |
 |---|---|---|
 | Heartbeat нет / цель не в списке `targets` | `APIConnectionError` | connect-класс retry (до 2 попыток), circuit breaker, fallback, error-блок |
-| Redis недоступен (сбой команды `GET`/`XADD`/`XRANGE`) | `APIConnectionError` | то же |
+| Redis недоступен ДО постановки заявки (сбой `GET` heartbeat'а или самого `XADD`) | `APIConnectionError` | то же — заявки в стриме нет, повтор безопасен |
+| Redis недоступен ПОСЛЕ постановки заявки (сбой `XRANGE` на поллинге) | `BridgePollError` (подкласс `APIConnectionError`) | БЕЗ retry (конверт уже в стриме, воркер его исполняет; повтор положил бы второй конверт с новым `request_id`), но circuit breaker + fallback срабатывают как обычно |
 | Дедлайн ожидания истёк | `BridgeDeadlineError` (подкласс `APITimeoutError`) | БЕЗ retry (дедлайн = полный `CHAT__REQUEST_TIMEOUT`; повтор клал бы в stream дубль-заявку, воркер исполнял бы её против LLM), но circuit breaker + fallback срабатывают как обычно |
 | Воркер вернул `error` со статусом 429 / 5xx | `BridgeBackendError` (подкласс `APIStatusError`) | БЕЗ retry: воркер эти статусы **уже** повторял сам (3 попытки с паузами 5/10/20 сек), и повтор здесь множился бы на воркерский — до 15 реальных вызовов LLM на одно сообщение. Circuit breaker и переход на следующий маршрут работают как обычно |
 | Воркер вернул `error` со статусом 408 | `APIStatusError(408)` | ретраится по обычной retry-политике: 408 воркер не повторял, решение за приложением |

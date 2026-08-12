@@ -15,6 +15,7 @@ import logging
 from app.db.repositories.base import BaseRepository
 from app.db.types import DbConn
 from app.domains.acts.block_types import LEAF_BLOCK_REFS, LEAF_BLOCK_TYPES
+from app.domains.acts.repositories import violation_row_mapper
 from app.domains.acts.utils import ActDirectivesValidator, ActTreeUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
 
@@ -198,30 +199,17 @@ class ActContentRepository(BaseRepository):
         }
 
     async def _load_violations(self, act_id: int) -> dict[str, dict]:
-        """Загружает нарушения акта."""
+        """Загружает нарушения акта (разбор строки — маппер по реестру полей)."""
         rows = await self.conn.fetch(
             f"""
-            SELECT violation_id, node_id, violated, established,
-                   description_list, additional_content, reasons,
-                   consequences, responsible, measures
+            SELECT {violation_row_mapper.select_columns_sql()}
             FROM {self.violations}
             WHERE act_id = $1
             """,
             act_id
         )
         return {
-            row['violation_id']: {
-                'id': row['violation_id'],
-                'nodeId': row['node_id'],
-                'violated': row['violated'] or '',
-                'established': row['established'] or '',
-                'descriptionList': json.loads(row['description_list'] or '{"enabled": false, "items": []}'),
-                'additionalContent': json.loads(row['additional_content'] or '{"enabled": false, "items": []}'),
-                'reasons': json.loads(row['reasons'] or '{"enabled": false, "content": ""}'),
-                'measures': json.loads(row['measures'] or '{"enabled": false, "content": ""}'),
-                'consequences': json.loads(row['consequences'] or '{"enabled": false, "content": ""}'),
-                'responsible': json.loads(row['responsible'] or '{"enabled": false, "content": ""}')
-            }
+            row['violation_id']: violation_row_mapper.row_to_violation_dict(row)
             for row in rows
         }
 
@@ -522,21 +510,14 @@ class ActContentRepository(BaseRepository):
             parent_node_id = info.get("parent_item_node_id")
             audit_point_id = audit_point_map.get(parent_node_id) if parent_node_id else None
 
-            args.append((
+            args.append(violation_row_mapper.violation_insert_args(
                 act_id,
                 audit_act_id,
                 audit_point_id,
                 v_id,
                 owner_node_id,
                 info.get("number"),
-                v_data.violated,
-                v_data.established,
-                json.dumps(v_data.descriptionList.model_dump()),
-                json.dumps(v_data.additionalContent.model_dump()),
-                json.dumps(v_data.reasons.model_dump()),
-                json.dumps(v_data.consequences.model_dump()),
-                json.dumps(v_data.responsible.model_dump()),
-                json.dumps(v_data.measures.model_dump()),
+                v_data,
             ))
 
         if dropped:
@@ -547,15 +528,7 @@ class ActContentRepository(BaseRepository):
 
         if args:
             await self.conn.executemany(
-                f"""
-                INSERT INTO {self.violations} (
-                    act_id, audit_act_id, audit_point_id,
-                    violation_id, node_id, node_number, violated, established,
-                    description_list, additional_content, reasons, consequences,
-                    responsible, measures
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                """,
+                violation_row_mapper.insert_sql(self.violations),
                 args,
             )
 

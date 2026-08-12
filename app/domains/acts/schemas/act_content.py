@@ -7,7 +7,7 @@ Pydantic схемы для валидации данных актов.
 
 import re
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -163,26 +163,17 @@ class TableCellSchema(BaseModel):
     originCol: int | None = Field(default=None, ge=0, description="Исходная колонка")
 
 
-class TableSchema(BaseModel):
+class TableGridSchema(BaseModel):
     """
-    Схема таблицы с матричной структурой.
+    Базовая сетка таблицы: матрица ячеек, ширины колонок и все структурные
+    инварианты (прямоугольность, границы объединений, нормализация colWidths).
 
-    Добавлены лимиты на размер grid (макс 64 строки, 16 колонок)
-    для защиты от исчерпания памяти.
-
-    Attributes:
-        id: Уникальный идентификатор таблицы
-        nodeId: ID узла дерева
-        grid: Матрица ячеек (двумерный массив, макс 64×16)
-        colWidths: Массив относительных весов ширины колонок (целые > 0; нормируются по сумме)
-        protected: Защищена ли таблица от перемещения и изменения структуры
-        deletable: Можно ли удалить таблицу (работает независимо от protected)
-        kind: Подвид таблицы (TABLE_KINDS); 'regular' — обычная таблица
+    Родитель двух моделей: ``TableSchema`` (таблица-узел дерева акта, добавляет
+    id/nodeId/protected/deletable/kind) и ``EmbeddedTableSchema`` (таблица
+    внутри блока нарушения — только сетка, всегда «обычная»).
     """
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(description="ID таблицы")
-    nodeId: str = Field(description="ID узла дерева")
     grid: list[list[TableCellSchema]] = Field(
         default_factory=list,
         description="Матрица ячеек (потолок строк/колонок — по настройкам ACTS__TABLES__*)",
@@ -190,21 +181,6 @@ class TableSchema(BaseModel):
     colWidths: list[int] = Field(
         default_factory=list,
         description="Относительные веса ширины колонок (целые > 0; нормируются по сумме)",
-    )
-    protected: bool = Field(
-        default=False,
-        description="Защита от перемещения и изменения структуры"
-    )
-    deletable: bool = Field(
-        default=True,
-        description="Разрешено ли удаление таблицы"
-    )
-
-    # Подвид таблицы: enum взаимоисключающ по построению (заменил 6 булевых
-    # флагов is*Table и валидатор «не более одного типа»).
-    kind: TableKind = Field(
-        default="regular",
-        description="Подвид таблицы (метрики / риски); 'regular' — обычная"
     )
 
     @field_validator("grid")
@@ -267,7 +243,7 @@ class TableSchema(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_structure(self) -> "TableSchema":
+    def validate_structure(self) -> "TableGridSchema":
         """
         Проверяет структурную целостность таблицы (A2, A3, R6).
 
@@ -350,6 +326,47 @@ class TableSchema(BaseModel):
         return self
 
 
+class TableSchema(TableGridSchema):
+    """
+    Схема таблицы-узла дерева акта (сетка + метаданные узла).
+
+    Attributes:
+        id: Уникальный идентификатор таблицы
+        nodeId: ID узла дерева
+        protected: Защищена ли таблица от перемещения и изменения структуры
+        deletable: Можно ли удалить таблицу (работает независимо от protected)
+        kind: Подвид таблицы (TABLE_KINDS); 'regular' — обычная таблица
+    """
+
+    id: str = Field(description="ID таблицы")
+    nodeId: str = Field(description="ID узла дерева")
+    protected: bool = Field(
+        default=False,
+        description="Защита от перемещения и изменения структуры"
+    )
+    deletable: bool = Field(
+        default=True,
+        description="Разрешено ли удаление таблицы"
+    )
+
+    # Подвид таблицы: enum взаимоисключающ по построению (заменил 6 булевых
+    # флагов is*Table и валидатор «не более одного типа»).
+    kind: TableKind = Field(
+        default="regular",
+        description="Подвид таблицы (метрики / риски); 'regular' — обычная"
+    )
+
+
+class EmbeddedTableSchema(TableGridSchema):
+    """
+    Таблица внутри блока нарушения: только сетка, без метаданных узла.
+
+    id/nodeId нет (адресация — по id блока-обёртки), kind не хранится —
+    встроенная таблица всегда «обычная» (metrics/risk-подвиды, пины и
+    каскады metrics↔risk — семантика дерева, к нарушению не относятся).
+    """
+
+
 class TextBlockSchema(BaseModel):
     """
     Схема текстового блока.
@@ -372,47 +389,23 @@ class TextBlockSchema(BaseModel):
     content: str = Field(default="", description="HTML-содержимое")
 
 
-class ViolationDescriptionListSchema(BaseModel):
-    """Схема списка описаний нарушения."""
+class ViolationTextBlockSchema(BaseModel):
+    """Текст-блок поля нарушения: rich-HTML (полный тулбар, включая списки)."""
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    items: list[str] = Field(default_factory=list)
+    id: str = Field(description="ID блока (uuid4-строка, стабилен весь жизненный цикл)")
+    type: Literal["text"] = Field(description="Дискриминатор типа блока")
+    content: str = Field(default="", description="Rich-HTML содержимое")
 
 
-class ViolationOptionalFieldSchema(BaseModel):
-    """
-    Схема опционального текстового поля нарушения.
-
-    Используется для причин, принятых мер, последствий,
-    ответственных лиц и др.
-    """
+class ViolationImageBlockSchema(BaseModel):
+    """Блок-картинка поля нарушения: inline data:image-URL + подпись."""
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    content: str = ""
-
-
-class ViolationContentItemSchema(BaseModel):
-    """
-    Универсальный элемент дополнительного контента.
-
-    Attributes:
-        id: Уникальный идентификатор элемента
-        type: Тип элемента
-        content: Текстовое содержимое (для case и freeText)
-        url: URL изображения (для image)
-        caption: Подпись изображения (для image)
-        filename: Имя файла (для image)
-        width: Ширина изображения в процентах полезной ширины страницы
-    """
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(description="ID элемента")
-    type: Literal["case", "image", "freeText"] = Field(description="Тип элемента")
-    content: str = Field(default="", description="Текстовое содержимое")
-    url: str = Field(default="", description="URL изображения")
-    caption: str = Field(default="", description="Подпись изображения")
+    id: str = Field(description="ID блока (uuid4-строка, стабилен весь жизненный цикл)")
+    type: Literal["image"] = Field(description="Дискриминатор типа блока")
+    url: str = Field(default="", description="data:image-URL изображения")
+    caption: str = Field(default="", description="Подпись изображения (rich)")
     filename: str = Field(default="", description="Имя файла")
     width: int = Field(
         default=0, ge=0, le=100,
@@ -420,15 +413,15 @@ class ViolationContentItemSchema(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_image_url(self) -> "ViolationContentItemSchema":
+    def validate_image_url(self) -> "ViolationImageBlockSchema":
         """
         Валидирует url картинки (4.3.M.2 + 5.2.2).
 
-        Для type='image' непустой url обязан быть data:image-URL разрешённого
-        растрового формата (png/jpeg/gif, base64) — отсекает
-        javascript:/data:text-схемы (XSS) и не-картинки. Пустая строка
-        допустима (черновик без содержимого). Лимит длины защищает БД и
-        снимки версий от многомегабайтных payload'ов.
+        Непустой url обязан быть data:image-URL разрешённого растрового
+        формата (png/jpeg/gif, base64) — отсекает javascript:/data:text-схемы
+        (XSS) и не-картинки. Пустая строка допустима (черновик без
+        содержимого). Лимит длины защищает БД и снимки версий от
+        многомегабайтных payload'ов.
         """
         if len(self.url) > VIOLATION_IMAGE_URL_MAX_LENGTH:
             raise ValueError(
@@ -436,7 +429,7 @@ class ViolationContentItemSchema(BaseModel):
                 f"({VIOLATION_IMAGE_URL_MAX_LENGTH} символов data-URL). "
                 f"Уменьшите изображение."
             )
-        if self.type == "image" and self.url:
+        if self.url:
             mime_types = tuple(_acts_settings().images.allowed_mime_types)
             if not _image_data_url_re(mime_types).match(self.url):
                 allowed = ", ".join(
@@ -449,77 +442,146 @@ class ViolationContentItemSchema(BaseModel):
         return self
 
 
-class ViolationAdditionalContentSchema(BaseModel):
-    """Коллекция дополнительного контента нарушения."""
+class ViolationTableBlockSchema(BaseModel):
+    """Блок-таблица поля нарушения: обычная таблица (сетка без метаданных узла)."""
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="ID блока (uuid4-строка, стабилен весь жизненный цикл)")
+    type: Literal["table"] = Field(description="Дискриминатор типа блока")
+    table: EmbeddedTableSchema = Field(
+        default_factory=EmbeddedTableSchema,
+        description="Сетка таблицы",
+    )
+
+
+# Дискриминированный union блоков поля нарушения. Дискриминатор — строковое
+# поле type (прямой lookup по тегу; callable Tag/Discriminator не нужен — тег
+# лежит в обычном поле). Неизвестный type → 422, fallback'а сознательно нет.
+# Значения type СИНХРОНИЗИРУЮТСЯ ВРУЧНУЮ с фронтом
+# (static/js/constructor/violation/violation-block-types.js, BLOCK_TYPES);
+# пин — страж test_violation_fields_guard.py.
+ViolationBlock = Annotated[
+    ViolationTextBlockSchema | ViolationImageBlockSchema | ViolationTableBlockSchema,
+    Field(discriminator="type"),
+]
+
+
+class ViolationFieldSchema(BaseModel):
+    """
+    Единый контейнер поля нарушения: {enabled, blocks}.
+
+    Одна форма у всех 10 полей реестра VIOLATION_FIELDS (блочная модель).
+    Лимит числа блоков — валидатором на модели, НЕ аннотацией на списке
+    (комбинация Len-аннотаций с внутренним Discriminator ломала сборку
+    схемы на отдельных версиях pydantic — issues #9503/#10352).
+    """
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    items: list[ViolationContentItemSchema] = Field(default_factory=list)
+    blocks: list[ViolationBlock] = Field(default_factory=list)
 
-    @field_validator("items")
+    @field_validator("blocks")
     @classmethod
-    def validate_items_count(
-        cls, v: list[ViolationContentItemSchema],
-    ) -> list[ViolationContentItemSchema]:
-        """Ограничивает число элементов доп. контента (лимит — из настроек)."""
+    def validate_blocks_count(cls, v: list) -> list:
+        """Ограничивает число блоков в поле (лимит — из настроек)."""
         max_items = _acts_settings().images.max_items_per_violation
         if len(v) > max_items:
-            # №14: текст синхронизирован ВРУЧНУЮ с фронтом (единая точка —
+            # Текст синхронизирован ВРУЧНУЮ с фронтом (единая точка —
             # AppConfig.content.errors.contentItemsLimitReached,
-            # static/js/shared/app-config.js) — должен совпадать дословно
-            # (прецедент синхронизации — names.py ↔ chat-client-actions.js).
+            # static/js/shared/app-config.js) — должен совпадать дословно.
             raise ValueError(
-                f"Достигнут лимит элементов дополнительного контента на нарушение ({max_items})."
+                f"Достигнут лимит блоков в поле нарушения ({max_items})."
             )
         return v
 
 
+def _enabled_field() -> ViolationFieldSchema:
+    """Фабрика включённого поля (для mandatory-полей violated/established)."""
+    return ViolationFieldSchema(enabled=True)
+
+
 class ViolationSchema(BaseModel):
     """
-    Схема нарушения со всеми полями.
+    Схема нарушения: 10 полей-контейнеров блочной модели + порядок полей.
+
+    Состав и порядок полей == реестр VIOLATION_FIELDS
+    (app/domains/acts/violation_fields.py, пин — test_violation_fields_guard).
 
     Attributes:
         id: Уникальный идентификатор нарушения
         nodeId: ID узла дерева, к которому привязано нарушение
-        violated: Текст для секции 'Нарушено'
-        established: Текст для секции 'Установлено'
-        descriptionList: Список описаний нарушения
-        additionalContent: Дополнительный контент
-        reasons: Причины нарушения
-        measures: Принятые меры
-        consequences: Последствия нарушения
-        responsible: Ответственные лица
+        fieldOrder: Пользовательский порядок полей (None = стандартный)
     """
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(description="ID нарушения")
     nodeId: str = Field(description="ID узла дерева")
-    violated: str = Field(default="", description="Текст для 'Нарушено'")
-    established: str = Field(default="", description="Текст для 'Установлено'")
-    descriptionList: ViolationDescriptionListSchema = Field(
-        default_factory=ViolationDescriptionListSchema,
-        description="Список описаний"
+    fieldOrder: list[str] | None = Field(
+        default=None,
+        description="Порядок полей (все 10 ключей реестра) или None — стандартный",
     )
-    additionalContent: ViolationAdditionalContentSchema = Field(
-        default_factory=ViolationAdditionalContentSchema,
-        description="Дополнительный контент"
+    violated: ViolationFieldSchema = Field(
+        default_factory=_enabled_field, description="Нарушено"
     )
-    reasons: ViolationOptionalFieldSchema = Field(
-        default_factory=ViolationOptionalFieldSchema,
-        description="Причины"
+    established: ViolationFieldSchema = Field(
+        default_factory=_enabled_field, description="Установлено"
     )
-    measures: ViolationOptionalFieldSchema = Field(
-        default_factory=ViolationOptionalFieldSchema,
-        description="Принятые меры"
+    description: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Описание"
     )
-    consequences: ViolationOptionalFieldSchema = Field(
-        default_factory=ViolationOptionalFieldSchema,
-        description="Последствия"
+    codeMining: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="CodeMining"
     )
-    responsible: ViolationOptionalFieldSchema = Field(
-        default_factory=ViolationOptionalFieldSchema,
-        description="Ответственные"
+    processMining: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="ProcessMining"
     )
+    additionalContent: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Дополнительный контент"
+    )
+    reasons: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Причины"
+    )
+    measures: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Принятые меры"
+    )
+    consequences: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Последствия"
+    )
+    responsible: ViolationFieldSchema = Field(
+        default_factory=ViolationFieldSchema, description="Ответственные"
+    )
+
+    @field_validator("fieldOrder")
+    @classmethod
+    def validate_field_order(cls, v: list[str] | None) -> list[str] | None:
+        """Порядок обязан быть перестановкой ВСЕХ ключей реестра (без дублей).
+
+        Предикат — общий с ``ordered_fields`` (violation_fields.py); отличается
+        только реакция: рендеры молча падают на стандартный порядок, схема
+        отклоняет запись.
+        """
+        if v is None:
+            return v
+        from app.domains.acts.violation_fields import (
+            VIOLATION_FIELD_KEYS,
+            is_valid_field_order,
+        )
+        if not is_valid_field_order(v):
+            raise ValueError(
+                "Порядок полей нарушения должен содержать каждый из ключей "
+                f"({', '.join(VIOLATION_FIELD_KEYS)}) ровно один раз."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def enforce_mandatory_enabled(self) -> "ViolationSchema":
+        """Mandatory-поля (Нарушено/Установлено) нельзя выключить — принуждаем."""
+        from app.domains.acts.violation_fields import MANDATORY_FIELD_KEYS
+        for key in MANDATORY_FIELD_KEYS:
+            field = getattr(self, key)
+            if not field.enabled:
+                field.enabled = True
+        return self
 
 
 class ActItemSchema(BaseModel):

@@ -218,7 +218,7 @@ test('restoreSurfaceSnapshot: цель исчезла из DOM (нет в target
 });
 
 test('restoreSurfaceSnapshot: цель без setContent (поверхность не умеет писать) → пропуск, не падение', () => {
-  const t = { id: 'viol:v1:list:descriptionList:0', getContent: () => 'ПОСЛЕ' }; // без setContent
+  const t = { id: 'viol:v1:violated:block:text_1', getContent: () => 'ПОСЛЕ' }; // без setContent
   const undoMap = new Map([[t.id, { before: 'ДО', after: 'ПОСЛЕ' }]]);
   const res = restoreSurfaceSnapshot(undoMap, new Map([[t.id, t]]));
   assert.deepEqual(res, { restored: 0, skipped: 1 });

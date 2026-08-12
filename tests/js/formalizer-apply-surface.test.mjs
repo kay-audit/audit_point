@@ -1,109 +1,197 @@
 /**
- * Пункт 2 (#7 + S4): `_applyFormalized` пишет извлечённые поля через
- * поверхность (setContent) — это делает setContent продовым путём (был S4) и
- * после записи снимает placeholder-класс `textblock-editor--empty` (#7: иначе
- * CSS-плейсхолдер «Опишите нарушение…» оставался серым префиксом перед реальным
- * текстом). Пустой результат формализатора («не извлечено») поле НЕ трогает.
+ * Раскладка ответа формализатора по блочным полям нарушения
+ * (`_applyFormalized`, спека §3.5/§4.х).
  *
- * renderActContent под node-стабом (без DOMPurify) пишет в element.textContent
- * (fallback), поэтому проверяем DOM через textContent — как в
- * violation-rich-surface.test.mjs.
+ * Контракт (после ревью №2): значения ответа — ВСЕГДА готовый HTML (бэк уже
+ * экранировал текст модели, перевёл `\n` в `<br>` и отдал перечисления
+ * `<ul><li>`). Фронт эвристику «есть `<` → это разметка» больше не применяет:
+ * значение только санитизируется профилем 'acts' и уходит НОВЫМ текст-блоком в
+ * конец своего поля (существующие блоки не перезаписываются), поле включается.
+ * Пустое извлечение поле не трогает. Метод возвращает число заполненных полей —
+ * по нему панель-формализатор решает, объявлять ли успех.
+ *
+ * Записи идут мутаторами (setFieldEnabled/addBlock), перерисовку секции ведёт
+ * ItemsRenderer.updateViolation — оба подменяются шпионами. DOMPurify в node без
+ * DOM не поднимается — фейк ниже фиксирует контракт (что долетает до sanitize).
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
+import { ItemsRenderer } from '../../static/js/constructor/items/items-renderer.js';
 import '../../static/js/constructor/violation/violation-init.js';
 import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
+import { BLOCK_TYPES } from '../../static/js/constructor/violation/violation-block-types.js';
+import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
+import { SAFE_HTML_PROFILES } from '../../static/js/shared/sanitize.js';
 
-// Фейковое rich-поле с трекингом класса и textContent (renderActContent-фолбэк
-// пишет в textContent). classList поверх Set — чтобы проверять наличие класса.
-function makeFieldDiv(initialClasses = []) {
-    const classes = new Set(initialClasses);
-    return {
-        textContent: '',
-        querySelector: () => null,
-        querySelectorAll: () => [],
-        classList: {
-            add: (c) => classes.add(c),
-            remove: (c) => classes.delete(c),
-            toggle: (c, force) => {
-                const on = force === undefined ? !classes.has(c) : !!force;
-                if (on) classes.add(c); else classes.delete(c);
-                return on;
-            },
-            contains: (c) => classes.has(c),
-        },
-    };
+let rerenders = [];
+let previewCalls = [];
+let sanitizeCalls = [];
+ItemsRenderer.updateViolation = (id) => rerenders.push(id);
+PreviewManager.updateBlock = (kind, id) => previewCalls.push({ kind, id });
+
+/**
+ * Фейк DOMPurify.sanitize: журналирует вызовы и режет теги вне ALLOWED_TAGS
+ * профиля (текст внутри сохраняется, как у настоящего DOMPurify).
+ */
+globalThis.window.DOMPurify = {
+    sanitize: (html, cfg) => {
+        sanitizeCalls.push({ html, cfg });
+        return String(html).replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (match, tag) => (
+            cfg && Array.isArray(cfg.ALLOWED_TAGS) && cfg.ALLOWED_TAGS.includes(tag.toLowerCase())
+                ? match
+                : ''
+        ));
+    },
+};
+
+/** Нарушение дефолт-формы (10 полей {enabled, blocks}). */
+function makeViolation() {
+    rerenders = [];
+    previewCalls = [];
+    sanitizeCalls = [];
+    return { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() };
 }
 
-// Контейнер опционального поля: querySelector отдаёт чекбокс/контент/fieldDiv
-// по селекторам, которые читает setOptional.
-function makeOptionalContainer(fieldDiv) {
-    const cb = { checked: false };
-    const content = { style: { display: 'none' } };
-    return {
-        _cb: cb,
-        _content: content,
-        querySelector: (sel) => {
-            if (sel.includes('checkbox')) return cb;
-            if (sel === '.violation-field-content') return content;
-            if (sel.includes('.violation-field')) return fieldDiv;
-            return null;
-        },
-    };
+/** VM без read-only-гейта: реальные мутаторы, стаб перерисовки контейнера. */
+function makeVm() {
+    const vm = new ViolationManager();
+    vm.renderBlocks = () => {};
+    return vm;
 }
 
-test('пункт2: формализатор на пустом поле — после Применить класс --empty снят, контент в DOM', () => {
-    const vm = new ViolationManager();
-    vm.setViolationField = () => true;
-    const fieldDiv = makeFieldDiv(['textblock-editor--empty']);
+test('непустое поле ответа → текст-блок в конце своего поля, поле включено', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
 
-    vm._applyFormalized({ id: 'v1' }, { violated: fieldDiv }, { violated: 'Текст нарушения' });
+    const applied = vm._applyFormalized(violation, { measures: 'Приняты меры' });
 
-    assert.equal(fieldDiv.classList.contains('textblock-editor--empty'), false,
-        'placeholder-класс снят — плейсхолдер не перекрывает реальный текст');
-    assert.equal(fieldDiv.textContent, 'Текст нарушения', 'контент отрисован в поле');
+    assert.equal(applied, 1, 'вернулось число заполненных полей');
+    assert.equal(violation.measures.enabled, true, 'опциональное поле включено');
+    assert.equal(violation.measures.blocks.length, 1);
+    assert.equal(violation.measures.blocks[0].type, BLOCK_TYPES.TEXT);
+    assert.equal(violation.measures.blocks[0].content, 'Приняты меры');
+    assert.deepEqual(rerenders, ['v1'], 'секция перерисована один раз');
+    // Превью планируют и мутаторы, и явный вызов в конце; подряд идущие
+    // updateBlock схлопывает RAF-дедуп PreviewManager — важно, что все они
+    // адресуют именно это нарушение.
+    assert.ok(previewCalls.length >= 1, 'превью запланировано');
+    assert.ok(previewCalls.every((c) => c.kind === 'violation' && c.id === 'v1'));
 });
 
-test('пункт2: заполненное поле — контент обновлён (модель + DOM), спецсимволы экранированы', () => {
-    const vm = new ViolationManager();
-    const model = [];
-    vm.setViolationField = (v, p, val) => { model.push([p, val]); return true; };
-    const fieldDiv = makeFieldDiv([]);
-    fieldDiv.textContent = 'старое';
+test('значение идёт в блок через санитайзер профиля acts', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
 
-    vm._applyFormalized({ id: 'v1' }, { violated: fieldDiv }, { violated: 'новое & <b>' });
+    vm._applyFormalized(violation, { violated: 'П. 3.1 Регламента' });
 
-    assert.equal(fieldDiv.textContent, 'новое &amp; &lt;b&gt;', 'DOM обновлён экранированным html');
-    assert.deepEqual(model, [['violated', 'новое &amp; &lt;b&gt;']], 'модель получила экранированный html через setContent');
+    assert.equal(sanitizeCalls.length, 1, 'значение прошло через санитайзер ровно раз');
+    assert.equal(sanitizeCalls[0].cfg, SAFE_HTML_PROFILES.acts, 'профиль acts');
+    assert.equal(sanitizeCalls[0].html, 'П. 3.1 Регламента');
 });
 
-test('пункт2: опциональное поле — enable выставлен, контент записан, класс --empty снят', () => {
-    const vm = new ViolationManager();
-    const model = [];
-    vm.setViolationField = (v, p, val) => { model.push([p, val]); return true; };
-    const fieldDiv = makeFieldDiv(['textblock-editor--empty']);
-    const container = makeOptionalContainer(fieldDiv);
+test('готовый HTML бэка не перекодируется: сущности и <br> остаются как есть', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
 
-    vm._applyFormalized({ id: 'v1' }, { measures: container }, { measures: 'Приняты меры' });
+    // Ровно то, что отдаёт бэк для текста «Ромашка & Ко\nстрока2».
+    vm._applyFormalized(violation, { violated: 'Ромашка &amp; Ко<br>строка2' });
 
-    assert.equal(container._cb.checked, true, 'чекбокс поля включён');
-    assert.equal(container._content.style.display, 'block', 'контейнер поля раскрыт');
-    assert.equal(fieldDiv.classList.contains('textblock-editor--empty'), false, 'placeholder-класс снят');
-    assert.equal(fieldDiv.textContent, 'Приняты меры', 'контент отрисован');
-    assert.deepEqual(model, [['measures.enabled', true], ['measures.content', 'Приняты меры']],
-        'модель получила enable и content');
+    assert.equal(
+        violation.violated.blocks[0].content,
+        'Ромашка &amp; Ко<br>строка2',
+        'повторного экранирования нет — иначе пользователь увидел бы &amp;amp;',
+    );
 });
 
-test('пункт2: пустой результат формализатора — поле НЕ тронуто (не затираем существующее)', () => {
-    const vm = new ViolationManager();
-    const model = [];
-    vm.setViolationField = (v, p, val) => { model.push([p, val]); return true; };
-    const fieldDiv = makeFieldDiv([]);
-    fieldDiv.textContent = 'существующий текст';
+test('готовый HTML формализатора (список <ul>) остаётся списком', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+    const html = '<ul><li>первая причина</li><li>вторая причина</li></ul>';
 
-    vm._applyFormalized({ id: 'v1' }, { violated: fieldDiv }, { violated: '   ' });
+    vm._applyFormalized(violation, { reasons: html });
 
-    assert.equal(fieldDiv.textContent, 'существующий текст', 'DOM не тронут');
-    assert.deepEqual(model, [], 'модель не тронута');
+    assert.equal(violation.reasons.blocks[0].content, html, 'разрешённые теги уцелели');
+    assert.equal(violation.reasons.enabled, true);
+});
+
+test('разметка вне профиля acts вырезается санитайзером', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+
+    vm._applyFormalized(violation, {
+        established: '<img src="http://evil.example/p.gif" onerror="alert(1)">видимый текст',
+    });
+
+    const content = violation.established.blocks[0].content;
+    assert.ok(!content.includes('<img'), 'img не в allowlist профиля acts');
+    assert.ok(!content.includes('onerror'), 'on*-вектор не доехал до модели');
+    assert.ok(content.includes('видимый текст'), 'видимый текст сохранён');
+});
+
+test('непустое поле НЕ перезаписывается — новый блок добавляется в конец', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+    violation.violated.blocks.push({ id: 'b0', type: BLOCK_TYPES.TEXT, content: 'старое' });
+
+    vm._applyFormalized(violation, { violated: 'новое' });
+
+    assert.deepEqual(
+        violation.violated.blocks.map((b) => b.content),
+        ['старое', 'новое'],
+        'существующий блок сохранён, извлечённый добавлен следом',
+    );
+});
+
+test('пустое извлечение поле не трогает (ни блока, ни включения), applied = 0', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+
+    const applied = vm._applyFormalized(violation, {
+        violated: '   ', reasons: '', measures: null,
+    });
+
+    assert.equal(applied, 0, 'применять было нечего');
+    assert.equal(violation.violated.blocks.length, 0);
+    assert.equal(violation.reasons.blocks.length, 0);
+    assert.equal(violation.reasons.enabled, false, 'пустое поле не включается');
+    assert.deepEqual(rerenders, [], 'перерисовки нет — писать было нечего');
+    assert.deepEqual(previewCalls, []);
+});
+
+test('все шесть полей ответа раскладываются по своим контейнерам', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+
+    const applied = vm._applyFormalized(violation, {
+        violated: 'н', established: 'у', reasons: 'п',
+        measures: 'м', consequences: 'по', responsible: 'о',
+    });
+
+    assert.equal(applied, 6);
+    for (const [key, expected] of Object.entries({
+        violated: 'н', established: 'у', reasons: 'п',
+        measures: 'м', consequences: 'по', responsible: 'о',
+    })) {
+        assert.equal(violation[key].blocks.length, 1, `${key}: ровно один блок`);
+        assert.equal(violation[key].blocks[0].content, expected, `${key}: своё значение`);
+        assert.equal(violation[key].enabled, true, `${key}: включено`);
+    }
+    assert.deepEqual(rerenders, ['v1'], 'одна перерисовка на весь ответ');
+});
+
+test('ключи вне реестра полей игнорируются (recommendations и прочее)', () => {
+    const vm = makeVm();
+    const violation = makeViolation();
+
+    // recommendations — массив; попади он в раскладку, .trim() бросил бы TypeError.
+    const applied = vm._applyFormalized(violation, {
+        violated: 'н',
+        recommendations: ['Уточните дату.', 'Укажите ответственных.'],
+        unknownField: 'мусор',
+    });
+
+    assert.equal(applied, 1, 'применено только поле реестра');
+    assert.equal(violation.violated.blocks.length, 1);
 });

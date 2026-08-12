@@ -11,6 +11,7 @@ import { ValidationCore } from './validation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { getBlockType } from '../block-types.js';
 import { getImageLimits, getStructureLimits } from '../violation/violation-image-validator.js';
+import { VIOLATION_FIELD_KEYS } from '../violation/violation-fields.js';
 
 // #8: тип узла → рантайм-ключ структурных лимитов (/acts/limits). Общий для
 // _validateContentLimits (гейт кнопки «Добавить …») и canInsertSubtree (гейт
@@ -298,12 +299,16 @@ export const ValidationTree = {
         const maxItems = getImageLimits().maxItemsPerViolation;
         if (typeof maxItems !== 'number') return ValidationCore.success();
 
+        // Блочная модель: лимит числа блоков — ПО КАЖДОМУ полю реестра
+        // (зеркало валидатора бэка ViolationFieldSchema.validate_blocks_count).
         for (const entry of Object.values(violationsDict)) {
-            const itemsCount = entry?.additionalContent?.items?.length || 0;
-            if (itemsCount > maxItems) {
-                return ValidationCore.failure(
-                    AppConfig.content.errors.contentItemsLimitReached(maxItems)
-                );
+            for (const fieldKey of VIOLATION_FIELD_KEYS) {
+                const blocksCount = entry?.[fieldKey]?.blocks?.length || 0;
+                if (blocksCount > maxItems) {
+                    return ValidationCore.failure(
+                        AppConfig.content.errors.contentItemsLimitReached(maxItems)
+                    );
+                }
             }
         }
 

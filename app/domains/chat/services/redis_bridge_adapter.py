@@ -20,10 +20,19 @@ docs/integrations/redis-llm-bridge.md.
 
 Ошибки транслируются в иерархию ``openai.*`` — иначе существующие
 retry (retry.py), circuit breaker и fallback (llm_call.py) их не увидят:
-- воркер мёртв / цель недоступна / Redis лёг → APIConnectionError;
+- воркер мёртв / цель недоступна / Redis лёг до постановки заявки →
+  APIConnectionError;
+- Redis лёг ПОСЛЕ постановки заявки (на поллинге) → BridgePollError
+  (подкласс APIConnectionError: fallback срабатывает, но retry его НЕ
+  повторяет — см. docstring класса);
 - дедлайн ожидания истёк → BridgeDeadlineError (подкласс APITimeoutError:
   fallback срабатывает, но retry его НЕ повторяет — см. docstring класса);
-- error-конверт воркера → APIStatusError с тем же status_code;
+- error-конверт воркера со статусом 408/4xx → APIStatusError с тем же
+  status_code (решение о повторе — за retry-политикой приложения);
+- error-конверт со статусом 429/5xx, а также finish_reason="error" в успешном
+  по статусу ответе → BridgeBackendError (подкласс APIStatusError: следующий
+  маршрут пробуется, но retry НЕ повторяет — воркер эти статусы уже повторял
+  сам, см. docstring класса);
 - невалидное тело final-конверта → BridgeSchemaError (подкласс APIStatusError
   со статусом 502: не маскируется под сбой Redis, тригерит следующий маршрут,
   но НЕ ретраится — разбор детерминирован, см. docstring класса).
@@ -92,6 +101,20 @@ class BridgeDeadlineError(APITimeoutError):
     request_timeout, а каждый повтор клал бы в stream НОВУЮ заявку —
     воркер исполнял бы дубли против LLM, а пользователь ждал бы кратно
     дольше (max_attempts × request_timeout).
+    """
+
+
+class BridgePollError(APIConnectionError):
+    """Сбой Redis на поллинге ответа — заявка УЖЕ поставлена в stream.
+
+    Подкласс APIConnectionError, поэтому llm_call считает его сбоем
+    провайдера и уходит на fallback. Но retry_on_transient его НЕ повторяет
+    (см. _NEVER_RETRY_EXC в retry.py): конверт лежит в стриме и воркер его
+    исполняет — повтор положил бы ВТОРУЮ заявку с новым request_id, и LLM
+    отработал бы дубль.
+
+    Сбой ДО/ВО ВРЕМЯ xadd остаётся обычным APIConnectionError: заявки в
+    стриме нет, повтор безопасен и нужен.
     """
 
 
@@ -406,9 +429,9 @@ def _handle_terminal(
     """Терминальный кусок → ChatCompletion либо APIStatusError.
 
     Нечитаемое/несовместимое со схемой тело final-конверта — это ответ
-    LLM-бэкенда, а не сбой транспорта, поэтому APIStatusError 502
-    (server-класс: ретраится по on_5xx, тригерит fallback), а не
-    APIConnectionError с вводящим в заблуждение текстом про Redis.
+    LLM-бэкенда, а не сбой транспорта, поэтому BridgeSchemaError со статусом
+    502 (тригерит следующий маршрут, но НЕ ретраится: разбор детерминирован),
+    а не APIConnectionError с вводящим в заблуждение текстом про Redis.
     В сообщение попадает деталь ошибки валидации (какое поле не сошлось):
     без неё по логам СДП причина неотличима от любого другого сбоя схемы.
     """
@@ -491,8 +514,10 @@ class _Completions:
         resp_key = client._key_prefix + RESP_KEY_SUFFIX + request_id
         redis = get_redis()
         terminal: dict | None = None
-        # В try — только обмен с Redis: ошибки разбора терминального куска
-        # не должны маскироваться под сбой Redis (_handle_terminal — снаружи).
+        # Постановка заявки и ожидание ответа — РАЗНЫЕ try: до успешного
+        # xadd заявки в стриме нет и повтор безопасен (APIConnectionError,
+        # ретраится как connect-класс), после — повтор породил бы дубль
+        # (BridgePollError, ретрай запрещён).
         try:
             await redis.xadd(
                 client._key_prefix + REQUESTS_STREAM_SUFFIX,
@@ -506,15 +531,23 @@ class _Completions:
                 },
                 maxlen=REQUEST_STREAM_MAXLEN,
             )
+        except Exception as exc:  # ошибки redis-py — connect-класс
+            raise APIConnectionError(
+                message="redis-bridge: не удалось поставить заявку в stream",
+                request=_make_request(),
+            ) from exc
+        # В try — только обмен с Redis: ошибки разбора терминального куска
+        # не должны маскироваться под сбой Redis (_handle_terminal — снаружи).
+        try:
             while time.monotonic() < deadline:
                 entries = await redis.xrange(resp_key)
                 terminal = _find_terminal(entries)
                 if terminal is not None:
                     break
                 await asyncio.sleep(POLL_INTERVAL_SEC)
-        except Exception as exc:  # ошибки redis-py — connect-класс
-            raise APIConnectionError(
-                message="redis-bridge: сбой Redis при обмене",
+        except Exception as exc:
+            raise BridgePollError(
+                message="redis-bridge: сбой Redis при ожидании ответа воркера",
                 request=_make_request(),
             ) from exc
         if terminal is None:

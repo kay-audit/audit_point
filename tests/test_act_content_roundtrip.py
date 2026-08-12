@@ -4,8 +4,9 @@ Round-trip-страж контракта фронт↔бэк для данных
 Фикстура повторяет ТОЧНУЮ форму фронтового снимка AppState.exportData()
 (static/js/constructor/state/state-core.js, _serializeTree/_serializeTables/
 _serializeTextBlocks/_serializeViolations): дерево с разделами, обычная
-таблица с colWidths, текстблок (content), нарушение с descriptionList и
-additionalContent. Прогон ActDataSchema.model_validate → model_dump обязан
+таблица с colWidths, текстблок (content), нарушение блочной модели
+(fieldOrder + контейнеры {enabled, blocks} со всеми 3 типами блоков).
+Прогон ActDataSchema.model_validate → model_dump обязан
 сохранить КАЖДОЕ поле фикстуры (рекурсивное сравнение): если схему изменят
 несинхронно с фронтом (переименуют/удалят поле, extra="ignore" молча выкинет
 ключ) — тест укажет на потерянное поле.
@@ -54,7 +55,7 @@ def _make_export_fixture() -> dict:
     дерево (root → раздел 5 → пункт с таблицей/текстблоком/нарушением),
     1 обычная таблица с colWidths и объединением, 1 риск-таблица с подвидом
     kind (exportData сериализует kind только при не-'regular'), 1 текстблок,
-    1 нарушение с descriptionList и additionalContent.
+    1 нарушение блочной модели (fieldOrder + контейнеры с 3 типами блоков).
     """
     grid = _grid(3, 3)
     # Горизонтальное объединение в строке данных — spanOrigin переживает round-trip.
@@ -163,28 +164,58 @@ def _make_export_fixture() -> dict:
             "v1": {
                 "id": "v1",
                 "nodeId": "5.1_v_1",
-                "violated": "Нарушен пункт регламента",
-                "established": "Установлено отклонение",
-                "descriptionList": {
+                # Блочная модель (_serializeViolations): fieldOrder + все поля
+                # реестра контейнерами {enabled, blocks}.
+                "fieldOrder": [
+                    "responsible", "violated", "established", "description",
+                    "codeMining", "processMining", "additionalContent",
+                    "reasons", "measures", "consequences",
+                ],
+                "violated": {
                     "enabled": True,
-                    "items": ["Описание один", "Описание два"],
+                    "blocks": [
+                        {"id": "text-1", "type": "text",
+                         "content": "Нарушен пункт регламента"},
+                    ],
                 },
+                "established": {
+                    "enabled": True,
+                    "blocks": [
+                        {"id": "text-2", "type": "text",
+                         "content": "Установлено отклонение"},
+                    ],
+                },
+                "description": {
+                    "enabled": True,
+                    "blocks": [
+                        {"id": "text-3", "type": "text", "content": "Описание один"},
+                        {"id": "text-4", "type": "text", "content": "Описание два"},
+                    ],
+                },
+                "codeMining": {
+                    "enabled": True,
+                    "blocks": [
+                        {"id": "table-1", "type": "table", "table": {
+                            "grid": [
+                                [{"content": "Запрос", "isHeader": True}],
+                                [{"content": "SELECT 1"}],
+                            ],
+                            "colWidths": [100],
+                        }},
+                    ],
+                },
+                "processMining": {"enabled": False, "blocks": []},
                 "additionalContent": {
                     "enabled": True,
-                    "items": [
+                    "blocks": [
                         {
-                            "id": "ac-1",
-                            "type": "case",
-                            "content": "Кейс с примером",
-                            "url": "",
-                            "caption": "",
-                            "filename": "",
-                            "width": 0,
+                            "id": "text-5",
+                            "type": "text",
+                            "content": "Свободный текст",
                         },
                         {
-                            "id": "ac-2",
+                            "id": "image-1",
                             "type": "image",
-                            "content": "",
                             "url": "data:image/png;base64,AAAA",
                             "caption": "Скриншот",
                             "filename": "screen.png",
@@ -192,9 +223,15 @@ def _make_export_fixture() -> dict:
                         },
                     ],
                 },
-                "reasons": {"enabled": True, "content": "Причина"},
-                "consequences": {"enabled": False, "content": ""},
-                "responsible": {"enabled": False, "content": ""},
+                "reasons": {
+                    "enabled": True,
+                    "blocks": [
+                        {"id": "text-6", "type": "text", "content": "Причина"},
+                    ],
+                },
+                "measures": {"enabled": False, "blocks": []},
+                "consequences": {"enabled": False, "blocks": []},
+                "responsible": {"enabled": False, "blocks": []},
             },
         },
         "invoiceNodeIds": ["5.1"],

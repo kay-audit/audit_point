@@ -16,6 +16,7 @@ import '../../static/js/constructor/textblock/textblock-toolbar.js';
 const ALL_COMMANDS = [
     'bold', 'italic', 'underline', 'strikeThrough',
     'justifyLeft', 'justifyCenter', 'justifyRight', 'justifyFull',
+    'insertUnorderedList', 'insertOrderedList',
     'createLink', 'createFootnote', 'removeFormat', 'findReplace', 'improveText',
 ];
 

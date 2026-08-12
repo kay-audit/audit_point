@@ -5,12 +5,14 @@ Redis — fakeredis через autouse-фикстуру ``fake_redis`` (tests/co
 """
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, NOT_GIVEN
 
 from app.domains.chat.services.redis_bridge_adapter import (
     BridgeDeadlineError,
+    BridgePollError,
     RedisBridgeClient,
 )
 
@@ -278,7 +280,10 @@ class TestCreateOpenAI:
         assert exc_info.value.status_code == 502
 
 
-class TestDeadlineNotRetried:
+class TestBridgeErrorsNotRetried:
+    """Исключения моста, возникшие ПОСЛЕ постановки заявки в stream,
+    ретраю не подлежат: повтор положил бы дубль-конверт."""
+
     async def test_retry_does_not_repeat_bridge_deadline(self):
         """retry_on_transient не повторяет BridgeDeadlineError: дедлайн моста
         равен полному request_timeout, повтор клал бы дубль-заявку в stream."""
@@ -301,6 +306,105 @@ class TestDeadlineNotRetried:
         with pytest.raises(BridgeDeadlineError):
             await failing()
         assert calls["n"] == 1
+
+    async def test_retry_does_not_repeat_bridge_poll_error(self):
+        """BridgePollError — подкласс APIConnectionError (connect-класс
+        ретраится), но ловится раньше него и не повторяется."""
+        import httpx
+
+        from app.domains.chat.services.retry import retry_on_transient
+
+        calls = {"n": 0}
+
+        @retry_on_transient(
+            on_429=True, on_5xx=True, max_attempts=5,
+            connect_max_attempts=3, backoff_base=0.0,
+        )
+        async def failing():
+            calls["n"] += 1
+            raise BridgePollError(
+                message="redis лёг",
+                request=httpx.Request("POST", "http://x/chat/completions"),
+            )
+
+        with pytest.raises(BridgePollError):
+            await failing()
+        assert calls["n"] == 1
+        assert issubclass(BridgePollError, APIConnectionError)
+
+
+class _FlakyRedis:
+    """Заглушка Redis: heartbeat живой, xadd/xrange падают по сценарию."""
+
+    def __init__(self, *, xadd_exc=None, xrange_exc=None):
+        self._xadd_exc = xadd_exc
+        self._xrange_exc = xrange_exc
+        self.xadd_calls = 0
+
+    async def get(self, key):
+        return json.dumps({"worker_id": "test", "targets": ["openai"]})
+
+    async def xadd(self, *args, **kwargs):
+        self.xadd_calls += 1
+        if self._xadd_exc is not None:
+            raise self._xadd_exc
+        return "1-1"
+
+    async def xrange(self, key):
+        if self._xrange_exc is not None:
+            raise self._xrange_exc
+        return []
+
+
+def _retry_wrapped(coro_factory):
+    """create() под тем же retry, что и в проде (connect-лимит 3)."""
+    from app.domains.chat.services.retry import retry_on_transient
+
+    return retry_on_transient(
+        on_429=True, on_5xx=True, max_attempts=5,
+        connect_max_attempts=3, backoff_base=0.0,
+    )(coro_factory)
+
+
+class TestSubmitVersusPollFailure:
+    """Сбой Redis ДО постановки заявки ретраится, ПОСЛЕ — нет.
+
+    Регрессия на двойной запрос к LLM: раньше один try накрывал и xadd,
+    и поллинг, любой сбой давал ретраибельный APIConnectionError, и повтор
+    клал ВТОРОЙ конверт с новым request_id, пока воркер исполнял первый.
+    """
+
+    async def _create(self, client):
+        return await client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "q"}],
+            tools=NOT_GIVEN, temperature=0.1,
+        )
+
+    async def test_xadd_failure_stays_retryable_connection_error(self):
+        """Заявка в stream не попала — обычный APIConnectionError, ретрай
+        безопасен (дубля не будет) и происходит по connect-лимиту."""
+        fake = _FlakyRedis(xadd_exc=RuntimeError("redis лёг на xadd"))
+        client = make_client("openai", timeout=5.0)
+
+        call = _retry_wrapped(lambda: self._create(client))
+        with patch("app.core.redis.get_redis", return_value=fake):
+            with pytest.raises(APIConnectionError) as exc_info:
+                await call()
+
+        assert not isinstance(exc_info.value, BridgePollError)
+        assert fake.xadd_calls == 3   # connect_max_attempts
+
+    async def test_poll_failure_does_not_resubmit_envelope(self):
+        """Заявка уже в stream — BridgePollError, повторного xadd нет."""
+        fake = _FlakyRedis(xrange_exc=RuntimeError("redis лёг на поллинге"))
+        client = make_client("openai", timeout=5.0)
+
+        call = _retry_wrapped(lambda: self._create(client))
+        with patch("app.core.redis.get_redis", return_value=fake):
+            with pytest.raises(BridgePollError):
+                await call()
+
+        assert fake.xadd_calls == 1
 
 
 GIGACHAT_RESPONSE_BODY = {

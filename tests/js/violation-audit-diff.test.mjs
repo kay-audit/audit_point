@@ -1,16 +1,15 @@
 /**
- * Тесты аудита правок нарушений через diff при сохранении (#17).
+ * Тесты аудита правок нарушений через diff при сохранении (#17) — блочная модель.
  *
- * Раньше журнал изменений фиксировал правки лишь двух полей нарушения
- * (violated/established) через per-keystroke debounce; остальные шесть полей
- * (описания/доп.материалы/причины/принятые меры/последствия/ответственные)
- * проходили бесследно. Теперь снимок нарушений берётся при загрузке акта, а
- * перед КАЖДЫМ flush журнала синтезируется по одной записи modify_violation на
- * каждое изменившееся нарушение — независимо от того, какое поле правилось.
+ * Снимок нарушений берётся при загрузке акта, перед КАЖДЫМ flush журнала
+ * синтезируется по одной записи modify_violation на каждое изменившееся
+ * нарушение — независимо от того, какое поле/какой блок правился.
  *
  * Производительность: отпечаток нарушения НЕ содержит base64-байтов картинок
- * (сравнение по id + метаданным: тип/подпись/имя файла/ширина). Правка только
- * байтов url при неизменных id/метаданных изменением НЕ считается.
+ * (image-блок сравнивается по id + метаданным: подпись/имя файла/ширина).
+ * Правка только байтов url при неизменных id/метаданных изменением НЕ считается.
+ * Table-блок — по id + content-ам ячеек. Плюс fieldOrder входит в отпечаток:
+ * перестановка полей — тоже правка.
  *
  * Синтез вшит в ChangelogTracker.flush() (pre-flush hook) → отрабатывает на
  * всех трёх flush-сайтах (авто-сейв, ручной, истечение сессии) автоматически.
@@ -20,23 +19,13 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChangelogTracker } from '../../static/js/constructor/changelog-tracker.js';
 import { ViolationAudit } from '../../static/js/constructor/violation/violation-audit.js';
+import { VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 
-function makeViolation(over = {}) {
-    return {
-        id: 'v1',
-        violated: '',
-        established: '',
-        descriptionList: { enabled: false, items: [] },
-        additionalContent: { enabled: false, items: [] },
-        reasons: { enabled: false, content: '' },
-        consequences: { enabled: false, content: '' },
-        responsible: { enabled: false, content: '' },
-        measures: { enabled: false, content: '' },
-        ...over,
-    };
+function textBlock(id, content = '') {
+    return { id, type: 'text', content };
 }
 
-function imageItem(over = {}) {
+function imageBlock(over = {}) {
     return {
         id: 'img1',
         type: 'image',
@@ -46,6 +35,27 @@ function imageItem(over = {}) {
         width: 0,
         ...over,
     };
+}
+
+function tableBlock(over = {}) {
+    return {
+        id: 'tbl1',
+        type: 'table',
+        table: { grid: [[{ content: 'A' }, { content: 'B' }]], colWidths: [100, 100] },
+        ...over,
+    };
+}
+
+function makeViolation(over = {}) {
+    const v = { id: 'v1', fieldOrder: null };
+    for (const key of VIOLATION_FIELD_KEYS) {
+        v[key] = { enabled: false, blocks: [] };
+    }
+    v.violated = { enabled: true, blocks: [textBlock('t_viol')] };
+    v.established = { enabled: true, blocks: [] };
+    v.reasons = { enabled: false, blocks: [textBlock('t_reas')] };
+    v.consequences = { enabled: false, blocks: [textBlock('t_cons')] };
+    return { ...v, ...over };
 }
 
 /** Число записей modify_violation по нарушению в результате flush. */
@@ -69,15 +79,15 @@ afterEach(() => {
 // ── Отпечаток (fingerprint) без base64 ─────────────────────────────────────────
 
 test('fingerprint игнорирует байты url картинки, но учитывает метаданные', () => {
-    const a = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ url: 'AAAA' })] } });
-    const b = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ url: 'ZZZZ' })] } });
+    const a = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ url: 'AAAA' })] } });
+    const b = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ url: 'ZZZZ' })] } });
     assert.equal(
         ViolationAudit.fingerprint(a),
         ViolationAudit.fingerprint(b),
         'разные байты url при тех же id/метаданных → одинаковый отпечаток',
     );
 
-    const c = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ caption: 'подпись' })] } });
+    const c = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ caption: 'подпись' })] } });
     assert.notEqual(
         ViolationAudit.fingerprint(a),
         ViolationAudit.fingerprint(c),
@@ -85,65 +95,88 @@ test('fingerprint игнорирует байты url картинки, но у�
     );
 });
 
+test('fingerprint table-блока учитывает содержимое ячеек', () => {
+    const a = makeViolation({ codeMining: { enabled: true, blocks: [tableBlock()] } });
+    const b = makeViolation({ codeMining: { enabled: true, blocks: [tableBlock()] } });
+    b.codeMining.blocks[0].table.grid[0][0].content = 'ИЗМЕНЕНО';
+    assert.notEqual(ViolationAudit.fingerprint(a), ViolationAudit.fingerprint(b));
+});
+
+test('fingerprint учитывает fieldOrder (перестановка полей — правка)', () => {
+    const a = makeViolation();
+    const b = makeViolation({ fieldOrder: [...VIOLATION_FIELD_KEYS].reverse() });
+    assert.notEqual(ViolationAudit.fingerprint(a), ViolationAudit.fingerprint(b));
+});
+
 // ── Синтез diff при flush через pre-flush hook ─────────────────────────────────
 
-test('правка reasons.content → одна запись modify_violation на flush', () => {
+test('правка текст-блока reasons → одна запись modify_violation на flush', () => {
     const v = makeViolation();
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.reasons.content = 'новая причина';
+    v.reasons.blocks[0].content = 'новая причина';
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
 });
 
-test('правка кейса (additionalContent case) → одна запись', () => {
-    const v = makeViolation({
-        additionalContent: { enabled: true, items: [{ id: 'c1', type: 'case', content: 'старое' }] },
-    });
+test('добавление блока в поле → одна запись', () => {
+    const v = makeViolation();
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.additionalContent.items[0].content = 'новое описание кейса';
+    v.additionalContent.blocks.push(textBlock('t_new', 'новый текст'));
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
 });
 
-test('правка пункта списка описаний → одна запись', () => {
-    const v = makeViolation({ descriptionList: { enabled: true, items: ['первый'] } });
+test('правка ячейки блока-таблицы → одна запись', () => {
+    const v = makeViolation({ codeMining: { enabled: true, blocks: [tableBlock()] } });
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.descriptionList.items[0] = 'исправленный';
+    v.codeMining.blocks[0].table.grid[0][0].content = 'SELECT 1';
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
 });
 
 test('правка подписи картинки → одна запись', () => {
-    const v = makeViolation({ additionalContent: { enabled: true, items: [imageItem()] } });
+    const v = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock()] } });
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.additionalContent.items[0].caption = 'новая подпись';
+    v.additionalContent.blocks[0].caption = 'новая подпись';
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
 });
 
 test('правка ширины картинки → одна запись', () => {
-    const v = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ width: 0 })] } });
+    const v = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ width: 0 })] } });
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.additionalContent.items[0].width = 50;
+    v.additionalContent.blocks[0].width = 50;
+    const entries = ChangelogTracker.flush();
+
+    assert.equal(countMods(entries), 1);
+});
+
+test('смена fieldOrder → одна запись', () => {
+    const v = makeViolation();
+    const violations = { v1: v };
+    ViolationAudit.snapshot(violations);
+    window.AppState = { violations };
+
+    v.fieldOrder = [...VIOLATION_FIELD_KEYS].reverse();
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
@@ -155,15 +188,16 @@ test('правка двух полей одного нарушения → вс�
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.violated = 'что нарушено';
-    v.reasons.content = 'и причина';
+    v.violated.blocks[0].content = 'что нарушено';
+    v.reasons.blocks[0].content = 'и причина';
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1, 'diff даёт ровно одну запись на нарушение, не по полю');
 });
 
 test('нетронутое нарушение → нет записи', () => {
-    const v = makeViolation({ violated: 'исходное' });
+    const v = makeViolation();
+    v.violated.blocks[0].content = 'исходное';
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
@@ -174,13 +208,13 @@ test('нетронутое нарушение → нет записи', () => {
 });
 
 test('снимок исключает base64: правка ТОЛЬКО байтов url (тот же id/метаданные) → нет записи', () => {
-    const v = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ url: 'data:image/png;base64,AAAA' })] } });
+    const v = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ url: 'data:image/png;base64,AAAA' })] } });
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
     // Меняем только бинарные байты картинки, id/подпись/имя/ширина прежние.
-    v.additionalContent.items[0].url = 'data:image/png;base64,ZZZZ';
+    v.additionalContent.blocks[0].url = 'data:image/png;base64,ZZZZ';
     const entries = ChangelogTracker.flush();
 
     assert.equal(
@@ -190,12 +224,12 @@ test('снимок исключает base64: правка ТОЛЬКО байт
 });
 
 test('замена картинки (сменились id и filename) → запись', () => {
-    const v = makeViolation({ additionalContent: { enabled: true, items: [imageItem({ id: 'imgOld', filename: 'old.png' })] } });
+    const v = makeViolation({ additionalContent: { enabled: true, blocks: [imageBlock({ id: 'imgOld', filename: 'old.png' })] } });
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.additionalContent.items[0] = imageItem({ id: 'imgNew', filename: 'new.png' });
+    v.additionalContent.blocks[0] = imageBlock({ id: 'imgNew', filename: 'new.png' });
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries), 1);
@@ -206,7 +240,8 @@ test('новое нарушение (нет в снимке) → не попад
     const violations = { v1 };
     ViolationAudit.snapshot(violations);
 
-    violations.v2 = makeViolation({ id: 'v2', violated: 'новое нарушение' });
+    violations.v2 = makeViolation({ id: 'v2' });
+    violations.v2.violated.blocks[0].content = 'новое нарушение';
     window.AppState = { violations };
 
     const entries = ChangelogTracker.flush();
@@ -222,8 +257,8 @@ test('несколько изменившихся нарушений → по о
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v1.violated = 'a';
-    v3.reasons.content = 'c';
+    v1.violated.blocks[0].content = 'a';
+    v3.reasons.blocks[0].content = 'c';
     const entries = ChangelogTracker.flush();
 
     assert.equal(countMods(entries, 'v1'), 1);
@@ -237,7 +272,7 @@ test('ре-снимок после flush+confirmSave: повторный flush �
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.reasons.content = 'x';
+    v.reasons.blocks[0].content = 'x';
     const first = ChangelogTracker.flush();
     assert.equal(countMods(first), 1, 'первый flush фиксирует правку');
 
@@ -257,7 +292,7 @@ test('#5 synthesize БЕЗ confirmSave не сдвигает эталон: не�
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.reasons.content = 'правка при сбое сохранения';
+    v.reasons.blocks[0].content = 'правка при сбое сохранения';
     const first = ChangelogTracker.flush();
     assert.equal(countMods(first), 1, 'первый flush (== неудачный save) фиксирует правку в журнале');
 
@@ -272,7 +307,7 @@ test('#5 confirmSave коммитит отложенный снимок: пов�
     ViolationAudit.snapshot(violations);
     window.AppState = { violations };
 
-    v.reasons.content = 'подтверждённая правка';
+    v.reasons.blocks[0].content = 'подтверждённая правка';
     ChangelogTracker.flush();
     ViolationAudit.confirmSave();
 
@@ -297,7 +332,7 @@ test('synthesize напрямую: одна запись на изменивше
         const v = makeViolation();
         const violations = { v1: v };
         ViolationAudit.snapshot(violations);
-        v.consequences.content = 'последствие';
+        v.consequences.blocks[0].content = 'последствие';
         ViolationAudit.synthesize(violations);
     } finally {
         ChangelogTracker.record = orig;
@@ -315,7 +350,7 @@ test('#5a synthesize пишет modify и НЕ сдвигает _snapshot до c
     ViolationAudit.snapshot(violations);
     const baselineBefore = ViolationAudit._snapshot.get('v1');
 
-    v.violated = 'изменено';
+    v.violated.blocks[0].content = 'изменено';
     const calls = [];
     const orig = ChangelogTracker.record;
     ChangelogTracker.record = (...a) => calls.push(a);
@@ -336,7 +371,7 @@ test('#5b имитация неудачного сохранения: synthesize
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
 
-    v.violated = 'правка, потерянная бы при старом баге';
+    v.violated.blocks[0].content = 'правка, потерянная бы при старом баге';
     const calls = [];
     const orig = ChangelogTracker.record;
     ChangelogTracker.record = (...a) => calls.push(a);
@@ -357,7 +392,7 @@ test('#5c synthesize + confirmSave коммитит эталон: следующ
     const violations = { v1: v };
     ViolationAudit.snapshot(violations);
 
-    v.violated = 'подтверждённая правка';
+    v.violated.blocks[0].content = 'подтверждённая правка';
     const calls = [];
     const orig = ChangelogTracker.record;
     ChangelogTracker.record = (...a) => calls.push(a);
@@ -376,16 +411,4 @@ test('#5c synthesize + confirmSave коммитит эталон: следующ
 test('#5 confirmSave без предшествующего synthesize — безопасный no-op', () => {
     ViolationAudit.reset();
     assert.doesNotThrow(() => ViolationAudit.confirmSave());
-});
-
-test('#5 synthesize без нарушений не создаёт бессмысленный pending-снимок (ранний return)', () => {
-    ViolationAudit.reset();
-    ViolationAudit.snapshot({ v1: makeViolation() });
-    const baselineBefore = ViolationAudit._snapshot.get('v1');
-
-    ViolationAudit.synthesize(null);
-    assert.equal(ViolationAudit._pendingSnapshot, null, 'ранний return — pending не создан');
-
-    ViolationAudit.confirmSave();
-    assert.equal(ViolationAudit._snapshot.get('v1'), baselineBefore, 'эталон не пострадал от no-op confirmSave');
 });

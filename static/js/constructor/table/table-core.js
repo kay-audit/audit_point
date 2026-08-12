@@ -5,8 +5,8 @@
  * Делегирует операции с ячейками в TableCellsOperations и изменение размеров в TableSizes.
  */
 import { ContextMenuManager } from '../context-menu/context-menu-core.js';
-import { AppState } from '../state/state-core.js';
 import { applyCellInput, cancelCellInput } from './cell-write-through.js';
+import { resolveTable } from './table-store.js';
 import { TableCellsOperations } from './table-cells-operations.js';
 import { TableSizes } from './table-sizes.js';
 import { Notifications } from '../../shared/notifications.js';
@@ -23,6 +23,9 @@ export class TableManager {
         // Исходные значения активных сессий редактирования ячеек —
         // для отката состояния при отмене (Escape). Ключ — элемент textarea.
         this._cellEditOriginals = new WeakMap();
+        // Уже обслуженные элементы (ячейки и ручки ресайза) — страж
+        // идемпотентности attachEventListenersToContainer, см. его докстринг.
+        this._wiredElements = new WeakSet();
 
         // Инициализация глобальных обработчиков
         this.initGlobalHandlers();
@@ -78,7 +81,15 @@ export class TableManager {
      * Привязка cell/handle-обработчиков ТОЛЬКО к ячейкам внутри указанного контейнера.
      * Используется per-node API в ItemsRenderer (updateTable/updateItem), чтобы НЕ навешивать
      * слушатели повторно на все таблицы в #itemsContainer (это привело бы к мульти-срабатыванию).
-     * Контейнер должен содержать только что созданные cell-элементы без существующих листенеров.
+     *
+     * Идемпотентна: уже обслуженные элементы пропускаются (`_wiredElements`).
+     * Один и тот же элемент попадает под привязку дважды на легальном пути —
+     * встроенная таблица блока нарушения получает слушателей при СОЗДАНИИ
+     * (перерисовка поля блоками не проходит через ItemsRenderer), а затем её
+     * ячейки попадают в сплошной обход #itemsContainer при полном рендере.
+     * Второй набор слушателей означал бы двойной selectCell (выделение
+     * снималось бы тем же кликом) и две textarea на dblclick.
+     *
      * @param {HTMLElement} container - DOM-элемент, в котором искать td/th/resize-handle
      */
     attachEventListenersToContainer(container) {
@@ -86,6 +97,9 @@ export class TableManager {
 
         // Обработка событий на ячейках
         container.querySelectorAll('td, th').forEach(cell => {
+            if (this._wiredElements.has(cell)) return;
+            this._wiredElements.add(cell);
+
             // Одинарный клик - выделение ячейки (с Ctrl - множественное)
             cell.addEventListener('click', (e) => {
                 if (e.target.classList.contains('resize-handle')) {
@@ -104,8 +118,7 @@ export class TableManager {
 
             // Двойной клик для редактирования ячейки
             cell.addEventListener('dblclick', (e) => {
-                const tableId = cell.dataset.tableId;
-                const table = AppState.tables[tableId];
+                const table = resolveTable(cell.dataset.tableId);
 
                 // ПРОВЕРКА: блокируем редактирование заголовков защищенных таблиц
                 const isProtectedTable = table && table.protected === true;
@@ -144,8 +157,7 @@ export class TableManager {
                 const textarea = e.target;
                 if (!textarea || textarea.tagName !== 'TEXTAREA') return;
                 applyCellInput(
-                    AppState.tables,
-                    cell.dataset.tableId,
+                    resolveTable(cell.dataset.tableId),
                     parseInt(cell.dataset.row, 10),
                     parseInt(cell.dataset.col, 10),
                     textarea.value,
@@ -163,8 +175,7 @@ export class TableManager {
                 const textarea = e.target;
                 if (!textarea || textarea.tagName !== 'TEXTAREA') return;
                 cancelCellInput(
-                    AppState.tables,
-                    cell.dataset.tableId,
+                    resolveTable(cell.dataset.tableId),
                     parseInt(cell.dataset.row, 10),
                     parseInt(cell.dataset.col, 10),
                     this._cellEditOriginals,
@@ -175,6 +186,9 @@ export class TableManager {
 
         // Обработка ручек изменения ширины колонок
         container.querySelectorAll('.resize-handle').forEach(handle => {
+            if (this._wiredElements.has(handle)) return;
+            this._wiredElements.add(handle);
+
             handle.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 e.stopPropagation();

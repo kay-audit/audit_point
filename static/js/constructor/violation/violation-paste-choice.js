@@ -9,7 +9,7 @@
  * решает пользователь; отмена (Escape / клик вне диалога) не вставляет ничего.
  *
  * Верстка и поведение — как у диалога качества картинок
- * (promptImageQualityMode, violation-additional-content.js): DialogManager без
+ * (promptImageQualityMode, violation-blocks.js): DialogManager без
  * штатных кнопок, свой ряд .dialog-buttons в onMount. Escape приходит через
  * EscapeStack базового диалога — своей обработки клавиш здесь нет.
  */

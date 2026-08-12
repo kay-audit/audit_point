@@ -67,6 +67,119 @@ def _convert_block_boundaries(content: str, break_str: str) -> str:
     return result
 
 
+_LIST_OPEN_RE = re.compile(r"<(ul|ol)\b[^>]*>", re.IGNORECASE)
+_LIST_CLOSE_RE = re.compile(r"</(ul|ol)\s*>", re.IGNORECASE)
+_LI_OPEN_RE = re.compile(r"<li\b[^>]*>", re.IGNORECASE)
+_LI_CLOSE_RE = re.compile(r"</li\s*>", re.IGNORECASE)
+
+
+def _convert_lists(content: str, *, blank_line_around: bool = False) -> str:
+    """Схлопывает <ul>/<ol>/<li> в синтетические <div>-абзацы с текстовым
+    маркером перед содержимым пункта («- » для <ul>, «N. » для <ol>, счётчик
+    свой у каждого списка). Маркер — обычный текст, поэтому дальше идёт по
+    тому же конвейеру, что и остальной контент пункта: <div>-границы доедут
+    до общего ``_convert_block_boundaries`` (запускать эту функцию — ДО него).
+
+    Вложенные списки СПЛЮЩИВАЮТСЯ в тот же уровень (ступенька отступа не
+    сохраняется — как в DOCX-конвертере, ``split_block_segments`` в
+    docx/builders/inline.py): открытие вложенного <ul>/<ol> внутри <li>
+    неявно закрывает текущий пункт (накопленный текст уже стал строкой),
+    следующие <li> — уже пункты вложенного списка со своим маркером/счётчиком
+    (нумерация вложенного <ol> начинается заново, с 1). Непарный <li>
+    (``<ul><li>a<li>b</ul>``) тоже закрывается неявно.
+
+    Чисто пробельный текст МЕЖДУ тегами списка (не внутри <li>, например
+    отступы разметки между <ul> и первым <li>) отбрасывается — иначе
+    появлялись бы пустые строки из форматирования исходного HTML.
+
+    blank_line_around: обернуть ВЕРХНЕУРОВНЕВЫЙ список пустой строкой между
+    ним и соседним контентом (Markdown-конвенция для однозначного
+    распознавания списка рендерером) — True для ``html_to_markdown``, False
+    для ``clean_html`` (TXT в таком обрамлении не нуждается).
+    """
+    out: list[str] = []
+    # Текст МЕЖДУ тегами списка вне <li> копится тут и фильтруется на
+    # пробельность при следующей структурной границе (см. _flush_pending).
+    pending: list[str] = []
+    list_stack: list[list] = []  # [kind ("ul"/"ol"), counter]
+    li_open = False
+
+    def _flush_pending() -> None:
+        text = "".join(pending)
+        pending.clear()
+        if text.strip():
+            out.append(text)
+
+    i, n = 0, len(content)
+    while i < n:
+        if content[i] == "<":
+            m = _TAG_RE.match(content, i)
+            if m:
+                tag = m.group(0)
+                list_open_m = _LIST_OPEN_RE.match(tag)
+                if list_open_m:
+                    if li_open:
+                        out.append("</div>")
+                        li_open = False
+                    else:
+                        _flush_pending()
+                        if (
+                            not list_stack and blank_line_around
+                            and out and "".join(out).strip()
+                        ):
+                            out.append("<div></div>")
+                    list_stack.append([list_open_m.group(1).lower(), 0])
+                    i = m.end()
+                    continue
+                if _LIST_CLOSE_RE.match(tag):
+                    if li_open:
+                        out.append("</div>")
+                        li_open = False
+                    if list_stack:
+                        list_stack.pop()
+                        if not list_stack:
+                            _flush_pending()
+                            if blank_line_around and content[m.end():].strip():
+                                out.append("<div></div>")
+                    i = m.end()
+                    continue
+                if _LI_OPEN_RE.match(tag) and list_stack:
+                    if li_open:
+                        out.append("</div>")
+                    else:
+                        _flush_pending()
+                    kind, count = list_stack[-1]
+                    count += 1
+                    list_stack[-1][1] = count
+                    marker = "- " if kind == "ul" else f"{count}. "
+                    out.append(f"<div>{marker}")
+                    li_open = True
+                    i = m.end()
+                    continue
+                if _LI_CLOSE_RE.match(tag) and li_open:
+                    out.append("</div>")
+                    li_open = False
+                    i = m.end()
+                    continue
+                # Прочий тег (span/b/i/a/… или <li> вне списка/уже закрытый)
+                # — как есть; вне <li> внутри списка фильтруется наравне с
+                # текстом (см. pending выше).
+                (out if (li_open or not list_stack) else pending).append(tag)
+                i = m.end()
+                continue
+        nxt = content.find("<", i)
+        chunk = content[i:] if nxt == -1 else content[i:nxt]
+        (out if (li_open or not list_stack) else pending).append(chunk)
+        if nxt == -1:
+            break
+        i = nxt
+
+    if li_open:
+        out.append("</div>")
+    _flush_pending()
+    return "".join(out)
+
+
 def _resolve_special_spans(content: str, link_fmt) -> str:
     """Разворачивает спец-span'ы (ссылка/сноска) в текстовый вид.
 
@@ -302,10 +415,16 @@ class HTMLUtils:
         Returns:
             Очищенный plain text
         """
+        # Списки (<ul>/<ol>/<li>) -> синтетические <div>-абзацы с маркером
+        # («- » / «N. ») — ДО общего перевода границ блоков, чтобы их </div>
+        # тоже дали перенос строки (иначе пункты списка склеивались бы в одну
+        # строку, см. _convert_lists).
+        clean = _convert_lists(content)
+
         # Границы блоков (div/p) и <br> -> перенос строки (общий шаг с
         # html_to_markdown, см. _convert_block_boundaries); открывающие
         # теги вырезает общий стрип тегов ниже.
-        clean = _convert_block_boundaries(content, "\n")
+        clean = _convert_block_boundaries(clean, "\n")
 
         # Спец-span'ы редактора: ссылка → «текст (url)», сноска →
         # «якорь (сноска: текст)» — иначе данные атрибутов теряются.
@@ -331,6 +450,8 @@ class HTMLUtils:
         - <i>, <em> -> *italic*
         - <u> -> разворачивается (Markdown не поддерживает подчёркивание)
         - <br>/</div>/</p> -> перенос строки (MD hard break "  \\n")
+        - <ul>/<ol>/<li> -> markdown-список («- пункт» / «N. пункт»),
+          обрамлённый пустой строкой от соседнего контента
         - спец-span'ы редактора: ссылка -> [текст](url), сноска ->
           «якорь (сноска: текст)»
 
@@ -347,10 +468,16 @@ class HTMLUtils:
         Returns:
             Markdown-текст
         """
+        # Списки -> синтетические <div>-абзацы с маркером (см. _convert_lists),
+        # ДО перевода границ блоков — та же причина, что и в clean_html.
+        # blank_line_around=True: список — markdown-разметка, для однозначного
+        # распознавания рендерером нужна пустая строка от соседнего контента.
+        pre = _convert_lists(content, blank_line_around=True)
+
         # Границы блоков (div/p) и <br> -> MD hard break тем же 3-шаговым
         # переводом, что и clean_html (_convert_block_boundaries): байт-семантика
         # границ не меняется. Открывающие <div>/<p> отбросит parser.
-        pre = _convert_block_boundaries(content, "  \n")
+        pre = _convert_block_boundaries(pre, "  \n")
 
         parser = _MarkdownParser()
         parser.feed(pre)

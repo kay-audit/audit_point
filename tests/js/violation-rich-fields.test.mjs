@@ -2,14 +2,11 @@
  * Тесты rich-полей нарушения (Task 1.3.3) — логика, доступная под node-стабом:
  *  - _createRichFieldEditor: хост-контракт (класс .violation-field, contenteditable,
  *    наполнение из модели, focus→mount, read-only-ветка);
- *  - ViolationContentItemSurface: поверхность кейса/свободного текста
- *    (commit/setContent → setContentItemField);
- *  - ViolationListItemSurface (Task 7): поверхность пункта списка описаний
- *    (commit/persist → setViolationListItem по индексу; setContent (T10) —
- *    для одношагового undo «Заменить всё», см. её докстринг);
  *  - _teardownActiveRichField: снятие контроллера при пересоздании DOM нарушения;
- *  - createViolationElement: 6 текстовых полей карточки идут через rich-поле с
- *    корректными путями поверхности.
+ *  - createViolationElement: форма собирается циклом по полям реестра.
+ *
+ * Поверхность блока (ViolationBlockSurface: commit/setContent/persist →
+ * setBlockField) проверяется в violation-rich-surface.test.mjs.
  *
  * РЕАЛЬНЫЙ contenteditable/сохранение формата/тулбар/тедаун-на-blur проверяются
  * ТОЛЬКО в Playwright (задача 1.6.3) — node-стаб без настоящего DOM/DOMPurify их
@@ -28,6 +25,8 @@ import { ViolationManager } from '../../static/js/constructor/violation/violatio
 import { EditorController } from '../../static/js/constructor/textblock/editor-controller.js';
 import { EditorRegistry } from '../../static/js/constructor/textblock/editor-registry.js';
 import { textBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
+import { VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
+import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
 
 /**
  * Фейковый элемент, записывающий className/contentEditable/dataset/classList и
@@ -268,320 +267,6 @@ test('V27: структурная починка (changed=true) — второй
     }
 });
 
-// ── ViolationContentItemSurface (кейс/свободный текст) ────────────────────────
-
-test('_makeContentItemSurface: id/kind/rich, getContent из item.content', () => {
-    const vm = new ViolationManager();
-    const s = vm._makeContentItemSurface({ id: 'v1' }, { id: 'c1', content: 'кейс' });
-
-    assert.equal(s.id, 'viol:v1:item:c1');
-    assert.equal(s.kind, 'violationField');
-    assert.equal(s.rich, true);
-    assert.equal(s.getContent(), 'кейс');
-});
-
-// ── Task 6: параметр field (подпись картинки) ─────────────────────────────────
-
-test('_makeContentItemSurface: field="caption" — id с суффиксом :caption, getContent из item.caption', () => {
-    const vm = new ViolationManager();
-    const s = vm._makeContentItemSurface({ id: 'v1' }, { id: 'i1', content: '', caption: 'подпись' }, 'caption');
-
-    assert.equal(s.id, 'viol:v1:item:i1:caption', 'id несёт суффикс поля (префикс viol:<id>: для teardown цел)');
-    assert.equal(s.kind, 'violationField');
-    assert.equal(s.rich, true);
-    assert.equal(s.getContent(), 'подпись', 'читает item.caption, не item.content');
-});
-
-test('ViolationContentItemSurface: field="caption" — commit/setContent пишут через setContentItemField(..., "caption", ...)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'i1', content: '', caption: '' };
-    const s = vm._makeContentItemSurface(violation, item, 'caption');
-
-    s.element = { innerHTML: '<b>новая подпись</b>', textContent: '' };
-    s.commit();
-    assert.deepEqual(calls, [{ field: 'caption', val: '<b>новая подпись</b>' }], 'commit пишет в caption, не в content');
-
-    calls.length = 0;
-    s.setContent('<i>внешняя подпись</i>');
-    assert.deepEqual(calls, [{ field: 'caption', val: '<i>внешняя подпись</i>' }], 'setContent пишет в caption');
-});
-
-test('_makeContentItemSurface: без field (кейс/свободный текст) — id/getContent/commit как раньше (content, без суффикса)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const s = vm._makeContentItemSurface({ id: 'v1' }, { id: 'c1', content: 'кейс', caption: 'не тронь' });
-
-    assert.equal(s.id, 'viol:v1:item:c1', 'без суффикса — обратная совместимость существующих id');
-    assert.equal(s.getContent(), 'кейс');
-    s.element = { innerHTML: '<i>x</i>', textContent: '' };
-    s.commit();
-    assert.deepEqual(calls, [{ field: 'content', val: '<i>x</i>' }]);
-});
-
-test('ViolationContentItemSurface: commit (element→модель) и setContent (модель→element) → setContentItemField', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: '' };
-    const s = vm._makeContentItemSurface(violation, item);
-
-    s.element = { innerHTML: '<i>новое</i>', textContent: '' };
-    s.commit();
-    assert.deepEqual(calls, [{ field: 'content', val: '<i>новое</i>' }], 'commit пишет element.innerHTML');
-
-    calls.length = 0;
-    s.setContent('<u>внешнее</u>');
-    assert.deepEqual(calls, [{ field: 'content', val: '<u>внешнее</u>' }], 'setContent пишет переданный html');
-});
-
-test('ViolationContentItemSurface: setContent — normalizeMarkers + tooltip вызваны на element (Task 1.3.4-B1)', () => {
-    const vm = new ViolationManager();
-    vm.setContentItemField = () => true;
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: '' };
-    const s = vm._makeContentItemSurface(violation, item);
-    s.element = { innerHTML: '', textContent: '' };
-
-    const normalizeCalls = [];
-    const tooltipCalls = [];
-    const origNormalize = textBlockManager.normalizeMarkers;
-    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
-    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
-    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
-    try {
-        s.setContent('<b>x</b>');
-        assert.deepEqual(normalizeCalls, [s.element], 'normalizeMarkers вызван на element');
-        assert.deepEqual(tooltipCalls, [s.element], '_attachInitialTooltipHandlers вызван на element');
-    } finally {
-        textBlockManager.normalizeMarkers = origNormalize;
-        textBlockManager._attachInitialTooltipHandlers = origTooltip;
-    }
-});
-
-test('ViolationContentItemSurface: commit снимает caret-guard\'ы (U+FEFF) перед записью (Task 1.3.4-A)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: '' };
-    const s = vm._makeContentItemSurface(violation, item);
-    const guard = String.fromCharCode(0xFEFF);
-
-    const origStrip = textBlockManager._stripGuards;
-    textBlockManager._stripGuards = (html) => html.split(guard).join('');
-    try {
-        s.element = { innerHTML: `${guard}<i>новое</i>${guard}`, textContent: '' };
-        s.commit();
-        assert.deepEqual(calls, [{ field: 'content', val: '<i>новое</i>' }], 'guard-символы вычищены до записи в модель');
-    } finally {
-        textBlockManager._stripGuards = origStrip;
-    }
-});
-
-// changed=false (косметика) НЕ означает «нечего чистить» — см. докстринг
-// _repairCapsuleHtml (violation-field-surface.js). Модель обязана получать
-// report.html БЕЗУСЛОВНО, независимо от changed (зеркало теста в
-// violation-rich-surface.test.mjs для ViolationFieldSurface).
-test('ViolationContentItemSurface: setContent — модель получает report.html ОДНИМ вызовом даже при changed=false (Task 1.3.4-A)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: '' };
-    const s = vm._makeContentItemSurface(violation, item);
-    const guard = String.fromCharCode(0xFEFF);
-
-    const origReport = textBlockManager._repairCapsulesReport;
-    textBlockManager._repairCapsulesReport = () => ({ html: '<i>чисто</i>', changed: false });
-    try {
-        s.setContent(`${guard}<i contenteditable="true">чисто</i>${guard}`);
-        assert.deepEqual(calls, [{ field: 'content', val: '<i>чисто</i>' }],
-            'модель получает report.html ОДНИМ вызовом независимо от changed');
-    } finally {
-        textBlockManager._repairCapsulesReport = origReport;
-    }
-});
-
-// ── #12 (основа): нормализация пустого коммита ────────────────────────────
-
-test('ViolationContentItemSurface: commit — визуально пустое поле (\'<div><br></div>\') нормализуется в \'\'', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: 'было' };
-    const s = vm._makeContentItemSurface(violation, item);
-
-    s.element = { innerHTML: '<div><br></div>', textContent: '' };
-    s.commit();
-
-    assert.deepEqual(calls, [{ field: 'content', val: '' }]);
-});
-
-test('ViolationContentItemSurface: commit — поле из одного \'&nbsp;\' нормализуется в \'\' (F2/Пункт 2)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: 'было' };
-    const s = vm._makeContentItemSurface(violation, item);
-
-    s.element = { innerHTML: '&nbsp;', textContent: ' ' };
-    s.commit();
-
-    assert.deepEqual(calls, [{ field: 'content', val: '' }]);
-});
-
-test('ViolationContentItemSurface: persist делегирует в commit (element→модель через setContentItemField)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setContentItemField = (v, item, field, val) => { calls.push({ field, val }); return true; };
-    const violation = { id: 'v1' };
-    const item = { id: 'c1', content: '' };
-    const s = vm._makeContentItemSurface(violation, item);
-
-    s.element = { innerHTML: '<b>x</b>', textContent: '' };
-    s.persist();
-
-    assert.deepEqual(calls, [{ field: 'content', val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
-});
-
-// ── Task 7: ViolationListItemSurface (пункт списка описаний) ─────────────────
-
-test('_makeViolationListItemSurface: id/kind/rich, getContent из items[index]', () => {
-    const vm = new ViolationManager();
-    const violation = { id: 'v1', descriptionList: { items: ['первый', 'второй'] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 1);
-
-    assert.equal(s.id, 'viol:v1:list:descriptionList:1');
-    assert.equal(s.kind, 'violationField');
-    assert.equal(s.rich, true);
-    assert.equal(s.getContent(), 'второй', 'читает items[index], не items[0]');
-});
-
-test('ViolationListItemSurface: commit (element→модель) → setViolationListItem по (violation, fieldName, index)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
-    const violation = { id: 'v1', descriptionList: { items: [''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-
-    s.element = { innerHTML: '<b>новый</b> пункт' };
-    s.commit();
-
-    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 0, val: '<b>новый</b> пункт' }]);
-});
-
-test('ViolationListItemSurface: commit снимает caret-guard\'ы (U+FEFF) перед записью (Task 1.3.4-A, зеркало ViolationContentItemSurface)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
-    const violation = { id: 'v1', descriptionList: { items: [''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-    const guard = String.fromCharCode(0xFEFF);
-
-    const origStrip = textBlockManager._stripGuards;
-    textBlockManager._stripGuards = (html) => html.split(guard).join('');
-    try {
-        s.element = { innerHTML: `${guard}<i>пункт</i>${guard}` };
-        s.commit();
-        assert.deepEqual(calls, ['<i>пункт</i>'], 'guard-символы вычищены до записи в модель');
-    } finally {
-        textBlockManager._stripGuards = origStrip;
-    }
-});
-
-test('ViolationListItemSurface: commit — визуально пустое поле (\'<br>\') нормализуется в \'\'', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
-    const violation = { id: 'v1', descriptionList: { items: ['было'] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-
-    s.element = { innerHTML: '<br>' };
-    s.commit();
-
-    assert.deepEqual(calls, ['']);
-});
-
-test('ViolationListItemSurface: persist делегирует в commit — ОБЯЗАТЕЛЕН для корректора (прецедент фикса 1.3.3)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
-    const violation = { id: 'v1', descriptionList: { items: [''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-
-    s.element = { innerHTML: '<b>x</b>' };
-    s.persist();
-
-    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 0, val: '<b>x</b>' }], 'persist пишет element.innerHTML как commit');
-});
-
-// T10: setContent добавлен для одношагового undo «Заменить всё» (раньше его НЕ
-// было — «ничто не пишет в пункт списка программно»; undo replace-all меняет
-// сам факт). Зеркало ViolationContentItemSurface.setContent: repair →
-// setViolationListItem → renderActContent → harden, с гейтом changed. Пустоту
-// setContent НЕ нормализует (это делает commit) — как у образца.
-test('ViolationListItemSurface: setContent (T10) → setViolationListItem по индексу (для undo «Заменить всё»)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push({ fieldName, index, val }); return true; };
-    const violation = { id: 'v1', descriptionList: { items: ['', ''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 1);
-    s.element = { textContent: '' };
-
-    s.setContent('<b>восстановленный</b> пункт');
-
-    assert.deepEqual(calls, [{ fieldName: 'descriptionList', index: 1, val: '<b>восстановленный</b> пункт' }],
-        'setContent пишет переданный html в items[index] через мутатор списка');
-});
-
-test('ViolationListItemSurface: setContent — normalizeMarkers + tooltip вызваны на element (harden, Task 1.3.4-B1)', () => {
-    const vm = new ViolationManager();
-    vm.setViolationListItem = () => true;
-    const violation = { id: 'v1', descriptionList: { items: [''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-    s.element = { textContent: '' };
-
-    const normalizeCalls = [];
-    const tooltipCalls = [];
-    const origNormalize = textBlockManager.normalizeMarkers;
-    const origTooltip = textBlockManager._attachInitialTooltipHandlers;
-    textBlockManager.normalizeMarkers = (element) => normalizeCalls.push(element);
-    textBlockManager._attachInitialTooltipHandlers = (element) => tooltipCalls.push(element);
-    try {
-        s.setContent('<b>x</b>');
-        assert.deepEqual(normalizeCalls, [s.element], 'normalizeMarkers вызван на element');
-        assert.deepEqual(tooltipCalls, [s.element], '_attachInitialTooltipHandlers вызван на element');
-    } finally {
-        textBlockManager.normalizeMarkers = origNormalize;
-        textBlockManager._attachInitialTooltipHandlers = origTooltip;
-    }
-});
-
-test('ViolationListItemSurface: setContent — модель получает report.html ОДНИМ вызовом даже при changed=false (Task 1.3.4-A)', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationListItem = (v, fieldName, index, val) => { calls.push(val); return true; };
-    const violation = { id: 'v1', descriptionList: { items: [''] } };
-    const s = vm._makeViolationListItemSurface(violation, 'descriptionList', 0);
-    const guard = String.fromCharCode(0xFEFF);
-
-    const origReport = textBlockManager._repairCapsulesReport;
-    textBlockManager._repairCapsulesReport = () => ({ html: '<i>чисто</i>', changed: false });
-    try {
-        s.setContent(`${guard}<i contenteditable="true">чисто</i>${guard}`);
-        assert.deepEqual(calls, ['<i>чисто</i>'], 'модель получает report.html ОДНИМ вызовом независимо от changed');
-    } finally {
-        textBlockManager._repairCapsulesReport = origReport;
-    }
-});
-
 // ── _teardownActiveRichField: снятие контроллера при пересоздании DOM ─────────
 
 test('_teardownActiveRichField: снимает контроллер, если активна поверхность этого нарушения', () => {
@@ -612,36 +297,61 @@ test('_teardownActiveRichField: чужое нарушение / чужой kind 
     } finally { EditorController.unmount = orig; EditorRegistry.clear(); }
 });
 
-// ── createViolationElement: маршрутизация 6 текстовых полей карточки ──────────
+// ── createViolationElement: форма собирается по реестру полей ────────────────
 
-test('createViolationElement: 6 текстовых полей карточки идут через rich-поле с корректными путями', () => {
+test('createViolationElement: секция на КАЖДОЕ поле реестра, в порядке fieldOrder', () => {
     const prev = AppConfig.readOnlyMode;
-    // Режим просмотра пропускает _addFormalizeButton (его insertBefore не покрыт
-    // стабом); набор создаваемых полей от режима не зависит.
+    // Режим просмотра пропускает бар действий (его insertBefore не покрыт
+    // стабом); набор секций от режима не зависит.
     AppConfig.readOnlyMode = { isReadOnly: true };
     try {
         const vm = new ViolationManager();
-        const surfaces = [];
-        vm._createRichFieldEditor = (surface, opts) => { surfaces.push({ id: surface.id, kind: surface.kind, ro: opts.isReadOnly }); return {}; };
-        vm.createAdditionalContentField = () => ({}); // не предмет теста
-
-        const violation = {
-            id: 'v1', violated: '', established: '',
-            descriptionList: { enabled: false, items: [] },
-            additionalContent: { enabled: false, items: [] },
-            reasons: { enabled: false, content: '' },
-            measures: { enabled: false, content: '' },
-            consequences: { enabled: false, content: '' },
-            responsible: { enabled: false, content: '' },
+        const fields = [];
+        vm.createBlocksField = (v, descriptor, ro) => {
+            fields.push({ key: descriptor.key, label: descriptor.label, ro });
+            return {};
         };
+
+        const violation = { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() };
         vm.createViolationElement(violation, { id: 'n1' });
 
-        assert.deepEqual(surfaces.map((s) => s.id), [
-            'viol:v1:violated', 'viol:v1:established',
-            'viol:v1:reasons.content', 'viol:v1:measures.content',
-            'viol:v1:consequences.content', 'viol:v1:responsible.content',
-        ], 'violated/established + 4 опциональных текстовых поля (descriptionList — список, свой ViolationListItemSurface по индексу, не через createViolationElement)');
-        assert.ok(surfaces.every((s) => s.kind === 'violationField' && s.ro === true));
+        assert.deepEqual(fields.map((f) => f.key), [...VIOLATION_FIELD_KEYS],
+            'все десять полей реестра — по секции на каждое, в стандартном порядке');
+        assert.ok(fields.every((f) => f.ro === true), 'режим просмотра прокинут в каждую секцию');
+    } finally {
+        AppConfig.readOnlyMode = prev;
+    }
+});
+
+test('createViolationElement: пользовательский fieldOrder меняет порядок секций', () => {
+    const prev = AppConfig.readOnlyMode;
+    AppConfig.readOnlyMode = { isReadOnly: true };
+    try {
+        const vm = new ViolationManager();
+        const keys = [];
+        vm.createBlocksField = (v, descriptor) => { keys.push(descriptor.key); return {}; };
+
+        const custom = [...VIOLATION_FIELD_KEYS].reverse();
+        const violation = { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape(), fieldOrder: custom };
+        vm.createViolationElement(violation, { id: 'n1' });
+
+        assert.deepEqual(keys, custom, 'порядок секций взят из fieldOrder нарушения');
+    } finally {
+        AppConfig.readOnlyMode = prev;
+    }
+});
+
+test('createViolationElement: нарушение попадает в реестр активных (адресат paste по фокусу)', () => {
+    const prev = AppConfig.readOnlyMode;
+    AppConfig.readOnlyMode = { isReadOnly: true };
+    try {
+        const vm = new ViolationManager();
+        vm.createBlocksField = () => ({});
+        const violation = { id: 'v1', nodeId: 'n1', ...createDefaultViolationShape() };
+
+        vm.createViolationElement(violation, { id: 'n1' });
+
+        assert.equal(vm.activeViolations.get('v1'), violation);
     } finally {
         AppConfig.readOnlyMode = prev;
     }

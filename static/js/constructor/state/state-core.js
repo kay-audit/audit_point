@@ -10,6 +10,9 @@ import { ValidationCore } from '../validation/validation-core.js';
 import { ValidationTree } from '../validation/validation-tree.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { KIND_REGULAR, getTableKind } from '../table/table-kind.js';
+import { serializeGrid } from '../table/table-serialize.js';
+import { VIOLATION_FIELD_KEYS, MANDATORY_FIELD_KEYS } from '../violation/violation-fields.js';
+import { BLOCK_TYPES } from '../violation/violation-block-types.js';
 
 export const AppState = {
     /** @type {number} Текущий шаг приложения (1 или 2) */
@@ -646,16 +649,7 @@ export const AppState = {
             serialized[tableId] = {
                 id: table.id,
                 nodeId: table.nodeId,
-                grid: table.grid.map(row => row.map(cell => ({
-                    content: cell.content || '',
-                    isHeader: cell.isHeader || false,
-                    colSpan: cell.colSpan || 1,
-                    rowSpan: cell.rowSpan || 1,
-                    isSpanned: cell.isSpanned || false,
-                    spanOrigin: cell.spanOrigin || null,
-                    originRow: cell.originRow,
-                    originCol: cell.originCol
-                }))),
+                grid: serializeGrid(table.grid),
                 colWidths: table.colWidths || [],
                 protected: table.protected || false,
                 deletable: table.deletable !== undefined ? table.deletable : true
@@ -695,7 +689,12 @@ export const AppState = {
     },
 
     /**
-     * Сериализует нарушения
+     * Сериализует нарушения (блочная модель).
+     *
+     * Состав полей ГЕНЕРИРУЕТСЯ из реестра VIOLATION_FIELD_KEYS — новое поле
+     * реестра попадает в payload автоматически (раньше здесь жил ручной
+     * белый список литералами: поле вне списка молча терялось при
+     * сохранении — топ-риск №1 карты сцеплений).
      * @private
      * @returns {Object} Сериализованные нарушения
      */
@@ -703,39 +702,52 @@ export const AppState = {
         const serialized = {};
 
         for (const [violationId, violation] of Object.entries(_unwrap(this.violations))) {
-            serialized[violationId] = {
+            const out = {
                 id: violation.id,
                 nodeId: violation.nodeId,
-                violated: violation.violated || '',
-                established: violation.established || '',
-                descriptionList: {
-                    enabled: violation.descriptionList?.enabled || false,
-                    items: violation.descriptionList?.items || []
-                },
-                additionalContent: {
-                    enabled: violation.additionalContent?.enabled || false,
-                    items: violation.additionalContent?.items || []
-                },
-                reasons: {
-                    enabled: violation.reasons?.enabled || false,
-                    content: violation.reasons?.content || ''
-                },
-                measures: {
-                    enabled: violation.measures?.enabled || false,
-                    content: violation.measures?.content || ''
-                },
-                consequences: {
-                    enabled: violation.consequences?.enabled || false,
-                    content: violation.consequences?.content || ''
-                },
-                responsible: {
-                    enabled: violation.responsible?.enabled || false,
-                    content: violation.responsible?.content || ''
-                }
+                fieldOrder: Array.isArray(violation.fieldOrder)
+                    ? [...violation.fieldOrder]
+                    : null,
             };
+            for (const key of VIOLATION_FIELD_KEYS) {
+                const container = violation[key];
+                out[key] = {
+                    enabled: container?.enabled ?? MANDATORY_FIELD_KEYS.includes(key),
+                    blocks: Array.isArray(container?.blocks)
+                        ? container.blocks.map(block => this._serializeViolationBlock(block))
+                        : [],
+                };
+            }
+            serialized[violationId] = out;
         }
 
         return serialized;
+    },
+
+    /**
+     * Сериализует ОДИН блок поля нарушения.
+     *
+     * Текст и картинка — плоские объекты хранимого формата, отдаются как есть.
+     * Табличный блок пересобирается через serializeGrid: встроенная таблица
+     * обслуживается той же машинерией, что узловые, и её ячейки несут
+     * рантайм-поля (mergeSnapshot после объединения). Без пересборки первое же
+     * объединение ячеек в нарушении отбило бы сохранение ВСЕГО акта 422
+     * (TableCellSchema extra="forbid").
+     * @private
+     * @param {Object} block - Блок поля нарушения
+     * @returns {Object} Блок в хранимом формате
+     */
+    _serializeViolationBlock(block) {
+        if (!block || block.type !== BLOCK_TYPES.TABLE) return block;
+
+        const table = block.table || {};
+        return {
+            ...block,
+            table: {
+                grid: serializeGrid(table.grid),
+                colWidths: Array.isArray(table.colWidths) ? [...table.colWidths] : [],
+            },
+        };
     }
 };
 

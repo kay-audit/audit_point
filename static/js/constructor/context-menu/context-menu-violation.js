@@ -1,12 +1,8 @@
 /**
- * Обработчик контекстного меню для нарушений
+ * Обработчик контекстного меню для блоков поля нарушения
  */
 import { ContextMenuManager } from './context-menu-core.js';
-import {
-    CONTENT_TYPE_CASE,
-    CONTENT_TYPE_FREE_TEXT,
-    CONTENT_TYPE_IMAGE,
-} from '../violation/violation-content-item.js';
+import { BLOCK_TYPES, BLOCK_TYPE_META } from '../violation/violation-block-types.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
 
 export class ViolationContextMenu {
@@ -17,20 +13,21 @@ export class ViolationContextMenu {
     show(x, y, params = {}) {
         const {
             violation,
+            fieldKey,
             contentContainer,
-            itemId = null,
+            blockId = null,
             insertPosition = 0
         } = params;
 
         // Добавляем проверку на обязательные параметры
-        if (!violation || !contentContainer) {
-            console.error('ViolationContextMenu: violation и contentContainer обязательны');
+        if (!violation || !fieldKey || !contentContainer) {
+            console.error('ViolationContextMenu: violation, fieldKey и contentContainer обязательны');
             return;
         }
 
         this.removeExistingMenu();
 
-        this.currentMenu = this.createMenu(violation, contentContainer, itemId, insertPosition);
+        this.currentMenu = this.createMenu(violation, fieldKey, contentContainer, blockId, insertPosition);
         this.currentMenu.style.left = `${x}px`;
         this.currentMenu.style.top = `${y}px`;
 
@@ -38,7 +35,7 @@ export class ViolationContextMenu {
         ContextMenuManager.positionMenu(this.currentMenu, x, y);
     }
 
-    createMenu(violation, contentContainer, itemId, insertPosition) {
+    createMenu(violation, fieldKey, contentContainer, blockId, insertPosition) {
         const menu = document.createElement('div');
         menu.className = 'violation-context-menu';
         menu.style.cssText = `
@@ -53,32 +50,26 @@ export class ViolationContextMenu {
             font-family: inherit;
         `;
 
-        // action — тип элемента из violation-content-item.js (один источник,
-        // без ручного маппинга 'text' → 'freeText').
-        const addItems = [
-            {label: '📝 Добавить кейс', action: CONTENT_TYPE_CASE},
-            {label: '🖼️ Добавить изображение', action: CONTENT_TYPE_IMAGE},
-            {label: '📄 Добавить текст', action: CONTENT_TYPE_FREE_TEXT}
-        ];
+        // Единый гейт лимита (#4): при достижении лимита ПО ПОЛЮ пункты
+        // добавления строятся в disabled-виде — реальный отказ всё равно
+        // проверяется в _insertBlocksBulk, здесь только UX-подсказка заранее.
+        const blocksCount = violation[fieldKey]?.blocks?.length || 0;
+        const limitReached = blocksCount >= getImageLimits().maxItemsPerViolation;
 
-        // Единый гейт лимита (#4): при достижении лимита пункты добавления
-        // строятся в disabled-виде — реальный отказ всё равно проверяется
-        // в addContentItemAtPosition, здесь только UX-подсказка заранее.
-        const itemsCount = violation.additionalContent?.items?.length || 0;
-        const limitReached = itemsCount >= getImageLimits().maxItemsPerViolation;
-
-        addItems.forEach(item => {
-            menu.appendChild(this.createMenuItem(item.label, () => {
-                this.handleAddContent(violation, item.action, contentContainer, insertPosition);
+        // Пункты добавления — обход реестра типов блоков: подписи, иконки и
+        // порядок оттуда же, что у тулбара поля и миниатюры перетаскивания.
+        Object.values(BLOCK_TYPE_META).forEach(meta => {
+            menu.appendChild(this.createMenuItem(`${meta.icon} ${meta.menuLabel}`, () => {
+                this.handleAddBlock(violation, fieldKey, meta.type, contentContainer, insertPosition);
                 this.removeExistingMenu();
                 ContextMenuManager.hide();
             }, false, limitReached));
         });
 
-        if (itemId !== null) {
+        if (blockId !== null) {
             menu.appendChild(this.createSeparator());
             menu.appendChild(this.createMenuItem('🗑️ Удалить', () => {
-                this.handleDelete(violation, itemId, contentContainer);
+                this.handleDelete(violation, fieldKey, blockId, contentContainer);
                 this.removeExistingMenu();
                 ContextMenuManager.hide();
             }, true));
@@ -137,44 +128,36 @@ export class ViolationContextMenu {
         return separator;
     }
 
-    handleAddContent(violation, action, contentContainer, insertPosition) {
-        if (!violation || !contentContainer) return;
+    handleAddBlock(violation, fieldKey, type, contentContainer, insertPosition) {
+        if (!violation || !fieldKey || !contentContainer) return;
 
-        const actions = {
-            [CONTENT_TYPE_CASE]: () => {
-                violationManager?.addContentItemAtPosition?.(
-                    violation,
-                    CONTENT_TYPE_CASE,
-                    contentContainer,
-                    insertPosition
-                );
-            },
-            [CONTENT_TYPE_IMAGE]: () => {
-                violationManager?.triggerImageUploadAtPosition?.(
-                    violation,
-                    contentContainer,
-                    insertPosition
-                );
-            },
-            [CONTENT_TYPE_FREE_TEXT]: () => {
-                violationManager?.addContentItemAtPosition?.(
-                    violation,
-                    CONTENT_TYPE_FREE_TEXT,
-                    contentContainer,
-                    insertPosition
-                );
-            }
-        };
+        // Картинка идёт своим конвейером (выбор файлов → качество → ресайз),
+        // текст и таблица создаются пустыми блоками.
+        if (type === BLOCK_TYPES.IMAGE) {
+            violationManager?.triggerImageUploadAtPosition?.(
+                violation,
+                fieldKey,
+                contentContainer,
+                insertPosition
+            );
+            return;
+        }
 
-        actions[action]?.();
+        violationManager?.addBlockAtPosition?.(
+            violation,
+            fieldKey,
+            type,
+            contentContainer,
+            insertPosition
+        );
     }
 
-    handleDelete(violation, itemId, contentContainer) {
-        if (!violation || !itemId || !contentContainer) return;
+    handleDelete(violation, fieldKey, blockId, contentContainer) {
+        if (!violation || !fieldKey || !blockId || !contentContainer) return;
 
-        // Гейт read-only (#11) — внутри removeContentItem, тем же
+        // Гейт read-only (#11) — внутри мутатора removeBlock, тем же
         // guard'ом, что и остальные мутации нарушения.
-        violationManager?.removeContentItem?.(violation, itemId, contentContainer);
+        violationManager?.removeBlockFromField?.(violation, fieldKey, blockId, contentContainer);
     }
 
     removeExistingMenu() {

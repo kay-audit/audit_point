@@ -501,7 +501,7 @@ def get_api_routers():
 | Файл | Модели |
 |------|--------|
 | `act_metadata.py` | `ActCreate`, `ActUpdate`, `ActResponse`, `ActListItem`, `ActAttentionItem`, `AuditTeamMember`, `ActDirective`, `UserSearchResult`, `AuditPointIdsRequest` |
-| `act_content.py` | `ActItemSchema`, `TableSchema`/`TableCellSchema`, `TextBlockSchema`, `ViolationSchema` (+ подсхемы `ViolationContentItemSchema`, `ViolationAdditionalContentSchema`, …), `ActDataSchema`, `ActSaveResponse` |
+| `act_content.py` | `ActItemSchema`, `TableSchema`/`TableCellSchema`/`TableGridSchema`/`EmbeddedTableSchema`, `TextBlockSchema`, `ViolationSchema` (10 полей-контейнеров `ViolationFieldSchema` + `fieldOrder`; блоки — `ViolationTextBlockSchema`/`ViolationImageBlockSchema`/`ViolationTableBlockSchema`), `ActDataSchema`, `ActSaveResponse` |
 | `act_invoice.py` | `InvoiceSave`, `MetricItem`, `InvoiceResponse`, `InvoiceVerifyRequest` |
 | `act_audit_log.py` | `AuditLogEntry`, `ContentVersionEntry`, `ContentVersionDetail` |
 | `act_responses.py` | `OperationResult`, `LockResponse`, `LockConfigResponse`, `InvoiceConfigResponse`, `RestoreVersionResponse`, `SaveContentResponse` |

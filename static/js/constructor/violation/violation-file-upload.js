@@ -1,6 +1,6 @@
 /**
- * Модуль загрузки файлов через Drag & Drop
- * Обработка перетаскивания изображений из файлового менеджера
+ * Загрузка файлов через Drag & Drop в контейнер блоков ОДНОГО поля.
+ * Перетащенные картинки становятся image-блоками этого поля.
  */
 
 import { ViolationManager } from './violation-core.js';
@@ -11,23 +11,15 @@ import { AppConfig } from '../../shared/app-config.js';
 Object.assign(ViolationManager.prototype, {
     /**
      * Настраивает обработчики Drag and Drop для файлов изображений
-     * @param {HTMLElement} itemsContainer - Контейнер для элементов
+     * @param {HTMLElement} itemsContainer - Контейнер блоков поля
      * @param {Object} violation - Объект нарушения
-     * @param {HTMLElement} contentContainer - Родительский контейнер
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} contentContainer - Контейнер содержимого поля
      */
-    setupFileDragAndDrop(itemsContainer, violation, contentContainer) {
+    setupFileDragAndDrop(itemsContainer, violation, fieldKey, contentContainer) {
         // Режим просмотра: приём файлов не навешиваем (#1). Defense-in-depth —
-        // в RO createAdditionalContentField этот метод уже не вызывает.
+        // в RO createBlocksField этот метод уже не вызывает.
         if (AppConfig.readOnlyMode?.isReadOnly) return;
-
-        // Повторная установка поля для того же нарушения снимает прежний
-        // document-слушатель drop — иначе он накапливался на каждый ре-рендер
-        // и удерживал отсоединённые контейнеры. Abort также дергают
-        // removeViolation (удаление узла) и destroy() (switch акта).
-        const prevController = this._fileDropControllers.get(violation.id);
-        if (prevController) prevController.abort();
-        const dropController = new AbortController();
-        this._fileDropControllers.set(violation.id, dropController);
 
         // Счетчик для отслеживания входов/выходов (для вложенных элементов)
         let dragCounter = 0;
@@ -125,7 +117,7 @@ Object.assign(ViolationManager.prototype, {
             // Определяем позицию вставки
             const insertPosition = this.cursorInsertPosition !== null
                 ? this.cursorInsertPosition
-                : violation.additionalContent.items.length;
+                : (violation?.[fieldKey]?.blocks?.length || 0);
 
             // Сбрасываем состояние
             dragCounter = 0;
@@ -154,11 +146,12 @@ Object.assign(ViolationManager.prototype, {
             // Тип-валидация ДО чтения (H6/#26): MIME/число элементов/абсурдный
             // потолок; отказники отсеяны с Notifications.warning. Размер (#2) —
             // после ресайза в конвейере.
-            const acceptedFiles = this.filterAcceptedImageFiles(imageFiles, violation);
+            const acceptedFiles = this.filterAcceptedImageFiles(imageFiles, violation, fieldKey);
             if (acceptedFiles.length === 0) return;
 
             // Диалог качества (Q3) → ресайз → вставка в порядке перетащенных (violation-4).
-            this.promptQualityThenInsertImages(violation, contentContainer, insertPosition, acceptedFiles);
+            this.promptQualityThenInsertImages(
+                violation, fieldKey, contentContainer, insertPosition, acceptedFiles);
         });
 
         // Дополнительная защита: сбрасываем состояние при любом завершении drag
@@ -174,13 +167,11 @@ Object.assign(ViolationManager.prototype, {
 
         itemsContainer.addEventListener('dragend', resetDragState);
 
-        // Сброс при потере фокуса или других событиях.
-        // Слушатель живёт до abort'а контроллера (см. начало метода).
-        document.addEventListener('drop', (e) => {
-            // Если drop произошел вне нашего контейнера
-            if (!itemsContainer.contains(e.target)) {
-                resetDragState();
-            }
-        }, { signal: dropController.signal });
+        // Сброс при промахе мимо зоны (drop где-то ещё на странице) —
+        // общий на весь менеджер document-слушатель, а не свой на каждое
+        // поле (#16). Ключ — нарушение+поле: у карточки десять независимых
+        // зон приёма, повторная установка поля перезаписывает свою запись.
+        // Снятие зон — removeViolation (удаление узла) и destroy() (switch акта).
+        this._registerFileDropZone(`${violation.id}:${fieldKey}`, itemsContainer, resetDragState);
     }
 });

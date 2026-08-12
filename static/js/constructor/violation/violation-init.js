@@ -12,7 +12,7 @@ import { ViolationManager } from './violation-core.js';
 import './violation-mutations.js';
 import './violation-field-surface.js';
 import './violation-paste.js';
-import './violation-additional-content.js';
+import './violation-blocks.js';
 import './violation-rendering.js';
 import './violation-drag-drop.js';
 import './violation-file-upload.js';

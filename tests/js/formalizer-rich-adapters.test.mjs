@@ -1,14 +1,9 @@
 /**
- * Тесты адаптеров формализатора: запись (Task 1.4.2) и чтение (Task 1.4.3).
+ * Тесты адаптера ЧТЕНИЯ формализатора (Task 1.4.3).
  *
- * Запись: `_applyFormalized` переводит ПЛОСКИЕ строки LLM в rich HTML перед
- * записью в модель — экранирует спецсимволы и переносы `\n` → `<br>` (зеркало
- * `_insertCorrected` в corrector-popover.js). Без адаптера `\n` не отрисовался
- * бы, а `&`/`<` в тексте LLM стали бы невалидным содержимым rich-поля.
- *
- * Единственная точка записи в модель — setViolationField (подменяется
- * шпионом); DOM-контролы карточки здесь не нужны (пустой `controls`),
- * поэтому проверяется именно запись в модель, без побочных DOM-эффектов.
+ * Адаптер записи (`_applyFormalized` — раскладка ответа по блочным полям и
+ * перевод плоских строк в rich HTML) живёт в
+ * formalizer-apply-surface.test.mjs.
  *
  * Чтение: `_gatherSource` прогоняет каждое поле карточки (rich HTML) через
  * `_richToPlain` перед сборкой — иначе LLM увидела бы HTML-теги вместо
@@ -23,42 +18,30 @@
 import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-// Входная точка графа нарушений — как в entries/constructor.js: violation-init
-// мешает rich-хелперы в прототип ViolationManager (см. violation-rich-fields.test.mjs).
-import '../../static/js/constructor/violation/violation-init.js';
-import { ViolationManager } from '../../static/js/constructor/violation/violation-core.js';
 import { FormalizerPopover } from '../../static/js/constructor/text-actions/formalizer-popover.js';
-
-test('_applyFormalized: escaped HTML с <br>, пустое не пишется', () => {
-    const vm = new ViolationManager();
-    const calls = [];
-    vm.setViolationField = (v, p, val) => { calls.push([p, val]); return true; };
-    vm._applyFormalized({ id: 'v1', reasons: { enabled: false, content: '' } }, {}, {
-        violated: 'Ромашка & Ко\nстрока2', established: '', reasons: 'причина',
-    });
-    const m = Object.fromEntries(calls);
-    assert.equal(m['violated'], 'Ромашка &amp; Ко<br>строка2');
-    assert.ok(!('established' in m));
-    assert.equal(m['reasons.enabled'], true);
-    assert.equal(m['reasons.content'], 'причина');
-});
 
 // --- _gatherSource / _richToPlain: адаптер чтения (Task 1.4.3) ---
 
-test('_gatherSource: прогоняет каждое читаемое поле через _richToPlain', () => {
+test('_gatherSource: прогоняет каждый читаемый rich-носитель через _richToPlain', () => {
     const original = FormalizerPopover._richToPlain;
     FormalizerPopover._richToPlain = (html) => 'PLAIN[' + html + ']';
     try {
+        // Блочная модель: text.content и image.caption идут через адаптер,
+        // выключенные поля пропускаются.
         const violation = {
-            violated: 'Нарушено', established: 'Установлено',
-            reasons: { enabled: true, content: 'Причины' },
-            measures: { enabled: false, content: 'скрыто' },
-            consequences: { enabled: true, content: 'Последствия' },
-            responsible: { enabled: true, content: 'Иванов' },
+            id: 'v1', fieldOrder: null,
+            violated: { enabled: true, blocks: [{ id: 't1', type: 'text', content: 'Нарушено' }] },
+            established: { enabled: true, blocks: [{ id: 't2', type: 'text', content: 'Установлено' }] },
+            reasons: { enabled: true, blocks: [{ id: 't3', type: 'text', content: 'Причины' }] },
+            measures: { enabled: false, blocks: [{ id: 't4', type: 'text', content: 'скрыто' }] },
+            responsible: {
+                enabled: true,
+                blocks: [{ id: 'i1', type: 'image', url: 'data:image/png;base64,AAAA', caption: 'Подпись', filename: '', width: 0 }],
+            },
         };
         assert.equal(
             FormalizerPopover._gatherSource(violation),
-            'PLAIN[Нарушено]\n\nPLAIN[Установлено]\n\nPLAIN[Причины]\n\nPLAIN[Последствия]\n\nPLAIN[Иванов]',
+            'PLAIN[Нарушено]\n\nPLAIN[Установлено]\n\nPLAIN[Причины]\n\nPLAIN[Подпись]',
         );
     } finally {
         FormalizerPopover._richToPlain = original;

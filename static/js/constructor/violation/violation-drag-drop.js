@@ -1,34 +1,69 @@
 /**
- * Модуль Drag & Drop для элементов контента
- * Перестановка элементов внутри дополнительного контента
+ * Drag & Drop блоков ВНУТРИ одного поля нарушения.
+ *
+ * Полезная нагрузка перетаскивания — {violationId, fieldKey, blockId}: drop в
+ * контейнер другого поля (или другого нарушения) игнорируется, перенос блоков
+ * между полями — сознательный non-goal первой итерации (спека §7).
+ * Перестановка — мутатором moveBlock (там read-only-guard и превью).
  */
 
 import { ViolationManager } from './violation-core.js';
-import {
-    CONTENT_TYPE_CASE,
-    CONTENT_TYPE_FREE_TEXT,
-    CONTENT_TYPE_IMAGE,
-} from './violation-content-item.js';
-import { computeAdditionalContentNumbers } from './violation-numbering.js';
+import { BLOCK_TYPE_META } from './violation-block-types.js';
+
+/** MIME-тип полезной нагрузки внутреннего перетаскивания блока. */
+const DRAG_PAYLOAD_TYPE = 'application/x-violation-block';
+
+/**
+ * Читает полезную нагрузку перетаскивания: из dataTransfer (drop), иначе — из
+ * снимка на менеджере (dragover: getData во время drag браузер не отдаёт).
+ * @param {Event} e - Событие drag&drop
+ * @param {ViolationManager} manager
+ * @returns {{violationId: string, fieldKey: string, blockId: string}|null}
+ */
+function readDragPayload(e, manager) {
+    try {
+        const raw = e.dataTransfer?.getData(DRAG_PAYLOAD_TYPE);
+        if (raw) return JSON.parse(raw);
+    } catch (_) { /* нечитаемый payload — падаем на снимок ниже */ }
+    return manager._dragPayload || null;
+}
+
+/**
+ * Принадлежит ли перетаскиваемый блок ИМЕННО этому полю этого нарушения.
+ * @param {Object|null} payload - Полезная нагрузка перетаскивания
+ * @param {Object} violation - Объект нарушения
+ * @param {string} fieldKey - Ключ поля реестра
+ * @returns {boolean}
+ */
+function isSameField(payload, violation, fieldKey) {
+    return !!payload && payload.violationId === violation.id && payload.fieldKey === fieldKey;
+}
 
 // Расширение ViolationManager
 Object.assign(ViolationManager.prototype, {
     /**
-     * Обработчик начала перетаскивания с созданием миниатюры
+     * Начало перетаскивания блока: полезная нагрузка + миниатюра.
      * @param {Event} e - Событие dragstart
      * @param {Object} violation - Объект нарушения
-     * @param {number} index - Индекс перетаскиваемого элемента
-     * @param {Object} item - Данные элемента
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {number} index - Индекс перетаскиваемого блока
+     * @param {Object} block - Блок
      */
-    handleDragStart(e, violation, index, item) {
+    handleDragStart(e, violation, fieldKey, index, block) {
         const wrapper = e.currentTarget;
         wrapper.classList.add('dragging');
 
+        const payload = { violationId: violation.id, fieldKey, blockId: block.id };
+        this._dragPayload = payload;
+
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', item.id);
+        // text/plain — маркер ВНУТРЕННЕГО drag для приёма файлов
+        // (violation-file-upload.js различает drag по составу types).
+        e.dataTransfer.setData('text/plain', block.id);
+        e.dataTransfer.setData(DRAG_PAYLOAD_TYPE, JSON.stringify(payload));
 
         // Создаем миниатюру
-        const miniature = this.createDragMiniature(item, index, violation.additionalContent.items);
+        const miniature = this.createDragMiniature(block);
         miniature.style.position = 'absolute';
         miniature.style.top = '-1000px';
         miniature.id = 'drag-miniature-temp';
@@ -48,40 +83,21 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Создает миниатюру элемента для drag-and-drop
-     * @param {Object} item - Данные элемента
-     * @param {number} index - Индекс элемента
-     * @param {Array} allItems - Все элементы
+     * Создает миниатюру блока для drag-and-drop
+     * @param {Object} block - Блок
      * @returns {HTMLElement} Миниатюра
      */
-    createDragMiniature(item, index, allItems) {
+    createDragMiniature(block) {
         const miniature = document.createElement('div');
         miniature.className = 'drag-miniature';
 
-        let label = '';
-        let icon = '';
-
-        if (item.type === CONTENT_TYPE_CASE) {
-            const caseNumbers = computeAdditionalContentNumbers(allItems);
-            const caseNumber = caseNumbers[index]?.number;
-            icon = '📋';
-            label = `Кейс ${caseNumber}`;
-        } else if (item.type === CONTENT_TYPE_IMAGE) {
-            const imageNumber = this.getTypeSequentialNumber(allItems, CONTENT_TYPE_IMAGE, index);
-            icon = '🖼️';
-            label = `Изображение ${imageNumber}`;
-        } else if (item.type === CONTENT_TYPE_FREE_TEXT) {
-            const textNumber = this.getTypeSequentialNumber(allItems, CONTENT_TYPE_FREE_TEXT, index);
-            icon = '📝';
-            label = `Текст ${textNumber}`;
-        }
-
-        miniature.innerHTML = `${icon} ${label}`;
+        const meta = BLOCK_TYPE_META[block.type];
+        miniature.innerHTML = meta ? `${meta.dragIcon} ${meta.label}` : ' ';
         return miniature;
     },
 
     /**
-     * Обработчик входа в зону элемента
+     * Обработчик входа в зону блока
      * @param {Event} e - Событие dragenter
      */
     handleDragEnter(e) {
@@ -89,12 +105,16 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Обработчик перемещения над элементом с плавным визуальным перемещением
+     * Перемещение над блоком: индикатор позиции вставки.
      * @param {Event} e - Событие dragover
      * @param {Object} violation - Объект нарушения
-     * @param {HTMLElement} container - Контейнер элементов
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} container - Контейнер блоков поля
      */
-    handleDragOver(e, violation, container) {
+    handleDragOver(e, violation, fieldKey, container) {
+        // Блок из другого поля/нарушения — зону не подсвечиваем и drop не примем.
+        if (!isSameField(this._dragPayload, violation, fieldKey)) return;
+
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
 
@@ -143,47 +163,49 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Обработчик сброса элемента - фиксирует новый порядок в данных
+     * Сброс блока — фиксирует новый порядок в данных.
      * @param {Event} e - Событие drop
      * @param {Object} violation - Объект нарушения
-     * @param {number} targetIndex - Индекс целевого элемента
-     * @param {HTMLElement} container - Контейнер элементов
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {number} targetIndex - Индекс целевого блока
+     * @param {HTMLElement} container - Контейнер блоков поля
      */
-    handleDrop(e, violation, targetIndex, container) {
+    handleDrop(e, violation, fieldKey, targetIndex, container) {
+        const payload = readDragPayload(e, this);
+        // Чужое поле/нарушение — молча игнорируем (перенос между полями не поддержан).
+        if (!isSameField(payload, violation, fieldKey)) return;
+
         e.preventDefault();
         e.stopPropagation();
 
-        const draggingElement = document.querySelector('.dragging');
-        if (!draggingElement) return;
-
-        const items = violation.additionalContent.items;
-        const draggedId = draggingElement.dataset.itemId;
-        const fromIndex = items.findIndex(item => item.id === draggedId);
+        const blocks = violation?.[fieldKey]?.blocks || [];
+        const fromIndex = blocks.findIndex(block => block.id === payload.blockId);
         if (fromIndex === -1) return;
 
         // Позиция вставки: точная из dragover (учитывает верх/низ половину
-        // элемента), иначе — индекс элемента под курсором (fallback без dragover).
+        // элемента), иначе — индекс блока под курсором (fallback без dragover).
         const toIndex = this.lastDragOverIndex !== null ? this.lastDragOverIndex : targetIndex;
 
         // Index-based перестановка (#6): DOM больше НЕ сдвинут оптимистично,
         // порядок считаем из данных. Сам splice — в мутаторе (§5.10a), там же
         // read-only-guard и превью; отказ мутатора не коммитим.
-        if (!this.moveContentItem(violation, fromIndex, toIndex)) return;
+        if (!this.moveBlock(violation, fieldKey, fromIndex, toIndex)) return;
 
         // Коммит состоялся — handleDragEnd не должен перерисовывать повторно.
         this._dropCommitted = true;
 
         // Перерисовываем с обновленными индексами
-        this.renderContentItems(violation, container);
+        this.renderBlocks(violation, fieldKey, container);
     },
 
     /**
-     * Обработчик окончания перетаскивания
+     * Окончание перетаскивания.
      * @param {Event} e - Событие dragend
      * @param {Object} violation - Объект нарушения
-     * @param {HTMLElement} container - Контейнер элементов
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} container - Контейнер блоков поля
      */
-    handleDragEnd(e, violation, container) {
+    handleDragEnd(e, violation, fieldKey, container) {
         e.target.classList.remove('dragging');
 
         // Снимаем индикатор позиции.
@@ -194,11 +216,12 @@ Object.assign(ViolationManager.prototype, {
         // сдвига больше нет, но re-render идемпотентно гарантирует чистоту
         // (в т.ч. после внутреннего drop через контейнер файлов).
         if (!this._dropCommitted) {
-            this.renderContentItems(violation, container);
+            this.renderBlocks(violation, fieldKey, container);
         }
 
-        // Сбрасываем флаг коммита и последний индекс для следующего drag.
+        // Сбрасываем состояние для следующего drag.
         this._dropCommitted = false;
         this.lastDragOverIndex = null;
+        this._dragPayload = null;
     }
 });

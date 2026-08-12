@@ -4,8 +4,8 @@
 дерево 4 уровней, все 7 подвидов таблиц (TABLE_KINDS), объединения ячеек
 (colSpan/rowSpan + spanOrigin), кастомные colWidths, спецсимволы в ячейках,
 текстблок с formatting и inline-разметкой (b/i/u/s, ссылка, сноска),
-нарушение со всеми полями (descriptionList, кейсы, freeText, картинка,
-причины/последствия/ответственные), пустая таблица и узел
+нарушение со всеми 10 полями блочной модели (все 3 типа блоков —
+текст/картинка/таблица — и нестандартный fieldOrder), пустая таблица и узел
 type='item' с прикреплённой таблицей (известный кандидат на потерю в DOCX).
 
 Все пользовательские строки — УНИКАЛЬНЫЕ маркеры (префикс GOLDEN_), чтобы
@@ -94,23 +94,35 @@ MARKERS_ALL_FORMATS = [
     "GOLDEN_TB_STRIKE",
     "GOLDEN_TB_LINK_TEXT",
     "GOLDEN_TB_FOOTNOTE_ANCHOR",
-    # Нарушение: все поля данных.
+    # Нарушение (блочная модель): контент всех 10 полей и всех 3 типов блоков.
     "GOLDEN_V_VIOLATED",
     "GOLDEN_V_ESTABLISHED",
     "GOLDEN_V_DESC_1",
     "GOLDEN_V_DESC_2",
-    "GOLDEN_V_DESC_3",
-    "GOLDEN_V_CASE_1",
-    "GOLDEN_V_CASE_2",
+    "GOLDEN_V_CM_TEXT",
+    "GOLDEN_V_CM_TH",
+    "GOLDEN_V_CM_TH2",
+    "GOLDEN_V_CM_CELL",
+    "GOLDEN_V_CM_CELL2",
+    "GOLDEN_V_PM_TEXT",
     "GOLDEN_V_FREETEXT",
     "GOLDEN_V_REASONS",
     "GOLDEN_V_MEASURES",
     "GOLDEN_V_CONSEQUENCES",
     "GOLDEN_V_RESPONSIBLE",
     MARKER_IMG_CAPTION,
-    # Семантика нумерации кейсов («Кейс 1/Кейс 2») едина для всех форматов.
-    "Кейс 1",
-    "Кейс 2",
+    # Метка поля с labeled=True — во всех форматах. Метки CodeMining /
+    # ProcessMining / Дополнительного контента сюда НЕ входят: эти поля
+    # выводятся без заголовка (решение владельца) — их отсутствие проверяет
+    # LABELS_NEVER_RENDERED.
+    "Описание",
+]
+
+# Метки полей с labeled=False: не должны появляться НИ В ОДНОМ формате.
+LABELS_NEVER_RENDERED = [
+    "CodeMining",
+    "ProcessMining",
+    "Дополнительный контент",
 ]
 
 
@@ -284,24 +296,72 @@ def build_golden_act_dict() -> dict:
         },
     }
 
+    # Блочная модель: все 10 полей — контейнеры {enabled, blocks}; у нарушения
+    # нестандартный fieldOrder (responsible поднят наверх) — паритет-тесты
+    # проверяют, что все три формата уважают пользовательский порядок полей.
     violations = {
         "v1": {
             "id": "v1",
             "nodeId": "n_v",
-            "violated": "GOLDEN_V_VIOLATED",
-            "established": "GOLDEN_V_ESTABLISHED",
-            "descriptionList": {
+            "fieldOrder": [
+                "responsible", "violated", "established", "description",
+                "codeMining", "processMining", "additionalContent",
+                "reasons", "measures", "consequences",
+            ],
+            "violated": {
                 "enabled": True,
-                "items": ["GOLDEN_V_DESC_1", "GOLDEN_V_DESC_2", "GOLDEN_V_DESC_3"],
+                "blocks": [
+                    {"id": "vb1", "type": "text", "content": "GOLDEN_V_VIOLATED"},
+                ],
+            },
+            "established": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb2", "type": "text", "content": "GOLDEN_V_ESTABLISHED"},
+                ],
+            },
+            "description": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb3", "type": "text", "content": "GOLDEN_V_DESC_1"},
+                    {"id": "vb4", "type": "text", "content": "GOLDEN_V_DESC_2"},
+                ],
+            },
+            "codeMining": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb5", "type": "text", "content": "GOLDEN_V_CM_TEXT"},
+                    {
+                        "id": "vb6",
+                        "type": "table",
+                        "table": {
+                            "grid": [
+                                [
+                                    {"content": "GOLDEN_V_CM_TH", "isHeader": True},
+                                    {"content": "GOLDEN_V_CM_TH2", "isHeader": True},
+                                ],
+                                [
+                                    {"content": "GOLDEN_V_CM_CELL"},
+                                    {"content": "GOLDEN_V_CM_CELL2"},
+                                ],
+                            ],
+                            "colWidths": [120, 80],
+                        },
+                    },
+                ],
+            },
+            "processMining": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb7", "type": "text", "content": "GOLDEN_V_PM_TEXT"},
+                ],
             },
             "additionalContent": {
                 "enabled": True,
-                "items": [
-                    {"id": "ac1", "type": "case", "content": "GOLDEN_V_CASE_1"},
-                    {"id": "ac2", "type": "case", "content": "GOLDEN_V_CASE_2"},
-                    {"id": "ac3", "type": "freeText", "content": "GOLDEN_V_FREETEXT"},
+                "blocks": [
+                    {"id": "vb8", "type": "text", "content": "GOLDEN_V_FREETEXT"},
                     {
-                        "id": "ac4",
+                        "id": "vb9",
                         "type": "image",
                         "url": GOLDEN_PNG_DATA_URL,
                         "caption": MARKER_IMG_CAPTION,
@@ -310,10 +370,30 @@ def build_golden_act_dict() -> dict:
                     },
                 ],
             },
-            "reasons": {"enabled": True, "content": "GOLDEN_V_REASONS"},
-            "measures": {"enabled": True, "content": "GOLDEN_V_MEASURES"},
-            "consequences": {"enabled": True, "content": "GOLDEN_V_CONSEQUENCES"},
-            "responsible": {"enabled": True, "content": "GOLDEN_V_RESPONSIBLE"},
+            "reasons": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb10", "type": "text", "content": "GOLDEN_V_REASONS"},
+                ],
+            },
+            "measures": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb11", "type": "text", "content": "GOLDEN_V_MEASURES"},
+                ],
+            },
+            "consequences": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb12", "type": "text", "content": "GOLDEN_V_CONSEQUENCES"},
+                ],
+            },
+            "responsible": {
+                "enabled": True,
+                "blocks": [
+                    {"id": "vb13", "type": "text", "content": "GOLDEN_V_RESPONSIBLE"},
+                ],
+            },
         },
     }
 

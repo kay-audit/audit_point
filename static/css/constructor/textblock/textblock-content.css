@@ -127,14 +127,32 @@
     font-size: var(--font-size-base);
 }
 
-/* Списки */
+/* Списки — во ВСЕХ rich-поверхностях редактора: текстблок и поля нарушения
+   (.violation-textarea — тот же движок, кнопки списков общие для тулбара).
+   padding-left обязателен: глобальный reset (base/reset.css) обнуляет padding
+   всем элементам, а маркер списка рисуется в этом отступе — без него маркеры
+   уезжают за левый край и не видны. list-style задаём явно по той же причине —
+   не полагаемся на браузерный дефолт, который reset мог сдвинуть. */
 .textblock-editor ul,
-.textblock-editor ol {
+.violation-textarea ul {
+    list-style: disc outside;
+}
+
+.textblock-editor ol,
+.violation-textarea ol {
+    list-style: decimal outside;
+}
+
+.textblock-editor ul,
+.textblock-editor ol,
+.violation-textarea ul,
+.violation-textarea ol {
     padding-left: var(--spacing-xl);
     margin-bottom: var(--spacing-sm);
 }
 
-.textblock-editor li {
+.textblock-editor li,
+.violation-textarea li {
     margin-bottom: var(--spacing-xs);
 }
 

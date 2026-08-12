@@ -110,7 +110,7 @@ import '../constructor/violation/violation-core.js';
 import '../constructor/violation/violation-mutations.js';
 import '../constructor/violation/violation-field-surface.js';
 import '../constructor/violation/violation-paste.js';
-import '../constructor/violation/violation-additional-content.js';
+import '../constructor/violation/violation-blocks.js';
 import '../constructor/violation/violation-rendering.js';
 import '../constructor/violation/violation-drag-drop.js';
 import '../constructor/violation/violation-file-upload.js';

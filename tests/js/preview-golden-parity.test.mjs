@@ -2,14 +2,14 @@
  * Golden-тест полноты ПРЕВЬЮ (зеркало tests/domains/acts/golden/, Б-2.3).
  *
  * Та же фикстура-эталон (компактная JS-форма с теми же GOLDEN_-маркерами,
- * что в tests/domains/acts/golden/fixture_act.py) прогоняется через ЧИСТЫЕ
- * функции превью: collectViolationLines + imagePresentationStyle
+ * что в tests/domains/acts/golden/fixture_act.py — блочная модель: 10 полей,
+ * 3 типа блоков, нестандартный fieldOrder) прогоняется через ЧИСТЫЕ функции
+ * превью: collectViolationLines + imagePresentationStyle
  * (preview-violation-renderer) и iterateVisibleCells (grid-merges).
  *
  * Политика — как у бэкового golden: presence данных, не равенство подписей
- * (Д.3). Полный DOM-рендер (PreviewTableRenderer/PreviewTextBlockRenderer/
- * preview.js) в node без DOM невозможен — что не покрыто, перечислено в
- * README golden-пакета и отчёте ветки.
+ * (Д.3). Полный DOM-рендер в node без DOM невозможен — что не покрыто,
+ * перечислено в README golden-пакета.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -21,41 +21,63 @@ import {
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
 import { iterateVisibleCells } from '../../static/js/constructor/table/grid-merges.js';
 
-// --- Фикстура: зеркало fixture_act.py (нарушение + обычная таблица) ---
+// --- Фикстура: зеркало fixture_act.py (нарушение блочной модели + таблица) ---
 
 const GOLDEN_PNG_DATA_URL =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
     'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
+const text = (id, content) => ({ id, type: 'text', content });
+
+const goldenImageBlock = {
+    id: 'vb9',
+    type: 'image',
+    url: GOLDEN_PNG_DATA_URL,
+    caption: 'GOLDEN_V_IMG_CAPTION',
+    filename: 'golden_image.png',
+    width: 50,
+};
+
 const goldenViolation = {
     id: 'v1',
     nodeId: 'n_v',
-    violated: 'GOLDEN_V_VIOLATED',
-    established: 'GOLDEN_V_ESTABLISHED',
-    descriptionList: {
+    fieldOrder: [
+        'responsible', 'violated', 'established', 'description',
+        'codeMining', 'processMining', 'additionalContent',
+        'reasons', 'measures', 'consequences',
+    ],
+    violated: { enabled: true, blocks: [text('vb1', 'GOLDEN_V_VIOLATED')] },
+    established: { enabled: true, blocks: [text('vb2', 'GOLDEN_V_ESTABLISHED')] },
+    description: {
         enabled: true,
-        items: ['GOLDEN_V_DESC_1', 'GOLDEN_V_DESC_2', 'GOLDEN_V_DESC_3'],
+        blocks: [text('vb3', 'GOLDEN_V_DESC_1'), text('vb4', 'GOLDEN_V_DESC_2')],
     },
-    additionalContent: {
+    codeMining: {
         enabled: true,
-        items: [
-            { id: 'ac1', type: 'case', content: 'GOLDEN_V_CASE_1' },
-            { id: 'ac2', type: 'case', content: 'GOLDEN_V_CASE_2' },
-            { id: 'ac3', type: 'freeText', content: 'GOLDEN_V_FREETEXT' },
+        blocks: [
+            text('vb5', 'GOLDEN_V_CM_TEXT'),
             {
-                id: 'ac4',
-                type: 'image',
-                url: GOLDEN_PNG_DATA_URL,
-                caption: 'GOLDEN_V_IMG_CAPTION',
-                filename: 'golden_image.png',
-                width: 50,
+                id: 'vb6', type: 'table',
+                table: {
+                    grid: [
+                        [{ content: 'GOLDEN_V_CM_TH', isHeader: true },
+                         { content: 'GOLDEN_V_CM_TH2', isHeader: true }],
+                        [{ content: 'GOLDEN_V_CM_CELL' }, { content: 'GOLDEN_V_CM_CELL2' }],
+                    ],
+                    colWidths: [120, 80],
+                },
             },
         ],
     },
-    reasons: { enabled: true, content: 'GOLDEN_V_REASONS' },
-    measures: { enabled: true, content: 'GOLDEN_V_MEASURES' },
-    consequences: { enabled: true, content: 'GOLDEN_V_CONSEQUENCES' },
-    responsible: { enabled: true, content: 'GOLDEN_V_RESPONSIBLE' },
+    processMining: { enabled: true, blocks: [text('vb7', 'GOLDEN_V_PM_TEXT')] },
+    additionalContent: {
+        enabled: true,
+        blocks: [text('vb8', 'GOLDEN_V_FREETEXT'), goldenImageBlock],
+    },
+    reasons: { enabled: true, blocks: [text('vb10', 'GOLDEN_V_REASONS')] },
+    measures: { enabled: true, blocks: [text('vb11', 'GOLDEN_V_MEASURES')] },
+    consequences: { enabled: true, blocks: [text('vb12', 'GOLDEN_V_CONSEQUENCES')] },
+    responsible: { enabled: true, blocks: [text('vb13', 'GOLDEN_V_RESPONSIBLE')] },
 };
 
 // Обычная таблица фикстуры: шапка + merge по горизонтали и вертикали + спецсимволы.
@@ -77,22 +99,37 @@ const goldenRegularGrid = [
     ],
 ];
 
+/** Дамп всех текстов модели строк (line-текст + ячейки table-строк). */
+function dumpLines(lines) {
+    return lines
+        .map(l => {
+            if (l.type === 'table') {
+                const cells = [];
+                iterateVisibleCells(l.table.grid || [], (cell) => cells.push(cell.content));
+                return cells.join(' ');
+            }
+            return `${l.label || ''}: ${l.text || ''}`;
+        })
+        .join('\n');
+}
+
 // --- Нарушение: presence всех данных в чистой модели строк превью ---
 
-test('golden: все текстовые поля нарушения присутствуют в модели строк превью', () => {
+test('golden: контент всех 10 полей и всех 3 типов блоков присутствует в модели строк превью', () => {
     const lines = collectViolationLines(goldenViolation);
-    const textDump = lines
-        .map(l => `${l.label || ''}: ${l.text || ''} ${(l.items || []).join(' ')}`)
-        .join('\n');
+    const textDump = dumpLines(lines);
 
     const markers = [
         'GOLDEN_V_VIOLATED',
         'GOLDEN_V_ESTABLISHED',
         'GOLDEN_V_DESC_1',
         'GOLDEN_V_DESC_2',
-        'GOLDEN_V_DESC_3',
-        'GOLDEN_V_CASE_1',
-        'GOLDEN_V_CASE_2',
+        'GOLDEN_V_CM_TEXT',
+        'GOLDEN_V_CM_TH',
+        'GOLDEN_V_CM_TH2',
+        'GOLDEN_V_CM_CELL',
+        'GOLDEN_V_CM_CELL2',
+        'GOLDEN_V_PM_TEXT',
         'GOLDEN_V_FREETEXT',
         'GOLDEN_V_REASONS',
         'GOLDEN_V_MEASURES',
@@ -103,35 +140,45 @@ test('golden: все текстовые поля нарушения присут
     assert.deepEqual(missing, [], `превью потеряло маркеры: ${missing}`);
 });
 
-test('golden: descriptionList — все 3 пункта целиком, отдельным списком, без заголовка «В том числе» (#12)', () => {
-    const list = collectViolationLines(goldenViolation).find(l => l.type === 'list');
-    assert.ok(list, 'list-строка отсутствует');
-    assert.deepEqual(list.items, ['GOLDEN_V_DESC_1', 'GOLDEN_V_DESC_2', 'GOLDEN_V_DESC_3']);
-    assert.equal(list.label, '', 'заголовок «В том числе» убран (#12)');
-});
-
-test('golden: кейсы нумеруются «Кейс 1»/«Кейс 2» (паритет DOCX/MD/TXT)', () => {
+test('golden: метки полей с labeled=true — из реестра (Описание/Ответственные/…)', () => {
     const lines = collectViolationLines(goldenViolation);
-    assert.equal(lines.find(l => l.label === 'Кейс 1').text, 'GOLDEN_V_CASE_1');
-    assert.equal(lines.find(l => l.label === 'Кейс 2').text, 'GOLDEN_V_CASE_2');
+    const labels = lines.map(l => l.label).filter(Boolean);
+    for (const expected of ['Нарушено', 'Установлено', 'Описание', 'Причины',
+                            'Принятые меры', 'Последствия', 'Ответственные']) {
+        assert.ok(labels.includes(expected), `метка «${expected}» отсутствует в превью`);
+    }
 });
 
-test('golden: свободный текст рендерится без подписи «Текст N» (#10)', () => {
+test('golden: метки полей с labeled=false в превью не выводятся (паритет с экспортами)', () => {
     const lines = collectViolationLines(goldenViolation);
-    const freeTextLine = lines.find(l => l.type === 'line' && l.text === 'GOLDEN_V_FREETEXT');
-    assert.ok(freeTextLine, 'строка свободного текста отсутствует');
-    assert.equal(freeTextLine.label, '');
-    assert.ok(!lines.some(l => /^Текст \d+$/.test(l.label || '')), 'подписи «Текст N» не должно быть');
+    const labels = lines.map(l => l.label).filter(Boolean);
+    for (const unexpected of ['CodeMining', 'ProcessMining', 'Дополнительный контент']) {
+        assert.ok(!labels.includes(unexpected), `метка «${unexpected}» лишняя в превью`);
+    }
 });
 
-test('golden: подпись поля responsible — «Ответственные», не «Ответственный за решение проблем» (#11)', () => {
+test('golden: fieldOrder уважается — responsible идёт первым', () => {
     const lines = collectViolationLines(goldenViolation);
-    const line = lines.find(l => l.text === 'GOLDEN_V_RESPONSIBLE');
-    assert.ok(line, 'строка responsible отсутствует');
-    assert.equal(line.label, 'Ответственные');
+    const firstLabeled = lines.find(l => l.label);
+    assert.equal(firstLabeled.label, 'Ответственные', 'первое поле — из fieldOrder, не из реестра');
+    assert.equal(firstLabeled.text, 'GOLDEN_V_RESPONSIBLE');
 });
 
-test('golden: image-элемент попадает в модель строк целиком (url/caption/filename/width)', () => {
+test('golden: второй text-блок поля идёт строкой-продолжением без метки', () => {
+    const lines = collectViolationLines(goldenViolation);
+    const cont = lines.find(l => l.type === 'line' && l.text === 'GOLDEN_V_DESC_2');
+    assert.ok(cont, 'строка второго блока отсутствует');
+    assert.equal(cont.label, '', 'продолжение — без метки поля');
+});
+
+test('golden: table-блок попадает в модель строк типом table с сеткой целиком', () => {
+    const tableLine = collectViolationLines(goldenViolation).find(l => l.type === 'table');
+    assert.ok(tableLine, 'table-строка отсутствует');
+    assert.equal(tableLine.table.grid.length, 2);
+    assert.deepEqual(tableLine.table.colWidths, [120, 80]);
+});
+
+test('golden: image-блок попадает в модель строк целиком (url/caption/filename/width)', () => {
     const image = collectViolationLines(goldenViolation).find(l => l.type === 'image');
     assert.ok(image, 'image-строка отсутствует');
     assert.equal(image.item.url, GOLDEN_PNG_DATA_URL);
@@ -140,10 +187,15 @@ test('golden: image-элемент попадает в модель строк �
     assert.equal(image.item.width, 50);
 });
 
+test('golden: выключенное поле не даёт строк', () => {
+    const v = JSON.parse(JSON.stringify(goldenViolation));
+    v.reasons.enabled = false;
+    const dump = dumpLines(collectViolationLines(v));
+    assert.ok(!dump.includes('GOLDEN_V_REASONS'), 'выключенное поле не рендерится');
+});
+
 test('golden: width=50 картинки → CSS width:50% (как DOCX: 50% полезной ширины)', () => {
-    const style = imagePresentationStyle(
-        goldenViolation.additionalContent.items[3], 40,
-    );
+    const style = imagePresentationStyle(goldenImageBlock, 40);
     assert.equal(style.width, '50%');
     assert.ok(style.maxHeight.endsWith('mm'));
 });

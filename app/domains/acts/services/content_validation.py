@@ -19,6 +19,7 @@ from typing import Any
 
 from app.domains.acts.formatters.utils.html_utils import HTMLUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
+from app.domains.acts.violation_fields import VIOLATION_FIELDS
 
 # Базовые разделы 1–5 (по id, как ValidationAct.validateStructure на фронте).
 _BASE_SECTION_IDS = ("1", "2", "3", "4", "5")
@@ -68,30 +69,60 @@ def _is_html_value_empty(value: str | None) -> bool:
     return not HTMLUtils.clean_html(value).strip()
 
 
-def _violation_has_empty_fields(violation: Any) -> bool:
-    """Есть ли у нарушения незаполненные обязательные (рендерящиеся) поля.
+def _is_block_empty(block: Any) -> bool:
+    """Пуст ли один блок поля нарушения (блочная модель text/image/table).
 
-    Триггер: пустой `violated` ИЛИ пустой `established` ИЛИ включённый
-    список описаний с пустым/пробельным пунктом ИЛИ включённый доп.контент
-    с пустым кейсом/свободным текстом. Пустота — HTML-aware (см.
-    `_is_html_value_empty`): `<br>`/`<div><br></div>`/`&nbsp;`-заглушки
-    rich-редактора считаются пустыми, а не «заполнено». Опциональные поля
-    (причины, принятые меры, последствия, ответственные) сознательно НЕ
-    учитываются — консервативно, вне scope находки о пустых обязательных
-    полях.
+    text — HTML-aware проверка видимого содержимого (см. `_is_html_value_empty`);
+    image — пуст, если нет url; table — пуста, если во всех ячейках grid нет
+    непустого content (ячейки хранят plain-текст, не rich-HTML).
     """
-    if _is_html_value_empty(violation.violated):
+    block_type = getattr(block, "type", None)
+    if block_type == "text":
+        return _is_html_value_empty(getattr(block, "content", ""))
+    if block_type == "image":
+        return not (getattr(block, "url", "") or "").strip()
+    if block_type == "table":
+        grid = getattr(getattr(block, "table", None), "grid", None) or []
+        return not any(
+            (getattr(cell, "content", "") or "").strip()
+            for row in grid
+            for cell in row
+        )
+    return True
+
+
+def _field_is_empty(field: Any) -> bool:
+    """Пуст ли контейнер поля нарушения: нет ни одного непустого блока.
+
+    None-гвард: у повреждённого нарушения контейнер поля может отсутствовать
+    или его `blocks` — не список (не прошли/обошли схему) — такое поле
+    считается пустым, а не роняет валидацию.
+    """
+    blocks = getattr(field, "blocks", None)
+    if not isinstance(blocks, list):
         return True
-    if _is_html_value_empty(violation.established):
-        return True
-    description_list = violation.descriptionList
-    if description_list.enabled and any(_is_html_value_empty(item) for item in description_list.items):
-        return True
-    additional = violation.additionalContent
-    if additional.enabled:
-        for item in additional.items:
-            if item.type in ("case", "freeText") and _is_html_value_empty(item.content):
-                return True
+    return all(_is_block_empty(block) for block in blocks)
+
+
+def _violation_has_empty_fields(violation: Any) -> bool:
+    """Есть ли у нарушения незаполненные ВКЛЮЧЁННЫЕ поля.
+
+    Поля блочной модели — контейнеры `{enabled, blocks}`; поле считается
+    пустым, если в нём нет ни одного непустого блока (`_field_is_empty`).
+    Учитываются обязательные (`mandatory` в реестре — включены всегда) и
+    опциональные, которые пользователь ВКЛЮЧИЛ чекбоксом: включённое пустое
+    поле — незаконченная работа, а не осознанный пропуск (выключенное поле
+    не проверяется вовсе). Ревью №6: без этого включённое пустое поле молча
+    доезжало до экспорта — раньше «висячей подписью» в DOCX, теперь тихой
+    пропажей (рендеры такое поле не выводят), и предупредить о нём при
+    сохранении может только валидация.
+    """
+    for field in VIOLATION_FIELDS:
+        container = getattr(violation, field.key, None)
+        if not field.mandatory and not getattr(container, "enabled", False):
+            continue
+        if _field_is_empty(container):
+            return True
     return False
 
 

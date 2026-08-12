@@ -31,6 +31,36 @@ import { makeDraggablePanel } from '../../shared/draggable-panel.js';
 import { serializeVisibleText } from '../../shared/rich-text.js';
 import { SafeHTML } from '../../shared/sanitize.js';
 import { formalizeViolation } from './text-actions-client.js';
+import { getOrderedFieldKeys } from '../violation/violation-fields.js';
+import { BLOCK_TYPES } from '../violation/violation-block-types.js';
+
+/**
+ * Сериализует сетку блока-таблицы в компактную markdown-сетку для LLM:
+ * `| a | b |` построчно, разделитель после первой строки (шапки). Ячейки —
+ * plain-текст (инвариант B8), pipe экранируется, переносы схлопываются в
+ * пробел. Пустая/вырожденная сетка → ''. Чистая функция — тест-шов.
+ * @param {Object} table - Сетка блока ({grid, colWidths})
+ * @returns {string}
+ */
+export function tableToMarkdown(table) {
+    const grid = table?.grid;
+    if (!Array.isArray(grid) || grid.length === 0) return '';
+    const rows = [];
+    for (const row of grid) {
+        if (!Array.isArray(row) || row.length === 0) continue;
+        const cells = row.map((cell) => String(cell?.content ?? '')
+            .replace(/\|/g, '\\|')
+            .replace(/\s+/g, ' ')
+            .trim());
+        rows.push(`| ${cells.join(' | ')} |`);
+        if (rows.length === 1) {
+            rows.push(`|${' --- |'.repeat(row.length)}`);
+        }
+    }
+    // Таблица без единого непустого символа в ячейках — не шлём LLM рамку.
+    const hasContent = rows.some((line) => /[^|\s\\-]/.test(line));
+    return hasContent ? rows.join('\n') : '';
+}
 
 // Поля превью в порядке карточки (Принятые меры — под Причинами, как в форме).
 const _PREVIEW_FIELDS = [
@@ -77,24 +107,35 @@ export const FormalizerPopover = {
 
     /**
      * Собирает свободный текст нарушения из уже заполненных полей карточки для
-     * (пере)формализации. Порядок — как в карточке; плоский текст без ярлыков
-     * полей (формализатор раскладывает сам). Опциональные блоки берём только
-     * включёнными и непустыми; «Нарушено»/«Установлено» — если непусты. Поля
-     * модели — rich HTML: каждое значение перед сборкой проходит через
-     * `this._richToPlain` (адаптер чтения rich→plain), иначе в тексте для LLM
-     * оказались бы HTML-теги. Чтение: карточку НЕ меняет.
+     * (пере)формализации — блочная модель. Порядок — как в карточке
+     * (getOrderedFieldKeys: fieldOrder нарушения либо стандартный); поля берём
+     * только включённые. Внутри поля: text-блок — видимый текст content;
+     * image-блок — видимый текст caption (base64-картинка LLM бесполезна);
+     * table-блок — компактная markdown-сетка (tableToMarkdown). Rich HTML
+     * проходит через `this._richToPlain` (адаптер чтения rich→plain), иначе в
+     * тексте для LLM оказались бы HTML-теги. Плоский текст без ярлыков полей
+     * (формализатор раскладывает сам). Чтение: карточку НЕ меняет.
      * @param {Object} violation
      * @returns {string}
      */
     _gatherSource(violation) {
         if (!violation) return '';
         const parts = [];
-        const push = (html) => { const t = this._richToPlain(html || '').trim(); if (t) parts.push(t); };
-        push(violation.violated);
-        push(violation.established);
-        for (const key of ['reasons', 'measures', 'consequences', 'responsible']) {
-            const f = violation[key];
-            if (f && f.enabled) push(f.content);
+        const pushText = (html) => { const t = this._richToPlain(html || '').trim(); if (t) parts.push(t); };
+        for (const key of getOrderedFieldKeys(violation)) {
+            const field = violation[key];
+            if (!field || !field.enabled || !Array.isArray(field.blocks)) continue;
+            for (const block of field.blocks) {
+                if (!block) continue;
+                if (block.type === BLOCK_TYPES.TEXT) {
+                    pushText(block.content);
+                } else if (block.type === BLOCK_TYPES.IMAGE) {
+                    pushText(block.caption);
+                } else if (block.type === BLOCK_TYPES.TABLE) {
+                    const md = tableToMarkdown(block.table);
+                    if (md) parts.push(md);
+                }
+            }
         }
         return parts.join('\n\n');
     },
@@ -212,9 +253,11 @@ export const FormalizerPopover = {
         try {
             const fields = await formalizeViolation(text, { signal: this._controller.signal });
             this._fields = fields;
-            this._renderPreview(fields);
+            const filled = this._renderPreview(fields);
             this._renderRecommendations(fields.recommendations);
-            this._els.accept.disabled = false;
+            // Пустой ответ применять нечего — «Применить» остаётся заблокированной,
+            // статус в превью объясняет, почему (ревью №3).
+            this._els.accept.disabled = filled === 0;
         } catch (e) {
             if (e && e.name === 'AbortError') return;
             this._fields = null;
@@ -229,10 +272,29 @@ export const FormalizerPopover = {
         }
     },
 
+    /**
+     * Рисует превью извлечённых полей. Значения — готовый HTML (контракт
+     * `FormalizeResponse`), поэтому идут в превью санитизированной разметкой
+     * профилем 'acts': списки видны списками, а не строкой с тегами `<ul><li>`
+     * (ревью №3). Ни одного непустого поля — вместо шести «— не извлечено»
+     * один внятный статус.
+     * @param {Object} fields - Ответ формализатора
+     * @returns {number} Сколько полей ответа непусты
+     */
     _renderPreview(fields) {
         this._els.preview.innerHTML = '';
-        for (const [key, label] of _PREVIEW_FIELDS) {
-            const value = (fields[key] || '').trim();
+        const values = _PREVIEW_FIELDS.map(
+            ([key, label]) => [label, String(fields?.[key] ?? '').trim()],
+        );
+        const filled = values.filter(([, value]) => value).length;
+        if (!filled) {
+            const msg = document.createElement('div');
+            msg.className = 'corrector-status';
+            msg.textContent = 'Модель ничего не извлекла из текста';
+            this._els.preview.appendChild(msg);
+            return 0;
+        }
+        for (const [label, value] of values) {
             const row = document.createElement('div');
             row.className = 'formalizer-field' + (value ? '' : ' formalizer-field-empty');
             const lab = document.createElement('span');
@@ -240,11 +302,13 @@ export const FormalizerPopover = {
             lab.textContent = label;
             const val = document.createElement('div');
             val.className = 'formalizer-field-value';
-            val.textContent = value || '— не извлечено';
+            if (value) SafeHTML.set(val, value, 'acts');
+            else val.textContent = '— не извлечено';
             row.appendChild(lab);
             row.appendChild(val);
             this._els.preview.appendChild(row);
         }
+        return filled;
     },
 
     /**
@@ -280,9 +344,20 @@ export const FormalizerPopover = {
         this._els.recs.classList.add('hidden');
     },
 
+    /**
+     * «Применить»: раскладывает извлечённые поля по карточке. Успех объявляем
+     * только по факту записи — `apply` возвращает число заполненных полей, и
+     * ноль (карточка в режиме просмотра, писать не дали) больше не показывает
+     * success и не закрывает окно: раньше уведомление «Поля карточки заполнены»
+     * выдавалось безусловно, даже когда в карточку не уехало ничего.
+     */
     _accept() {
         if (!this._fields || typeof this._apply !== 'function') { this.close(); return; }
-        this._apply(this._fields);
+        const applied = this._apply(this._fields);
+        if (!applied) {
+            Notifications.info('Поля карточки не заполнены — применять было нечего');
+            return;   // окно оставляем открытым: результат ещё перед глазами
+        }
         Notifications.success('Поля карточки заполнены');
         // Есть рекомендации → окно остаётся открытым только с этим блоком.
         // Нет — закрываемся, показывать нечего.

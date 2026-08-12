@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 
 from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.shared import Pt, Twips
+from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -494,16 +494,28 @@ _TEXT_ALIGN_RE = re.compile(
 _PLACEHOLDER_BR_RE = re.compile(r"^\s*<br\b[^>]*>\s*$", re.IGNORECASE)
 
 
+# Списки rich-HTML (V14.1): тег списка → built-in стиль абзаца Word. "List
+# Bullet" — тот же стиль, которым уже размечались пункты descriptionList, так
+# что оформление акта не меняется. Стиль несёт маркер/нумерацию и отступ; для
+# нумерованных списков Word ведёт СКВОЗНУЮ нумерацию стиля "List Number" —
+# два отдельных <ol> в одном документе продолжают счёт, а не начинают с 1
+# (ограничение built-in стилей, отдельный numId под каждый список не заводим).
+LIST_TAG_STYLES = {"ul": "List Bullet", "ol": "List Number"}
+
+
 @dataclass(frozen=True)
 class BlockSegment:
     """Верхнеуровневый «абзац» контента текстблока.
 
     alignment — значение text-align блочного элемента (None = не задано,
     рендер подставит дефолт justify); html — внутренняя разметка сегмента
-    (пустая строка = пустой абзац-строка).
+    (пустая строка = пустой абзац-строка); list_style — стиль абзаца для
+    сегмента-пункта списка (LIST_TAG_STYLES ближайшего <ul>/<ol>), None у
+    обычного сегмента.
     """
     alignment: str | None
     html: str
+    list_style: str | None = None
 
 
 # text-align сегмента → выравнивание Word. Потребитель — render_block_segments
@@ -528,6 +540,13 @@ def split_block_segments(html: str) -> list[BlockSegment]:
     Вложенные блочные теги остаются внутри html сегмента — apply_inline_html
     рендерит их мягкими переносами w:br, как раньше. Пустой/пробельный
     контент даёт пустой список (рендер сам добавит абзац-строку).
+
+    Списки (V14.1): <ul>/<ol> сами абзаца не дают, а задают list_style своим
+    <li>; каждый <li> — отдельный сегмент (свой абзац Word со стилем списка).
+    Вложенные списки СПЛЮЩИВАЮТСЯ: пункт вложенного списка становится обычным
+    сегментом того же уровня со стилем СВОЕГО списка — текст сохраняется,
+    ступенька отступа теряется (built-in стили "List Bullet 2"/"List Number 2"
+    сознательно не используются, см. LIST_TAG_STYLES).
     """
     if not html:
         return []
@@ -551,6 +570,10 @@ class _TopLevelSplitter(HTMLParser):
     перекрывает). Вложенный блок БЕЗ align остаётся сырым внутри сегмента
     (мягкий перенос w:br, наследует align родителя) — прежнее поведение. Так
     превью (каскад CSS) и DOCX не расходятся по выравниванию.
+
+    Пункт списка <li> — тоже граница сегмента (V14.1): открывающий <ul>/<ol>
+    кладёт свой стиль на стек списков, каждый <li> внутри становится
+    контейнером с этим стилем. Сам <ul>/<ol> абзаца не даёт.
     """
 
     def __init__(self):
@@ -558,8 +581,13 @@ class _TopLevelSplitter(HTMLParser):
         self._segments: list[BlockSegment] = []
         self._buf: list[str] = []
         # Стек открытых блоков-КОНТЕЙНЕРОВ (границ сегмента): элемент —
-        # [align, emitted_child]. Пусто = верхний уровень (анонимный сегмент).
+        # [align, emitted_child, list_style]. Пусто = верхний уровень
+        # (анонимный сегмент).
         self._ctx_stack: list[list] = []
+        # Стек открытых <ul>/<ol>: элемент — (стиль абзаца, глубина _ctx_stack
+        # на момент открытия). Глубина нужна, чтобы </ul> закрыл незакрытые
+        # <li> (частая разметка вида <ul><li>a<li>b</ul>).
+        self._list_stack: list[tuple[str, int]] = []
         # Глубина открытых НЕ-контейнерных элементов (span/b/… и вложенных div/p
         # без align) внутри текущего буфера. Пока >0 — мы внутри сырой разметки
         # сегмента, новые div/p там тоже сырые (буфер держим сбалансированным).
@@ -570,13 +598,34 @@ class _TopLevelSplitter(HTMLParser):
         if tag in _VOID_TAGS:
             self._buf.append(raw)
             return
-        if tag in ("div", "p") and self._inner_depth == 0:
-            align = _extract_text_align(dict(attrs))
-            # Контейнер: верхнеуровневый блок ЛИБО вложенный со своим align.
-            if not self._ctx_stack or align is not None:
-                self._open_container(align)
+        if self._inner_depth == 0:
+            if tag in LIST_TAG_STYLES:
+                self._open_list(LIST_TAG_STYLES[tag])
                 return
-        # Прочее (span/b/i/a/li/hN и вложенные div/p без align) — сырьё сегмента.
+            if tag == "li" and self._list_stack:
+                # Пункт — свой абзац со стилем БЛИЖАЙШЕГО списка: вложенный
+                # список сплющивается в тот же уровень (см. split_block_segments).
+                # Собственный text-align <li> приоритетнее; при его отсутствии
+                # наследуется align объемлющего контейнера (открытого div/p с
+                # align — только такие контейнеры и попадают в _ctx_stack, см.
+                # ветку "div"/"p" ниже), как в браузере (text-align наследуется).
+                own_align = _extract_text_align(dict(attrs))
+                inherited_align = own_align if own_align is not None else (
+                    self._ctx_stack[-1][0] if self._ctx_stack else None
+                )
+                self._open_container(
+                    inherited_align,
+                    list_style=self._list_stack[-1][0],
+                )
+                return
+            if tag in ("div", "p"):
+                align = _extract_text_align(dict(attrs))
+                # Контейнер: верхнеуровневый блок ЛИБО вложенный со своим align.
+                if not self._ctx_stack or align is not None:
+                    self._open_container(align)
+                    return
+        # Прочее (span/b/i/a/hN, <li> вне списка и вложенные div/p без align) —
+        # сырьё сегмента.
         self._buf.append(raw)
         self._inner_depth += 1
 
@@ -590,6 +639,9 @@ class _TopLevelSplitter(HTMLParser):
         if self._inner_depth > 0:
             self._inner_depth -= 1
             self._buf.append(f"</{tag}>")
+            return
+        if tag in LIST_TAG_STYLES and self._list_stack:
+            self._close_list()
             return
         if self._ctx_stack:
             self._close_container()
@@ -612,35 +664,52 @@ class _TopLevelSplitter(HTMLParser):
         self._flush_anonymous()
         return self._segments
 
-    def _open_container(self, align: str | None) -> None:
-        # Перед новым контейнером — сбросить накопленный кусок текущего сегмента.
+    def _open_container(self, align: str | None, list_style: str | None = None) -> None:
+        self._flush_before_block()
+        self._ctx_stack.append([align, False, list_style])
+
+    def _close_container(self) -> None:
+        inner = _normalize_segment_html("".join(self._buf))
+        self._buf.clear()
+        align, emitted_child, list_style = self._ctx_stack.pop()
+        if inner:
+            self._segments.append(BlockSegment(align, inner, list_style))
+        elif not emitted_child:
+            # Пустой блок-лист = пустая строка-абзац (как <div><br></div>).
+            self._segments.append(BlockSegment(align, "", list_style))
+        # else: пустой хвост после дочерних сегментов — не плодим пустой абзац.
+
+    def _open_list(self, style: str) -> None:
+        """<ul>/<ol>: своего абзаца не даёт, только задаёт стиль пунктам."""
+        self._flush_before_block()
+        self._list_stack.append((style, len(self._ctx_stack)))
+
+    def _close_list(self) -> None:
+        """</ul>/</ol>: закрывает пункты, оставшиеся незакрытыми внутри списка."""
+        _, depth = self._list_stack.pop()
+        while len(self._ctx_stack) > depth:
+            self._close_container()
+
+    def _flush_before_block(self) -> None:
+        """Сброс накопленного куска перед новой границей (контейнер/список)."""
         if self._ctx_stack:
             self._flush_partial()          # частичный кусок родителя (его align)
             self._ctx_stack[-1][1] = True  # у родителя появился дочерний сегмент
         else:
             self._flush_anonymous()        # верхнеуровневый анонимный кусок
-        self._ctx_stack.append([align, False])
-
-    def _close_container(self) -> None:
-        inner = _normalize_segment_html("".join(self._buf))
-        self._buf.clear()
-        align, emitted_child = self._ctx_stack.pop()
-        if inner:
-            self._segments.append(BlockSegment(align, inner))
-        elif not emitted_child:
-            # Пустой блок-лист = пустая строка-абзац (как <div><br></div>).
-            self._segments.append(BlockSegment(align, ""))
-        # else: пустой хвост после дочерних сегментов — не плодим пустой абзац.
 
     def _flush_partial(self) -> None:
         """Кусок текущего контейнера ДО вложенного блока — свой сегмент с align
-        контейнера; чисто пробельный кусок пропускаем (браузер его схлопывает)."""
+        и стилем списка контейнера; чисто пробельный кусок пропускаем (браузер
+        его схлопывает). Так текст пункта ДО вложенного списка
+        (<li>текст<ul>…</ul></li>) остаётся маркированным."""
         text = "".join(self._buf)
         self._buf.clear()
         if not text.strip(" \t\r\n"):
             return
+        align, _, list_style = self._ctx_stack[-1]
         self._segments.append(
-            BlockSegment(self._ctx_stack[-1][0], _normalize_segment_html(text))
+            BlockSegment(align, _normalize_segment_html(text), list_style)
         )
 
     def _flush_anonymous(self) -> None:
@@ -670,18 +739,6 @@ def _extract_text_align(attrs: dict) -> str | None:
 # (текстблок, скалярные rich-поля нарушения, подпись картинки, пункты списка).
 # ---------------------------------------------------------------------------
 
-# Отступ ТЕКСТА маркированной строки стиля "List Bullet" (built-in стиль
-# дефолтного шаблона python-docx, docx/templates/default.docx). Сам стиль
-# несёт только w:numPr numId=1 без своего w:ind — реальный отступ живёт в
-# определении уровня нумерации (numbering.xml: numId=1 → abstractNumId=8 →
-# w:lvl[ilvl=0]/w:pPr/w:ind left="360" hanging="360"). hanging=360 отодвигает
-# МАРКЕР первой строки на позицию 0, а текст строки — на left=360. Продолжение
-# многосегментного пункта (обычный абзац без стиля/маркера) получает тот же
-# left_indent, чтобы визуально начинаться под текстом первой строки, а не под
-# маркером (иначе вторая строка «проваливается» на 0.25" левее первой).
-_LIST_BULLET_TEXT_INDENT = Twips(360)
-
-
 def render_block_segments(
     doc: Document,
     html: str,
@@ -689,7 +746,6 @@ def render_block_segments(
     base_size_pt: float,
     base_italic: bool = False,
     default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-    paragraph_style: str | None = None,
     first_paragraph: Paragraph | None = None,
 ) -> list[Paragraph]:
     """HTML → абзацы документа: единая геометрия рендера для всех хостов.
@@ -702,13 +758,10 @@ def render_block_segments(
     последний — без прямого форматирования (наследует Normal), как у
     прежней одноабзацной модели.
 
-    paragraph_style применяется ТОЛЬКО к первому абзацу — маркер списка
-    ("List Bullet") или иной стиль хоста не повторяется на продолжениях
-    (зеркало «метка на первом абзаце», см. first_paragraph); игнорируется,
-    если передан first_paragraph. Для "List Bullet" продолжения получают
-    left_indent, совпадающий с текстовой позицией маркированной строки
-    (_LIST_BULLET_TEXT_INDENT) — иначе вторая строка пункта визуально
-    выпадает левее текста первой.
+    Список из самого HTML (V14.1, <ul>/<ol>) — сегмент-пункт получает СВОЙ
+    list_style на любой позиции, включая first_paragraph (метка поля
+    «Причины:» тогда стоит внутри первого пункта — маркер у всех пунктов
+    списка одинаковый).
 
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
@@ -720,7 +773,7 @@ def render_block_segments(
         # Нет верхнеуровневых сегментов (пустой/пробельный html) — единственный
         # абзац с дефолтным выравниванием; apply_inline_html на исходном html
         # безопасен (no-op на пустой строке).
-        para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+        para = first_paragraph if first_paragraph is not None else doc.add_paragraph()
         para.alignment = default_alignment
         apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
         return [para]
@@ -728,13 +781,14 @@ def render_block_segments(
     paragraphs: list[Paragraph] = []
     for i, segment in enumerate(segments):
         if i == 0:
-            para = first_paragraph if first_paragraph is not None else doc.add_paragraph(style=paragraph_style)
+            if first_paragraph is not None:
+                para = first_paragraph
+                if segment.list_style:
+                    para.style = segment.list_style
+            else:
+                para = doc.add_paragraph(style=segment.list_style)
         else:
-            para = doc.add_paragraph()
-            if paragraph_style == "List Bullet":
-                # Маркер только на первом сегменте (см. докстринг) — но текст
-                # продолжения должен стоять под текстом маркированной строки.
-                para.paragraph_format.left_indent = _LIST_BULLET_TEXT_INDENT
+            para = doc.add_paragraph(style=segment.list_style)
         para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
         apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
         paragraphs.append(para)

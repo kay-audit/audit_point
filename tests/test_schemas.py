@@ -15,12 +15,15 @@ from app.domains.acts.schemas.act_content import (
     VIOLATION_CONTENT_ITEMS_MAX,
     VIOLATION_IMAGE_URL_MAX_LENGTH,
     ActDataSchema,
+    EmbeddedTableSchema,
     TableCellSchema,
     TableSchema,
     TextBlockSchema,
-    ViolationAdditionalContentSchema,
-    ViolationContentItemSchema,
+    ViolationFieldSchema,
+    ViolationImageBlockSchema,
+    ViolationSchema,
 )
+from app.domains.acts.violation_fields import VIOLATION_FIELD_KEYS
 from app.domains.acts.schemas.act_invoice import InvoiceSave, MetricItem
 
 
@@ -311,114 +314,173 @@ class TestTableSchema:
             )
 
 
-# ── ViolationContentItemSchema: валидация url картинок (4.3.M.2 + 5.2.2) ──
+# ── Блоки полей нарушения (блочная модель) ──
 
 
-class TestViolationContentItemUrl:
-    """url элемента image: только data:image-URL разрешённых форматов."""
+class TestViolationImageBlockUrl:
+    """url блока-картинки: только data:image-URL разрешённых форматов."""
 
     def test_valid_data_image_png_passes(self):
-        item = ViolationContentItemSchema(
-            id="i1", type="image",
+        block = ViolationImageBlockSchema(
+            id="image_1_a", type="image",
             url="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
         )
-        assert item.url.startswith("data:image/png")
+        assert block.url.startswith("data:image/png")
 
     def test_valid_data_image_jpeg_jpg_gif_pass(self):
         for mime in ("jpeg", "jpg", "gif"):
-            item = ViolationContentItemSchema(
-                id="i1", type="image", url=f"data:image/{mime};base64,AAAA",
+            block = ViolationImageBlockSchema(
+                id="image_1_a", type="image", url=f"data:image/{mime};base64,AAAA",
             )
-            assert item.url
+            assert block.url
 
     def test_webp_rejected(self):
         # webp исключён из whitelist: python-docx не встраивает его в DOCX,
         # картинка молча расходилась бы между превью и экспортом.
         with pytest.raises(ValidationError, match="data:image"):
-            ViolationContentItemSchema(
-                id="i1", type="image", url="data:image/webp;base64,AAAA",
+            ViolationImageBlockSchema(
+                id="image_1_a", type="image", url="data:image/webp;base64,AAAA",
             )
 
-    def test_empty_url_allowed_for_image(self):
+    def test_empty_url_allowed(self):
         # Картинка без содержимого (черновик) — допустима.
-        item = ViolationContentItemSchema(id="i1", type="image", url="")
-        assert item.url == ""
+        block = ViolationImageBlockSchema(id="image_1_a", type="image", url="")
+        assert block.url == ""
 
     def test_javascript_url_rejected(self):
         with pytest.raises(ValidationError, match="data:image"):
-            ViolationContentItemSchema(
-                id="i1", type="image", url="javascript:alert(1)",
+            ViolationImageBlockSchema(
+                id="image_1_a", type="image", url="javascript:alert(1)",
             )
 
     def test_data_text_html_rejected(self):
         with pytest.raises(ValidationError, match="data:image"):
-            ViolationContentItemSchema(
-                id="i1", type="image",
+            ViolationImageBlockSchema(
+                id="image_1_a", type="image",
                 url="data:text/html,<script>alert(1)</script>",
             )
 
     def test_data_image_svg_rejected(self):
         # SVG может содержать скрипты — не входит в whitelist форматов.
         with pytest.raises(ValidationError, match="data:image"):
-            ViolationContentItemSchema(
-                id="i1", type="image", url="data:image/svg+xml;base64,AAAA",
+            ViolationImageBlockSchema(
+                id="image_1_a", type="image", url="data:image/svg+xml;base64,AAAA",
             )
 
     def test_oversized_url_rejected(self):
         too_long = "data:image/png;base64," + "A" * VIOLATION_IMAGE_URL_MAX_LENGTH
         with pytest.raises(ValidationError, match="превышает"):
-            ViolationContentItemSchema(id="i1", type="image", url=too_long)
-
-    def test_non_image_types_do_not_require_image_url(self):
-        # Для case/freeText url не проверяется на data:image-префикс.
-        item = ViolationContentItemSchema(id="i1", type="case", content="текст")
-        assert item.url == ""
+            ViolationImageBlockSchema(id="image_1_a", type="image", url=too_long)
 
 
-class TestViolationAdditionalContentItemsLimit:
-    """Число items дополнительного контента ограничено."""
+class TestViolationBlockUnion:
+    """Дискриминированный union блоков: диспетчеризация по type, 422 на чужом."""
 
-    def _items(self, n: int) -> list[ViolationContentItemSchema]:
+    def test_three_block_types_dispatch(self):
+        field = ViolationFieldSchema.model_validate({
+            "enabled": True,
+            "blocks": [
+                {"id": "text_1_a", "type": "text", "content": "<p>x</p>"},
+                {"id": "image_1_b", "type": "image", "url": ""},
+                {"id": "table_1_c", "type": "table",
+                 "table": {"grid": [[{"content": "A"}]], "colWidths": [100]}},
+            ],
+        })
+        assert [type(b).__name__ for b in field.blocks] == [
+            "ViolationTextBlockSchema",
+            "ViolationImageBlockSchema",
+            "ViolationTableBlockSchema",
+        ]
+
+    def test_unknown_block_type_rejected(self):
+        # Неизвестный тип блока → громкая 422, fallback'а сознательно нет.
+        with pytest.raises(ValidationError):
+            ViolationFieldSchema.model_validate({
+                "enabled": True,
+                "blocks": [{"id": "b1", "type": "case", "content": "x"}],
+            })
+
+    def test_embedded_table_has_no_node_metadata(self):
+        # EmbeddedTableSchema: сетка без id/nodeId/kind (extra=forbid).
+        with pytest.raises(ValidationError, match="nodeId"):
+            EmbeddedTableSchema.model_validate({"grid": [], "nodeId": "n1"})
+        with pytest.raises(ValidationError, match="kind"):
+            EmbeddedTableSchema.model_validate({"grid": [], "kind": "metrics"})
+
+
+class TestViolationFieldBlocksLimit:
+    """Число блоков в поле нарушения ограничено (лимит — из настроек)."""
+
+    def _blocks(self, n: int) -> list[dict]:
         return [
-            ViolationContentItemSchema(id=f"i{i}", type="case", content="x")
+            {"id": f"text_1_{i}", "type": "text", "content": "x"}
             for i in range(n)
         ]
 
-    def test_items_at_limit_pass(self):
-        ac = ViolationAdditionalContentSchema(
-            enabled=True, items=self._items(VIOLATION_CONTENT_ITEMS_MAX),
+    def test_blocks_at_limit_pass(self):
+        field = ViolationFieldSchema.model_validate(
+            {"enabled": True, "blocks": self._blocks(VIOLATION_CONTENT_ITEMS_MAX)},
         )
-        assert len(ac.items) == VIOLATION_CONTENT_ITEMS_MAX
+        assert len(field.blocks) == VIOLATION_CONTENT_ITEMS_MAX
 
-    def test_items_over_limit_rejected(self):
-        with pytest.raises(ValidationError, match="лемент"):
-            ViolationAdditionalContentSchema(
-                enabled=True, items=self._items(VIOLATION_CONTENT_ITEMS_MAX + 1),
+    def test_blocks_over_limit_rejected(self):
+        with pytest.raises(ValidationError, match="лимит блоков"):
+            ViolationFieldSchema.model_validate(
+                {"enabled": True, "blocks": self._blocks(VIOLATION_CONTENT_ITEMS_MAX + 1)},
             )
 
 
-# ── ViolationContentItemSchema: устаревшее поле order (#24) ──
+class TestViolationSchemaFieldOrder:
+    """fieldOrder — перестановка всех ключей реестра либо None."""
+
+    def test_none_is_default(self):
+        v = ViolationSchema(id="v1", nodeId="n1")
+        assert v.fieldOrder is None
+
+    def test_valid_permutation_accepted(self):
+        order = list(reversed(VIOLATION_FIELD_KEYS))
+        v = ViolationSchema(id="v1", nodeId="n1", fieldOrder=order)
+        assert v.fieldOrder == order
+
+    def test_incomplete_order_rejected(self):
+        with pytest.raises(ValidationError, match="ровно один раз"):
+            ViolationSchema(
+                id="v1", nodeId="n1", fieldOrder=list(VIOLATION_FIELD_KEYS[1:]),
+            )
+
+    def test_duplicate_key_rejected(self):
+        order = list(VIOLATION_FIELD_KEYS[:-1]) + [VIOLATION_FIELD_KEYS[0]]
+        with pytest.raises(ValidationError, match="ровно один раз"):
+            ViolationSchema(id="v1", nodeId="n1", fieldOrder=order)
+
+    def test_alien_key_rejected(self):
+        order = list(VIOLATION_FIELD_KEYS[:-1]) + ["unknownField"]
+        with pytest.raises(ValidationError, match="ровно один раз"):
+            ViolationSchema(id="v1", nodeId="n1", fieldOrder=order)
 
 
-class TestViolationContentItemLegacyOrder:
-    """Директива владельца 1B: шим снят, обратная совместимость не нужна.
+class TestViolationSchemaMandatoryFields:
+    """Нарушено/Установлено нельзя выключить — enabled принуждается к True."""
 
-    Поле order вырезано из модели (#24); порядок элемента задаётся позицией в
-    списке items. Прежний before-валидатор молча выкидывал ключ ради restore
-    старых актов — снят. При extra="forbid" подача order теперь отвергается
-    (БД пересоздаётся с нуля, легаси-данных нет).
-    """
+    def test_defaults_enabled(self):
+        v = ViolationSchema(id="v1", nodeId="n1")
+        assert v.violated.enabled is True
+        assert v.established.enabled is True
+        assert v.reasons.enabled is False
 
-    def test_legacy_order_key_rejected(self):
-        with pytest.raises(ValidationError, match="order"):
-            ViolationContentItemSchema.model_validate({
-                "id": "i1", "type": "case", "content": "текст", "order": 3,
-            })
+    def test_disabled_mandatory_coerced_to_enabled(self):
+        v = ViolationSchema.model_validate({
+            "id": "v1", "nodeId": "n1",
+            "violated": {"enabled": False, "blocks": []},
+        })
+        assert v.violated.enabled is True
 
-    def test_other_unknown_field_still_rejected(self):
-        # extra="forbid": любое незадекларированное поле отвергается.
-        with pytest.raises(ValidationError, match="junk"):
-            ViolationContentItemSchema(id="i1", type="case", junk=1)
+    def test_registry_fields_match_schema(self):
+        # Все 10 полей реестра присутствуют в схеме контейнерами.
+        v = ViolationSchema(id="v1", nodeId="n1")
+        for key in VIOLATION_FIELD_KEYS:
+            field = getattr(v, key)
+            assert isinstance(field, ViolationFieldSchema)
 
 
 # ── TextBlockSchema: устаревшее поле formatting ──
@@ -502,9 +564,13 @@ class TestExtraForbidPolicy:
         with pytest.raises(ValidationError, match="junk"):
             TextBlockSchema(id="tb1", nodeId="n1", junk=1)
 
-    def test_unknown_field_in_violation_item_rejected(self):
+    def test_unknown_field_in_violation_block_rejected(self):
         with pytest.raises(ValidationError, match="position"):
-            ViolationContentItemSchema(id="i1", type="case", position=3)
+            ViolationImageBlockSchema(id="image_1_a", type="image", position=3)
+
+    def test_unknown_field_in_violation_rejected(self):
+        with pytest.raises(ValidationError, match="junk"):
+            ViolationSchema(id="v1", nodeId="n1", junk=1)
 
     def test_unknown_top_level_field_rejected(self):
         with pytest.raises(ValidationError, match="metadata"):
@@ -769,21 +835,21 @@ class TestDynamicLimitsFromSettings:
         settings_registry._registry[DOMAIN_NAME] = acts_settings
 
     def test_items_count_limit_from_settings(self):
-        """#3: лимит элементов нарушения берётся из ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION."""
+        """#3: лимит блоков поля нарушения берётся из ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION."""
         from app.domains.acts.settings import ActsSettings, ImagesSettings
         self._register(ActsSettings(images=ImagesSettings(max_items_per_violation=2)))
-        items = [
-            ViolationContentItemSchema(id=str(i), type="freeText", content="x")
+        blocks = [
+            {"id": f"text_1_{i}", "type": "text", "content": "x"}
             for i in range(3)
         ]
         with pytest.raises(ValidationError) as exc_info:
-            ViolationAdditionalContentSchema(enabled=True, items=items)
+            ViolationFieldSchema.model_validate({"enabled": True, "blocks": blocks})
         # №14: текст синхронизирован вручную с фронтом (AppConfig.content.errors.
         # contentItemsLimitReached, static/js/shared/app-config.js) — должен
         # совпадать дословно.
-        assert "Достигнут лимит элементов дополнительного контента на нарушение (2)." in str(exc_info.value)
-        # 2 элемента проходят
-        ViolationAdditionalContentSchema(enabled=True, items=items[:2])
+        assert "Достигнут лимит блоков в поле нарушения (2)." in str(exc_info.value)
+        # 2 блока проходят
+        ViolationFieldSchema.model_validate({"enabled": True, "blocks": blocks[:2]})
 
     def test_image_mime_whitelist_from_settings(self):
         """#15: добавленный в настройки MIME принимается схемой url."""
@@ -792,10 +858,10 @@ class TestDynamicLimitsFromSettings:
             images=ImagesSettings(allowed_mime_types=["image/webp", "image/png"])
         ))
         # webp теперь валиден
-        ViolationContentItemSchema(id="1", type="image", url="data:image/webp;base64,AAAA")
+        ViolationImageBlockSchema(id="image_1_a", type="image", url="data:image/webp;base64,AAAA")
         # gif больше не в whitelist -> отвергается
         with pytest.raises(ValidationError):
-            ViolationContentItemSchema(id="2", type="image", url="data:image/gif;base64,AAAA")
+            ViolationImageBlockSchema(id="image_1_b", type="image", url="data:image/gif;base64,AAAA")
 
     def test_table_rows_limit_from_settings(self):
         """#13: потолок строк grid берётся из ACTS__TABLES__MAX_ROWS."""

@@ -5,14 +5,21 @@
  * и переиспользуется _createViolationObject (state-content.js) — иначе два источника
  * истины дрейфуют друг от друга при будущих правках полей.
  *
- * Старые/повреждённые акты (ручная правка БД, сбойный мигратор, испорченный
- * localStorage-снимок) могут не содержать части под-объектов нарушения.
- * normalizeViolations ДО-заполняет только ОТСУТСТВУЮЩИЕ ключи эталоном, не
- * трогая валидные данные — идемпотентный проход при загрузке, по образцу
- * normalizeFontSizes (6.4, textblock-toolbar.js).
+ * Блочная модель: форма генерируется циклом по реестру VIOLATION_FIELDS
+ * (violation-fields.js) — каждое поле получает единый контейнер
+ * {enabled, blocks}, mandatory-поля создаются включёнными; плюс скаляр
+ * fieldOrder (null = стандартный порядок).
+ *
+ * Повреждённые акты (ручная правка БД, испорченный localStorage-снимок)
+ * могут не содержать части под-объектов нарушения. normalizeViolations
+ * ДО-заполняет только ОТСУТСТВУЮЩИЕ ключи эталоном, не трогая валидные
+ * данные — идемпотентный проход при загрузке, по образцу normalizeFontSizes
+ * (6.4, textblock-toolbar.js).
  *
  * Модуль без DOM — тестируется под node:test напрямую (без _browser-stub).
  */
+
+import { VIOLATION_FIELDS } from './violation-fields.js';
 
 /**
  * Дефолтная форма нового нарушения (эталон, зеркалит _createViolationObject
@@ -21,34 +28,14 @@
  * @returns {Object}
  */
 export function createDefaultViolationShape() {
-    return {
-        violated: '',
-        established: '',
-        descriptionList: {
-            enabled: false,
-            items: [],
-        },
-        additionalContent: {
-            enabled: false,
-            items: [],
-        },
-        reasons: {
-            enabled: false,
-            content: '',
-        },
-        measures: {
-            enabled: false,
-            content: '',
-        },
-        consequences: {
-            enabled: false,
-            content: '',
-        },
-        responsible: {
-            enabled: false,
-            content: '',
-        },
-    };
+    const shape = { fieldOrder: null };
+    for (const field of VIOLATION_FIELDS) {
+        shape[field.key] = {
+            enabled: field.mandatory,
+            blocks: [],
+        };
+    }
+    return shape;
 }
 
 /**

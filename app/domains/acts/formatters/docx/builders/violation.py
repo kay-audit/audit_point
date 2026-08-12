@@ -1,18 +1,25 @@
-"""Builder нарушений: Нарушено/Установлено/Причины/...
+"""Builder нарушений — блочная модель.
 
 Заголовок и нумерация нарушения не выводятся: шаблон «Проблема. ПNNNN.»
 указывается в блоке пункта (item) и подставляется при сборке в formatter.py.
 
-Дополнительный контент:
-- кейсы нумеруются («Кейс 1:», «Кейс 2:»), нумерация сбрасывается после
-  не-кейса — та же семантика, что в MD/TXT-форматтерах и превью;
-- картинки (data:image-URL) встраиваются inline shape'ом: отдельный абзац
-  по центру, подпись курсивом по центру ниже (Б-1.5). Ширина — поле
-  `width` (% полезной ширины страницы); 0/не задана — натуральный размер,
-  но не шире полезной ширины (Б-1.4). Допустимые форматы — из настроек
-  ACTS__IMAGES__ALLOWED_MIME_TYPES (через image_data_url_pattern из act_content,
-  тот же источник, что и у валидатора url). Битый/пустой url или формат вне
-  whitelist → текстовый плейсхолдер «Изображение: {filename}» (паритет с MD/TXT).
+Единый цикл: поля в порядке fieldOrder нарушения (или стандартном, см.
+violation_fields.ordered_fields) → у видимого поля метка + блоки по порядку.
+Видимость и наличие метки — общая политика реестра (should_render_field /
+field_label_for_render), не локальные условия: поля без метки
+(CodeMining/ProcessMining/Дополнительный контент) выводят один контент
+подряд, как текстблоки. Размер шрифта поля — из флага small дескриптора
+(9pt/12pt), курсив следует той же группе. Блоки:
+- text — rich-HTML через общий render_block_segments (первый text-блок поля
+  С МЕТКОЙ идёт inline с ней — привычный вид «Метка: текст»);
+- image — inline shape: отдельный абзац по центру, подпись курсивом по
+  центру ниже (Б-1.5). Ширина — поле `width` (% полезной ширины страницы);
+  0 — натуральный размер, но не шире полезной ширины (Б-1.4). Допустимые
+  форматы — из ACTS__IMAGES__ALLOWED_MIME_TYPES (image_data_url_pattern,
+  тот же источник, что у валидатора url). Битый/пустой url → текстовый
+  плейсхолдер «Изображение: {filename}» (паритет с MD/TXT);
+- table — обычная таблица через общий build_table (та же графика, что у
+  таблиц-узлов дерева).
 """
 import base64
 import binascii
@@ -25,14 +32,19 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, Twips
 
 from app.domains.acts.formatters.docx.builders.inline import render_block_segments
+from app.domains.acts.formatters.docx.builders.tables import build_table
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
     image_data_url_pattern,
-    ViolationContentItemSchema,
+    ViolationImageBlockSchema,
     ViolationSchema,
 )
-from app.domains.acts.violation_fields import CASE_LABEL_TEMPLATE, LABELS
+from app.domains.acts.violation_fields import (
+    field_label_for_render,
+    ordered_fields,
+    should_render_field,
+)
 
 # Полезная ширина страницы (A4 минус поля) в твипах — потолок ширины картинок.
 _USABLE_WIDTH_TWIPS = Page.width_twips - Margins.left - Margins.right
@@ -58,63 +70,54 @@ def _data_url_re() -> re.Pattern:
 
 
 def build_violation(doc: Document, violation: ViolationSchema) -> None:
-    """Рендерит нарушение в документ (без заголовка и нумерации)."""
-    _labeled_paragraph(
-        doc, f"{LABELS['violated']}:", violation.violated,
-        italic=True, size_pt=Sizes.violation_pt, rich=True,
-    )
-    _labeled_paragraph(
-        doc, f"{LABELS['established']}:", violation.established,
-        italic=True, size_pt=Sizes.violation_pt, rich=True,
-    )
+    """Рендерит нарушение в документ (без заголовка и нумерации).
 
-    if violation.descriptionList.enabled:
-        for item in violation.descriptionList.items:
-            # Task 7 + #5: пункт — rich-HTML; общий render_block_segments режет
-            # его на строки per-line align (дефолт JUSTIFY, как раньше), маркер
-            # "List Bullet" — только на первом сегменте, продолжения — без
-            # маркера (зеркало «метки на первом абзаце» из _labeled_paragraph).
-            render_block_segments(
-                doc, item,
-                base_size_pt=Sizes.violation_pt, base_italic=True,
-                default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-                paragraph_style="List Bullet",
-            )
+    Видимость поля и его метка — общая политика реестра (should_render_field /
+    field_label_for_render), та же, что у MD/TXT (violation_render).
+    """
+    for field in ordered_fields({"fieldOrder": violation.fieldOrder}):
+        container = getattr(violation, field.key)
+        blocks = list(container.blocks)
 
-    # additionalContent (case / image / freeText). Нумеруются ВСЕ кейсы, включая
-    # пустые (метка + пустое тело); счётчик сбрасывается на любом не-кейсе —
-    # единое правило нумерации (computeAdditionalContentNumbers, решение Q1),
-    # зеркало markdown/text_formatter._add_additional_content.
-    if violation.additionalContent.enabled:
-        case_number = 1
-        for item in violation.additionalContent.items:
-            if item.type == "case":
+        if not should_render_field(
+            field, enabled=container.enabled, has_blocks=bool(blocks)
+        ):
+            continue
+
+        size_pt = Sizes.violation_pt if field.small else Sizes.body_pt
+        italic = field.small
+
+        label = field_label_for_render(field)
+        if label is not None:
+            # Привычный вид «Метка: текст»: первый text-блок идёт inline с
+            # меткой; если первый блок — картинка/таблица (или блоков нет) —
+            # метка отдельным абзацем, блоки следом.
+            if blocks and blocks[0].type == "text":
+                first = blocks.pop(0)
                 _labeled_paragraph(
-                    doc, f"{CASE_LABEL_TEMPLATE.format(n=case_number)}:", item.content,
-                    italic=True, size_pt=Sizes.violation_pt, rich=True,
+                    doc, f"{label}:", first.content,
+                    italic=italic, size_pt=size_pt, rich=True,
                 )
-                case_number += 1
-            elif item.type == "image":
-                _add_image(doc, item)
-                case_number = 1
-            elif item.type == "freeText":
+            else:
                 _labeled_paragraph(
-                    doc, "", item.content,
-                    italic=True, size_pt=Sizes.violation_pt, rich=True,
+                    doc, f"{label}:", "", italic=italic, size_pt=size_pt,
                 )
-                case_number = 1
 
-    for label, field in [
-        (f"{LABELS['reasons']}:", violation.reasons),
-        (f"{LABELS['measures']}:", violation.measures),
-        (f"{LABELS['consequences']}:", violation.consequences),
-        (f"{LABELS['responsible']}:", violation.responsible),
-    ]:
-        if field.enabled and field.content:
-            _labeled_paragraph(doc, label, field.content, rich=True)
+        for block in blocks:
+            if block.type == "text":
+                if block.content:
+                    render_block_segments(
+                        doc, block.content,
+                        base_size_pt=size_pt, base_italic=italic,
+                        default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+                    )
+            elif block.type == "image":
+                _add_image(doc, block)
+            elif block.type == "table":
+                build_table(doc, block.table)
 
 
-def _add_image(doc: Document, item: ViolationContentItemSchema) -> None:
+def _add_image(doc: Document, item: ViolationImageBlockSchema) -> None:
     """Картинка: абзац по центру; подпись курсивом по центру ниже (Б-1.5).
 
     Не удалось встроить (битый base64, пустой url, формат без поддержки

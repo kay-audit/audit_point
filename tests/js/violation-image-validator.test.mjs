@@ -64,10 +64,10 @@ test('абсурдный сырой потолок отсекает гигант
     assert.match(res.reason, /для обработки/);
 });
 
-test('достигнут лимит элементов на нарушение → отказ, текст из единой точки app-config.js (№14)', () => {
+test('достигнут лимит блоков поля → отказ, текст из единой точки app-config.js (№14)', () => {
     const res = validateImageType(file(), { itemsCount: 3, limits: LIMITS });
     assert.equal(res.ok, false);
-    assert.match(res.reason, /лимит элементов/);
+    assert.match(res.reason, /лимит блоков/);
     // №14: текст не хардкодится тут — берётся из AppConfig.content.errors.
     // contentItemsLimitReached, той же точки, что и paste/undo-гейт.
     assert.equal(res.reason, AppConfig.content.errors.contentItemsLimitReached(3));
@@ -105,7 +105,7 @@ test('интеграция: existingTotalBytes (estimateActImageBytes) и ужа
     // (2667 * 0.75 = 2000.25 → округление до 2000). existingTotalBytes и байты
     // нового файла — обе величины в сырых байтах, единица одна.
     const url = `data:image/png;base64,${'A'.repeat(2667)}`;
-    const violations = { v1: { additionalContent: { items: [{ type: 'image', url }] } } };
+    const violations = { v1: { additionalContent: { blocks: [{ type: 'image', url }] } } };
     const existingTotalBytes = estimateActImageBytes(violations);
     assert.equal(existingTotalBytes, 2000);
 
@@ -137,22 +137,24 @@ test('estimateDataUrlBytes: не-data строка → 0', () => {
     assert.equal(estimateDataUrlBytes(null), 0);
 });
 
-test('estimateActImageBytes суммирует только image-элементы всех нарушений', () => {
+test('estimateActImageBytes суммирует image-блоки ВСЕХ полей всех нарушений', () => {
     const url1k = `data:image/png;base64,${'A'.repeat(1000)}`;
     const violations = {
         v1: {
             additionalContent: {
                 enabled: true,
-                items: [
+                blocks: [
                     { type: 'image', url: url1k },
-                    { type: 'case', content: 'не считается', url: '' },
+                    { type: 'text', content: 'не считается' },
                 ],
             },
+            // Блочная модель: картинка может лежать в любом поле реестра.
+            codeMining: { enabled: true, blocks: [{ type: 'image', url: url1k }] },
         },
-        v2: { additionalContent: { enabled: false, items: [{ type: 'image', url: url1k }] } },
+        v2: { additionalContent: { enabled: false, blocks: [{ type: 'image', url: url1k }] } },
         v3: {},
     };
-    assert.equal(estimateActImageBytes(violations), 1500);
+    assert.equal(estimateActImageBytes(violations), 2250);
 });
 
 test('estimateActImageBytes на пустом/отсутствующем словаре → 0', () => {

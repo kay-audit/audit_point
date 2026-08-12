@@ -45,6 +45,24 @@ class ServiceUnavailableError(AppError):
     code: ClassVar[str] = "service-unavailable"
 
 
+# Полевые колонки таблицы нарушений (блочная модель) — источник имён для
+# однотипных CHECK-сообщений ниже. Список продублирован из доменного реестра
+# app/domains/acts/violation_fields.py СОЗНАТЕЛЬНО: core не импортирует домены
+# (слоение). Расхождение поймает test_check_constraints_complete — он сверяет
+# маппинг с реальными констрейнтами schema.sql.
+_VIOLATION_FIELD_COLUMNS = (
+    "violated",
+    "established",
+    "description",
+    "code_mining",
+    "process_mining",
+    "additional_content",
+    "reasons",
+    "measures",
+    "consequences",
+    "responsible",
+)
+
 # Маппинг имён CHECK-ограничений БД → понятные сообщения для пользователя.
 # Используется глобальным обработчиком CheckViolationError в main.py.
 # ВАЖНО: при добавлении нового CHECK constraint в schema.sql — обязательно
@@ -86,24 +104,18 @@ CHECK_CONSTRAINT_MESSAGES: dict[str, str] = {
     "check_acts_validation_status_values": (
         "Недопустимое состояние валидации акта. Допустимые значения: ok, warning, error"
     ),
-    # ── acts: act_violations ─────────────────────────────────────────────────
-    "check_description_list_is_object_or_null": (
-        "Поле description_list должно быть объектом JSON или отсутствовать"
-    ),
-    "check_additional_content_is_object_or_null": (
-        "Поле additional_content должно быть объектом JSON или отсутствовать"
-    ),
-    "check_reasons_is_object_or_null": (
-        "Поле reasons должно быть объектом JSON с полями enabled и content, или отсутствовать"
-    ),
-    "check_measures_is_object_or_null": (
-        "Поле measures должно быть объектом JSON с полями enabled и content, или отсутствовать"
-    ),
-    "check_consequences_is_object_or_null": (
-        "Поле consequences должно быть объектом JSON с полями enabled и content, или отсутствовать"
-    ),
-    "check_responsible_is_object_or_null": (
-        "Поле responsible должно быть объектом JSON с полями enabled и content, или отсутствовать"
+    # ── acts: act_violations (блочная модель: контейнеры {enabled, blocks}) ──
+    # Десять полевых колонок нарушения — один и тот же CHECK с точностью до
+    # имени колонки, поэтому сообщения генерируются, а не переписываются.
+    **{
+        f"check_{column}_is_object_or_null": (
+            f"Поле {column} должно быть объектом JSON "
+            "с полями enabled и blocks, или отсутствовать"
+        )
+        for column in _VIOLATION_FIELD_COLUMNS
+    },
+    "check_field_order_is_array_or_null": (
+        "Порядок полей нарушения (field_order) должен быть массивом JSON или отсутствовать"
     ),
     # ── acts: act_invoices ───────────────────────────────────────────────────
     # PG-имена (явные, добавлены при заполнении)

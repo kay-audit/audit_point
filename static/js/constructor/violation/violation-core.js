@@ -10,8 +10,45 @@ import { EscapeStack } from '../../shared/escape-stack.js';
 import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
 import { FormalizerPopover } from '../text-actions/formalizer-popover.js';
-import { plainToRichHtml } from '../../shared/html-text.js';
-import { toggleEmptyClass } from './violation-field-empty.js';
+import { SafeHTML } from '../../shared/sanitize.js';
+import {
+    FIELD_BY_KEY, VIOLATION_FIELD_KEYS, getOrderedFieldKeys,
+} from './violation-fields.js';
+import { createTextBlock } from './violation-block-types.js';
+import { openFieldOrderDialog } from './violation-field-order-dialog.js';
+import { loadImageLimits } from './violation-image-validator.js';
+
+/**
+ * Ключи ответа формализатора, которые применимы к карточке: пересечение ключей
+ * ответа с реестром полей нарушения. Состав задаёт бэк (FormalizeResponse — шесть
+ * строк + recommendations), фронт больше не держит четвёртую копию этого списка
+ * (ревью №22): `recommendations` не ключ реестра и отсеивается сам — важно, т.к.
+ * это массив, и `.trim()` на нём бросил бы исключение.
+ * @param {Object} fields - Ответ формализатора
+ * @returns {string[]} Ключи полей реестра, присутствующие в ответе
+ */
+function formalizedFieldKeys(fields) {
+    if (!fields || typeof fields !== 'object') return [];
+    const known = new Set(VIOLATION_FIELD_KEYS);
+    return Object.keys(fields).filter(key => known.has(key));
+}
+
+/**
+ * Пересоздаёт секцию нарушения существующим путём обновления (ItemsRenderer
+ * держит DOM-индекс, прямая замена узла оставила бы в нём висячую ссылку).
+ *
+ * Обращение через window-глобал, а НЕ через import: items-renderer.js стоит
+ * НАД графом нарушений — он импортирует violationManager (violation-init.js),
+ * и обратный статический импорт добавил бы ещё одно ребро цикла в и без того
+ * закольцованный граф (violation-core → preview → state-core →
+ * storage-manager → items-renderer → violation-init). Тот же приём, что у
+ * context-menu-violation.js с глобальным violationManager.
+ *
+ * @param {string} violationId
+ */
+function rerenderViolationSection(violationId) {
+    window.ItemsRenderer?.updateViolation?.(violationId);
+}
 
 // Предикат «цель — редактируемое поле» общий с глобальными хоткеями Ctrl+Z /
 // Ctrl+C/Ctrl+V (shared/editable-target.js): раньше у каждой подсистемы была
@@ -26,15 +63,20 @@ export class ViolationManager {
         // Переменная для отслеживания последней позиции при drag
         this.lastDragOverIndex = null;
         // Хранилище активных violation для быстрого доступа.
-        // Запись добавляется в createAdditionalContentField (violation-additional-content.js);
-        // удаляется через removeViolation при разрушении узла дерева — без этого Map
-        // рос бесконтрольно при switch'е между актами / удалении нарушений.
+        // Запись добавляется в createViolationElement; удаляется через
+        // removeViolation при разрушении узла дерева — без этого Map рос
+        // бесконтрольно при switch'е между актами / удалении нарушений.
         this.activeViolations = new Map();
-        // AbortController'ы document-слушателей drop по violation.id
-        // (см. setupFileDragAndDrop): abort при повторной установке поля,
-        // удалении нарушения и destroy() — иначе слушатели копились
-        // на каждый ре-рендер поля дополнительных материалов.
-        this._fileDropControllers = new Map();
+        // Зоны приёма файлов по ключу `<violationId>:<fieldKey>` (у карточки
+        // их десять — по одной на поле): {itemsContainer, reset}. Запись
+        // добавляет setupFileDragAndDrop, снимают removeViolation (удаление
+        // узла) и destroy() (switch акта).
+        this._fileDropZones = new Map();
+        // AbortController ЕДИНСТВЕННОГО document-слушателя drop, общего на все
+        // зоны (#16): раньше слушатель вешался на каждое поле, и карточка
+        // нарушения давала десять одинаковых слушателей на document.
+        // Ставится лениво при первой зоне, снимается в destroy().
+        this._documentDropController = null;
         // Текущий активный контейнер для paste (только когда мышь внутри)
         this.currentActiveContainer = null;
         // Позиция курсора для вставки (null означает конец списка)
@@ -54,11 +96,49 @@ export class ViolationManager {
     }
 
     /**
-     * Активирует зону вставки (мышь внутри контейнера дополнительного
-     * контента) и регистрирует сброс зоны по ESC через EscapeStack —
-     * вместо прежнего собственного document-listener'а в обход стека.
+     * Регистрирует зону приёма файлов поля и — при первой зоне — вешает
+     * ЕДИНСТВЕННЫЙ document-слушатель drop на весь менеджер (#16).
+     *
+     * Зона отдаёт свой контейнер блоков и функцию сброса подсветки; слушатель
+     * пробегает по всем живым зонам и сбрасывает те, мимо которых промахнулись.
+     * Повторная установка того же поля (ре-рендер контейнера) перезаписывает
+     * запись по ключу, поэтому зоны не копятся.
+     *
+     * @param {string} zoneKey - Ключ `<violationId>:<fieldKey>`
+     * @param {HTMLElement} itemsContainer - Контейнер блоков поля
+     * @param {Function} reset - Сброс состояния файлового drag этой зоны
+     */
+    _registerFileDropZone(zoneKey, itemsContainer, reset) {
+        this._fileDropZones.set(zoneKey, { itemsContainer, reset });
+
+        if (this._documentDropController) return;
+        this._documentDropController = new AbortController();
+        document.addEventListener('drop', (e) => {
+            for (const zone of this._fileDropZones.values()) {
+                // Drop произошёл вне зоны — снимаем её подсветку и индикаторы.
+                if (!zone.itemsContainer.contains(e.target)) zone.reset();
+            }
+        }, { signal: this._documentDropController.signal });
+    }
+
+    /**
+     * Снимает document-слушатель drop и забывает все зоны приёма файлов.
+     * Идемпотентен; следующий setupFileDragAndDrop поставит слушатель заново.
+     */
+    _teardownFileDropZones() {
+        this._fileDropZones.clear();
+        if (this._documentDropController) {
+            this._documentDropController.abort();
+            this._documentDropController = null;
+        }
+    }
+
+    /**
+     * Активирует зону вставки (мышь внутри контейнера блоков поля) и
+     * регистрирует сброс зоны по ESC через EscapeStack — вместо прежнего
+     * собственного document-listener'а в обход стека.
      * Идемпотентен: повторная активация не плодит хэндлеры.
-     * @param {HTMLElement} container - Контейнер дополнительного контента
+     * @param {HTMLElement} container - Контейнер содержимого поля
      */
     _setActiveZone(container) {
         this.currentActiveContainer = container;
@@ -105,15 +185,19 @@ export class ViolationManager {
         // домешивания rich-хелперов (violation-field-surface.js) в изоляции.
         this._teardownActiveRichField?.(violationId);
         this.activeViolations.delete(violationId);
-        const controller = this._fileDropControllers.get(violationId);
-        if (controller) {
-            controller.abort();
-            this._fileDropControllers.delete(violationId);
+        // Зон приёма файлов у карточки десять (по одной на поле) — ключ зоны
+        // составной `<violationId>:<fieldKey>`, забываем все. Общий
+        // document-слушатель остаётся жить до destroy(): он один на менеджер
+        // и без зон ничего не делает.
+        for (const key of [...this._fileDropZones.keys()]) {
+            if (key.startsWith(`${violationId}:`)) {
+                this._fileDropZones.delete(key);
+            }
         }
 
         // #23: активная зона вставки принадлежала удаляемому нарушению — сбрасываем
         // её (иначе paste/ESC работали бы с зоной уже несуществующего нарушения).
-        const owner = this.currentActiveContainer?.querySelector?.('.additional-content-items')
+        const owner = this.currentActiveContainer?.querySelector?.('.violation-blocks-items')
             ?.dataset?.violationId;
         if (owner === violationId) {
             this._resetActiveZone();
@@ -126,16 +210,19 @@ export class ViolationManager {
      */
     destroy() {
         this.activeViolations.clear();
-        this._fileDropControllers.forEach(controller => controller.abort());
-        this._fileDropControllers.clear();
+        this._teardownFileDropZones();
         this._resetActiveZone();
         this.selectedViolation = null;
         this.lastDragOverIndex = null;
     }
 
     /**
-     * Создает элемент нарушения для отображения в интерфейсе
-     * @param {Object} violation - Объект нарушения с полями (violated, established, и т.д.)
+     * Создаёт элемент нарушения: цикл по полям реестра в текущем порядке
+     * (fieldOrder либо стандартный), каждое поле — одинаковая секция блоков
+     * (createBlocksField, violation-blocks.js). Двухколоночной вёрстки
+     * «Нарушено/Установлено» больше нет — все десять полей идут вертикально.
+     *
+     * @param {Object} violation - Объект нарушения (10 полей {enabled, blocks})
      * @param {Object} node - Узел дерева, к которому привязано нарушение
      * @returns {HTMLElement} Контейнер с формой нарушения
      */
@@ -148,339 +235,125 @@ export class ViolationManager {
         // Режим только чтения определяем один раз — для всех полей карточки.
         const isReadOnly = AppConfig.readOnlyMode?.isReadOnly;
 
+        // Регистрируем violation в хранилище для быстрого доступа (paste по фокусу).
+        this.activeViolations.set(violation.id, violation);
+
+        // Лимиты картинок подтягиваются один раз заранее (fire-and-forget):
+        // к моменту приёма первого файла валидатор уже знает серверные значения.
+        loadImageLimits();
+
         const section = document.createElement('div');
         section.className = RENDER_CLASSES.VIOLATION_SECTION;
         section.dataset.violationId = violation.id;
 
-        const columnsContainer = document.createElement('div');
-        columnsContainer.className = 'violation-columns';
+        const fieldsContainer = document.createElement('div');
+        fieldsContainer.className = 'violation-fields';
 
-        // Колонка "Нарушено"
-        const violatedColumn = document.createElement('div');
-        violatedColumn.className = 'violation-column';
+        for (const key of getOrderedFieldKeys(violation)) {
+            const descriptor = FIELD_BY_KEY[key];
+            if (!descriptor) continue;
+            fieldsContainer.appendChild(
+                this.createBlocksField(violation, descriptor, isReadOnly));
+        }
 
-        const violatedLabel = document.createElement('div');
-        violatedLabel.className = 'violation-label';
-        violatedLabel.textContent = 'Нарушено:';
-        violatedColumn.appendChild(violatedLabel);
+        section.appendChild(fieldsContainer);
 
-        // «Нарушено» — rich-поле (contenteditable). Наполняется из модели, формат
-        // переживает ре-рендер; ввод пишется в модель через write-through
-        // контроллера (setViolationField). Аудит — diff при сохранении
-        // (violation-audit.js), не per-keystroke.
-        const violatedField = this._createRichFieldEditor(
-            this._makeViolationSurface(violation, 'violated'),
-            { placeholder: 'Опишите нарушение...', isReadOnly },
-        );
-        violatedColumn.appendChild(violatedField);
-
-        // Колонка "Установлено"
-        const establishedColumn = document.createElement('div');
-        establishedColumn.className = 'violation-column';
-
-        const establishedLabel = document.createElement('div');
-        establishedLabel.className = 'violation-label';
-        establishedLabel.textContent = 'Установлено:';
-        establishedColumn.appendChild(establishedLabel);
-
-        // «Установлено» — rich-поле (симметрично «Нарушено»).
-        const establishedField = this._createRichFieldEditor(
-            this._makeViolationSurface(violation, 'established'),
-            { placeholder: 'Опишите установленное...', isReadOnly },
-        );
-        establishedColumn.appendChild(establishedField);
-
-        columnsContainer.appendChild(violatedColumn);
-        columnsContainer.appendChild(establishedColumn);
-        section.appendChild(columnsContainer);
-
-        // Контейнер для дополнительных опциональных полей
-        const optionalFieldsContainer = document.createElement('div');
-        optionalFieldsContainer.className = 'violation-optional-fields';
-
-        optionalFieldsContainer.appendChild(
-            this.createOptionalField(violation, 'descriptionList', 'Описание причин', 'list', isReadOnly)
-        );
-
-        optionalFieldsContainer.appendChild(
-            this.createAdditionalContentField(violation, isReadOnly)
-        );
-
-        const reasonsField = this.createOptionalField(violation, 'reasons', 'Причины', 'text', isReadOnly);
-        const measuresField = this.createOptionalField(violation, 'measures', 'Принятые меры', 'text', isReadOnly);
-        const consequencesField = this.createOptionalField(violation, 'consequences', 'Последствия', 'text', isReadOnly);
-        const responsibleField = this.createOptionalField(violation, 'responsible', 'Ответственные', 'text', isReadOnly);
-        optionalFieldsContainer.appendChild(reasonsField);
-        optionalFieldsContainer.appendChild(measuresField);
-        optionalFieldsContainer.appendChild(consequencesField);
-        optionalFieldsContainer.appendChild(responsibleField);
-
-        section.appendChild(optionalFieldsContainer);
-
-        // Формализация: раскладка свободного текста по полям карточки (не в RO-режиме).
+        // Бар действий над карточкой (не в RO): формализатор + порядок полей.
         if (!isReadOnly) {
             // Номер пункта нарушения — это номер РОДИТЕЛЬСКОГО пункта (у самого
             // violation-узла number вида «Нарушение N», не «5.x»).
             const pointNumber = AppState.findParentNode(node?.id)?.number || '';
-            this._addFormalizeButton(section, violation, pointNumber, {
-                violated: violatedField,
-                established: establishedField,
-                reasons: reasonsField,
-                measures: measuresField,
-                consequences: consequencesField,
-                responsible: responsibleField,
-            });
+            this._addViolationToolbar(section, violation, pointNumber);
         }
 
         return section;
     }
 
     /**
-     * Добавляет кнопку «Формализовать из текста» вверху секции нарушения.
-     * Открывает панель-заполнитель; применение раскладывает извлечённые поля.
+     * Бар действий вверху секции нарушения: «Формализовать из текста»
+     * (раскладка свободного текста по полям) и «Порядок полей» (модалка
+     * перестановки полей карточки).
+     *
      * @param {HTMLElement} section - Секция нарушения
      * @param {Object} violation - Объект нарушения
      * @param {string} pointNumber - Номер пункта (для заголовка панели)
-     * @param {Object} controls - Ссылки на DOM-контролы полей карточки
      */
-    _addFormalizeButton(section, violation, pointNumber, controls) {
+    _addViolationToolbar(section, violation, pointNumber) {
         const bar = document.createElement('div');
         bar.className = 'violation-formalize-bar';
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'violation-formalize-btn';
-        btn.textContent = '✨ Формализовать из текста';
-        btn.title = 'Разложить свободный текст нарушения по полям карточки';
-        btn.addEventListener('click', () => {
+        const formalizeBtn = document.createElement('button');
+        formalizeBtn.type = 'button';
+        formalizeBtn.className = 'violation-formalize-btn';
+        formalizeBtn.textContent = '✨ Формализовать из текста';
+        formalizeBtn.title = 'Разложить свободный текст нарушения по полям карточки';
+        formalizeBtn.addEventListener('click', () => {
             FormalizerPopover.open({
                 violation,
                 pointNumber,
-                apply: (fields) => this._applyFormalized(violation, controls, fields),
+                apply: (fields) => this._applyFormalized(violation, fields),
             });
         });
 
-        bar.appendChild(btn);
+        const orderBtn = document.createElement('button');
+        orderBtn.type = 'button';
+        orderBtn.className = 'violation-formalize-btn violation-field-order-btn';
+        orderBtn.textContent = '↕️ Порядок полей';
+        orderBtn.title = 'Изменить порядок полей нарушения в акте';
+        orderBtn.addEventListener('click', () => {
+            openFieldOrderDialog({
+                violation,
+                manager: this,
+                // Порядок полей меняет вёрстку карточки целиком — пересоздаём
+                // секцию существующим путём обновления (индекс DOM внутри).
+                onApplied: () => rerenderViolationSection(violation.id),
+            });
+        });
+
+        bar.appendChild(formalizeBtn);
+        bar.appendChild(orderBtn);
         section.insertBefore(bar, section.firstChild);
     }
 
     /**
-     * Пишет извлечённые формализацией поля в объект нарушения и его DOM-контролы.
-     * Что LLM не извлекла (пустая строка) — поле НЕ трогаем.
+     * Раскладывает ответ формализатора по полям карточки: каждое непустое
+     * значение уходит НОВЫМ текст-блоком в конец своего поля (существующие
+     * блоки не перезаписываются), поле при этом включается.
+     *
+     * Значение ВСЕГДА готовый HTML — так его отдаёт бэк (контракт
+     * `FormalizeResponse`: текст модели уже экранирован, `\n` переведены в `<br>`,
+     * перечисления пришли `<ul><li>…</li></ul>`). Прежняя эвристика
+     * «есть `<` → это разметка» (ревью №2) съедала текст вида «Порог <b» и теряла
+     * переносы строк; теперь фронт только санитизирует значение профилем 'acts' —
+     * тем же, которым рендерится содержимое поля.
+     *
      * @param {Object} violation - Объект нарушения
-     * @param {Object} controls - Ссылки на DOM-контролы
-     * @param {Object} fields - Ответ формализатора (плоские строки)
+     * @param {Object} fields - Ответ формализатора (шесть полей готового HTML)
+     * @returns {number} Сколько полей карточки реально заполнено
      */
-    _applyFormalized(violation, controls, fields) {
-        // Пишем извлечённое поле через поверхность (setContent) — единый защищённый
-        // путь модель+DOM: setViolationField (requireWrite-guard + превью) внутри +
-        // renderActContent + капсульная гигиена. Это же делает setContent продовым
-        // путём (S4: до этой задачи ни одного продового вызова). Плоскую строку LLM
-        // переводим в rich HTML (экранирование + \n → <br>) ДО записи.
-        const writeField = (path, fieldDiv, value) => {
-            const v = (value || '').trim();
-            if (!v) return;                 // не извлечено — не затираем существующее
-            const html = plainToRichHtml(v);
-            if (fieldDiv) {
-                const surface = this._makeViolationSurface(violation, path);
-                surface.element = fieldDiv;
-                surface.setContent(html);
-                // setContent не трогает placeholder-класс — снимаем его (поле теперь
-                // непусто), иначе CSS-плейсхолдер (.textblock-editor--empty::before)
-                // «Опишите нарушение…» оставался бы серым префиксом перед реальным
-                // текстом (#7). Предикат пустоты — общий с подсветкой (T5,
-                // violation-field-empty.js).
-                toggleEmptyClass(fieldDiv, 'textblock-editor--empty', fieldDiv);
-            } else {
-                // Поле не смонтировано (нет DOM-хоста) — прямой model-write; DOM его
-                // подхватит при следующем рендере карточки.
-                this.setViolationField(violation, path, html);
-            }
-        };
-        const setPlain = (name, fieldDiv, value) => writeField(name, fieldDiv, value);
-        const setOptional = (name, container, value) => {
-            const v = (value || '').trim();
-            if (!v) return;
-            this.setViolationField(violation, `${name}.enabled`, true);
-            const cb = container?.querySelector('.violation-field-toggle input[type="checkbox"]');
-            const content = container?.querySelector('.violation-field-content');
-            const fieldDiv = container?.querySelector('.violation-field-content .violation-field');
-            if (cb) cb.checked = true;
-            if (content) content.style.display = 'block';
-            writeField(`${name}.content`, fieldDiv, value);
-        };
+    _applyFormalized(violation, fields) {
+        let applied = 0;
 
-        setPlain('violated', controls.violated, fields.violated);
-        setPlain('established', controls.established, fields.established);
-        setOptional('reasons', controls.reasons, fields.reasons);
-        setOptional('measures', controls.measures, fields.measures);
-        setOptional('consequences', controls.consequences, fields.consequences);
-        setOptional('responsible', controls.responsible, fields.responsible);
+        for (const key of formalizedFieldKeys(fields)) {
+            const value = String(fields[key] ?? '').trim();
+            if (!value) continue;   // не извлечено — поле не трогаем
+
+            // Включаем поле (у mandatory-полей мутатор и так держит enabled).
+            this.setFieldEnabled(violation, key, true);
+
+            const html = SafeHTML.sanitize(value, 'acts');
+            if (this.addBlock(violation, key, createTextBlock(html))) {
+                applied++;
+            }
+        }
+
+        if (!applied) return 0;
+
+        // Секция пересобирается целиком: у полей могли смениться и состав
+        // блоков, и состояние чекбокса.
+        rerenderViolationSection(violation.id);
         PreviewManager.updateBlock('violation', violation.id);
-    }
-
-    /**
-     * Создает опциональное поле с чекбоксом для включения/выключения
-     * @param {Object} violation - Объект нарушения
-     * @param {string} fieldName - Имя поля в объекте violation
-     * @param {string} label - Текст метки поля
-     * @param {string} type - Тип поля ('list' или 'text')
-     * @returns {HTMLElement} Контейнер с опциональным полем
-     */
-    createOptionalField(violation, fieldName, label, type, isReadOnly = false) {
-        // #20 страховка А: дешёвая защита от отсутствующего под-объекта поля
-        // (старые/повреждённые данные до normalizeViolations на загрузке).
-        // Не перезатирает валидные данные — подставляет дефолт только при
-        // полном отсутствии поля; последующие чтения (в т.ч. renderList) безопасны.
-        if (!violation[fieldName] || typeof violation[fieldName] !== 'object') {
-            violation[fieldName] = { enabled: false, items: [], content: '' };
-        }
-
-        const fieldContainer = document.createElement('div');
-        fieldContainer.className = 'violation-optional-field';
-
-        // Чекбокс для включения/выключения поля
-        const checkboxContainer = document.createElement('div');
-        checkboxContainer.className = 'violation-field-toggle';
-
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.id = `${violation.id}-${fieldName}`;
-        checkbox.checked = violation[fieldName].enabled;
-        checkbox.disabled = isReadOnly;
-
-        // В режиме просмотра чекбокс заблокирован, мутирующий слушатель не вешаем.
-        // Уже включённые секции остаются раскрытыми (display ниже) для чтения.
-        if (!isReadOnly) {
-            checkbox.addEventListener('change', () => {
-                this.setViolationField(violation, `${fieldName}.enabled`, checkbox.checked);
-                contentContainer.style.display = checkbox.checked ? 'block' : 'none';
-            });
-        }
-
-        const checkboxLabel = document.createElement('label');
-        checkboxLabel.htmlFor = checkbox.id;
-        checkboxLabel.textContent = label;
-        checkboxLabel.className = 'violation-field-label';
-
-        checkboxContainer.appendChild(checkbox);
-        checkboxContainer.appendChild(checkboxLabel);
-        fieldContainer.appendChild(checkboxContainer);
-
-        // Контейнер для содержимого поля
-        const contentContainer = document.createElement('div');
-        contentContainer.className = 'violation-field-content';
-        contentContainer.style.display = violation[fieldName].enabled ? 'block' : 'none';
-
-        // Создаем либо список, либо текстовое поле
-        if (type === 'list') {
-            const listContainer = document.createElement('div');
-            listContainer.className = 'violation-list-container';
-
-            const addButton = document.createElement('button');
-            addButton.className = 'violation-list-add-btn';
-            addButton.textContent = '+ Добавить пункт';
-            addButton.disabled = isReadOnly;
-
-            if (!isReadOnly) {
-                addButton.addEventListener('click', () => {
-                    if (this.addViolationListItem(violation, fieldName)) {
-                        // Список пере-рендеривается целиком — снимаем контроллер с
-                        // активного rich-поля ЭТОГО нарушения ПЕРЕД пере-рендером,
-                        // иначе после innerHTML='' он держал бы detached-хост со
-                        // слушателями (зеркало createViolationElement).
-                        this._teardownActiveRichField(violation.id);
-                        this.renderList(listContainer, violation, fieldName, isReadOnly);
-                    }
-                });
-            }
-
-            contentContainer.appendChild(addButton);
-            contentContainer.appendChild(listContainer);
-            this.renderList(listContainer, violation, fieldName, isReadOnly);
-
-        } else if (type === 'text') {
-            // Опциональное текстовое поле (reasons/measures/consequences/
-            // responsible) — rich-поле (contenteditable), путь `${fieldName}.content`.
-            const field = this._createRichFieldEditor(
-                this._makeViolationSurface(violation, `${fieldName}.content`),
-                { placeholder: label ? `Введите ${label.toLowerCase()}...` : '...', isReadOnly },
-            );
-            contentContainer.appendChild(field);
-        }
-
-        fieldContainer.appendChild(contentContainer);
-        return fieldContainer;
-    }
-
-    /**
-     * Отрисовывает маркированный список элементов. Пункт — rich-поле
-     * (Task 7, contenteditable через _createRichFieldEditor), как остальные
-     * текстовые поля нарушения; write-through в модель ведёт EditorController
-     * (commit на input), Escape в rich-поле = blur (ревёрта нет — как во
-     * всех rich-полях, паритет с case/freeText/caption).
-     * @param {HTMLElement} container - Контейнер для списка
-     * @param {Object} violation - Объект нарушения
-     * @param {string} fieldName - Имя поля со списком
-     */
-    renderList(container, violation, fieldName, isReadOnly = false) {
-        container.innerHTML = '';
-
-        violation[fieldName].items.forEach((item, index) => {
-            const itemContainer = document.createElement('div');
-            itemContainer.className = 'violation-list-item';
-            // Подсветка пустого пункта (#9-Г, Wave 2): не блокирует ввод, только
-            // визуальный сигнал. Единый предикат с live-тумблером ниже (#12/V24)
-            // — toggleEmptyClass (violation-field-empty.js). String(...) —
-            // страховка от не-строкового элемента ([null]/число из легаси/битого
-            // акта): нормализатор дозаполняет ключи, но не приводит типы внутри
-            // items, иначе isFieldEmpty получил бы не-строку и рендер карточки
-            // мог упасть.
-            toggleEmptyClass(itemContainer, 'violation-list-item--empty', String(item));
-
-            const field = this._createRichFieldEditor(
-                this._makeViolationListItemSurface(violation, fieldName, index),
-                { placeholder: `Пункт ${index + 1}`, isReadOnly },
-            );
-            field.classList.add('violation-textarea--compact');
-
-            if (!isReadOnly) {
-                // Живая подсветка пустоты (#9-Г) — только визуальный класс, без
-                // записи модели (её ведёт write-through контроллера через commit,
-                // зеркало createCaseElement/createFreeTextElement).
-                field.addEventListener('input', () => {
-                    toggleEmptyClass(itemContainer, 'violation-list-item--empty', field);
-                });
-            }
-
-            // Кнопка удаления элемента списка
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'violation-list-delete-btn';
-            deleteBtn.textContent = '×';
-            deleteBtn.disabled = isReadOnly;
-
-            if (!isReadOnly) {
-                deleteBtn.addEventListener('click', () => {
-                    // Teardown ПЕРЕД removeViolationListItem (splice), не после
-                    // (ревью Issue 1): unmount коммитит смонтированную поверхность
-                    // БЕЗУСЛОВНО, а ViolationListItemSurface адресует по индексу —
-                    // если смонтирован более ПОЗДНИЙ пункт этого же нарушения
-                    // (фокус на нём не снят), commit ДО splice пишет по его
-                    // текущему (ещё валидному) индексу; commit ПОСЛЕ splice попал
-                    // бы по устаревшему индексу в уже сдвинутый массив (фантомный
-                    // дубль / перезапись чужого пункта). Зеркало createViolationElement
-                    // (:141) — teardown строго до мутации/пересборки.
-                    this._teardownActiveRichField(violation.id);
-                    if (this.removeViolationListItem(violation, fieldName, index)) {
-                        this.renderList(container, violation, fieldName, isReadOnly);
-                    }
-                });
-            }
-
-            itemContainer.appendChild(field);
-            itemContainer.appendChild(deleteBtn);
-            container.appendChild(itemContainer);
-        });
+        return applied;
     }
 }
 

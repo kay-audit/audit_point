@@ -30,6 +30,7 @@ import { AppState, _unwrap } from '../state/state-core.js';
 import { TreeUtils } from '../tree/tree-utils.js';
 import { ValidationTree } from '../validation/validation-tree.js';
 import { getBlockType, isLeafBlockType } from '../block-types.js';
+import { VIOLATION_FIELD_KEYS } from '../violation/violation-fields.js';
 import { isPinnedTable, isRiskTable, isMetricsTable, getTableKind } from '../table/table-kind.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { isEditableTarget } from '../../shared/editable-target.js';
@@ -167,19 +168,26 @@ export function regenerateIds(payload, gens) {
 
                 const newEntry = { ...entry, id: newContentId, nodeId: newNodeId };
 
-                // #22: элементы additionalContent нарушения несут СОБСТВЕННЫЙ id
-                // (violation-content-item.js) — при вставке копии они должны стать
-                // новыми, иначе копия делит id элементов с оригиналом (коллизии при
-                // последующем удалении/DnD по id). Генератор — с ИНДЕКСОМ пачки:
-                // Date.now() внутри цикла map по нескольким элементам может повториться.
-                if (spec.dictName === 'violations' && Array.isArray(newEntry.additionalContent?.items)) {
-                    newEntry.additionalContent = {
-                        ...newEntry.additionalContent,
-                        items: newEntry.additionalContent.items.map((item, i) => ({
-                            ...item,
-                            id: `${item.type}_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 9)}`,
-                        })),
-                    };
+                // #22 (блочная модель): блоки ВСЕХ полей нарушения несут
+                // СОБСТВЕННЫЙ id — при вставке копии они должны стать новыми,
+                // иначе копия делит id блоков с оригиналом (коллизии при
+                // последующем удалении/DnD/диффе по id). Обход — циклом по
+                // реестру VIOLATION_FIELD_KEYS, а не хардкодом одного поля
+                // (тот же цикл переиспользует будущий transfer «песочница↔акт»
+                // модели «роли и блоки»). Генератор — с ИНДЕКСОМ пачки:
+                // Date.now() внутри map по нескольким блокам может повториться.
+                if (spec.dictName === 'violations') {
+                    for (const fieldKey of VIOLATION_FIELD_KEYS) {
+                        const container = newEntry[fieldKey];
+                        if (!Array.isArray(container?.blocks) || !container.blocks.length) continue;
+                        newEntry[fieldKey] = {
+                            ...container,
+                            blocks: container.blocks.map((block, i) => ({
+                                ...block,
+                                id: `${block.type}_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 9)}`,
+                            })),
+                        };
+                    }
                 }
 
                 if (!newDicts[spec.dictName]) newDicts[spec.dictName] = {};

@@ -30,6 +30,7 @@
  * Модуль без DOM — тестируется под node:test напрямую.
  */
 import { ChangelogTracker } from '../changelog-tracker.js';
+import { VIOLATION_FIELD_KEYS } from './violation-fields.js';
 
 export class ViolationAudit {
     /** Эталонный снимок: Map<violationId, отпечаток(строка)>. */
@@ -45,62 +46,60 @@ export class ViolationAudit {
     static _pendingSnapshot = null;
 
     /**
-     * Отпечаток текстового под-поля (reasons/measures/consequences/responsible).
-     * @param {Object} field
-     * @returns {{enabled: boolean, content: string}}
-     */
-    static _textField(field) {
-        const f = field || {};
-        return { enabled: !!f.enabled, content: f.content || '' };
-    }
-
-    /**
-     * Отпечаток одного элемента доп.материалов БЕЗ бинарных данных картинки.
-     * Кейс/текст — id+тип+content; картинка — id+тип+подпись+имя+ширина
-     * (url с base64 намеренно исключён, см. модульный комментарий).
-     * @param {Object} item
+     * Отпечаток одного блока БЕЗ тяжёлых данных: text — id+content;
+     * image — id+подпись+имя+ширина (url с base64 намеренно исключён, см.
+     * модульный комментарий); table — id+сетка content-ов (без span-метаданных:
+     * их правка без изменения контента — крайне редкий кейс, не стоит веса
+     * снимка).
+     * @param {Object} block
      * @returns {Object}
      */
-    static _itemFingerprint(item) {
-        if (!item || typeof item !== 'object') return { id: null, type: null };
-        if (item.type === 'image') {
+    static _blockFingerprint(block) {
+        if (!block || typeof block !== 'object') return { id: null, type: null };
+        if (block.type === 'image') {
             return {
-                id: item.id,
-                type: item.type,
-                caption: item.caption || '',
-                filename: item.filename || '',
-                width: item.width || 0,
+                id: block.id,
+                type: block.type,
+                caption: block.caption || '',
+                filename: block.filename || '',
+                width: block.width || 0,
             };
         }
-        return { id: item.id, type: item.type, content: item.content || '' };
+        if (block.type === 'table') {
+            const grid = block.table?.grid;
+            return {
+                id: block.id,
+                type: block.type,
+                cells: Array.isArray(grid)
+                    ? grid.map(row => (Array.isArray(row) ? row.map(c => c?.content || '') : []))
+                    : [],
+            };
+        }
+        return { id: block.id, type: block.type, content: block.content || '' };
     }
 
     /**
-     * Нормализованный отпечаток нарушения (строка) — все восемь полей, но без
-     * base64-байтов картинок. Порядок ключей фиксирован → стабильная сериализация.
+     * Нормализованный отпечаток нарушения (строка): все поля реестра
+     * (контейнеры {enabled, blocks}) + fieldOrder, без base64-байтов картинок.
+     * Порядок ключей — порядок реестра → стабильная сериализация.
      * @param {Object} violation
      * @returns {string}
      */
     static fingerprint(violation) {
         if (!violation || typeof violation !== 'object') return '';
-        const dl = violation.descriptionList || {};
-        const ac = violation.additionalContent || {};
-        return JSON.stringify({
-            violated: violation.violated || '',
-            established: violation.established || '',
-            descriptionList: {
-                enabled: !!dl.enabled,
-                items: Array.isArray(dl.items) ? dl.items : [],
-            },
-            additionalContent: {
-                enabled: !!ac.enabled,
-                items: Array.isArray(ac.items) ? ac.items.map(i => this._itemFingerprint(i)) : [],
-            },
-            reasons: this._textField(violation.reasons),
-            measures: this._textField(violation.measures),
-            consequences: this._textField(violation.consequences),
-            responsible: this._textField(violation.responsible),
-        });
+        const out = {
+            fieldOrder: Array.isArray(violation.fieldOrder) ? violation.fieldOrder : null,
+        };
+        for (const key of VIOLATION_FIELD_KEYS) {
+            const container = violation[key] || {};
+            out[key] = {
+                enabled: !!container.enabled,
+                blocks: Array.isArray(container.blocks)
+                    ? container.blocks.map(b => this._blockFingerprint(b))
+                    : [],
+            };
+        }
+        return JSON.stringify(out);
     }
 
     /**

@@ -12,15 +12,22 @@
 
 Отказ отдельного экстрактора/рекомендаций не роняет формализацию: поле просто
 останется пустым, а список рекомендаций — пустым («что LLM выделила — заполняем,
-что не смогла — пусто»).
+что не смогла — пусто»). Но отказ ВСЕХ экстракторов — это не пустой результат, а
+недоступный LLM: такой случай отдаётся ``TextActionUnavailableError`` (503), иначе
+лежащий провайдер неотличим от «модель ничего не нашла».
 """
 
 import asyncio
+import html
 import logging
+import re
 
 from pydantic import BaseModel, Field
 
-from app.domains.chat.exceptions import TextActionValidationError
+from app.domains.chat.exceptions import (
+    TextActionUnavailableError,
+    TextActionValidationError,
+)
 from app.domains.chat.schemas.text_actions import FormalizeResponse
 from app.domains.chat.services.llm_client import build_llm_client
 from app.domains.chat.services.retry import retry_on_transient
@@ -35,10 +42,17 @@ from app.domains.chat.services.text_actions.formalizer_prompts import (
 from app.domains.chat.services.text_actions.llm_utils import run_json_call
 from app.domains.chat.settings import ChatDomainSettings
 
-logger = logging.getLogger(__name__)
+# Явное имя логгера: handler'ы висят на «audit_workstation» с propagate=False,
+# и предупреждения из-под __name__ («app.domains.chat…») уходили в никуда.
+logger = logging.getLogger("audit_workstation.chat.text_actions.formalizer")
 
 # Промпт D17 обещает не более 5 рекомендаций — режем на нашей стороне как страховку.
 _MAX_RECOMMENDATIONS = 5
+
+# Сообщение пользователю при отказе LLM-провайдера (все экстракторы упали).
+_UNAVAILABLE_MESSAGE = "ИИ-сервис недоступен, повторите попытку позже"
+
+_NEWLINE_RE = re.compile(r"\r\n|\r|\n")
 
 
 # --- Разобранный вывод экстракторов D17 (зеркало schema.py; поля с дефолтами
@@ -67,18 +81,37 @@ class RecommendationsParsed(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
-def _join(items: list[str]) -> str:
-    """Список D17 → строка поля нарушения: непустые элементы через «; »."""
-    return "; ".join(s.strip() for s in items if s and s.strip())
+def _list_to_html(items: list[str]) -> str:
+    """Список D17 → честный HTML-список поля нарушения (`<ul><li>…</li></ul>`).
+
+    Элементы экранируются (текст от LLM — не HTML). Пустой список (или все
+    элементы пустые) → пустая строка — поле остаётся незаполненным."""
+    cleaned = [s.strip() for s in items if s and s.strip()]
+    if not cleaned:
+        return ""
+    items_html = "".join(f"<li>{html.escape(item)}</li>" for item in cleaned)
+    return f"<ul>{items_html}</ul>"
+
+
+def _text_to_html(value: str) -> str:
+    """Скалярный текст D17 → готовый HTML поля: экранирование + `\\n` → `<br>`.
+
+    Текст от LLM — НЕ разметка: `<`/`&` из него («отклонение <5%», «Иванов & Ко»)
+    обязаны доехать до карточки видимым символом, а не съеденным тегом или битой
+    сущностью. Перенос строки в rich-поле значим только как `<br>` — голый `\\n`
+    не отрисуется ни в превью, ни в DOCX."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    return _NEWLINE_RE.sub("<br>", html.escape(cleaned))
 
 
 def _established_from(essence: EssenceParsed) -> str:
-    """«Установлено» = суть + метрики (каждый факт с новой строки)."""
-    parts: list[str] = []
-    if essence.essence.strip():
-        parts.append(essence.essence.strip())
-    parts.extend(m.strip() for m in essence.metrics if m and m.strip())
-    return "\n".join(parts)
+    """«Установлено» = суть (текст) + метрики (HTML-список, если есть).
+
+    Склейка БЕЗ разделителя: `<ul>` — блочный элемент, он и так начинается с
+    новой строки, а голый `\\n` между ними переносом не стал бы."""
+    return _text_to_html(essence.essence) + _list_to_html(essence.metrics)
 
 
 class ViolationFormalizerService:
@@ -103,10 +136,15 @@ class ViolationFormalizerService:
 
     async def formalize(self, text: str) -> FormalizeResponse:
         """Разложить текст по полям карточки. Кидает ``TextActionValidationError``
-        на пустой/слишком длинный ввод. Сбой отдельного экстрактора → пустое поле.
+        на пустой/слишком длинный ввод и ``TextActionUnavailableError``, когда
+        сорвались ВСЕ экстракторы (отказ LLM-провайдера). Сбой ЧАСТИ экстракторов
+        толерантен: их поля останутся пустыми, остальные заполнятся.
 
         После 4 экстракторов — 2-й этап: рекомендации «чего не хватает» по уже
-        извлечённым полям (дисплей-онли, в карточку/экспорт не пишутся)."""
+        извлечённым полям (дисплей-онли, в карточку/экспорт не пишутся). Его
+        сбой ответ не роняет — рекомендации просто придут пустыми.
+
+        Все значения ответа — готовый HTML (см. ``FormalizeResponse``)."""
         if not text or not text.strip():
             raise TextActionValidationError("Пустой текст для формализации")
         if len(text) > self._max_chars:
@@ -114,44 +152,67 @@ class ViolationFormalizerService:
                 f"Текст длиннее {self._max_chars} символов — сократите выделение",
             )
         client = build_llm_client(self._settings)
-        essence, causes, consequences, measures = await asyncio.gather(
-            self._extract(client, EssenceParsed, ESSENCE_SYSTEM, text),
-            self._extract(client, CausesParsed, CAUSES_SYSTEM, text),
-            self._extract(client, ConsequencesParsed, CONSEQUENCES_SYSTEM, text),
-            self._extract(client, MeasuresParsed, MEASURES_SYSTEM, text),
+        extractors = (
+            (EssenceParsed, ESSENCE_SYSTEM),
+            (CausesParsed, CAUSES_SYSTEM),
+            (ConsequencesParsed, CONSEQUENCES_SYSTEM),
+            (MeasuresParsed, MEASURES_SYSTEM),
         )
+        # return_exceptions=True: сбой одного экстрактора не отменяет остальные —
+        # разбираем результаты ниже, чтобы отличить пустой разбор от отказа вызова.
+        results = await asyncio.gather(
+            *(
+                self._extract(client, schema_cls, system, text)
+                for schema_cls, system in extractors
+            ),
+            return_exceptions=True,
+        )
+        parsed = []
+        failed = 0
+        for (schema_cls, _), result in zip(extractors, results):
+            if isinstance(result, BaseException):
+                failed += 1
+                logger.warning(
+                    "Экстрактор %s не дал результата: %s", schema_cls.__name__, result,
+                )
+                parsed.append(schema_cls())
+            else:
+                parsed.append(result)
+        if failed == len(extractors):
+            # Ни один вызов не дошёл до модели — это отказ провайдера, а не
+            # «в тексте нечего извлекать»: пустой ответ с HTTP 200 скрыл бы аварию.
+            logger.error(
+                "Формализация не выполнена: сорвались все %s экстракторов", failed,
+            )
+            raise TextActionUnavailableError(_UNAVAILABLE_MESSAGE)
+        essence, causes, consequences, measures = parsed
         recommendations = await self._recommend(
             client, essence, causes, consequences, measures,
         )
         return FormalizeResponse(
-            violated=essence.norm_doc.strip(),
+            violated=_text_to_html(essence.norm_doc),
             established=_established_from(essence),
-            reasons=_join(causes.causes),
-            responsible=_join(causes.persons),
-            consequences=consequences.consequences.strip(),
-            measures=_join(measures.measures),
+            reasons=_list_to_html(causes.causes),
+            responsible=_list_to_html(causes.persons),
+            consequences=_text_to_html(consequences.consequences),
+            measures=_list_to_html(measures.measures),
             recommendations=recommendations,
         )
 
     async def _extract(self, client, schema_cls, system: str, text: str):
-        """Один экстрактор: JSON-вызов + валидация. Любой сбой → пустой результат
-        (частичная толерантность — поле карточки останется пустым)."""
-        try:
-            raw = await run_json_call(
-                client,
-                model=self._model,
-                temperature=self._temperature,
-                system=system,
-                user=text,
-                retry_call=self._retry_call,
-                timeout=self._timeout,
-            )
-            return schema_cls.model_validate(raw)
-        except Exception as e:  # noqa: BLE001 — сбой экстрактора не роняет формализацию
-            logger.warning(
-                "Экстрактор %s не дал результата: %s", schema_cls.__name__, e,
-            )
-            return schema_cls()
+        """Один экстрактор: JSON-вызов + валидация. Сбой вызова/разбора отдаётся
+        исключением — решение «пустое поле или авария» принимает ``formalize``,
+        которому видно, упал ли один экстрактор или все сразу."""
+        raw = await run_json_call(
+            client,
+            model=self._model,
+            temperature=self._temperature,
+            system=system,
+            user=text,
+            retry_call=self._retry_call,
+            timeout=self._timeout,
+        )
+        return schema_cls.model_validate(raw)
 
     async def _recommend(
         self,

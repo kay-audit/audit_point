@@ -13,8 +13,7 @@ import { AppConfig } from '../../shared/app-config.js';
 import { getBlockType, isLeafBlockType } from '../block-types.js';
 import { ChatEventBus } from '../../shared/chat/chat-event-bus.js';
 import { Notifications } from '../../shared/notifications.js';
-import { buildColgroup } from '../table/colgroup.js';
-import { iterateVisibleCells } from '../table/grid-merges.js';
+import { createTableElement } from '../table/table-render.js';
 import { shouldShowTableTitle, tableTitleText } from '../table/table-title.js';
 import { tableManager } from '../table/table-core.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
@@ -611,7 +610,7 @@ export class ItemsRenderer {
             section.appendChild(this._createTableTitle(table, node));
         }
 
-        section.appendChild(this._createTableElement(table));
+        section.appendChild(createTableElement(table, table.id));
         return section;
     }
 
@@ -661,116 +660,6 @@ export class ItemsRenderer {
             ItemsTitleEditing.startEditingTableTitle(tableTitle, node);
         });
     }
-
-    /**
-     * Создает DOM-элемент таблицы со всеми строками и ячейками.
-     * Применяет стили для защищенных таблиц.
-     * @param {Object} table - Данные таблицы
-     * @returns {HTMLElement} Элемент <table>
-     * @private
-     */
-    static _createTableElement(table) {
-        const tableEl = document.createElement('table');
-        tableEl.className = 'editable-table';
-
-        if (table.protected) {
-            tableEl.classList.add('protected-table');
-        }
-
-        // Проверяем наличие grid
-        if (!table.grid || table.grid.length === 0) {
-            // Создаем пустую таблицу-заглушку
-            const tr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.textContent = '[Пустая таблица]';
-            td.style.padding = '10px';
-            td.style.color = '#999';
-            td.style.fontStyle = 'italic';
-            tr.appendChild(td);
-            tableEl.appendChild(tr);
-            return tableEl;
-        }
-
-        const numCols = table.grid[0]?.length || 0;
-
-        // colgroup задаёт ширину колонок из colWidths (единый источник истины) —
-        // веса → проценты, при table-layout:fixed Word-подобная раскладка.
-        tableEl.style.tableLayout = 'fixed';
-        tableEl.appendChild(buildColgroup(table.colWidths, numCols));
-
-        table.grid.forEach((rowData, rowIndex) => {
-            const tr = this._createTableRow(rowData, rowIndex, table.id, numCols);
-            tableEl.appendChild(tr);
-        });
-
-        return tableEl;
-    }
-
-    /**
-     * Создает строку таблицы со всеми ячейками.
-     * Пропускает поглощенные ячейки (isSpanned).
-     * @param {Array} rowData - Данные строки (массив ячеек)
-     * @param {number} rowIndex - Индекс строки
-     * @param {string} tableId - ID таблицы
-     * @param {number} numCols - Общее количество колонок
-     * @returns {HTMLElement} Элемент <tr>
-     * @private
-     */
-    static _createTableRow(rowData, rowIndex, tableId, numCols) {
-        const tr = document.createElement('tr');
-
-        // Единый обход видимых (не поглощённых) ячеек — общий helper для всех
-        // рендереров. Обходим строку как одно-строчную сетку.
-        iterateVisibleCells([rowData], (cellData, _r, colIndex) => {
-            const cellEl = this._createTableCell(cellData, rowIndex, colIndex, tableId, numCols);
-            tr.appendChild(cellEl);
-        });
-
-        return tr;
-    }
-
-    /**
-     * Создает ячейку таблицы с обработчиками изменения размера.
-     * Добавляет хендлы для изменения ширины колонок и высоты строк.
-     * @param {Object} cellData - Данные ячейки
-     * @param {number} rowIndex - Индекс строки
-     * @param {number} colIndex - Индекс колонки
-     * @param {string} tableId - ID таблицы
-     * @param {number} numCols - Общее количество колонок
-     * @returns {HTMLElement} Элемент <td> или <th>
-     * @private
-     */
-    static _createTableCell(cellData, rowIndex, colIndex, tableId, numCols) {
-        const cellEl = document.createElement(cellData.isHeader ? 'th' : 'td');
-        cellEl.textContent = cellData.content || '';
-
-        // Применяем объединение ячеек
-        if (cellData.colSpan > 1) cellEl.colSpan = cellData.colSpan;
-        if (cellData.rowSpan > 1) cellEl.rowSpan = cellData.rowSpan;
-
-        // Сохраняем координаты ячейки
-        Object.assign(cellEl.dataset, {
-            row: rowIndex,
-            col: colIndex,
-            tableId
-        });
-
-        // Добавляем хендл изменения ширины колонки (не для последней колонки)
-        const colspan = cellData.colSpan || 1;
-        const cellEndCol = colIndex + colspan - 1;
-        const isLastColumn = cellEndCol >= numCols - 1;
-
-        if (cellData.isHeader && !isLastColumn) {
-            const resizeHandle = document.createElement('div');
-            resizeHandle.className = 'resize-handle';
-            cellEl.appendChild(resizeHandle);
-        }
-
-        // Высота строк — auto (как в Word); ручки изменения высоты убраны.
-
-        return cellEl;
-    }
-
 }
 
 // Подписчик на 'node:tb-changed' — обновляет бейджи ТБ на шаге 2 без полного

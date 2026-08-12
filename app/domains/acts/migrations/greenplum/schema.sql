@@ -294,6 +294,11 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_textblocks.updated_at IS 'Дата и в�
 -- ТАБЛИЦА НАРУШЕНИЙ
 -- ============================================================================
 
+-- Блочная модель: каждое полевое поле — JSONB-контейнер {enabled, blocks};
+-- состав и порядок полевых колонок == реестр VIOLATION_FIELD_COLUMNS
+-- (app/domains/acts/violation_fields.py, страж —
+-- tests/domains/acts/test_violation_schema_columns_guard.py);
+-- field_order — пользовательский порядок полей (JSONB-массив ключей или NULL).
 CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
     id BIGSERIAL NOT NULL,
     act_id BIGINT NOT NULL REFERENCES {SCHEMA}.{PREFIX}acts(id),
@@ -302,21 +307,32 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
     violation_id VARCHAR(100) NOT NULL,
     node_id VARCHAR(100) NOT NULL,
     node_number VARCHAR(50),
-    violated TEXT,
-    established TEXT,
-    description_list JSONB,
+    violated JSONB,
+    established JSONB,
+    description JSONB,
+    code_mining JSONB,
+    process_mining JSONB,
     additional_content JSONB,
     reasons JSONB,
     measures JSONB,
     consequences JSONB,
     responsible JSONB,
+    field_order JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     -- Constraints (GP 5.x не поддерживает оператор '?' для JSONB, проверяем только тип)
     PRIMARY KEY (act_id, id),
-    CONSTRAINT check_description_list_is_object_or_null
-        CHECK (description_list IS NULL OR jsonb_typeof(description_list) = 'object'),
+    CONSTRAINT check_violated_is_object_or_null
+        CHECK (violated IS NULL OR jsonb_typeof(violated) = 'object'),
+    CONSTRAINT check_established_is_object_or_null
+        CHECK (established IS NULL OR jsonb_typeof(established) = 'object'),
+    CONSTRAINT check_description_is_object_or_null
+        CHECK (description IS NULL OR jsonb_typeof(description) = 'object'),
+    CONSTRAINT check_code_mining_is_object_or_null
+        CHECK (code_mining IS NULL OR jsonb_typeof(code_mining) = 'object'),
+    CONSTRAINT check_process_mining_is_object_or_null
+        CHECK (process_mining IS NULL OR jsonb_typeof(process_mining) = 'object'),
     CONSTRAINT check_additional_content_is_object_or_null
         CHECK (additional_content IS NULL OR jsonb_typeof(additional_content) = 'object'),
     CONSTRAINT check_reasons_is_object_or_null
@@ -327,6 +343,8 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
         CHECK (consequences IS NULL OR jsonb_typeof(consequences) = 'object'),
     CONSTRAINT check_responsible_is_object_or_null
         CHECK (responsible IS NULL OR jsonb_typeof(responsible) = 'object'),
+    CONSTRAINT check_field_order_is_array_or_null
+        CHECK (field_order IS NULL OR jsonb_typeof(field_order) = 'array'),
 
     UNIQUE(act_id, violation_id)
 )
@@ -339,14 +357,17 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.act_id IS 'Ссылка на �
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.violation_id IS 'Уникальный ID нарушения внутри акта';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.node_id IS 'ID узла в дереве, к которому привязано нарушение';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.node_number IS 'Номер узла (например, 5.1.3) для аналитики';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.violated IS 'Что нарушено (нормативная база)';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.established IS 'Что установлено (факты нарушения)';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.description_list IS 'JSONB объект с полями enabled и items для списка описаний';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.additional_content IS 'JSONB объект с полями enabled и items для дополнительного содержимого';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.reasons IS 'JSONB объект с полями enabled и content для причин нарушения';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.measures IS 'JSONB объект с полями enabled и content для принятых мер';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.consequences IS 'JSONB объект с полями enabled и content для последствий нарушения';
-COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.responsible IS 'JSONB объект с полями enabled и content для ответственных лиц';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.violated IS 'Что нарушено: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.established IS 'Что установлено: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.description IS 'Описание: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.code_mining IS 'CodeMining: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.process_mining IS 'ProcessMining: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.additional_content IS 'Дополнительный контент: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.reasons IS 'Причины: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.measures IS 'Принятые меры: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.consequences IS 'Последствия: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.responsible IS 'Ответственные: JSONB-контейнер {enabled, blocks}';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.field_order IS 'Порядок полей: JSONB-массив ключей реестра или NULL (стандартный)';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.created_at IS 'Дата и время создания записи о нарушении';
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.updated_at IS 'Дата и время последнего изменения записи';
 
