@@ -7,7 +7,9 @@
   - НЕ ретраится: HTTP 400/401/403/404/422 и прочие 4xx, доменные исключения
     чата (ChatLimitError, ChatFileValidationError, ChatRateLimitError и т.п.),
     BridgeDeadlineError redis-моста (дедлайн = полный request_timeout,
-    повтор породил бы дубль-заявку в stream), любые иные исключения.
+    повтор породил бы дубль-заявку в stream), BridgeSchemaError redis-моста
+    (разбор ответа детерминирован — повтор даст тот же результат ценой
+    нового вызова LLM), любые иные исключения.
 
 Два класса ретраябельных ошибок с разными лимитами попыток:
   - **connect-class** (сервер недоступен, обрыв соединения) — fast-fail с
@@ -42,7 +44,11 @@ from app.domains.chat.exceptions import (
     ChatLimitError,
     ChatRateLimitError,
 )
-from app.domains.chat.services.redis_bridge_adapter import BridgeDeadlineError
+from app.domains.chat.services.redis_bridge_adapter import (
+    BridgeBackendError,
+    BridgeDeadlineError,
+    BridgeSchemaError,
+)
 
 logger = logging.getLogger("audit_workstation.chat.retry")
 
@@ -74,12 +80,23 @@ _TRANSIENT_NETWORK_EXC: tuple[type[BaseException], ...] = (
 #   бы дубли против LLM) и умножал бы время ожидания пользователя.
 #   Ловится ЗДЕСЬ, до APITimeoutError (он её подкласс). Fallback при этом
 #   срабатывает как обычно (llm_call._is_provider_failure видит
-#   APITimeoutError-иерархию).
+#   APITimeoutError-иерархию);
+# - BridgeSchemaError — ответ воркера не разобрался в ChatCompletion.
+#   Разбор детерминирован: тот же ответ не станет валидным со второй попытки,
+#   а каждый повтор = новая заявка в stream = новый реальный вызов LLM;
+# - BridgeBackendError — 429/5xx от бэкенда за воркером либо
+#   finish_reason="error". Воркер такие ответы уже повторял сам (3 попытки
+#   с паузами 5/10/20 сек), и повтор здесь множился бы на воркерский: до 15
+#   реальных вызовов LLM на одно сообщение пользователя.
+#   Оба ловятся ЗДЕСЬ, до APIStatusError (они его подклассы, статус 502 иначе
+#   попал бы под on_5xx). Переход на следующий маршрут работает как обычно.
 _NEVER_RETRY_EXC: tuple[type[BaseException], ...] = (
     ChatLimitError,
     ChatFileValidationError,
     ChatRateLimitError,
     BridgeDeadlineError,
+    BridgeSchemaError,
+    BridgeBackendError,
 )
 
 

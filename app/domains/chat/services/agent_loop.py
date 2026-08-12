@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Any
 from app.core.chat.block_id_generator import BlockIdGenerator
 from app.core.chat.names import TOOL_FORWARD_TO_KNOWLEDGE_AGENT
 from app.core.chat.tools import resolve_wire_name, to_wire_name
-from app.domains.chat.exceptions import ChatLimitError, ChatToolValidationError
+from app.domains.chat.exceptions import (
+    ChatLimitError,
+    ChatLLMUnavailableError,
+    ChatToolValidationError,
+)
 from app.domains.chat.services.orchestrator_helpers import (
     TOOL_VALIDATION_NEUTRAL_MESSAGE,
     ToolValidationTracker,
@@ -35,6 +39,11 @@ if TYPE_CHECKING:
     from app.domains.chat.services.orchestrator import Orchestrator
 
 logger = logging.getLogger("audit_workstation.domains.chat.agent_loop")
+
+# Нейтральный текст для сбоев, которые имеет смысл переждать (таймаут,
+# ошибка провайдера). Случай «маршрутов нет вовсе» переждать нельзя —
+# там показывается сообщение ChatLLMUnavailableError.
+LLM_TEMPORARY_ERROR_MESSAGE = "Временная ошибка AI-сервиса. Попробуйте позже."
 
 
 async def _handle_forward_terminal(
@@ -216,14 +225,24 @@ async def run_agent_loop(
     - "adaptive" — forward-тул включён (LLM может его вызвать);
     - "off" и любое другое — forward-тул скрыт от LLM.
     """
-    # Fallback при отсутствии настроек API. redis-bridge-маршрутам
-    # api_base/api_key не нужны — их транспорт живёт на общем Redis.
+    # Заглушка «чат вообще не настроен»: HTTP-маршрут без api_base/api_key
+    # и без единого запасного маршрута. redis-bridge-маршрутам api_base/
+    # api_key не нужны — их транспорт живёт на общем Redis.
+    #
+    # Если fallback-маршрут задан, короткое замыкание сюда было бы неверным:
+    # выбор маршрута — дело планировщика (llm_routing), он может оказаться
+    # вполне рабочим и без настроек primary. Не нашёл ни одного — вернёт
+    # ChatLLMUnavailableError, что честнее эха с инструкцией по .env.
     from app.domains.chat.settings import parse_route, wire_is_gigachat
 
     transport, _wire = parse_route(orch.settings.profile)
-    if transport == "http" and (
-        not orch.settings.api_base
-        or not orch.settings.api_key.get_secret_value()
+    if (
+        transport == "http"
+        and not orch.settings.fallback_profile
+        and (
+            not orch.settings.api_base
+            or not orch.settings.api_key.get_secret_value()
+        )
     ):
         return orch._fallback_response(user_message)
 
@@ -273,7 +292,11 @@ async def run_agent_loop(
     block_id_gen = BlockIdGenerator(message_id)
 
     try:
-        response, _fb_used, client = await orch._llm_call_with_fallback(
+        # client НЕ переприсваиваем: это клиент primary-маршрута, и он должен
+        # оставаться им на всех раундах. Возвращаемый active-клиент может быть
+        # fallback'ом — подставив его обратно, следующий раунд отправил бы
+        # primary-маршрут в чужого клиента с неподменёнными kwargs.
+        response, _fb_used, _active = await orch._llm_call_with_fallback(
             client,
             model=orch.settings.model,
             messages=messages,
@@ -333,7 +356,7 @@ async def run_agent_loop(
                 if pending_tool_calls:
                     continue
                 # Очередь опустела — вызываем LLM с обновлённой историей
-                response, _fb_used, client = await orch._llm_call_with_fallback(
+                response, _fb_used, _active = await orch._llm_call_with_fallback(
                     client,
                     model=orch.settings.model,
                     messages=messages,
@@ -469,7 +492,7 @@ async def run_agent_loop(
             # переходим к следующей итерации, где очередь будет обработана.
             if pending_tool_calls:
                 continue
-            response, _fb_used, client = await orch._llm_call_with_fallback(
+            response, _fb_used, _active = await orch._llm_call_with_fallback(
                 client,
                 model=orch.settings.model,
                 messages=messages,
@@ -519,48 +542,68 @@ async def run_agent_loop(
                 "conversation_id": conversation_id,
             },
         )
-        error_message = "Временная ошибка AI-сервиса. Попробуйте позже."
-        try:
-            await orch._save_assistant_message(
-                conversation_id=conversation_id,
-                content_blocks=[{
-                    "type": "error",
-                    "message": error_message,
-                    "code": "llm_unavailable",
-                }],
-                token_usage=None,
-                message_id=message_id,
-            )
-        except Exception:
-            logger.exception(
-                "Не удалось сохранить error-block ассистент-сообщения",
-            )
-        return {"response": error_message, "status": "error"}
+        return await _error_result(
+            orch,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            error_message=LLM_TEMPORARY_ERROR_MESSAGE,
+        )
+    except ChatLLMUnavailableError as exc:
+        # Маршрутов нет вовсе (воркер не запущен, провайдер не сконфигурирован):
+        # это не «временная ошибка», её не переждать — показываем причину как
+        # она сформулирована планировщиком, техника уже в логе llm_call.
+        logger.error(
+            "LLM недоступен: %s",
+            exc.message,
+            extra={
+                "stage": "run",
+                "model": orch.settings.model,
+                "conversation_id": conversation_id,
+            },
+        )
+        return await _error_result(
+            orch,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            error_message=exc.message,
+        )
     except Exception:
         logger.exception("Ошибка вызова LLM API")
-        # Сохраняем ErrorBlock в историю: без этого при перезагрузке
-        # страницы пользователь не увидит, что произошло — будет только
-        # его user-message без ответа. Сырые детали (stack/код провайдера)
-        # наружу не пробрасываем — только нейтральное сообщение.
-        error_message = "Временная ошибка AI-сервиса. Попробуйте позже."
-        try:
-            await orch._save_assistant_message(
-                conversation_id=conversation_id,
-                content_blocks=[{
-                    "type": "error",
-                    "message": error_message,
-                    "code": "llm_unavailable",
-                }],
-                token_usage=None,
-                message_id=message_id,
-            )
-        except Exception:
-            # save может упасть, если БД тоже недоступна — это не фатально,
-            # ответ всё равно вернём.
-            logger.exception(
-                "Не удалось сохранить error-block ассистент-сообщения",
-            )
-        return {
-            "response": error_message,
-            "status": "error",
-        }
+        # Сырые детали (stack/код провайдера) наружу не пробрасываем —
+        # только нейтральное сообщение.
+        return await _error_result(
+            orch,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            error_message=LLM_TEMPORARY_ERROR_MESSAGE,
+        )
+
+
+async def _error_result(
+    orch,
+    *,
+    conversation_id: str,
+    message_id: str | None,
+    error_message: str,
+) -> dict:
+    """Сохраняет error-block в историю и возвращает ответ-ошибку.
+
+    ErrorBlock нужен, чтобы при перезагрузке страницы пользователь видел, что
+    произошло: иначе в беседе остаётся его сообщение без ответа. Падение
+    самого save не фатально (БД может лежать вместе с LLM) — ответ всё равно
+    возвращаем.
+    """
+    try:
+        await orch._save_assistant_message(
+            conversation_id=conversation_id,
+            content_blocks=[{
+                "type": "error",
+                "message": error_message,
+                "code": "llm_unavailable",
+            }],
+            token_usage=None,
+            message_id=message_id,
+        )
+    except Exception:
+        logger.exception("Не удалось сохранить error-block ассистент-сообщения")
+    return {"response": error_message, "status": "error"}
