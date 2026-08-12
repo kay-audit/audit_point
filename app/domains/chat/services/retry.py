@@ -6,8 +6,11 @@
     (ConnectError, ReadTimeout, WriteTimeout, RemoteProtocolError, PoolTimeout).
   - НЕ ретраится: HTTP 400/401/403/404/422 и прочие 4xx, доменные исключения
     чата (ChatLimitError, ChatFileValidationError, ChatRateLimitError и т.п.),
-    BridgeDeadlineError и BridgePollError redis-моста (заявка уже в stream,
-    повтор породил бы дубль), любые иные исключения.
+    исключения redis-моста: BridgeDeadlineError и BridgePollError (заявка уже
+    в stream, повтор породил бы дубль), BridgeSchemaError (разбор ответа
+    детерминирован — повтор даст тот же результат ценой нового вызова LLM),
+    BridgeBackendError (429/5xx воркер уже повторял сам), любые иные
+    исключения.
 
 Два класса ретраябельных ошибок с разными лимитами попыток:
   - **connect-class** (сервер недоступен, обрыв соединения) — fast-fail с
@@ -43,8 +46,10 @@ from app.domains.chat.exceptions import (
     ChatRateLimitError,
 )
 from app.domains.chat.services.redis_bridge_adapter import (
+    BridgeBackendError,
     BridgeDeadlineError,
     BridgePollError,
+    BridgeSchemaError,
 )
 
 logger = logging.getLogger("audit_workstation.chat.retry")
@@ -77,19 +82,31 @@ _TRANSIENT_NETWORK_EXC: tuple[type[BaseException], ...] = (
 #   бы дубли против LLM) и умножал бы время ожидания пользователя.
 #   Ловится ЗДЕСЬ, до APITimeoutError (он её подкласс). Fallback при этом
 #   срабатывает как обычно (llm_call._is_provider_failure видит
-#   APITimeoutError-иерархию).
+#   APITimeoutError-иерархию);
 # - BridgePollError — сбой Redis на поллинге ответа, когда заявка уже
 #   поставлена в stream: повтор положил бы ВТОРОЙ конверт с новым
 #   request_id, пока воркер исполняет первый. Ловится ЗДЕСЬ, до
 #   APIConnectionError (он её подкласс), fallback тоже срабатывает.
 #   Сбой ДО постановки заявки остаётся обычным APIConnectionError и
-#   ретраится как connect-класс.
+#   ретраится как connect-класс;
+# - BridgeSchemaError — ответ воркера не разобрался в ChatCompletion.
+#   Разбор детерминирован: тот же ответ не станет валидным со второй попытки,
+#   а каждый повтор = новая заявка в stream = новый реальный вызов LLM;
+# - BridgeBackendError — 429/5xx от бэкенда за воркером либо
+#   finish_reason="error". Воркер такие ответы уже повторял сам (3 попытки
+#   с паузами 5/10/20 сек), и повтор здесь множился бы на воркерский: до 15
+#   реальных вызовов LLM на одно сообщение пользователя.
+#   Последние два ловятся ЗДЕСЬ, до APIStatusError (они его подклассы, статус
+#   502 иначе попал бы под on_5xx). Переход на следующий маршрут работает
+#   как обычно.
 _NEVER_RETRY_EXC: tuple[type[BaseException], ...] = (
     ChatLimitError,
     ChatFileValidationError,
     ChatRateLimitError,
     BridgeDeadlineError,
     BridgePollError,
+    BridgeSchemaError,
+    BridgeBackendError,
 )
 
 
@@ -119,9 +136,12 @@ def retry_on_transient(
         это клиентские ошибки, повтор не поможет.
       - Доменные исключения чата (ChatLimitError, ChatFileValidationError,
         ChatRateLimitError) — НЕ повторяются, это бизнес-ошибки.
-      - Исключения redis-моста после постановки заявки в stream
-        (BridgeDeadlineError, BridgePollError) — НЕ повторяются: повтор
-        положил бы дубль-заявку, которую воркер исполнил бы против LLM.
+      - Исключения redis-моста — НЕ повторяются, но по двум разным причинам:
+        BridgeDeadlineError и BridgePollError возникают уже ПОСЛЕ постановки
+        заявки в stream (повтор положил бы дубль, который воркер исполнил бы
+        против LLM); BridgeSchemaError и BridgeBackendError означают, что
+        повторять нечего — разбор детерминирован, а 429/5xx воркер уже
+        повторял сам.
 
     ВАЖНО: openai.APITimeoutError — подкласс openai.APIConnectionError, но это
     «сервер медленный», поэтому ловится ПЕРВЫМ и идёт по transient-классу
