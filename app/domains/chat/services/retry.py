@@ -45,6 +45,7 @@ from app.domains.chat.exceptions import (
     ChatRateLimitError,
 )
 from app.domains.chat.services.redis_bridge_adapter import (
+    BridgeBackendError,
     BridgeDeadlineError,
     BridgeSchemaError,
 )
@@ -82,15 +83,20 @@ _TRANSIENT_NETWORK_EXC: tuple[type[BaseException], ...] = (
 #   APITimeoutError-иерархию);
 # - BridgeSchemaError — ответ воркера не разобрался в ChatCompletion.
 #   Разбор детерминирован: тот же ответ не станет валидным со второй попытки,
-#   а каждый повтор = новая заявка в stream = новый реальный вызов LLM.
-#   Ловится ЗДЕСЬ, до APIStatusError (он её подкласс, статус 502 иначе попал
-#   бы под on_5xx). Переход на следующий маршрут при этом работает как обычно.
+#   а каждый повтор = новая заявка в stream = новый реальный вызов LLM;
+# - BridgeBackendError — 429/5xx от бэкенда за воркером либо
+#   finish_reason="error". Воркер такие ответы уже повторял сам (3 попытки
+#   с паузами 5/10/20 сек), и повтор здесь множился бы на воркерский: до 15
+#   реальных вызовов LLM на одно сообщение пользователя.
+#   Оба ловятся ЗДЕСЬ, до APIStatusError (они его подклассы, статус 502 иначе
+#   попал бы под on_5xx). Переход на следующий маршрут работает как обычно.
 _NEVER_RETRY_EXC: tuple[type[BaseException], ...] = (
     ChatLimitError,
     ChatFileValidationError,
     ChatRateLimitError,
     BridgeDeadlineError,
     BridgeSchemaError,
+    BridgeBackendError,
 )
 
 

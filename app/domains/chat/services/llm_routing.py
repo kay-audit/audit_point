@@ -33,18 +33,21 @@
 health-check воркера не должен лишать пользователя единственного живого
 провайдера — это то же решение, что и в ``_ensure_worker_available``
 (``require_healthy`` не используется на пользовательском пути).
+
+Разомкнутый circuit breaker обрабатывается отдельно (``without_primary``
+поверх готового плана, см. llm_call): это не вопрос доступности маршрута,
+и решает его тот, кто держит breaker.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from app.domains.chat.settings import ChatDomainSettings, parse_route
 
-logger = logging.getLogger(
-    "audit_workstation.domains.chat.services.llm_routing",
-)
+# Логирует результат планирования вызывающий (llm_call): только он знает,
+# изменился ли план с прошлого раза, и умеет не писать один и тот же warning
+# на каждый раунд agent loop.
 
 PRIMARY = "primary"
 FALLBACK = "fallback"
@@ -133,18 +136,41 @@ def _http_route_problem(
     return None
 
 
-async def plan_routes(
-    settings: ChatDomainSettings, *, breaker_open: bool = False,
-) -> RoutePlan:
+def can_skip_primary(plan: RoutePlan) -> bool:
+    """True, если primary есть в плане И есть чем его заменить.
+
+    Условие для похода в circuit breaker: спрашивать ``is_open()``, когда
+    ответ ничего не изменит, нельзя — этот вызов не чистый, он сам переводит
+    open → half_open по таймеру. Лишний вызов оставил бы breaker в half_open
+    без пробы, и следующий же сбой primary кинул бы его сразу в open,
+    минуя ``failure_threshold``.
+    """
+    kinds = {route.kind for route in plan.routes}
+    return PRIMARY in kinds and len(plan.routes) > 1
+
+
+def without_primary(plan: RoutePlan, reason: str) -> RoutePlan:
+    """План без primary-маршрута; убранный уходит в skipped с причиной.
+
+    Используется при разомкнутом breaker'е: primary именно ИСКЛЮЧАЕТСЯ, а не
+    опускается в конец. Иначе после сбоя fallback'а каждый запрос дожигал бы
+    полный retry-бюджет об заведомо лежащий primary (ради чего breaker и
+    существует), а его ``record_failure`` в состоянии open заново
+    проштамповывал бы ``_opened_at`` — при ``external_recovery=False``
+    таймерное восстановление не наступило бы никогда.
+    """
+    kept = tuple(r for r in plan.routes if r.kind != PRIMARY)
+    dropped = tuple(
+        SkippedRoute(r, reason) for r in plan.routes if r.kind == PRIMARY
+    )
+    return RoutePlan(routes=kept, skipped=plan.skipped + dropped)
+
+
+async def plan_routes(settings: ChatDomainSettings) -> RoutePlan:
     """Строит план вызова из реально доступных маршрутов.
 
-    ``breaker_open`` — circuit breaker разомкнут (primary недавно падал):
-    primary уходит в конец плана, если есть куда переключиться. Это прежний
-    fast-path «breaker open → сразу fallback», но теперь он не выбрасывает
-    primary совсем: если fallback окажется недоступен, primary остаётся
-    последним шансом вместо гарантированной ошибки пользователю.
-
     Redis-маршруты проверяются по одному чтению heartbeat'а на весь план.
+    Состояние circuit breaker здесь не учитывается — см. ``without_primary``.
     """
     from app.domains.chat.services.redis_bridge_adapter import (
         target_is_healthy,
@@ -197,10 +223,4 @@ async def plan_routes(
 
     # Нездоровые — в конец, приоритет внутри групп сохраняется (sort стабилен).
     ordered = sorted(available, key=lambda r: not r.healthy)
-    # Breaker разомкнут → primary в конец, но только если есть альтернатива.
-    if breaker_open and len(ordered) > 1:
-        ordered = (
-            [r for r in ordered if r.kind != PRIMARY]
-            + [r for r in ordered if r.kind == PRIMARY]
-        )
     return RoutePlan(routes=tuple(ordered), skipped=tuple(skipped))

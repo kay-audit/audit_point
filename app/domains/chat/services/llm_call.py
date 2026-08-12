@@ -36,7 +36,13 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.domains.chat.exceptions import ChatLLMUnavailableError
-from app.domains.chat.services.llm_routing import Route, plan_routes
+from app.domains.chat.services.llm_routing import (
+    Route,
+    RoutePlan,
+    can_skip_primary,
+    plan_routes,
+    without_primary,
+)
 
 if TYPE_CHECKING:
     from app.domains.chat.services.orchestrator import Orchestrator
@@ -47,10 +53,48 @@ _NO_ROUTES_MESSAGE = (
     "AI-ассистент недоступен: нет ни одного доступного LLM-провайдера. "
     "Сообщите администратору."
 )
+_BREAKER_OPEN_REASON = "circuit breaker разомкнут (primary недавно падал)"
+
+# Последний залогированный состав плана. План стабилен между запросами
+# (воркер либо заявляет цель, либо нет), а agent loop зовёт LLM до
+# max_tool_rounds раз на сообщение — без дедупликации один и тот же warning
+# писался бы в лог на каждый раунд каждого сообщения. Логируем только смену
+# состояния; процесс однопоточный (asyncio), блокировка не нужна.
+_last_plan_signature: str | None = None
+
+
+def _log_plan(plan: RoutePlan) -> None:
+    """Пишет состав плана в лог — только когда он изменился."""
+    global _last_plan_signature
+
+    signature = (
+        f"{[r.describe() for r in plan.routes]}|{plan.describe_skipped()}"
+    )
+    if signature == _last_plan_signature:
+        return
+    _last_plan_signature = signature
+    if plan.skipped:
+        logger.warning(
+            "LLM маршруты: пробуем [%s]; пропущены: %s",
+            ", ".join(r.describe() for r in plan.routes) or "нечего",
+            plan.describe_skipped(),
+        )
+    else:
+        logger.info(
+            "LLM маршруты: пробуем [%s]",
+            ", ".join(r.describe() for r in plan.routes),
+        )
 
 
 def _client_for(orch: "Orchestrator", route: Route, primary_client):
-    """Клиент маршрута: primary — переданный, fallback — из настроек."""
+    """Клиент маршрута: primary — переданный, fallback — из настроек.
+
+    ``primary_client`` обязан быть клиентом ИМЕННО primary-маршрута. Вызывающий
+    код не должен подставлять сюда клиента, вернувшегося из прошлого вызова
+    (``active_client``): после раунда, ушедшего на fallback, это отправило бы
+    primary-маршрут в fallback-клиента с неподменёнными kwargs — чужая модель,
+    4xx и отказ без попытки других маршрутов.
+    """
     if route.is_fallback:
         return orch._get_fallback_client()
     return primary_client
@@ -81,8 +125,9 @@ async def call_llm_with_fallback(
     ``active_client`` — клиент, через который реально прошёл вызов.
 
     Логика:
-      1. Планируем маршруты (доступные, в порядке приоритета; при открытом
-         breaker'е primary опускается в конец).
+      1. Планируем маршруты (доступные, в порядке приоритета). При открытом
+         breaker'е primary исключается — но только если есть чем его
+         заменить, иначе единственный маршрут остаётся.
       2. Пустой план — ChatLLMUnavailableError, ни одного запроса не уходит.
       3. Идём по плану: provider-failure → следующий маршрут; клиентская
          ошибка (4xx/валидация) пробрасывается сразу — другой провайдер
@@ -93,9 +138,11 @@ async def call_llm_with_fallback(
     fallback'а удаляется stream=True из kwargs.
     """
     breaker = orch._get_circuit_breaker()
-    plan = await plan_routes(
-        orch.settings, breaker_open=await breaker.is_open(),
-    )
+    plan = await plan_routes(orch.settings)
+    # is_open() спрашиваем, только если ответ может изменить план: вызов не
+    # чистый (сам переводит open → half_open по таймеру).
+    if can_skip_primary(plan) and await breaker.is_open():
+        plan = without_primary(plan, _BREAKER_OPEN_REASON)
 
     if not plan.routes:
         logger.error(
@@ -104,12 +151,7 @@ async def call_llm_with_fallback(
         )
         raise ChatLLMUnavailableError(_NO_ROUTES_MESSAGE)
 
-    if plan.skipped:
-        logger.warning(
-            "LLM маршруты: пробуем [%s]; пропущены: %s",
-            ", ".join(r.describe() for r in plan.routes),
-            plan.describe_skipped(),
-        )
+    _log_plan(plan)
 
     last_exc: BaseException | None = None
     last_index = len(plan.routes) - 1

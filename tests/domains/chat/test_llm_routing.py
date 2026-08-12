@@ -10,7 +10,13 @@ import json
 
 import pytest
 
-from app.domains.chat.services.llm_routing import FALLBACK, PRIMARY, plan_routes
+from app.domains.chat.services.llm_routing import (
+    FALLBACK,
+    PRIMARY,
+    can_skip_primary,
+    plan_routes,
+    without_primary,
+)
 from app.domains.chat.settings import ChatDomainSettings
 
 ALIVE_KEY = "llm:bridge:worker:alive"
@@ -152,19 +158,41 @@ class TestHttpRoutes:
 
 
 class TestBreakerInteraction:
-    async def test_open_breaker_demotes_primary(self, fake_redis):
+    """Разомкнутый breaker ИСКЛЮЧАЕТ primary, а не опускает его в конец.
+
+    Понижение оставляло бы дыру: после сбоя fallback'а каждый запрос дожигал
+    бы полный retry-бюджет об заведомо лежащий primary, а его record_failure
+    в состоянии open заново проштамповывал бы opened_at — при
+    external_recovery=False таймерное восстановление не наступило бы никогда.
+    """
+
+    async def test_open_breaker_excludes_primary(self, fake_redis):
         await put_heartbeat(fake_redis, ["gigachat", "openai"])
-        plan = await plan_routes(bridge_settings(), breaker_open=True)
+        plan = await plan_routes(bridge_settings())
+        assert can_skip_primary(plan) is True
 
-        assert kinds(plan) == [FALLBACK, PRIMARY]
+        reduced = without_primary(plan, "breaker")
+        assert kinds(reduced) == [FALLBACK]
+        assert [s.route.kind for s in reduced.skipped] == [PRIMARY]
+        assert "breaker" in reduced.describe_skipped()
 
-    async def test_open_breaker_keeps_lone_primary(self, fake_redis):
-        """Переставлять нечего: primary остаётся единственным маршрутом,
-        а не превращается в пустой план."""
+    async def test_lone_primary_is_never_skipped(self, fake_redis):
+        """Заменить нечем — breaker даже не спрашивают: единственный маршрут
+        лучше гарантированной ошибки пользователю."""
         await put_heartbeat(fake_redis, ["gigachat"])
-        plan = await plan_routes(bridge_settings(), breaker_open=True)
+        plan = await plan_routes(bridge_settings())
 
         assert kinds(plan) == [PRIMARY]
+        assert can_skip_primary(plan) is False
+
+    async def test_plan_without_primary_is_not_skippable(self, fake_redis):
+        """Primary и так недоступен → спрашивать breaker незачем: is_open()
+        не чистый, лишний вызов перевёл бы open → half_open без пробы."""
+        await put_heartbeat(fake_redis, ["openai"])
+        plan = await plan_routes(bridge_settings())
+
+        assert kinds(plan) == [FALLBACK]
+        assert can_skip_primary(plan) is False
 
 
 @pytest.mark.parametrize("fallback", [None, ""])

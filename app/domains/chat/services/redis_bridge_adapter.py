@@ -65,8 +65,13 @@ CONSUMER_GROUP = "llm-workers"
 _ALLOWED_FINISH_REASONS = frozenset({
     "stop", "length", "tool_calls", "content_filter", "function_call",
 })
-_FINISH_REASON_ALIASES = {"blacklist": "content_filter", "error": "stop"}
+_FINISH_REASON_ALIASES = {"blacklist": "content_filter"}
 _FINISH_REASON_DEFAULT = "stop"
+# finish_reason, означающий «генерация не состоялась». Приводить его к "stop"
+# нельзя: ответ выглядел бы успешным, breaker получил бы record_success,
+# следующий маршрут не пробовался бы, а пользователь увидел бы пустое
+# сообщение без error-блока. Такой ответ — сбой бэкенда (BridgeBackendError).
+_FAILED_FINISH_REASONS = frozenset({"error"})
 # Длина детали ошибки валидации в сообщении APIStatusError: полный вывод
 # pydantic многострочный и уходит в лог целиком, а в сообщении нужен
 # опознаваемый хвост (имя поля), а не простыня.
@@ -103,6 +108,27 @@ class BridgeSchemaError(APIStatusError):
     """
 
 
+class BridgeBackendError(APIStatusError):
+    """LLM-бэкенд за воркером не выполнил запрос, и воркер уже отработал своё.
+
+    Два источника:
+
+    - ``error``-конверт со статусом 429/5xx: воркер такие ответы **уже**
+      повторял сам (``MAX_ATTEMPTS=3`` с паузами 5/10/20 сек). Повтор на
+      стороне приложения множится на воркерский: 5 попыток приложения × 3
+      воркера = до 15 реальных вызовов LLM на одно сообщение пользователя;
+    - ``finish_reason="error"`` в успешном по статусу ответе: генерация не
+      состоялась, и отдавать это пользователю как готовый (обычно пустой)
+      ответ нельзя.
+
+    Поэтому НЕ ретраится (см. _NEVER_RETRY_EXC в retry.py), но остаётся
+    APIStatusError: 5xx считается provider-failure, и переход на следующий
+    маршрут работает как обычно. 408 и прочие 4xx сюда не попадают — их
+    воркер не повторял, решение о повторе остаётся за retry-политикой
+    приложения (см. §5 в docs/integrations/redis-llm-bridge.md).
+    """
+
+
 def _status_error(status_code: int, message: str) -> APIStatusError:
     """APIStatusError с заданным кодом (для error-конвертов воркера)."""
     response = httpx.Response(
@@ -117,6 +143,14 @@ def _schema_error(message: str) -> BridgeSchemaError:
         status_code=502, request=_make_request(), text=message,
     )
     return BridgeSchemaError(message, response=response, body=None)
+
+
+def _backend_error(status_code: int, message: str) -> BridgeBackendError:
+    """BridgeBackendError (не ретраится: воркер уже повторял сам)."""
+    response = httpx.Response(
+        status_code=status_code, request=_make_request(), text=message,
+    )
+    return BridgeBackendError(message, response=response, body=None)
 
 
 async def read_worker_heartbeat(key_prefix: str) -> dict:
@@ -283,6 +317,26 @@ def _normalize_message(message: dict, *, wire_format: str) -> dict:
     return out
 
 
+def _failed_finish_reason(raw: Any) -> str | None:
+    """finish_reason, означающий несостоявшуюся генерацию, если он есть.
+
+    Проверяется ДО нормализации: иначе значение схлопнулось бы в "stop"
+    и провал бэкенда выглядел бы успешным ответом.
+    """
+    if not isinstance(raw, dict):
+        return None
+    choices = raw.get("choices")
+    if not isinstance(choices, list):
+        return None
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        reason = choice.get("finish_reason")
+        if reason in _FAILED_FINISH_REASONS:
+            return reason
+    return None
+
+
 def _normalize_choice(choice: Any, *, index: int, wire_format: str) -> Any:
     """Копия choice с дозаполненным index и допустимым схемой finish_reason."""
     if not isinstance(choice, dict):
@@ -365,15 +419,27 @@ def _handle_terminal(
             code = int(fields.get("status_code") or 502)
         except (TypeError, ValueError):
             code = 502
-        raise _status_error(
-            code, fields.get("message") or "redis-bridge: ошибка воркера",
-        )
+        message = fields.get("message") or "redis-bridge: ошибка воркера"
+        if code == 429 or code >= 500:
+            # Эти статусы воркер уже повторял сам — повторять их ещё и здесь
+            # значит множить попытки (до 15 реальных вызовов LLM на сообщение).
+            raise _backend_error(code, message)
+        raise _status_error(code, message)
     try:
         raw = json.loads(fields["body"])
     except (KeyError, TypeError, ValueError) as exc:
         raise _schema_error(
             f"redis-bridge: нечитаемое тело ответа воркера ({exc})",
         ) from exc
+    # ДО общего try: это сбой бэкенда, а не разбора, и подменять его
+    # BridgeSchemaError'ом нельзя.
+    failed_reason = _failed_finish_reason(raw)
+    if failed_reason is not None:
+        raise _backend_error(
+            502,
+            "redis-bridge: бэкенд не выполнил генерацию "
+            f"(finish_reason={failed_reason!r})",
+        )
     try:
         completion = ChatCompletion.model_validate(
             _normalize_completion_payload(

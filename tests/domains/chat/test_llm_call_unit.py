@@ -145,24 +145,23 @@ async def test_breaker_open_with_fallback_skips_primary_fast_path():
     )
 
 
-async def test_breaker_open_but_fallback_client_none_falls_through_to_primary():
-    """Если breaker open и ``_has_fallback`` True, но ``_get_fallback_client``
-    вернул None — fast-path не срабатывает, идём в обычную try-ветку primary."""
+async def test_breaker_open_and_fallback_client_none_does_not_touch_primary():
+    """Breaker open + fallback-клиент не собрался → запрос не уходит вовсе.
+
+    Раньше в этой ветке шли в primary «на всякий случай». Это ровно то, ради
+    чего breaker и существует: primary признан лежащим, и поход туда стоил бы
+    полного retry-цикла, а его record_failure в состоянии open заново
+    проштамповал бы opened_at, отодвигая таймерное восстановление."""
     primary = MagicMock(name="primary")
-    expected = MagicMock(name="response")
     orch, breaker = _make_orch_stub(
         has_fallback=True, breaker_open=True, fallback_client=None,
     )
-    orch._completions_create = AsyncMock(return_value=expected)
 
-    result, fb_used, active = await call_llm_with_fallback(
-        orch, primary, model="m",
-    )
+    with pytest.raises(ChatLLMUnavailableError):
+        await call_llm_with_fallback(orch, primary, model="m")
 
-    assert result is expected
-    assert fb_used is False
-    assert active is primary
-    breaker.record_success.assert_awaited_once()
+    orch._completions_create.assert_not_awaited()
+    breaker.record_failure.assert_not_awaited()
 
 
 async def test_breaker_open_no_fallback_configured_uses_primary():
@@ -445,3 +444,39 @@ class TestRoutePlanDrivesTheCall:
 
         assert orch._completions_create.await_count == 1
         breaker.record_failure.assert_awaited_once()
+
+
+class TestPrimaryClientIsNotRebound:
+    """Клиент primary-маршрута берётся из аргумента и не подменяется.
+
+    Регресс на реальную ловушку: agent_loop раньше писал результат обратно
+    в ту же переменную (``response, _fb, client = ...``). После раунда,
+    ушедшего на fallback, следующий раунд отправлял бы primary-маршрут в
+    fallback-клиента — с моделью primary и без подмены kwargs.
+    """
+
+    async def test_primary_route_uses_the_passed_client(self):
+        primary, fb = MagicMock(name="primary"), MagicMock(name="fb")
+        orch, _ = _make_orch_stub(has_fallback=True, fallback_client=fb)
+        orch._completions_create = AsyncMock(return_value=MagicMock())
+
+        _result, fb_used, active = await call_llm_with_fallback(orch, primary)
+
+        assert active is primary and fb_used is False
+        assert orch._completions_create.await_args.args[0] is primary
+
+    async def test_second_call_after_fallback_still_starts_with_primary(self):
+        """Тот же orch, два последовательных вызова: возврат fallback-клиента
+        из первого не влияет на маршрутизацию второго."""
+        primary, fb = MagicMock(name="primary"), MagicMock(name="fb")
+        orch, _ = _make_orch_stub(has_fallback=True, fallback_client=fb)
+        orch._completions_create = AsyncMock(
+            side_effect=[RuntimeError("primary"), MagicMock(), MagicMock()],
+        )
+
+        _r1, fb_used, active = await call_llm_with_fallback(orch, primary)
+        assert fb_used is True and active is fb
+
+        _r2, fb_used2, active2 = await call_llm_with_fallback(orch, primary)
+        assert fb_used2 is False and active2 is primary
+        assert orch._completions_create.await_args.args[0] is primary

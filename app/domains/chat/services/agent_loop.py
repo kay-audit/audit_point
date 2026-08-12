@@ -292,7 +292,11 @@ async def run_agent_loop(
     block_id_gen = BlockIdGenerator(message_id)
 
     try:
-        response, _fb_used, client = await orch._llm_call_with_fallback(
+        # client НЕ переприсваиваем: это клиент primary-маршрута, и он должен
+        # оставаться им на всех раундах. Возвращаемый active-клиент может быть
+        # fallback'ом — подставив его обратно, следующий раунд отправил бы
+        # primary-маршрут в чужого клиента с неподменёнными kwargs.
+        response, _fb_used, _active = await orch._llm_call_with_fallback(
             client,
             model=orch.settings.model,
             messages=messages,
@@ -352,7 +356,7 @@ async def run_agent_loop(
                 if pending_tool_calls:
                     continue
                 # Очередь опустела — вызываем LLM с обновлённой историей
-                response, _fb_used, client = await orch._llm_call_with_fallback(
+                response, _fb_used, _active = await orch._llm_call_with_fallback(
                     client,
                     model=orch.settings.model,
                     messages=messages,
@@ -488,7 +492,7 @@ async def run_agent_loop(
             # переходим к следующей итерации, где очередь будет обработана.
             if pending_tool_calls:
                 continue
-            response, _fb_used, client = await orch._llm_call_with_fallback(
+            response, _fb_used, _active = await orch._llm_call_with_fallback(
                 client,
                 model=orch.settings.model,
                 messages=messages,

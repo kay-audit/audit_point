@@ -579,3 +579,118 @@ class TestSchemaErrorNotRetried:
             body=None,
         )
         assert Orchestrator._is_provider_failure(exc) is True
+
+
+class TestBackendFailures:
+    """429/5xx воркера и finish_reason='error' — сбой бэкенда, не успех.
+
+    Воркер такие ответы уже повторял сам (3 попытки с паузами 5/10/20 сек),
+    поэтому приложение их не ретраит: иначе одно сообщение пользователя
+    превращалось бы в 5 × 3 = до 15 реальных вызовов LLM.
+    """
+
+    async def _final(self, fake_redis, body: dict):
+        await put_heartbeat(fake_redis, ["gigachat"])
+        client = make_client("gigachat", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "q"}],
+            tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="final",
+            extra={"status_code": "200", "body": json.dumps(body)},
+        )
+        return task
+
+    async def _error(self, fake_redis, status_code: str):
+        await put_heartbeat(fake_redis, ["openai"])
+        client = make_client("openai", timeout=5.0)
+        task = asyncio.create_task(client.chat.completions.create(
+            model="m", messages=[], tools=NOT_GIVEN, temperature=0.1,
+        ))
+        await worker_reply(
+            fake_redis, kind="error",
+            extra={"status_code": status_code, "message": "бэкенд лёг"},
+        )
+        return task
+
+    async def test_finish_reason_error_is_a_failure_not_an_empty_answer(
+        self, fake_redis,
+    ):
+        """finish_reason='error' нельзя приводить к 'stop': ответ выглядел бы
+        успешным, breaker получил бы record_success, следующий маршрут не
+        пробовался бы, а пользователь увидел бы пустое сообщение."""
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeBackendError,
+        )
+
+        body = json.loads(json.dumps(GIGACHAT_RESPONSE_WITHOUT_ID))
+        body["choices"][0]["finish_reason"] = "error"
+        body["choices"][0]["message"]["content"] = ""
+        task = await self._final(fake_redis, body)
+
+        with pytest.raises(BridgeBackendError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 502
+        assert "finish_reason" in str(exc_info.value.message)
+
+    async def test_worker_5xx_envelope_is_not_retryable(self, fake_redis):
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeBackendError,
+        )
+
+        task = await self._error(fake_redis, "503")
+        with pytest.raises(BridgeBackendError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 503
+
+    async def test_worker_429_envelope_is_not_retryable(self, fake_redis):
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeBackendError,
+        )
+
+        task = await self._error(fake_redis, "429")
+        with pytest.raises(BridgeBackendError):
+            await task
+
+    async def test_worker_408_envelope_stays_retryable(self, fake_redis):
+        """408 воркер НЕ повторял (он ретраит только 429/5xx), поэтому
+        решение о повторе остаётся за retry-политикой приложения."""
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeBackendError,
+        )
+
+        task = await self._error(fake_redis, "408")
+        with pytest.raises(APIStatusError) as exc_info:
+            await task
+        assert exc_info.value.status_code == 408
+        assert not isinstance(exc_info.value, BridgeBackendError)
+
+    async def test_retry_does_not_repeat_backend_error(self):
+        import httpx
+
+        from app.domains.chat.services.redis_bridge_adapter import (
+            BridgeBackendError,
+        )
+        from app.domains.chat.services.retry import retry_on_transient
+
+        calls = {"n": 0}
+
+        @retry_on_transient(
+            on_429=True, on_5xx=True, max_attempts=5,
+            connect_max_attempts=2, backoff_base=0.0,
+        )
+        async def failing():
+            calls["n"] += 1
+            raise BridgeBackendError(
+                "бэкенд",
+                response=httpx.Response(
+                    503,
+                    request=httpx.Request("POST", "http://x/chat/completions"),
+                ),
+                body=None,
+            )
+
+        with pytest.raises(BridgeBackendError):
+            await failing()
+        assert calls["n"] == 1
