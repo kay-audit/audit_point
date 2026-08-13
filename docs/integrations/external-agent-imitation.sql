@@ -38,7 +38,10 @@
 --                        пока пишется ответ; legacy-ключ {thinking} AW тоже
 --                        понимает)
 --    • buttons         = JSONB: массив [{action_id, label, params}]
---    • media           = JSONB: [{file_id, filename, mime_type, file_size}]
+--    • media           = JSONB: [{file_id, filename, mime_type, file_size}];
+--                        file_id — либо id строки в chat_files, либо инлайн
+--                        data-URL `data:<mime>;base64,<...>` (так отдаёт
+--                        nanobot); filename необязателен, см. сценарий 3
 --    • status          = pending | processing | completed | failed
 --                        (CHECK владельца, подтверждённая спека; 'timeout'
 --                        и 'error' ЗАПРЕЩЕНЫ — записи статуса от AW best-effort)
@@ -73,7 +76,8 @@
 --    0. ПОДГОТОВКА          — просмотр активных вопросов, копирование <QUESTION_ID>
 --    1. Успешный ответ       — нормальный поток: вопрос → ответ
 --    2. Ответ с кнопками     — поле buttons с action_id/label/params
---    3. Ответ с файлом/медиа — поле media, заливка файла в chat_files
+--    3. Ответ с файлом/медиа — поле media: 3 — заливка файла в chat_files,
+--                              3Б — инлайн data-URL в file_id (формат nanobot)
 --    4. Ошибка               — status='failed' на вопросе и/или ответе
 --    5. Агент думает         — UPDATE вопроса до processing (простой индикатор)
 --    6. ДИАГНОСТИКА          — счётчики, старые pending, пара вопрос–ответ
@@ -223,11 +227,31 @@ END$$;
 -- 3. СЦЕНАРИЙ "ответ с файлом/медиа"
 -- ────────────────────────────────────────────────────────────────────────────
 --
--- media — массив [{file_id, filename, mime_type, file_size}].
--- file_id ДОЛЖЕН указывать на реально существующую строку в chat_files
--- (с корректным conversation_id = chat_id треда), иначе
--- GET /api/v1/chat/files/{file_id} вернёт 404. AW определяет превью по mime_type:
---   image/* — встроенное изображение; остальные — иконка + кнопка «Скачать».
+-- media — массив [{file_id, filename, mime_type, file_size}]. AW определяет
+-- превью по mime_type: image/* — встроенное изображение; остальные — иконка
+-- + кнопка «Скачать».
+--
+-- file_id поддерживает ДВА формата:
+--   А. id строки в chat_files — с корректным conversation_id = chat_id треда,
+--      иначе GET /api/v1/chat/files/{file_id} вернёт 404. Вариант для файлов,
+--      которые агент действительно кладёт в хранилище (блок ниже).
+--   Б. инлайн data-URL `data:<mime>;base64,<payload>` — так отдаёт файлы
+--      nanobot. В chat_files ничего не пишется, AW подставляет data-URL в
+--      href/src напрямую и в files-эндпоинт не ходит (вариант 3Б в конце
+--      раздела).
+--
+-- filename НЕобязателен. Если его нет, AW восстанавливает имя по цепочке:
+-- имя файла, упомянутое в тексте ответа (сопоставление с media по порядку
+-- следования) → mime_type → mime из самого data-URL → «Файл» без расширения.
+--
+-- ВНИМАНИЕ, два ограничения распознавания имени из текста:
+--   • только ЛАТИНИЦА и цифры — регулярка построена на \w без флага `u`,
+--     кириллическое «отчёт.txt» в тексте НЕ распознаётся;
+--   • работает только для истории (перезагрузка страницы). В живом ответе
+--     блоки печатаются через typeOutBlocks/typeOutSingleBlock, куда подсказка
+--     имени не передаётся — там имя берётся сразу из mime_type.
+-- Практический вывод для агента: если имя важно (особенно кириллическое) —
+-- передавай filename в media явно, не рассчитывай на текст.
 --
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 -- Блок сам заливает реально скачиваемый TXT-файл в chat_files и связывает его
@@ -284,6 +308,58 @@ END$$;
 -- PDF:  f_body := decode('255044462D312E340A25E2E3CFD30A', 'hex'); -- "%PDF-1.4\n%...\n"
 -- XLSX: f_body := decode('504B0304140000000000', 'hex');          -- "PK\x03\x04..." (ZIP)
 -- (сигнатуры достаточно для иконки и скачивания; для открытия нужен полный файл).
+
+
+-- ── 3Б. Тот же сценарий, но файл инлайном в data-URL (формат nanobot) ───────
+--
+-- Ничего не пишется в chat_files: содержимое едет прямо в file_id. Здесь же
+-- проверяется восстановление имени — filename в media НЕ передан, имя
+-- «report.txt» AW возьмёт из текста ответа. Имя латиницей намеренно: см.
+-- ограничения распознавания выше.
+-- Замени ТОЛЬКО <QUESTION_ID>.
+
+DO $$
+DECLARE
+    q_id     uuid := '<QUESTION_ID>';                                       -- ← подставь сюда
+    a_id     uuid := md5(random()::text || clock_timestamp()::text)::uuid;
+    -- Без пробела после ';' — data-URL не допускает пробелов в заголовке.
+    f_mime   text := 'text/plain;charset=utf-8';
+    f_body   bytea := convert_to(
+                  'Сводный отчёт по КМ-12-32141.' || E'\n' ||
+                  'Файл доставлен инлайном, без chat_files.', 'UTF8');
+    v_chat   text;
+    v_user   text;
+BEGIN
+    SELECT chat_id, user_id INTO v_chat, v_user
+    FROM chat_agent_messages_bus
+    WHERE id = q_id;
+
+    INSERT INTO chat_agent_messages_bus
+        (id, chat_id, user_id, role,
+         content, media, reply_to, status, created_at, updated_at)
+    VALUES (a_id, v_chat, v_user, 'assistant',
+            'Сформировал отчёт, прикладываю report.txt:',
+            jsonb_build_array(
+                jsonb_build_object(
+                    -- replace(): encode() в PG переносит строку каждые 76
+                    -- символов, в data-URL переносы не нужны
+                    'file_id',   'data:' || f_mime || ';base64,'
+                                 || replace(encode(f_body, 'base64'), E'\n', ''),
+                    'mime_type', f_mime,
+                    'file_size', octet_length(f_body)
+                )
+            ),
+            q_id, 'completed', now(), now());
+
+    UPDATE chat_agent_messages_bus
+    SET status     = 'completed',
+        updated_at = now()
+    WHERE id = q_id;
+END$$;
+
+-- Проверка в UI: иконка текстового документа, «Скачать» отдаёт файл без
+-- обращения к /api/v1/chat/files/. Имя карточки: в живом ответе «file.txt»
+-- (из mime_type), после перезагрузки страницы — «report.txt» (из текста).
 
 
 -- ────────────────────────────────────────────────────────────────────────────
