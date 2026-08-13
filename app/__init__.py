@@ -5,6 +5,6 @@ Audit Workstation: управление актами проверок, AI-асс
 экспорт документов, интеграции с хранилищами данных и аналитика.
 """
 
-__version__ = "15.0.0"
+__version__ = "15.0.1"
 __title__ = "Audit Workstation"
 __description__ = "Audit Workstation — единая среда для проведения проверок"
