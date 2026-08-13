@@ -840,7 +840,7 @@ export const ChatRenderer = {
             const previewBtn = document.createElement('button');
             previewBtn.className = 'chat-block-file-btn';
             previewBtn.title = 'Предпросмотр';
-            previewBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin-round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
+            previewBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
             previewBtn.addEventListener('click', () => ChatRenderer._openFileViewer(block));
 
             // Скачать
@@ -1028,20 +1028,6 @@ export const ChatRenderer = {
     // ========================================================
     //  Хелперы
     // ========================================================
-
-/**
-     * Конструирует URL для скачивания файла чата
-     *
-     * @param {string} fileId — идентификатор файла
-     * @returns {string}
-     * @private
-     */
-    _getFileUrl(fileId) {
-        if (typeof AppConfig === 'undefined') {
-            return `/api/v1/chat/files/${fileId}`;
-        }
-        return AppConfig.api.getUrl(AppConfig.chatEndpoints.file(fileId));
-    },
 
     /**
      * Распознаёт data-URL в ``file_id`` и возвращает подходящий URL.
