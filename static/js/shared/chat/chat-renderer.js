@@ -55,7 +55,7 @@ marked.use({
  * @param {HTMLElement} targetEl — элемент, в который пишется HTML
  * @returns {{ appendText: function(string): void, finalize: function(): void }}
  */
-function makeStreamingClosure(targetEl) {
+function makeStreamingClosure(targetEl, onFinalize) {
     let accumulated = '';
     let lastRender = 0;
     // Re-parse — O(всего накопленного текста), поэтому интервал перерисовки
@@ -76,6 +76,11 @@ function makeStreamingClosure(targetEl) {
         },
         finalize() {
             ChatRenderer._safeSetHtml(targetEl, ChatRenderer._markdownToHtml(accumulated));
+            // Хук для cleanup (например, убрать loader-анимацию у reasoning).
+            if (typeof onFinalize === 'function') {
+                try { onFinalize(); }
+                catch (e) { console.error('makeStreamingClosure onFinalize failed:', e); }
+            }
         },
     };
 }
@@ -129,6 +134,33 @@ export const ChatRenderer = {
         if (!container) return;
         const placeholder = container.querySelector(':scope > .chat-typing-placeholder');
         if (placeholder) placeholder.remove();
+    },
+
+    /**
+     * Создаёт DOM-индикатор активного рассуждения: сетка 4×4 точек
+     * без рамки, gray → blue, opacity 0.4 ↔ 1.0. Живёт весь стрим,
+     * снимается в `makeStreamingClosure.finalize()`.
+     *
+     * @returns {HTMLElement} <span class="chat-reasoning-loader">
+     */
+    _createReasoningLoader() {
+        const loader = document.createElement('span');
+        loader.className = 'chat-reasoning-loader';
+        loader.setAttribute('aria-hidden', 'true');
+        for (let row = 0; row < 4; row++) {
+            for (let col = 0; col < 4; col++) {
+                const i = row * 4 + col;
+                const dot = document.createElement('span');
+                dot.className = 'chat-reasoning-loader-dot';
+                dot.style.setProperty('--col', String(col));
+                dot.style.setProperty('--row', String(row));
+                // Псевдослучайная задержка, scatter в окне 1.5с
+                const delay = ((i * 89) % 1500) / 1000;
+                dot.style.animationDelay = delay.toFixed(2) + 's';
+                loader.appendChild(dot);
+            }
+        }
+        return loader;
     },
 
     /**
@@ -319,8 +351,20 @@ export const ChatRenderer = {
     renderBlocks(container, blocks, opts) {
         if (!container || !Array.isArray(blocks)) return;
 
+        // Pre-scan: вытаскиваем из text-блоков имена файлов, которые ассистент
+        // перечислил в ответе ("• capabilities.txt — текстовый, ...). Порядок
+        // имён сохраняем — сопоставление с file-блоками идёт по индексу
+        // появления. Это позволяет не возвращать filename с бэка для
+        // бот-генерации (data-URL в file_id), но при этом дать карточке
+        // осмысленное имя.
+        const fileNames = this._extractFileNamesFromText(blocks);
+        let fileIdx = 0;
+
         for (const block of blocks) {
-            const el = this.renderBlock(block, opts);
+            const ctx = (block && block.type === 'file')
+                ? Object.assign({}, opts, { _suggestedName: fileNames[fileIdx++] || '' })
+                : opts;
+            const el = this.renderBlock(block, ctx);
             if (el) this.appendBlock(container, el);
         }
     },
@@ -449,7 +493,7 @@ export const ChatRenderer = {
             case 'plan':
                 el = this._renderPlan(block); break;
             case 'file':
-                el = this._renderFile(block); break;
+                el = this._renderFile(block, options); break;
             case 'image':
                 el = this._renderImage(block); break;
             case 'buttons':
@@ -509,9 +553,7 @@ export const ChatRenderer = {
     /**
      * Создаёт блок для посимвольного проявления (декоративный эффект печати)
      *
-     * Для reasoning-блока: каждый вызов создаёт НОВЫЙ <details>-элемент
-     * (изначально раскрытый), чтобы каждый reasoning-чанк отображался
-     * как отдельный сворачиваемый блок.
+     * Для reasoning-блока создаёт НОВЫЙ <details>, свёрнутый по умолчанию.
      *
      * @param {string} blockType — тип блока ('text' или 'reasoning')
      * @param {string} [blockId] — идентификатор блока (для reasoning тегируется в data-block-id)
@@ -521,8 +563,8 @@ export const ChatRenderer = {
         if (blockType === 'reasoning') {
             const details = document.createElement('details');
             details.className = 'chat-block chat-block-reasoning';
-            // По умолчанию каждый чанк раскрыт; пользователь сворачивает руками.
-            details.open = true;
+            // Свёрнут по умолчанию; loader показывает активность стрима.
+            details.open = false;
             if (typeof blockId === 'string' && blockId) {
                 details.dataset.blockId = blockId;
             }
@@ -532,14 +574,26 @@ export const ChatRenderer = {
             }
 
             const summary = document.createElement('summary');
-            summary.textContent = 'Рассуждение';
+            const loader = this._createReasoningLoader();
+            const summaryText = document.createElement('span');
+            summaryText.className = 'chat-block-reasoning-summary-text';
+            summaryText.textContent = 'Рассуждение';
+            summary.appendChild(loader);
+            summary.appendChild(summaryText);
             details.appendChild(summary);
 
             const content = document.createElement('div');
             content.className = 'chat-block-reasoning-content chat-md';
             details.appendChild(content);
 
-            return { element: details, ...makeStreamingClosure(content) };
+            // Loader снимается в finalize() — когда ассистент переходит
+            // к генерации итогового text-блока.
+            return {
+                element: details,
+                ...makeStreamingClosure(content, () => {
+                    if (loader.parentNode) loader.remove();
+                }),
+            };
         }
 
         // По умолчанию — текстовый блок
@@ -654,7 +708,10 @@ export const ChatRenderer = {
     _renderReasoning(block) {
         const details = document.createElement('details');
         details.className = 'chat-block chat-block-reasoning';
-        details.open = true;
+        // Свернут по умолчанию (и для стрима, и для истории) — пользователь
+        // кликает чтобы раскрыть и посмотреть. Для стрима loader появляется
+        // на время печати и исчезает в finalize.
+        details.open = false;
         if (typeof block.block_id === 'string' && block.block_id) {
             details.dataset.blockId = block.block_id;
         }
@@ -714,21 +771,52 @@ export const ChatRenderer = {
         return div;
     },
 
-    /**
+/**
      * Блок файла — карточка с иконкой, именем, размером и кнопками действий
      * @private
      */
-    _renderFile(block) {
+    _renderFile(block, options) {
         const div = document.createElement('div');
         div.className = 'chat-block chat-block-file';
 
+        // Имя: backend-имя → извлечённое из text-блока (см. renderBlocks) →
+        // дефолт по mime → 'Файл'. Это позволяет не подгонять бэк под каждый
+        // случай (multipart-загрузка присылает filename в блоке; data-URL от
+        // бота — извлекаем из text-блока, в котором ассистент перечислил имена).
+        const suggestedName = (options && options._suggestedName) || '';
+        // Резервный канал: если в text имени нет, а бот прислал data-URL с
+        // ``data:application/x-zip-compressed;base64,...`` — пробуем извлечь
+        // подстроку mime из file_id (между ``data:`` и ``;``) и смаппить через
+        // _defaultFilenameForMime. Это закрывает кейс «у zip нету» при
+        // application/octet-stream или ``application/x-*-compressed``, для
+        // которых нет ни имени в text, ни готового расширения в file_id.
+        let baseName = block.filename || block.name || suggestedName;
+        if (!baseName) {
+            const fallback = this._defaultFilenameForMime(block.mime_type);
+            if (fallback) {
+                baseName = fallback;
+            } else if (typeof block.file_id === 'string' && block.file_id.startsWith('data:')) {
+                const headEnd = block.file_id.indexOf(';');
+                if (headEnd > 5) {
+                    const dataMime = block.file_id.slice(5, headEnd);
+                    const fromData = this._defaultFilenameForMime(dataMime);
+                    if (fromData) baseName = fromData;
+                }
+            }
+        }
+        const displayName = baseName || 'Файл';
+
         const icon = document.createElement('span');
         icon.className = 'chat-block-file-icon';
-        icon.textContent = '\uD83D\uDCC4'; // 📄
+        // Иконка по расширению: PNG/PDF/DOCX/XLSX/etc — уникальные SVG,
+        // неизвестные — нейтральный листочек (как раньше).
+        const ext = this._extractExt(baseName);
+        icon.classList.add('chat-block-file-icon--' + this._iconClassForExt(ext));
+        icon.innerHTML = this._getFileIconSvg(ext);
 
         const nameEl = document.createElement('span');
         nameEl.className = 'chat-block-file-name';
-        nameEl.textContent = block.filename || block.name || 'Файл';
+        nameEl.textContent = displayName;
 
         if (block.file_id) {
             nameEl.classList.add('chat-block-file-name--clickable');
@@ -752,14 +840,16 @@ export const ChatRenderer = {
             const previewBtn = document.createElement('button');
             previewBtn.className = 'chat-block-file-btn';
             previewBtn.title = 'Предпросмотр';
-            previewBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
+            previewBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin-round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
             previewBtn.addEventListener('click', () => ChatRenderer._openFileViewer(block));
 
             // Скачать
             const downloadBtn = document.createElement('a');
             downloadBtn.className = 'chat-block-file-btn';
-            downloadBtn.href = this._getFileUrl(block.file_id);
-            downloadBtn.download = block.filename || block.name || 'Файл';
+            // Для data-URL используем сам data-URL (валидный href для <a download>);
+            // для UUID-загруженных файлов — backend-эндпоинт.
+            downloadBtn.href = this._resolveFileUrl(block.file_id).url;
+            downloadBtn.download = displayName;
             downloadBtn.title = 'Скачать';
             downloadBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -784,7 +874,7 @@ export const ChatRenderer = {
         img.alt = block.alt || 'Изображение';
 
         const imgUrl = block.url || (block.file_id
-            ? this._getFileUrl(block.file_id)
+            ? this._resolveFileUrl(block.file_id).url
             : '');
 
         img.src = imgUrl;
@@ -939,7 +1029,7 @@ export const ChatRenderer = {
     //  Хелперы
     // ========================================================
 
-    /**
+/**
      * Конструирует URL для скачивания файла чата
      *
      * @param {string} fileId — идентификатор файла
@@ -954,20 +1044,329 @@ export const ChatRenderer = {
     },
 
     /**
-     * Открывает полноэкранный модальный просмотрщик файла
+     * Распознаёт data-URL в ``file_id`` и возвращает подходящий URL.
      *
-     * Поддерживает изображения, PDF, текстовые файлы и JSON/XML.
-     * Для неподдерживаемых типов предлагает скачать.
+     * Внешний бот (nanobot / nanobot-ai) может передавать вложения в шину
+     * ассистент-канала не как UUID загруженного файла, а как data-URL
+     * (``data:<mime>;base64,<...>``) — это формат, который ``message`` tool
+     * возвращает напрямую. data-URL валиден для нативного использования в
+     * ``<a href>`` / ``<img src>`` / ``<iframe src>`` и не требует похода на
+     * сервер; бэкенд-эндпоинт ``/api/v1/chat/files/<id>`` ищет файл в таблице
+     * ``t_db_oarb_audit_act_chat_files`` по UUID и для data-URL возвращает 404.
      *
-     * @param {Object} block — блок файла {file_id, filename, name, mime_type, ...}
+     * Возвращает ``{ url, isDataUrl }``: для data-URL — сам data-URL (как
+     * есть, без каких-либо query-параметров), для UUID — backend-эндпоинт.
+     *
+     * @param {string} fileId — ``file_id`` блока чата
+     * @returns {{ url: string, isDataUrl: boolean }}
      * @private
      */
+    _resolveFileUrl(fileId) {
+        if (typeof fileId === 'string' && fileId.startsWith('data:')) {
+            return { url: fileId, isDataUrl: true };
+        }
+        const url = (typeof AppConfig === 'undefined')
+            ? `/api/v1/chat/files/${fileId}`
+            : AppConfig.api.getUrl(AppConfig.chatEndpoints.file(fileId));
+        return { url, isDataUrl: false };
+    },
+
+    /**
+     * Декодирует text/plain data-URL в строку.
+     *
+     * Используется в просмотрщике для текстовых файлов вместо ``fetch()``,
+     * который для ``data:``-URL работает только без query-параметров и в любом
+     * случае лишний (данные уже в браузере).
+     *
+     * @param {string} dataUrl — ``data:<mime>;base64,<payload>`` или ``data:,...``
+     * @returns {string|null} — декодированный текст или ``null`` для не-text / битых
+     * @private
+     */
+    _decodeTextDataUrl(dataUrl) {
+        if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+            return null;
+        }
+        const commaIdx = dataUrl.indexOf(',');
+        if (commaIdx < 0) {
+            return null;
+        }
+        const head = dataUrl.slice(5, commaIdx); // после "data:"
+        const payload = dataUrl.slice(commaIdx + 1);
+        const isBase64 = /;\s*base64\s*$/i.test(head) || head.endsWith(';base64');
+        try {
+            if (isBase64) {
+                // atob() корректно декодирует стандартный base64; русский текст в
+                // UTF-8 → Uint8Array → TextDecoder (atob трактует байты как latin1).
+                const binary = atob(payload);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                return new TextDecoder('utf-8').decode(bytes);
+            }
+            return decodeURIComponent(payload);
+        } catch (err) {
+            console.warn('ChatRenderer: не удалось декодировать data-URL', err);
+            return null;
+        }
+    },
+
+/**
+     *  Извлекает имена файлов из text-блоков массива в порядке появления.
+     *
+     *  Используется ``renderBlocks`` чтобы передать в ``_renderFile`` подсказку
+     *  для случая, когда у блока нет ``block.filename`` (типично для бот-генерации:
+     *  ассистент упоминает файлы в предыдущем text-блоке вида ``• capabilities.txt
+     *  — текстовый``, а в file-блоке приходит только ``file_id`` data-URL).
+     *
+     *  Ловим распространённые офисные/текстовые/графические/архивные
+     *  расширения. Регистр игнорируется, повторы не дедуплицируются —
+     *  сопоставление идёт по индексу с file-блоками, чтобы ``capabilities.txt``
+     *  в тексте соответствовал первому file-блоку в порядке рендера.
+     *
+     *  @param {Array<Object>} blocks — массив блоков сообщения
+     *  @returns {Array<string>} — список имён файлов в порядом появления
+     *  @private
+     */
+    _extractFileNamesFromText(blocks) {
+        if (!Array.isArray(blocks)) return [];
+        // \b граница слова, имена могут содержать точку/подчёркивание/дефис,
+        // расширения — буквенно-цифровые 1-5 символов.
+        const re = /\b[\w][\w\-.]*?\.(txt|pdf|csv|xlsx|docx|sql|ipynb|rar|zip|pptx|png|jpe?g|gif|bmp|webp|svg|json|xml|html|css|ts|js|py|md|log|ya?ml|tar|gz|7z|ipynb|ip)\b/gi;
+        const names = [];
+        for (const b of blocks) {
+            if (!b || b.type !== 'text' || typeof b.content !== 'string') continue;
+            const matches = b.content.match(re);
+            if (matches) names.push(...matches);
+        }
+        return names;
+    },
+
+    /**
+     *  Возвращает расширение файла (lowercase, с ведущей точкой) или пустую строку.
+     *
+     *  @param {string} name — имя файла (или пустое)
+     *  @returns {string}
+     *  @private
+     */
+    _extractExt(name) {
+        if (!name) return '';
+        const m = String(name).toLowerCase().match(/\.([a-z0-9]{1,5})$/);
+        return m ? '.' + m[1] : '';
+    },
+
+    /**
+     *  Генерирует имя файла по умолчанию на основе mime-типа.
+     *
+     *  Используется когда ни ``block.filename``/``block.name``, ни подсказка из
+     *  text-блока не дали имени (типично для data-URL бот-генерации без
+     *  человекочитаемого перечисления).
+     *
+     *  Покрывает ВСЕ варианты mime для распространённых форматов, которые бот
+     *  может прислать в data-URL. Несколько вариантов на один тип:
+     *  - ``application/zip`` (Microsoft) + ``application/x-zip-compressed`` (IANA) — обе.
+     *  - ``image/jpeg`` + ``image/jpg`` — обе.
+     *  Это нужно потому, что ``map[mime.toLowerCase()]`` иначе возвращает '' для
+     *  неизвестного варианта, и fallback на "Файл" — пользователь не увидит
+     *  расширения. Бот присылал ``application/x-zip-compressed`` → displayName
+     *  был просто "Файл" (баг, который привёл к жалобе "у zip нету").
+     *
+     *  @param {string} mime — mime-тип
+     *  @returns {string} — имя вида ``file.<ext>`` или пустая строка
+     *  @private
+     */
+    _defaultFilenameForMime(mime) {
+        if (!mime) return '';
+        const m = mime.toLowerCase();
+        const map = {
+            // Текстовые
+            'text/plain': 'file.txt',
+            'text/markdown': 'file.md',
+            'text/html': 'file.html',
+            'text/css': 'file.css',
+            'text/csv': 'file.csv',
+            'text/xml': 'file.xml',
+            // Данные / структуры
+            'application/json': 'file.json',
+            'application/xml': 'file.xml',
+            'application/yaml': 'file.yaml',
+            'application/x-yaml': 'file.yaml',
+            // Документы Microsoft
+            'application/pdf': 'file.pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'file.docx',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'file.xlsx',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'file.pptx',
+            'application/vnd.ms-excel': 'file.xls',
+            'application/vnd.ms-powerpoint': 'file.ppt',
+            'application/msword': 'file.doc',
+            // OpenDocument
+            'application/vnd.oasis.opendocument.text': 'file.odt',
+            'application/vnd.oasis.opendocument.spreadsheet': 'file.ods',
+            'application/vnd.oasis.opendocument.presentation': 'file.odp',
+            // Архивы — оба варианта mime (IANA + Microsoft)
+            'application/zip': 'file.zip',
+            'application/x-zip-compressed': 'file.zip',
+            'application/x-7z-compressed': 'file.7z',
+            'application/x-rar-compressed': 'file.rar',
+            'application/vnd.rar': 'file.rar',
+            'application/x-tar': 'file.tar',
+            'application/tar': 'file.tar',
+            'application/gzip': 'file.gz',
+            'application/x-gzip': 'file.gz',
+            'application/x-bzip2': 'file.bz2',
+            'application/x-bzip': 'file.bz2',
+            // Изображения
+            'image/png': 'file.png',
+            'image/jpeg': 'file.jpg',
+            'image/jpg': 'file.jpg',
+            'image/gif': 'file.gif',
+            'image/svg+xml': 'file.svg',
+            'image/webp': 'file.webp',
+            'image/bmp': 'file.bmp',
+            'image/x-icon': 'file.ico',
+            'image/heic': 'file.heic',
+        };
+        if (map[m]) return map[m];
+        // Generic fallback для подсемейств
+        if (m.startsWith('image/')) return 'file.png';
+        if (m.startsWith('text/')) return 'file.txt';
+        if (m.startsWith('audio/')) return 'file.mp3';
+        if (m.startsWith('video/')) return 'file.mp4';
+        return '';
+    },
+
+    /**
+     *  Класс иконки по расширению — для возможной стилизации CSS (цвет, фон).
+     *  Все варианты приведены к lowercase с ведущей точкой.
+     *
+     *  @param {string} ext — расширение вида ``.pdf`` или пустая строка
+     *  @returns {string} — slug для CSS-класса (``pdf``, ``docx``, ``unknown`` и пр.)
+     *  @private
+     */
+    _iconClassForExt(ext) {
+        if (!ext) return 'unknown';
+        return ext.replace(/^\./, '').replace(/[^a-z0-9]/g, '') || 'unknown';
+    },
+
+    /**
+     *  Возвращает SVG-разметку иконки для расширения файла.
+     *
+     *  Используются иконки из Heroicons (https://github.com/tailwindlabs/heroicons),
+     *  лицензия MIT. Иконки выбраны так, чтобы форма передавала тип:
+     *  ``document`` (общий листок) — для текстовых документов и данных;
+     *  ``table-cells`` — для таблиц (xlsx); ``presentation-chart-bar`` —
+     *  для презентаций; ``photo`` — для изображений; ``code-bracket`` —
+     *  для кода/SQL; ``archive-box`` — для архивов. Цвет приходит из
+     *  CSS-класса ``chat-block-file-icon--<ext>`` (см. ``chat-blocks.css``),
+     *  внутри SVG — только обводка через ``currentColor``.
+     *
+     *  Никаких текстовых лейблов внутри иконок — различие по цвету,
+     *  а имя файла в чате уже выводится текстом рядом.
+     *
+     *  @param {string} ext — расширение вида ``.pdf`` или пустая строка
+     *  @returns {string} — inline SVG markup
+     *  @private
+     */
+    /**
+     * Базовый URL каталога иконок. Каждая иконка — отдельный .svg
+     * (см. ``static/icons/chat/<name>-<size>.svg``): редактируется
+     * и перерисовывается без рестарта, hard refresh достаточно.
+     * @private
+     */
+    _ICONS_BASE_URL: '/static/icons/chat/',
+
+    /**
+     * Логическое имя иконки → имя файла .svg.
+     * @private
+     */
+    _ICON_URLS: {
+        'file-generic-24':      'file-generic-24.svg',
+        'file-spreadsheet-24':  'file-spreadsheet-24.svg',
+        'file-presentation-24': 'file-presentation-24.svg',
+        'file-image-24':        'file-image-24.svg',
+        'file-code-24':         'file-code-24.svg',
+        'file-archive-24':      'file-archive-24.svg',
+    },
+
+    /**
+     * Расширение → логическое имя иконки.
+     * @private
+     */
+    _ICON_FORM: {
+        '.pdf':  'file-generic-24',  '.doc':  'file-generic-24',  '.docx': 'file-generic-24',
+        '.xls':  'file-spreadsheet-24', '.xlsx': 'file-spreadsheet-24',
+        '.csv':  'file-generic-24',  '.txt':  'file-generic-24',
+        '.md':   'file-generic-24',  '.log':  'file-generic-24',
+        '.ppt':  'file-presentation-24', '.pptx': 'file-presentation-24',
+        '.png':  'file-image-24', '.jpg': 'file-image-24', '.jpeg': 'file-image-24',
+        '.gif':  'file-image-24', '.bmp': 'file-image-24', '.webp': 'file-image-24', '.svg': 'file-image-24',
+        '.sql':  'file-code-24',
+        '.ipynb':'file-code-24', '.py': 'file-code-24',
+        '.js':   'file-code-24', '.ts': 'file-code-24',
+        '.json': 'file-generic-24', '.xml': 'file-generic-24',
+        '.yaml': 'file-generic-24', '.yml': 'file-generic-24',
+        '.zip':  'file-archive-24', '.rar': 'file-archive-24',
+        '.7z':   'file-archive-24', '.gz': 'file-archive-24', '.tar': 'file-archive-24',
+    },
+
+    /**
+     * Кеш SVG-строк. ``null`` = fetch не успел или упал.
+     * @private
+     */
+    _ICONS_CACHE: {},
+
+    /**
+     * Параллельно fetch'ит все .svg из ``_ICON_URLS`` в кеш.
+     * Идемпотентен: повторный вызов не делает fetch если кеш заполнен.
+     * @returns {Promise<void>}
+     */
+    async _loadIcons() {
+        const base = this._ICONS_BASE_URL;
+        const tasks = Object.entries(this._ICON_URLS).map(async ([key, filename]) => {
+            if (this._ICONS_CACHE[key] != null) return;
+            try {
+                const r = await fetch(base + filename, { credentials: 'same-origin' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                this._ICONS_CACHE[key] = await r.text();
+            } catch (e) {
+                console.error('[ChatRenderer] failed to load icon', filename, e);
+                this._ICONS_CACHE[key] = null;
+            }
+        });
+        await Promise.all(tasks);
+    },
+
+    /**
+     * Inline-SVG иконки по расширению. Пустая строка если кеш не заполнен.
+     * @param {string} ext — расширение вида ``.pdf``
+     * @returns {string}
+     * @private
+     */
+    _getFileIconSvg(ext) {
+        const key = this._ICON_FORM[(ext || '').toLowerCase()] || 'file-generic-24';
+        return this._ICONS_CACHE[key] || '';
+    },
+
+    /**
+     *  Открывает полноэкранный модальный просмотрщик файла
+     *
+     *  Поддерживает изображения, PDF, текстовые файлы и JSON/XML.
+     *  Для неподдерживаемых типов предлагает скачать.
+     *
+     *  @param {Object} block — блок файла {file_id, filename, name, mime_type, ...}
+     *  @private
+     */
     _openFileViewer(block) {
-        // Удаляем предыдущий просмотрщик, если есть
+        // Удаляем предыдущий просмотрщик, если он есть
         ChatRenderer._closeFileViewer();
 
-        const fileUrl = ChatRenderer._getFileUrl(block.file_id);
-        const inlineUrl = fileUrl + (fileUrl.includes('?') ? '&' : '?') + 'inline=true';
+const resolved = ChatRenderer._resolveFileUrl(block.file_id);
+        const fileUrl = resolved.url;
+        // ``inline=true`` валиден только для backend-эндпоинта — для data-URL
+        // добавлять query нельзя (это часть base64-payload'а, она не парсится).
+        const inlineUrl = resolved.isDataUrl
+            ? fileUrl
+            : fileUrl + (fileUrl.includes('?') ? '&' : '?') + 'inline=true';
         const mime = (block.mime_type || '').toLowerCase();
         const filename = block.filename || block.name || 'Файл';
 
@@ -1036,17 +1435,29 @@ export const ChatRenderer = {
         } else if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml') {
             const pre = document.createElement('pre');
             pre.className = 'chat-file-viewer-text';
-            pre.textContent = 'Загрузка...';
-            body.appendChild(pre);
+            // Для data-URL декодируем на лету — fetch на data: лишний, плюс
+            // у нас нет надёжного способа передать сюда isDataUrl из resolved.
+            // Резолвим заново: для UUID — fetch, для data — decode.
+            const resolvedForText = ChatRenderer._resolveFileUrl(block.file_id);
+            if (resolvedForText.isDataUrl) {
+                const text = ChatRenderer._decodeTextDataUrl(resolvedForText.url);
+                pre.textContent = (text === null)
+                    ? 'Не удалось декодировать содержимое файла'
+                    : text;
+                body.appendChild(pre);
+            } else {
+                pre.textContent = 'Загрузка...';
+                body.appendChild(pre);
 
-            const fetchOpts = {};
-            if (typeof AuthManager !== 'undefined' && AuthManager.getAuthHeaders) {
-                fetchOpts.headers = AuthManager.getAuthHeaders();
+                const fetchOpts = {};
+                if (typeof AuthManager !== 'undefined' && AuthManager.getAuthHeaders) {
+                    fetchOpts.headers = AuthManager.getAuthHeaders();
+                }
+                fetch(resolvedForText.url + '?inline=true', fetchOpts)
+                    .then(r => r.text())
+                    .then(text => { pre.textContent = text; })
+                    .catch(() => { pre.textContent = 'Ошибка загрузки файла'; });
             }
-            fetch(inlineUrl, fetchOpts)
-                .then(r => r.text())
-                .then(text => { pre.textContent = text; })
-                .catch(() => { pre.textContent = 'Ошибка загрузки файла'; });
         } else {
             // Неподдерживаемый тип — сообщение + ссылка на скачивание
             const unsupported = document.createElement('div');

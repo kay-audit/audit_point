@@ -598,6 +598,8 @@ NOT `execute(action, params)`, иначе обойдётся `block_id`-пров
 | `ChatHistory.deleteConversation` | `chat-history.js:149` |
 | `ChatFeedback._request` | `chat-feedback.js:310` |
 | `ChatRenderer._getFileUrl` | `chat-renderer.js:953` |
+| `ChatRenderer._resolveFileUrl` | `chat-renderer.js:1064` |
+| `ChatRenderer._decodeTextDataUrl` | `chat-renderer.js:1085` |
 
 **Все `open_url` client-actions** с относительным URL — через
 `resolveProxyUrl` (`chat-client-actions.js:141-150, 157`), который делегирует

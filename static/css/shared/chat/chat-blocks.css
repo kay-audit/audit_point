@@ -132,6 +132,11 @@
 }
 
 .chat-block-reasoning > summary {
+    /* Flex-контейнер: ::before (стрелка), loader и текст —
+       на одной линии, выровнены по центру. */
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-sm);
     background: var(--bg-secondary);
     color: var(--text-secondary);
@@ -148,9 +153,9 @@
 .chat-block-reasoning > summary::before {
     content: '\25B6'; /* ▶ */
     display: inline-block;
-    margin-right: var(--spacing-xs);
     font-size: var(--font-size-xs);
     transition: transform var(--duration-fast, 150ms);
+    flex-shrink: 0;
 }
 
 .chat-block-reasoning[open] > summary::before {
@@ -163,6 +168,63 @@
     color: var(--text-secondary);
     line-height: var(--line-height-relaxed);
     border-top: var(--border-width-thin) solid var(--border-light);
+}
+
+/* ============================================
+   Индикатор активного рассуждения: крошечная сетка 3x3 (9 точек)
+   без рамки и фона. Серые (#6b7280) → голубые (#3b82f6), opacity
+   0.4 ↔ 1.0. Появляется короткой вспышкой (~1с) при старте стрима
+   рассуждения и сам пропадает (setTimeout в JS).
+   ============================================ */
+
+.chat-reasoning-loader {
+    display: inline-block;
+    /* 4×4 = 16 точек по 2px + 3 gap'а по 1px = 11×11.
+       Компактный, но заметный на стриме рассуждения. */
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    line-height: 0;
+    position: relative;
+}
+
+.chat-reasoning-loader-dot {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    background: #6b7280; /* gray-500: обычное состояние */
+    opacity: 0.4;
+    animation: chat-reasoning-loader-blink 1.5s ease-in-out infinite;
+    /* Позиция: --col, --row ставятся inline в JS (0..3 каждое).
+       Шаг 3px = 2px dot + 1px gap. Контейнер 11px вмещает 4 точки
+       от 0px до 9px включительно. */
+    left: calc(var(--col, 0) * 3px);
+    top: calc(var(--row, 0) * 3px);
+    /* animation-delay ставится inline в JS: (i*89) % 1500 / 1000s —
+       16 точек стартуют в окне 1.5с, образуя непрерывное мерцание. */
+}
+
+@keyframes chat-reasoning-loader-blink {
+    0%, 100% {
+        background: #6b7280; /* gray-500 */
+        opacity: 0.4;
+    }
+    45% {
+        background: #3b82f6; /* blue-500: активное состояние */
+        opacity: 1;
+    }
+    55% {
+        background: #3b82f6;
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chat-reasoning-loader-dot {
+        animation: none;
+        opacity: 0.8;
+    }
 }
 
 /* Разделитель между двумя последовательными reasoning-блоками внутри группы */
@@ -217,6 +279,22 @@
 .chat-reasoning-group-content > .chat-block-reasoning {
     margin-bottom: 0;
 }
+
+/* Если в группе только один шаг рассуждения — внешний "Рассуждение агента"
+   избыточен. Прячем summary и убираем рамку/фон, чтобы остался только
+   внутренний <details> с текстом "Рассуждение". */
+.chat-reasoning-group:has(> .chat-reasoning-group-content > .chat-block-reasoning:only-child) > summary {
+    display: none;
+}
+.chat-reasoning-group:has(> .chat-reasoning-group-content > .chat-block-reasoning:only-child) {
+    border: none;
+    background: transparent;
+}
+.chat-reasoning-group:has(> .chat-reasoning-group-content > .chat-block-reasoning:only-child) > .chat-reasoning-group-content {
+    padding: 0;
+    border-top: none;
+}
+
 
 /* ============================================
    Блок плана
@@ -303,8 +381,54 @@
 
 .chat-block-file-icon {
     flex-shrink: 0;
-    font-size: var(--font-size-lg);
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary, #6b7280);
 }
+.chat-block-file-icon svg {
+    width: 24px;
+    height: 24px;
+    display: block;
+    stroke-width: 1.5;
+}
+
+/* Цветовая палитра по расширению — рамка остака чёрная, различается только цвет. */
+.chat-block-file-icon--pdf    { color: #dc2626; }
+.chat-block-file-icon--doc,
+.chat-block-file-icon--docx   { color: #1d4ed8; }
+.chat-block-file-icon--xls,
+.chat-block-file-icon--xlsx   { color: #15803d; }
+.chat-block-file-icon--csv,
+.chat-block-file-icon--txt,
+.chat-block-file-icon--md,
+.chat-block-file-icon--log,
+.chat-block-file-icon--json,
+.chat-block-file-icon--xml,
+.chat-block-file-icon--yaml,
+.chat-block-file-icon--yml   { color: #475569; }
+.chat-block-file-icon--ppt,
+.chat-block-file-icon--pptx   { color: #c2410c; }
+.chat-block-file-icon--png,
+.chat-block-file-icon--jpg,
+.chat-block-file-icon--jpeg,
+.chat-block-file-icon--gif,
+.chat-block-file-icon--bmp,
+.chat-block-file-icon--webp,
+.chat-block-file-icon--svg    { color: #a16207; }
+.chat-block-file-icon--sql    { color: #be185d; }
+.chat-block-file-icon--ipynb,
+.chat-block-file-icon--py     { color: #be185d; }
+.chat-block-file-icon--js,
+.chat-block-file-icon--ts     { color: #ca8a04; }
+.chat-block-file-icon--zip,
+.chat-block-file-icon--rar,
+.chat-block-file-icon--7z,
+.chat-block-file-icon--gz,
+.chat-block-file-icon--tar    { color: #a16207; }
+.chat-block-file-icon--unknown { color: #94a3b8; }
 
 .chat-block-file-name {
     flex: 1;

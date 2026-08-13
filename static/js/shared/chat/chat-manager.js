@@ -16,6 +16,7 @@ import { ChatContext } from './chat-context.js';
 import { ChatEventBus } from './chat-event-bus.js';
 import { ChatFiles } from './chat-files.js';
 import { ChatMessages } from './chat-messages.js';
+import { ChatRenderer } from './chat-renderer.js';
 import { ChatUI } from './chat-ui.js';
 
 export class ChatManager {
@@ -66,6 +67,11 @@ export class ChatManager {
         ChatFiles.init(domRefs);
         ChatMessages.init(domRefs);
         ChatContext.init();
+
+        // Прогрев кеша иконок (fire-and-forget, init не блокируется).
+        if (typeof ChatRenderer._loadIcons === 'function') {
+            ChatRenderer._loadIcons().catch(console.error);
+        }
 
         // Общий AbortController — снимает все DOM-listener'ы при destroy().
         this._abortController = new AbortController();
