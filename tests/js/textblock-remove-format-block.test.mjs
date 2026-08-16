@@ -118,6 +118,61 @@ test('ИНВАРИАНТ: у капсулы не чистится style (её в
   assert.equal(out.indexOf('text-align'), -1);
 });
 
+// ── скоуп по выделению ───────────────────────────────────────────────────────
+
+/**
+ * Диапазон-скоуп для _removeBlockFormat. Настоящего Range в node нет (мини-DOM
+ * его не эмулирует), но методу нужны ровно три вещи: collapsed, startContainer
+ * и intersectsNode — их и подменяем. Границы корня (_rangeCoversContents)
+ * считать нечем (нет document.createRange) → корень остаётся нетронутым, что
+ * для частичного выделения и требуется.
+ * @param {object[]} nodes Узлы, которые диапазон «пересекает».
+ * @returns {object}
+ */
+function fakeRange(nodes) {
+  return { collapsed: false, intersectsNode: (el) => nodes.includes(el) };
+}
+
+test('СКОУП: частичное выделение вне списка — список НЕ разворачивается', () => {
+  // Регрессия: проход по всему блоку сносил все списки из-за одного выделенного
+  // жирного слова — и тут же персистил это через saveContent.
+  const editor = parseHtml('<p><b>жирное</b> слово</p><ul><li>раз</li><li>два</li></ul>');
+  const bold = editor.querySelector('b');
+  mgr()._removeBlockFormat(editor, fakeRange([editor.querySelector('p'), bold]));
+  assert.equal(editor.innerHTML, '<p><b>жирное</b> слово</p><ul><li>раз</li><li>два</li></ul>');
+});
+
+test('СКОУП: выделение внутри одного списка — соседний список цел', () => {
+  const editor = parseHtml('<ul><li>раз</li></ul><ol><li>один</li></ol>');
+  const target = editor.querySelector('ul');
+  mgr()._removeBlockFormat(editor, fakeRange([target, ...target.querySelectorAll('*')]));
+  assert.equal(editor.innerHTML, 'раз<ol><li>один</li></ol>');
+});
+
+test('СКОУП: выравнивание снимается только с пересечённых элементов', () => {
+  const editor = parseHtml(
+    '<p style="text-align: center">в выделении</p><div style="text-align: right">вне</div>',
+  );
+  mgr()._removeBlockFormat(editor, fakeRange([editor.querySelector('p')]));
+  assert.equal(editor.innerHTML, '<p>в выделении</p><div style="text-align: right">вне</div>');
+});
+
+test('СКОУП: схлопнутая каретка — только её блочные предки, соседний список цел', () => {
+  const editor = parseHtml(
+    '<ul style="text-align: center"><li>раз</li></ul><ul><li>сосед</li></ul>',
+  );
+  const caret = editor.querySelector('li').firstChild;
+  mgr()._removeBlockFormat(editor, { collapsed: true, startContainer: caret });
+  assert.equal(editor.innerHTML, 'раз<ul><li>сосед</li></ul>');
+});
+
+test('СКОУП: корень редактора при частичном выделении НЕ чистится', () => {
+  const editor = parseHtml('<p>текст</p>');
+  editor.style.textAlign = 'center';
+  mgr()._removeBlockFormat(editor, fakeRange([editor.querySelector('p')]));
+  assert.equal(editor.style.textAlign, 'center', 'text-align корня — не в скоупе выделения');
+});
+
 // ── устойчивость и идемпотентность ───────────────────────────────────────────
 
 test('повторный прогон ничего не меняет (идемпотентность)', () => {

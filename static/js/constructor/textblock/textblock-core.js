@@ -50,6 +50,15 @@ export function isZeroWidthNode(n) {
 const LIST_LEVEL_CMDS = ['indent', 'outdent'];
 
 /**
+ * Потолок глубины списка (0-based): уровень 8 — девятый и последний, который
+ * умеет описать w:abstractNum в OOXML (9 уровней). Глубже не уводит ни Tab, ни
+ * пункт меню «уровень глубже» — оба приходят в execCommand, где стоит гейт.
+ * Живёт в core (базовый класс), т.к. проверка — часть гейта; textblock-editor.js
+ * импортирует отсюда, чтобы число 8 не дублировалось.
+ */
+export const MAX_LIST_LEVEL = 8;
+
+/**
  * Команды, меняющие СТРУКТУРУ списка: после них разметка проходит нормализацию
  * вложенности (_normalizeListNesting, textblock-editor.js).
  */
@@ -80,6 +89,14 @@ export class TextBlockManager {
     hideToolbar() {
         if (this.globalToolbar) {
             this.globalToolbar.classList.add('hidden');
+        }
+        // Открытое меню класс hidden на тулбаре НЕ закрывает: дропдаун держит
+        // своё состояние сам. Без явного закрытия меню переживает смену
+        // поверхности (detachToolbar → hideToolbar) и всплывает при re-attach
+        // уже над ДРУГОЙ поверхностью. Метод миксина тулбара — зовём защитно
+        // (hideToolbar есть у всех поверхностей и вызывается рано).
+        if (typeof this._closeToolbarDropdowns === 'function') {
+            this._closeToolbarDropdowns();
         }
     }
 
@@ -273,11 +290,19 @@ export class TextBlockManager {
         // перезагрузке молча исчезал. Тихий no-op, нативная команда не идёт.
         // Гейт стоит ЗДЕСЬ, а не в тулбаре: через execCommand проходят все пути
         // (меню, Tab/Shift+Tab, программный вызов), дизейбл кнопки покрыл бы
-        // только один. Ту же проверку делает _handleListTab — она дублирующая.
-        if (LIST_LEVEL_CMDS.includes(command) && typeof this._listItemAncestor === 'function') {
+        // только один. Здесь же — потолок глубины: раньше MAX_LIST_LEVEL знала
+        // ТОЛЬКО Tab-ветка (_handleListTab), и пункт меню «уровень глубже»
+        // углублял до уровней 9+, которые DOCX-сборщик (inline.py) молча
+        // клампит на ilvl 8.
+        if (LIST_LEVEL_CMDS.includes(command) && typeof this._caretListItem === 'function') {
             const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
-            const caret = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).startContainer : null;
-            if (!this._listItemAncestor(caret, this.activeEditor)) return false;
+            const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+            const li = range ? this._caretListItem(range, this.activeEditor) : null;
+            if (!li) return false;
+            if (command === 'indent' && typeof this._listLevel === 'function'
+                    && this._listLevel(li, this.activeEditor) >= MAX_LIST_LEVEL) {
+                return false;
+            }
         }
 
         // Атомарность капсулы: inline-форматные команды по выделению, заходящему

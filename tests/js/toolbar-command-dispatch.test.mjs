@@ -18,6 +18,7 @@ import '../../static/js/constructor/textblock/textblock-toolbar.js';
 import { Notifications } from '../../static/js/shared/notifications.js';
 import { FindBar } from '../../static/js/constructor/search/find-bar.js';
 import { CorrectorPopover } from '../../static/js/constructor/text-actions/corrector-popover.js';
+import { EditorRegistry, SURFACE_POLICY } from '../../static/js/constructor/textblock/editor-registry.js';
 
 function makeManager() {
     const mgr = Object.create(TextBlockManager.prototype);
@@ -137,6 +138,93 @@ test('_runToolbarCommand("improveText") с выделением: открыва�
     assert.equal(calls[0].text, 'выделенный текст');
 });
 
+// ── политика поверхности на самом диспатче (не только в визуальном слое) ─────
+
+/**
+ * Активирует поверхность в EditorRegistry с временно выключенным ключом
+ * политики; возвращает восстановление.
+ * @param {string} policyKey Ключ SURFACE_POLICY.textblock, который гасим.
+ * @returns {() => void}
+ */
+function withBlockedPolicy(policyKey) {
+    const origValue = SURFACE_POLICY.textblock[policyKey];
+    const origActive = EditorRegistry.getActive();
+    SURFACE_POLICY.textblock[policyKey] = false;
+    EditorRegistry.setActive({ kind: 'textblock', element: {} });
+    return () => {
+        SURFACE_POLICY.textblock[policyKey] = origValue;
+        EditorRegistry.setActive(origActive);
+    };
+}
+
+test('_runToolbarCommand: команда дропдауна под запретом политики поверхности — тихий no-op', () => {
+    // Открытое меню переживало смену поверхности: пункт «Нумерованный список»
+    // исполнялся уже на поверхности с lists:false (визуальный слой гасит только
+    // ТРИГГЕР дропдауна, до пунктов открытого меню он не дотягивается).
+    for (const [command, policyKey] of [['insertOrderedList', 'lists'], ['indent', 'lists'],
+        ['justifyCenter', 'align'], ['createFootnote', 'footnotes']]) {
+        const mgr = makeManager();
+        const calls = [];
+        mgr.execCommand = (cmd) => calls.push(cmd);
+        mgr.createOrEditFootnote = () => calls.push('createOrEditFootnote');
+        mgr.updateToolbarState = () => calls.push('updateToolbarState');
+        const restore = withBlockedPolicy(policyKey);
+        try {
+            mgr._runToolbarCommand(command);
+        } finally { restore(); }
+        assert.deepEqual(calls, [], `${command} под ${policyKey}:false не должен исполняться`);
+    }
+});
+
+test('_runToolbarCommand: та же команда при разрешающей политике исполняется', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.execCommand = (cmd) => calls.push(cmd);
+    const origActive = EditorRegistry.getActive();
+    EditorRegistry.setActive({ kind: 'textblock', element: {} });
+    try {
+        mgr._runToolbarCommand('insertOrderedList');
+    } finally { EditorRegistry.setActive(origActive); }
+    assert.deepEqual(calls, ['insertOrderedList']);
+});
+
+test('_runToolbarCommand: нет активной поверхности / команда без policy-ключа — default-allow', () => {
+    const mgr = makeManager();
+    const calls = [];
+    mgr.execCommand = (cmd) => calls.push(cmd);
+    const origActive = EditorRegistry.getActive();
+    EditorRegistry.clear();
+    try {
+        mgr._runToolbarCommand('insertOrderedList'); // ключ есть, поверхности нет
+        mgr._runToolbarCommand('bold');              // ключа в карте нет вовсе
+    } finally { EditorRegistry.setActive(origActive); }
+    assert.deepEqual(calls, ['insertOrderedList', 'bold']);
+});
+
+// ── hideToolbar закрывает дропдауны (иначе меню переживает смену поверхности) ─
+
+test('hideToolbar: все три дропдауна закрываются вместе с тулбаром', () => {
+    const mgr = Object.create(TextBlockManager.prototype);
+    const closed = [];
+    const makeDropdown = (name) => ({ close: () => closed.push(name) });
+    mgr.globalToolbar = { classList: { add() {}, remove() {} } };
+    mgr._fontSizeDropdown = makeDropdown('fontSize');
+    mgr._alignDropdown = makeDropdown('align');
+    mgr._listsDropdown = makeDropdown('lists');
+
+    mgr.hideToolbar();
+
+    assert.deepEqual(closed, ['fontSize', 'align', 'lists']);
+});
+
+test('hideToolbar: дропдаунов нет (стаб тулбара) — ничего не падает', () => {
+    const mgr = Object.create(TextBlockManager.prototype);
+    mgr.globalToolbar = { classList: { add() {}, remove() {} } };
+    assert.doesNotThrow(() => mgr.hideToolbar());
+    // И вовсе без тулбара — hideToolbar зовётся рано, до initGlobalToolbar.
+    assert.doesNotThrow(() => Object.create(TextBlockManager.prototype).hideToolbar());
+});
+
 // ── _updateAlignTriggerState / _updateListsTriggerState ──────────────────────
 
 function makeClassList() {
@@ -223,7 +311,9 @@ test('_updateListsTriggerState: каретка ВНЕ <li> — indent/outdent п
         querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
     };
     mgr.queryCommandState = () => false;
-    mgr._listItemAncestor = () => null; // каретка вне списка
+    // Хелпер каретки — _caretListItem (обёртка над _listItemAncestor, разбирает
+    // range, заякоренный на самом редакторе: Ctrl+A в Chrome).
+    mgr._caretListItem = () => null; // каретка вне списка
     globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ startContainer: {} }) });
 
     try {
@@ -249,7 +339,7 @@ test('_updateListsTriggerState: каретка ВНУТРИ <li> — indent/outd
         querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
     };
     mgr.queryCommandState = () => false;
-    mgr._listItemAncestor = () => ({ tagName: 'LI' }); // каретка в списке
+    mgr._caretListItem = () => ({ tagName: 'LI' }); // каретка в списке
     globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ startContainer: {} }) });
 
     try {
@@ -263,7 +353,7 @@ test('_updateListsTriggerState: каретка ВНУТРИ <li> — indent/outd
     assert.equal(byCommand.outdent.getAttribute('aria-disabled'), 'false');
 });
 
-test('_updateListsTriggerState: без _listItemAncestor (миксин editor-levels не загружен) — indent/outdent НЕ падают, aria-disabled="true"', () => {
+test('_updateListsTriggerState: без _caretListItem (миксин editor-levels не загружен) — indent/outdent НЕ падают, aria-disabled="true"', () => {
     const mgr = makeManager();
     const trigger = { classList: makeClassList() };
     const options = ['indent', 'outdent'].map(makeOption);
@@ -272,7 +362,7 @@ test('_updateListsTriggerState: без _listItemAncestor (миксин editor-le
         querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
     };
     mgr.queryCommandState = () => false;
-    // mgr._listItemAncestor намеренно НЕ определён
+    // mgr._caretListItem намеренно НЕ определён
 
     assert.doesNotThrow(() => mgr._updateListsTriggerState());
 

@@ -6,9 +6,11 @@ import { test, expect, openAct, SEED_ACTS, waitForSaveComplete } from '../fixtur
  * Юнит-тесты (`tests/js/textblock-list-nesting.test.mjs`) гоняют нормализатор
  * вложенности на рукописном мини-DOM и не умеют исполнить `document.execCommand`
  * вовсе — здесь же живой Chromium: что реально порождает `execCommand('indent')`,
- * снимает ли `removeFormat` список без потери капсул, переживает ли вложенность
- * round-trip через санитайзер `acts` (DOMPurify недоступен в node), и не теряет
- * ли contenteditable выделение при клике по пунктам дропдауна списков (BUG-3).
+ * снимает ли `removeFormat` список без потери капсул и удерживается ли он в
+ * границах выделения, упирается ли пункт меню «уровень глубже» в потолок
+ * глубины, переживает ли вложенность round-trip через санитайзер `acts`
+ * (DOMPurify недоступен в node), и не теряет ли contenteditable выделение при
+ * клике по пунктам дропдауна списков (BUG-3).
  */
 
 const EDITOR = '.textblock-editor[data-text-block-id="txt-seed-1"]';
@@ -352,6 +354,98 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     expect(capsulesAfter).toEqual(capsulesBefore);
     await expect(editor).toHaveText(/Первый пункт с ссылкой/);
     await expect(editor).toHaveText(/Второй пункт со сноской/);
+  });
+
+  test('removeFormat по частичному выделению не трогает список вне выделения (D2)', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+    await editor.click();
+
+    await page.evaluate(() => {
+      const ed = document.querySelector(
+        '.textblock-editor[data-text-block-id="txt-seed-1"]'
+      ) as HTMLElement;
+      const tbm = (window as any).textBlockManager;
+      tbm.activeEditor = ed;
+      ed.innerHTML =
+        '<div>обычный <b>жирный</b> текст</div>' +
+        '<ul><li>Пункт списка</li><li>Второй пункт</li></ul>';
+      // Выделяем ТОЛЬКО жирное слово — список остаётся вне диапазона.
+      const range = document.createRange();
+      range.selectNodeContents(ed.querySelector('b') as HTMLElement);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      ed.focus();
+    });
+
+    await page
+      .locator('#globalTextBlockToolbar .toolbar-btn[data-command="removeFormat"]')
+      .click();
+
+    const html = await editor.innerHTML();
+    // Нативная часть команды сняла жирность выделенного слова…
+    expect(html).not.toMatch(/<(b|strong)\b/i);
+    // …а блочный проход НЕ развернул список: он вне выделения. Раньше проход шёл
+    // по всему блоку и сносил все списки блока разом (и это персистилось).
+    expect(html).toMatch(/<ul\b/i);
+    expect(await editor.evaluate((ed) => ed.querySelectorAll('li').length)).toBe(2);
+    await expect(editor).toHaveText(/Пункт списка/);
+    await expect(editor).toHaveText(/Второй пункт/);
+    await expect(editor).toHaveText(/обычный жирный текст/);
+  });
+
+  test('Пункт меню «Уровень глубже» не углубляет ниже потолка (MAX_LIST_LEVEL)', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+    await editor.click();
+
+    // = MAX_LIST_LEVEL из static/js/constructor/textblock/textblock-core.js:
+    // 0-based уровень 8 — девятый и последний, который умеет описать
+    // w:abstractNum в OOXML (глубже inline.py молча клампит на ilvl 8).
+    const MAX_LIST_LEVEL = 8;
+
+    await page.evaluate((maxLevel) => {
+      const ed = document.querySelector(
+        '.textblock-editor[data-text-block-id="txt-seed-1"]'
+      ) as HTMLElement;
+      const tbm = (window as any).textBlockManager;
+      tbm.activeEditor = ed;
+      // maxLevel+1 вложенных списков → у самого глубокого <li> уровень maxLevel.
+      let html = '<ul><li>Дно списка</li></ul>';
+      for (let i = maxLevel - 1; i >= 0; i--) html = `<ul><li>Уровень ${i}${html}</li></ul>`;
+      ed.innerHTML = html;
+      const items = ed.querySelectorAll('li');
+      const range = document.createRange();
+      range.selectNodeContents(items[items.length - 1]);
+      range.collapse(false);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      ed.focus();
+    }, MAX_LIST_LEVEL);
+
+    expect(await listDepthOf(editor, 'Дно списка')).toBe(MAX_LIST_LEVEL);
+    const before = await editor.innerHTML();
+
+    // Каретка внутри <li>, поэтому пункт меню активен (aria-disabled ставится
+    // только вне списка) — потолок держит гейт execCommand, не UI-слой.
+    await page.locator('#listsTrigger').click();
+    const indentOption = page.locator(
+      '#listsMenu .toolbar-dropdown-option[data-command="indent"]'
+    );
+    await expect(indentOption).toHaveAttribute('aria-disabled', 'false');
+    await indentOption.click();
+
+    // Structural check: глубина DOM не выросла, разметка не изменилась вовсе.
+    // Что тот же пункт меню РАБОТАЕТ под потолком — отдельный тест выше
+    // («Пункты меню „Уровень глубже“/„Уровень выше“ делают то же, что Tab»).
+    expect(await listDepthOf(editor, 'Дно списка')).toBe(MAX_LIST_LEVEL);
+    expect(await editor.innerHTML()).toBe(before);
   });
 
   test('Дропдауны тулбара открываются, применяют команду и не теряют выделение редактора (BUG-3)', async ({

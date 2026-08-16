@@ -6,24 +6,36 @@ import { getStructureLimits } from '../violation/violation-image-validator.js';
 import { FindBar } from '../search/find-bar.js';
 import { Notifications } from '../../shared/notifications.js';
 import { CorrectorPopover } from '../text-actions/corrector-popover.js';
-import { SURFACE_POLICY } from './editor-registry.js';
+import { EditorRegistry, SURFACE_POLICY } from './editor-registry.js';
 import { ToolbarDropdown } from './toolbar-dropdown.js';
 
 /**
- * Task 0.4 / Task 5 (A1): карта data-command → ключ SURFACE_POLICY для
- * top-level .toolbar-btn. Команды без ключа (bold/italic/underline/
- * strikeThrough/removeFormat) политикой не управляются — остаются как есть.
- * Task 5 схлопнула выравнивание и списки в дропдауны — justifyLeft/…/
- * insertOrderedList/indent/outdent больше не top-level кнопки, их политика
- * теперь в DROPDOWN_TRIGGER_POLICY_KEY ниже (блокирует триггер целиком).
- * Размер шрифта (#fontSizeTrigger) — по-прежнему без policy-ключа, механизм
- * на него не распространяется (см. отчёт Task 0.4).
+ * Task 0.4 / Task 5 (A1): карта data-command → ключ SURFACE_POLICY. Команды без
+ * ключа (bold/italic/underline/strikeThrough/removeFormat) политикой не
+ * управляются — остаются как есть. Размер шрифта (#fontSizeTrigger) —
+ * по-прежнему без policy-ключа, механизм на него не распространяется (см. отчёт
+ * Task 0.4).
+ *
+ * Два потребителя: _applyToolbarPolicy гасит по ней top-level .toolbar-btn
+ * (визуальный слой), _runToolbarCommand — гейтит сам диспатч. Команды
+ * выравнивания/списков top-level кнопок не имеют (Task 5 схлопнула их в
+ * дропдауны, чьи ТРИГГЕРЫ гасит DROPDOWN_TRIGGER_POLICY_KEY ниже), поэтому на
+ * первого потребителя их записи не влияют — они нужны второму: открытое меню
+ * может пережить смену поверхности, и пункт обязан упереться в политику.
  */
 const COMMAND_POLICY_KEY = {
     createFootnote: 'footnotes',
     createLink: 'links',
     findReplace: 'findReplace',
     improveText: 'improveText',
+    justifyLeft: 'align',
+    justifyCenter: 'align',
+    justifyRight: 'align',
+    justifyFull: 'align',
+    insertUnorderedList: 'lists',
+    insertOrderedList: 'lists',
+    indent: 'lists',
+    outdent: 'lists',
 };
 
 /**
@@ -249,6 +261,14 @@ Object.assign(TextBlockManager.prototype, {
      * @param {string} command
      */
     _runToolbarCommand(command) {
+        // Политика поверхности — на единой точке диспатча, а не только в
+        // визуальном слое (_applyToolbarPolicy гасит кнопки и триггеры
+        // дропдаунов). Пункт МЕНЮ под запрет не попадал: открытое меню
+        // переживало смену поверхности, и «Нумерованный список» исполнялся уже
+        // на поверхности с lists:false. Тихий return — источник-дропдаун к этому
+        // моменту закрыт сам (ToolbarDropdown зовёт close ДО onSelect).
+        if (!this._isCommandAllowedForSurface(command)) return;
+
         if (command === 'findReplace') {
             // В отличие от прочих команд, панель поиска остаётся открытой и
             // держит фокус на своём поле ввода — редактор НЕ перефокусируем
@@ -300,6 +320,34 @@ Object.assign(TextBlockManager.prototype, {
         }
 
         this.updateToolbarState();
+    },
+
+    /**
+     * @private Команда разрешена политикой ТЕКУЩЕЙ активной поверхности?
+     * Источник поверхности — EditorRegistry (тот же, что у клавиатурных
+     * шорткатов в handleEditorKeydown), а не аргумент attachToolbarTo: тулбар
+     * общий, а исполняется команда всегда на активной поверхности. Команда без
+     * policy-ключа, неизвестный kind, нет активной поверхности — default-allow
+     * (запрещаем, только когда ключ ЯВНО false).
+     * @param {string} command
+     * @returns {boolean}
+     */
+    _isCommandAllowedForSurface(command) {
+        const policyKey = COMMAND_POLICY_KEY[command];
+        if (!policyKey) return true;
+        return SURFACE_POLICY[EditorRegistry.getActive()?.kind]?.[policyKey] !== false;
+    },
+
+    /**
+     * @private Закрывает все дропдауны тулбара. Зовётся из hideToolbar
+     * (textblock-core.js) — открытое меню обязано умереть вместе с показом
+     * тулбара, иначе всплывёт при re-attach уже над другой поверхностью.
+     * Дропдаунов может не быть вовсе (стаб тулбара в тестах,
+     * _mountToolbarDropdown вернул null) — закрываем защитно.
+     */
+    _closeToolbarDropdowns() {
+        [this._fontSizeDropdown, this._alignDropdown, this._listsDropdown]
+            .forEach(dropdown => dropdown?.close?.());
     },
 
     /**
@@ -584,13 +632,15 @@ Object.assign(TextBlockManager.prototype, {
         // тихо гасит вне списка (гейт в textblock-core.js, защищает данные на
         // ВСЕХ путях, включая программный вызов). Здесь — ТОЛЬКО UI-состояние:
         // кликабельный, но безответный пункт меню читается как сломанная кнопка.
-        // _listItemAncestor — метод миксина editor-levels (textblock-editor.js),
-        // отсюда зовём защитно.
+        // _caretListItem — метод миксина editor-levels (textblock-editor.js),
+        // отсюда зовём защитно. Он же (а не «сырой» _listItemAncestor) разбирает
+        // range, заякоренный на самом редакторе: иначе Ctrl+A над списком красил
+        // бы пункты уровня как недоступные — ровно то, что гейт разрешает.
         let inList = false;
-        if (typeof this._listItemAncestor === 'function' && this.activeEditor) {
+        if (typeof this._caretListItem === 'function' && this.activeEditor) {
             const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
-            const caret = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).startContainer : null;
-            inList = !!this._listItemAncestor(caret, this.activeEditor);
+            const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+            inList = !!(range && this._caretListItem(range, this.activeEditor));
         }
 
         menu?.querySelectorAll('.toolbar-dropdown-option').forEach(opt => {
