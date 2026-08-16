@@ -580,8 +580,24 @@ Object.assign(TextBlockManager.prototype, {
             : (this.queryCommandState('insertOrderedList') ? 'insertOrderedList' : null);
         trigger.classList.toggle('active', !!active);
 
+        // Доделка: indent/outdent осмысленны только внутри <li> — execCommand их
+        // тихо гасит вне списка (гейт в textblock-core.js, защищает данные на
+        // ВСЕХ путях, включая программный вызов). Здесь — ТОЛЬКО UI-состояние:
+        // кликабельный, но безответный пункт меню читается как сломанная кнопка.
+        // _listItemAncestor — метод миксина editor-levels (textblock-editor.js),
+        // отсюда зовём защитно.
+        let inList = false;
+        if (typeof this._listItemAncestor === 'function' && this.activeEditor) {
+            const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
+            const caret = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).startContainer : null;
+            inList = !!this._listItemAncestor(caret, this.activeEditor);
+        }
+
         menu?.querySelectorAll('.toolbar-dropdown-option').forEach(opt => {
             opt.classList.toggle('active', !!active && opt.dataset.command === active);
+            if (opt.dataset.command === 'indent' || opt.dataset.command === 'outdent') {
+                opt.setAttribute('aria-disabled', inList ? 'false' : 'true');
+            }
         });
     },
 

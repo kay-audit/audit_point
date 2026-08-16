@@ -115,6 +115,12 @@ export class ToolbarDropdown {
             if (!item) return;
             e.preventDefault();
             e.stopPropagation();
+            // aria-disabled="true" (например, indent/outdent вне списка,
+            // textblock-toolbar.js::_updateListsTriggerState) — пункт видим, но
+            // неактивен: меню остаётся открытым, onSelect не зовётся. preventDefault
+            // выше всё равно отработал — клик по нему не должен ронять
+            // фокус/выделение редактора.
+            if (item.getAttribute('aria-disabled') === 'true') return;
             this.close();
             this._onSelect?.(item, e);
         });

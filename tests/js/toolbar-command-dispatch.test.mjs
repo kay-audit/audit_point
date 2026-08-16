@@ -149,6 +149,17 @@ function makeClassList() {
     };
 }
 
+/** Пункт меню дропдауна: dataset + classList + setAttribute/getAttribute (aria-disabled). */
+function makeOption(command) {
+    const attrs = {};
+    return {
+        dataset: { command },
+        classList: makeClassList(),
+        setAttribute(k, v) { attrs[k] = String(v); },
+        getAttribute(k) { return attrs[k] ?? null; },
+    };
+}
+
 test('_updateAlignTriggerState: иконка триггера и активный пункт меню отражают текущее выравнивание', () => {
     const mgr = makeManager();
     const icon = { textContent: '' };
@@ -187,8 +198,7 @@ test('_updateAlignTriggerState: ни один justify* не активен → �
 test('_updateListsTriggerState: insertOrderedList активен — триггер и пункт подсвечены', () => {
     const mgr = makeManager();
     const trigger = { classList: makeClassList() };
-    const options = ['insertUnorderedList', 'insertOrderedList', 'indent', 'outdent']
-        .map(command => ({ dataset: { command }, classList: makeClassList() }));
+    const options = ['insertUnorderedList', 'insertOrderedList', 'indent', 'outdent'].map(makeOption);
     const menu = { querySelectorAll: () => options };
     mgr.globalToolbar = {
         querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
@@ -199,6 +209,76 @@ test('_updateListsTriggerState: insertOrderedList активен — тригг�
 
     assert.equal(trigger.classList.contains('active'), true);
     assert.deepEqual(options.map(o => o.classList.contains('active')), [false, true, false, false]);
+});
+
+// ── Доделка: indent/outdent неактивны вне <li> (execCommand их тихо гасит —
+// кликабельный, но безответный пункт меню читается как баг) ─────────────────
+
+test('_updateListsTriggerState: каретка ВНЕ <li> — indent/outdent получают aria-disabled="true"', () => {
+    const mgr = makeManager();
+    const trigger = { classList: makeClassList() };
+    const options = ['insertUnorderedList', 'insertOrderedList', 'indent', 'outdent'].map(makeOption);
+    const menu = { querySelectorAll: () => options };
+    mgr.globalToolbar = {
+        querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
+    };
+    mgr.queryCommandState = () => false;
+    mgr._listItemAncestor = () => null; // каретка вне списка
+    globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ startContainer: {} }) });
+
+    try {
+        mgr._updateListsTriggerState();
+    } finally {
+        delete globalThis.getSelection;
+    }
+
+    const byCommand = Object.fromEntries(options.map(o => [o.dataset.command, o]));
+    assert.equal(byCommand.indent.getAttribute('aria-disabled'), 'true');
+    assert.equal(byCommand.outdent.getAttribute('aria-disabled'), 'true');
+    // insertUnorderedList/insertOrderedList — не пункты уровня, aria-disabled их не касается.
+    assert.equal(byCommand.insertUnorderedList.getAttribute('aria-disabled'), null);
+    assert.equal(byCommand.insertOrderedList.getAttribute('aria-disabled'), null);
+});
+
+test('_updateListsTriggerState: каретка ВНУТРИ <li> — indent/outdent получают aria-disabled="false"', () => {
+    const mgr = makeManager();
+    const trigger = { classList: makeClassList() };
+    const options = ['insertUnorderedList', 'insertOrderedList', 'indent', 'outdent'].map(makeOption);
+    const menu = { querySelectorAll: () => options };
+    mgr.globalToolbar = {
+        querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
+    };
+    mgr.queryCommandState = () => false;
+    mgr._listItemAncestor = () => ({ tagName: 'LI' }); // каретка в списке
+    globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ startContainer: {} }) });
+
+    try {
+        mgr._updateListsTriggerState();
+    } finally {
+        delete globalThis.getSelection;
+    }
+
+    const byCommand = Object.fromEntries(options.map(o => [o.dataset.command, o]));
+    assert.equal(byCommand.indent.getAttribute('aria-disabled'), 'false');
+    assert.equal(byCommand.outdent.getAttribute('aria-disabled'), 'false');
+});
+
+test('_updateListsTriggerState: без _listItemAncestor (миксин editor-levels не загружен) — indent/outdent НЕ падают, aria-disabled="true"', () => {
+    const mgr = makeManager();
+    const trigger = { classList: makeClassList() };
+    const options = ['indent', 'outdent'].map(makeOption);
+    const menu = { querySelectorAll: () => options };
+    mgr.globalToolbar = {
+        querySelector: (sel) => (sel === '#listsTrigger' ? trigger : sel === '#listsMenu' ? menu : null),
+    };
+    mgr.queryCommandState = () => false;
+    // mgr._listItemAncestor намеренно НЕ определён
+
+    assert.doesNotThrow(() => mgr._updateListsTriggerState());
+
+    const byCommand = Object.fromEntries(options.map(o => [o.dataset.command, o]));
+    assert.equal(byCommand.indent.getAttribute('aria-disabled'), 'true');
+    assert.equal(byCommand.outdent.getAttribute('aria-disabled'), 'true');
 });
 
 test('_updateListsTriggerState: каретка вне списка — триггер и пункты неактивны', () => {

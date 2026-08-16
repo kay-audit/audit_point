@@ -249,6 +249,20 @@
     font-weight: var(--font-weight-semibold);
 }
 
+/* Доделка: indent/outdent вне <li> — execCommand их тихо гасит (гейт в
+   textblock-core.js), пункт остаётся видимым, но неактивным (по образцу
+   .toolbar-btn:disabled). role="option" — не форм-контрол, поэтому состояние
+   через aria-disabled, не через IDL-свойство disabled. */
+.toolbar-dropdown-option[aria-disabled="true"] {
+    opacity: var(--opacity-subtle);
+    cursor: not-allowed;
+}
+
+.toolbar-dropdown-option[aria-disabled="true"]:hover {
+    background: transparent;
+    color: var(--text-primary);
+}
+
 /* Подсказка клавиши (Tab / Shift+Tab у пунктов indent/outdent) — прижата к
    правому краю пункта меню. */
 .toolbar-dropdown-hint {

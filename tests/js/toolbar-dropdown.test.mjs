@@ -158,6 +158,27 @@ test('клик по меню мимо пункта (например, фону �
     assert.equal(calls.onSelect.length, 0);
 });
 
+test('клик по пункту с aria-disabled="true" (например, indent/outdent вне списка): меню НЕ закрывается, onSelect НЕ зовётся', () => {
+    const { menu, dropdown, calls } = makeDropdown();
+    dropdown.open();
+    const item = makeFakeItem('opt', { command: 'indent' });
+    item.setAttribute('aria-disabled', 'true');
+    const res = menu.dispatch('click', { target: item });
+    assert.equal(res.preventDefaultCalled, true, 'preventDefault всё равно защищает фокус/выделение редактора');
+    assert.equal(dropdown.isOpen, true, 'меню остаётся открытым');
+    assert.equal(calls.onSelect.length, 0, '_onSelect не вызван для disabled-пункта');
+});
+
+test('клик по пункту с aria-disabled="false" — обычный выбор (регресс: строка "false" не должна читаться как истина)', () => {
+    const { menu, dropdown, calls } = makeDropdown();
+    dropdown.open();
+    const item = makeFakeItem('opt', { command: 'indent' });
+    item.setAttribute('aria-disabled', 'false');
+    menu.dispatch('click', { target: item });
+    assert.equal(dropdown.isOpen, false);
+    assert.equal(calls.onSelect.length, 1);
+});
+
 test('открытие регистрирует РОВНО один слой в EscapeStack; повторный open не плодит слои', () => {
     drainEscapeStack();
     const { dropdown } = makeDropdown();
