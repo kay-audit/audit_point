@@ -7,25 +7,33 @@ import { FindBar } from '../search/find-bar.js';
 import { Notifications } from '../../shared/notifications.js';
 import { CorrectorPopover } from '../text-actions/corrector-popover.js';
 import { SURFACE_POLICY } from './editor-registry.js';
+import { ToolbarDropdown } from './toolbar-dropdown.js';
 
 /**
- * Task 0.4: карта data-command → ключ SURFACE_POLICY. Команды без ключа
- * (bold/italic/underline/strikeThrough/removeFormat) политикой не управляются —
- * остаются как есть. Размер шрифта (#fontSizeTrigger) — отдельный триггер БЕЗ
- * data-command, поэтому ключ fontSize из SURFACE_POLICY этим механизмом пока
- * не применяется (см. отчёт Task 0.4).
+ * Task 0.4 / Task 5 (A1): карта data-command → ключ SURFACE_POLICY для
+ * top-level .toolbar-btn. Команды без ключа (bold/italic/underline/
+ * strikeThrough/removeFormat) политикой не управляются — остаются как есть.
+ * Task 5 схлопнула выравнивание и списки в дропдауны — justifyLeft/…/
+ * insertOrderedList/indent/outdent больше не top-level кнопки, их политика
+ * теперь в DROPDOWN_TRIGGER_POLICY_KEY ниже (блокирует триггер целиком).
+ * Размер шрифта (#fontSizeTrigger) — по-прежнему без policy-ключа, механизм
+ * на него не распространяется (см. отчёт Task 0.4).
  */
 const COMMAND_POLICY_KEY = {
     createFootnote: 'footnotes',
-    justifyLeft: 'align',
-    justifyCenter: 'align',
-    justifyRight: 'align',
-    justifyFull: 'align',
     createLink: 'links',
     findReplace: 'findReplace',
     improveText: 'improveText',
-    insertUnorderedList: 'lists',
-    insertOrderedList: 'lists',
+};
+
+/**
+ * Task 5 (A1): align/lists — теперь дропдауны (не отдельные .toolbar-btn), их
+ * пункты меню недоступны все разом, если недоступен сам триггер. Карта:
+ * id триггера → ключ SURFACE_POLICY.
+ */
+const DROPDOWN_TRIGGER_POLICY_KEY = {
+    alignTrigger: 'align',
+    listsTrigger: 'lists',
 };
 
 Object.assign(TextBlockManager.prototype, {
@@ -56,48 +64,73 @@ Object.assign(TextBlockManager.prototype, {
             </div>
             
             <div class="toolbar-separator"></div>
-            
+
             <div class="toolbar-group">
-                <div class="toolbar-fontsize" id="fontSizePicker">
-                    <button type="button" class="toolbar-btn toolbar-fontsize-trigger" id="fontSizeTrigger"
+                <div class="toolbar-fontsize toolbar-dropdown" id="fontSizePicker">
+                    <button type="button" class="toolbar-btn toolbar-dropdown-trigger toolbar-fontsize-trigger" id="fontSizeTrigger"
                             title="Размер шрифта (Ctrl+Shift+> / <)" aria-haspopup="listbox" aria-expanded="false">
                         <span class="toolbar-fontsize-value">14</span>
-                        <span class="toolbar-fontsize-caret" aria-hidden="true">▾</span>
+                        <span class="toolbar-dropdown-caret" aria-hidden="true">▾</span>
                     </button>
-                    <div class="toolbar-fontsize-menu hidden" id="fontSizeMenu" role="listbox" aria-label="Размер шрифта">
+                    <div class="toolbar-fontsize-menu toolbar-dropdown-menu hidden" id="fontSizeMenu" role="listbox" aria-label="Размер шрифта">
                         ${this.fontSizes.map(size =>
-            `<div class="toolbar-fontsize-option" role="option" data-size="${size}" tabindex="-1">${size}px</div>`
+            `<div class="toolbar-fontsize-option toolbar-dropdown-option" role="option" data-size="${size}" tabindex="-1">${size}px</div>`
         ).join('')}
                     </div>
                 </div>
             </div>
-            
+
             <div class="toolbar-separator"></div>
-            
+
             <div class="toolbar-group">
-                <button class="toolbar-btn" data-command="justifyLeft" title="По левому краю (Ctrl+Shift+A — цикл)">
-                    ◧
-                </button>
-                <button class="toolbar-btn" data-command="justifyCenter" title="По центру (Ctrl+Shift+A — цикл)">
-                    ▥
-                </button>
-                <button class="toolbar-btn" data-command="justifyRight" title="По правому краю (Ctrl+Shift+A — цикл)">
-                    ◨
-                </button>
-                <button class="toolbar-btn" data-command="justifyFull" title="По ширине (Ctrl+Shift+A — цикл)">
-                    ▦
-                </button>
+                <div class="toolbar-align toolbar-dropdown" id="alignPicker">
+                    <button type="button" class="toolbar-btn toolbar-dropdown-trigger toolbar-dropdown-trigger-icon" id="alignTrigger"
+                            title="Выравнивание (Ctrl+Shift+A — цикл)" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="toolbar-dropdown-icon" aria-hidden="true">◧</span>
+                        <span class="toolbar-dropdown-caret" aria-hidden="true">▾</span>
+                    </button>
+                    <div class="toolbar-dropdown-menu hidden" id="alignMenu" role="listbox" aria-label="Выравнивание">
+                        <div class="toolbar-dropdown-option" role="option" data-command="justifyLeft" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">◧</span><span class="toolbar-dropdown-label">По левому краю</span>
+                        </div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="justifyCenter" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">▥</span><span class="toolbar-dropdown-label">По центру</span>
+                        </div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="justifyRight" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">◨</span><span class="toolbar-dropdown-label">По правому краю</span>
+                        </div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="justifyFull" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">▦</span><span class="toolbar-dropdown-label">По ширине</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="toolbar-separator"></div>
 
             <div class="toolbar-group">
-                <button class="toolbar-btn" data-command="insertUnorderedList" title="Маркированный список">
-                    •
-                </button>
-                <button class="toolbar-btn" data-command="insertOrderedList" title="Нумерованный список">
-                    1.
-                </button>
+                <div class="toolbar-lists toolbar-dropdown" id="listsPicker">
+                    <button type="button" class="toolbar-btn toolbar-dropdown-trigger toolbar-dropdown-trigger-icon" id="listsTrigger"
+                            title="Списки" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="toolbar-dropdown-icon" aria-hidden="true">•</span>
+                        <span class="toolbar-dropdown-caret" aria-hidden="true">▾</span>
+                    </button>
+                    <div class="toolbar-dropdown-menu hidden" id="listsMenu" role="listbox" aria-label="Списки">
+                        <div class="toolbar-dropdown-option" role="option" data-command="insertUnorderedList" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">•</span><span class="toolbar-dropdown-label">Маркированный список</span>
+                        </div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="insertOrderedList" tabindex="-1">
+                            <span class="toolbar-dropdown-icon" aria-hidden="true">1.</span><span class="toolbar-dropdown-label">Нумерованный список</span>
+                        </div>
+                        <div class="toolbar-dropdown-separator" role="separator"></div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="indent" tabindex="-1">
+                            <span class="toolbar-dropdown-label">Уровень глубже</span><span class="toolbar-dropdown-hint">Tab</span>
+                        </div>
+                        <div class="toolbar-dropdown-option" role="option" data-command="outdent" tabindex="-1">
+                            <span class="toolbar-dropdown-label">Уровень выше</span><span class="toolbar-dropdown-hint">Shift+Tab</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="toolbar-separator"></div>
@@ -110,12 +143,16 @@ Object.assign(TextBlockManager.prototype, {
                     📑
                 </button>
             </div>
-            
+
             <div class="toolbar-separator"></div>
 
             <div class="toolbar-group">
                 <button class="toolbar-btn" data-command="removeFormat" title="Очистить форматирование">
-                    ✕
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M22 21H7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="m5 11 9 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                 </button>
             </div>
 
@@ -156,139 +193,113 @@ Object.assign(TextBlockManager.prototype, {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const command = btn.dataset.command;
-
-                if (command === 'findReplace') {
-                    // В отличие от прочих команд, панель поиска остаётся открытой и
-                    // держит фокус на своём поле ввода — редактор НЕ перефокусируем
-                    // (иначе activeEditor.focus() ниже тут же увёл бы фокус обратно).
-                    // Префилл из выделения снимаем ДО hideToolbar — так же, как
-                    // Ctrl+F: кнопка обещает «(Ctrl+F)», поведение должно совпадать (#9).
-                    const prefill = FindBar._selectionPrefill();
-                    this.hideToolbar();
-                    FindBar.open(prefill);
-                    return;
-                }
-
-                if (command === 'improveText') {
-                    // Корректор: плавающая перетаскиваемая панель. Выделение держим
-                    // через клон Range — редактор НЕ перефокусируем.
-                    const sel = window.getSelection();
-                    if (!sel || sel.isCollapsed) {
-                        Notifications.info('Выделите текст для корректуры');
-                        return;
-                    }
-                    const range = sel.getRangeAt(0).cloneRange();
-                    // Selection.toString() отдаёт переносы строк (<br> → \n), а
-                    // Range.toString() их теряет (только текстовые узлы). Корректору
-                    // нужны переносы, иначе многострочный текст схлопнется в одну
-                    // строку. Ср. FindBar._selectionPrefill (та же причина).
-                    const text = sel.toString();
-                    if (!text.trim()) {
-                        Notifications.info('Выделите текст для корректуры');
-                        return;
-                    }
-                    CorrectorPopover.open({ editor: this.activeEditor, range, text });
-                    return;
-                }
-
-                // Специальная обработка для ссылок и сносок
-                if (command === 'createLink') {
-                    this.createOrEditLink();
-                } else if (command === 'createFootnote') {
-                    this.createOrEditFootnote();
-                } else {
-                    this.execCommand(command);
-                }
-
-                // Возвращаем фокус в редактор
-                if (this.activeEditor) {
-                    this.activeEditor.focus();
-                    // Применяем форматирование к элементам
-                    this.applyFormattingToNewNodes(this.activeEditor);
-                }
-
-                this.updateToolbarState();
+                this._runToolbarCommand(btn.dataset.command);
             });
         });
 
-        // BUG-3: кастомный дропдаун размера шрифта вместо нативного <select>.
-        // Нативный <select> крал фокус у contenteditable и схлопывал выделение
-        // (preventDefault на его mousedown нельзя — дропдаун не откроется), из-за
-        // чего applyFontSize уходил в ветку каретки и ресайз выделения «не работал».
-        // Триггер и пункты — на mousedown/pointerdown→preventDefault, как кнопки
-        // тулбара: редактор НЕ теряет фокус/выделение, applyFontSize работает по
-        // живому Range без save/restore-хаков.
-        const fontSizePicker = this.globalToolbar.querySelector('#fontSizePicker');
-        const fontSizeTrigger = this.globalToolbar.querySelector('#fontSizeTrigger');
-        const fontSizeMenu = this.globalToolbar.querySelector('#fontSizeMenu');
-        if (fontSizePicker && fontSizeTrigger && fontSizeMenu) {
-            fontSizeTrigger.addEventListener('mousedown', (e) => e.preventDefault());
-            fontSizeTrigger.addEventListener('pointerdown', (e) => e.preventDefault());
-            fontSizeTrigger.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this._toggleFontSizeMenu();
-            });
+        // Task 5 (A1): дропдауны тулбара (размер шрифта мигрирует, выравнивание
+        // и списки — новые) — общий хелпер ToolbarDropdown вместо трёх похожих
+        // реализаций BUG-3 (preventDefault на mousedown/pointerdown триггера и
+        // пунктов, закрытие по Escape через EscapeStack и по клику вне picker —
+        // см. toolbar-dropdown.js).
+        this._fontSizeDropdown = this._mountToolbarDropdown({
+            pickerId: 'fontSizePicker', triggerId: 'fontSizeTrigger', menuId: 'fontSizeMenu',
+            itemSelector: '.toolbar-fontsize-option',
+            onOpen: () => this.updateFontSizeSelect(),
+            onSelect: (item) => this.applyFontSize(parseInt(item.dataset.size, 10)),
+        });
 
-            fontSizeMenu.querySelectorAll('.toolbar-fontsize-option').forEach(opt => {
-                opt.addEventListener('mousedown', (e) => e.preventDefault());
-                opt.addEventListener('pointerdown', (e) => e.preventDefault());
-                opt.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this._closeFontSizeMenu();
-                    this.applyFontSize(parseInt(opt.dataset.size));
-                });
-            });
+        this._alignDropdown = this._mountToolbarDropdown({
+            pickerId: 'alignPicker', triggerId: 'alignTrigger', menuId: 'alignMenu',
+            itemSelector: '.toolbar-dropdown-option',
+            onOpen: () => this._updateAlignTriggerState(),
+            onSelect: (item) => this._runToolbarCommand(item.dataset.command),
+        });
 
-            // Закрытие меню по клику вне пикера и по Escape. Документ-уровневые
-            // слушатели навешиваются один раз (тулбар создаётся единожды).
-            document.addEventListener('mousedown', (e) => {
-                if (fontSizePicker && !fontSizePicker.contains(e.target)) {
-                    this._closeFontSizeMenu();
-                }
-            });
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') this._closeFontSizeMenu();
-            });
+        this._listsDropdown = this._mountToolbarDropdown({
+            pickerId: 'listsPicker', triggerId: 'listsTrigger', menuId: 'listsMenu',
+            itemSelector: '.toolbar-dropdown-option',
+            onOpen: () => this._updateListsTriggerState(),
+            onSelect: (item) => this._runToolbarCommand(item.dataset.command),
+        });
+    },
+
+    /**
+     * Task 5 (A1): находит picker/trigger/menu по id внутри тулбара и монтирует
+     * ToolbarDropdown. Элементов может не быть (стаб тулбара в тестах) — тогда
+     * возвращает null, ничего не роняя.
+     * @private
+     * @param {{pickerId:string, triggerId:string, menuId:string, itemSelector:string,
+     *   onOpen?:Function, onSelect?:Function}} config
+     * @returns {ToolbarDropdown|null}
+     */
+    _mountToolbarDropdown({ pickerId, triggerId, menuId, itemSelector, onOpen, onSelect }) {
+        const picker = this.globalToolbar.querySelector(`#${pickerId}`);
+        const trigger = this.globalToolbar.querySelector(`#${triggerId}`);
+        const menu = this.globalToolbar.querySelector(`#${menuId}`);
+        if (!picker || !trigger || !menu) return null;
+        return new ToolbarDropdown({ picker, trigger, menu, itemSelector, onOpen, onSelect });
+    },
+
+    /**
+     * Task 5 (A1): общий диспатч команды тулбара — выполняется и обычной
+     * кнопкой (.toolbar-btn), и пунктом дропдауна (выравнивание/списки).
+     * Раньше жил только внутри click-листенера кнопок; вынесен, чтобы пункты
+     * дропдаунов уходили В ТУ ЖЕ ветку, а не дублировали её.
+     * @param {string} command
+     */
+    _runToolbarCommand(command) {
+        if (command === 'findReplace') {
+            // В отличие от прочих команд, панель поиска остаётся открытой и
+            // держит фокус на своём поле ввода — редактор НЕ перефокусируем
+            // (иначе activeEditor.focus() ниже тут же увёл бы фокус обратно).
+            // Префилл из выделения снимаем ДО hideToolbar — так же, как
+            // Ctrl+F: кнопка обещает «(Ctrl+F)», поведение должно совпадать (#9).
+            const prefill = FindBar._selectionPrefill();
+            this.hideToolbar();
+            FindBar.open(prefill);
+            return;
         }
-    },
 
-    /**
-     * BUG-3: переключает видимость меню размера шрифта.
-     * @private
-     */
-    _toggleFontSizeMenu() {
-        const menu = this.globalToolbar?.querySelector('#fontSizeMenu');
-        if (!menu) return;
-        if (menu.classList.contains('hidden')) this._openFontSizeMenu();
-        else this._closeFontSizeMenu();
-    },
+        if (command === 'improveText') {
+            // Корректор: плавающая перетаскиваемая панель. Выделение держим
+            // через клон Range — редактор НЕ перефокусируем.
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed) {
+                Notifications.info('Выделите текст для корректуры');
+                return;
+            }
+            const range = sel.getRangeAt(0).cloneRange();
+            // Selection.toString() отдаёт переносы строк (<br> → \n), а
+            // Range.toString() их теряет (только текстовые узлы). Корректору
+            // нужны переносы, иначе многострочный текст схлопнется в одну
+            // строку. Ср. FindBar._selectionPrefill (та же причина).
+            const text = sel.toString();
+            if (!text.trim()) {
+                Notifications.info('Выделите текст для корректуры');
+                return;
+            }
+            CorrectorPopover.open({ editor: this.activeEditor, range, text });
+            return;
+        }
 
-    /**
-     * BUG-3: открывает меню и подсвечивает текущий размер.
-     * @private
-     */
-    _openFontSizeMenu() {
-        const menu = this.globalToolbar?.querySelector('#fontSizeMenu');
-        const trigger = this.globalToolbar?.querySelector('#fontSizeTrigger');
-        if (!menu) return;
-        menu.classList.remove('hidden');
-        trigger?.setAttribute('aria-expanded', 'true');
-        this.updateFontSizeSelect();
-    },
+        // Специальная обработка для ссылок и сносок
+        if (command === 'createLink') {
+            this.createOrEditLink();
+        } else if (command === 'createFootnote') {
+            this.createOrEditFootnote();
+        } else {
+            this.execCommand(command);
+        }
 
-    /**
-     * BUG-3: закрывает меню размера шрифта.
-     * @private
-     */
-    _closeFontSizeMenu() {
-        const menu = this.globalToolbar?.querySelector('#fontSizeMenu');
-        const trigger = this.globalToolbar?.querySelector('#fontSizeTrigger');
-        if (!menu) return;
-        menu.classList.add('hidden');
-        trigger?.setAttribute('aria-expanded', 'false');
+        // Возвращаем фокус в редактор
+        if (this.activeEditor) {
+            this.activeEditor.focus();
+            // Применяем форматирование к элементам
+            this.applyFormattingToNewNodes(this.activeEditor);
+        }
+
+        this.updateToolbarState();
     },
 
     /**
@@ -470,6 +481,11 @@ Object.assign(TextBlockManager.prototype, {
             }
         });
 
+        // Task 5 (A1): триггеры дропдаунов отражают состояние так же, как
+        // раньше это делали отдельные кнопки justifyLeft/…/insertOrderedList.
+        this._updateAlignTriggerState();
+        this._updateListsTriggerState();
+
         // Обновляем размер шрифта
         this.updateFontSizeSelect();
     },
@@ -520,6 +536,52 @@ Object.assign(TextBlockManager.prototype, {
             const on = activeSize !== null && parseInt(opt.dataset.size) === activeSize;
             opt.classList.toggle('active', on);
             opt.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+    },
+
+    /**
+     * Task 5 (A1): триггер дропдауна выравнивания отражает ТЕКУЩЕЕ выравнивание —
+     * иконка триггера меняется на активный вариант, соответствующий пункт меню
+     * подсвечивается (тот же приём, что updateFontSizeSelect делает для размера).
+     * Ни один justify* не активен (каретка вне явно выровненного блока) —
+     * дефолт «по левому краю» (соответствует UA-дефолту браузера).
+     * @private
+     */
+    _updateAlignTriggerState() {
+        const trigger = this.globalToolbar?.querySelector('#alignTrigger');
+        const iconEl = trigger?.querySelector('.toolbar-dropdown-icon');
+        const menu = this.globalToolbar?.querySelector('#alignMenu');
+        if (!trigger || !iconEl) return;
+
+        const ALIGN_ICONS = {
+            justifyLeft: '◧', justifyCenter: '▥', justifyRight: '◨', justifyFull: '▦',
+        };
+        const active = Object.keys(ALIGN_ICONS).find(cmd => this.queryCommandState(cmd)) || 'justifyLeft';
+        iconEl.textContent = ALIGN_ICONS[active];
+
+        menu?.querySelectorAll('.toolbar-dropdown-option').forEach(opt => {
+            opt.classList.toggle('active', opt.dataset.command === active);
+        });
+    },
+
+    /**
+     * Task 5 (A1): триггер дропдауна списков подсвечивается ('active' на самой
+     * кнопке, как раньше делали отдельные insertUnorderedList/insertOrderedList),
+     * если каретка внутри маркированного или нумерованного списка; активный
+     * пункт меню подсвечивается тоже.
+     * @private
+     */
+    _updateListsTriggerState() {
+        const trigger = this.globalToolbar?.querySelector('#listsTrigger');
+        const menu = this.globalToolbar?.querySelector('#listsMenu');
+        if (!trigger) return;
+
+        const active = this.queryCommandState('insertUnorderedList') ? 'insertUnorderedList'
+            : (this.queryCommandState('insertOrderedList') ? 'insertOrderedList' : null);
+        trigger.classList.toggle('active', !!active);
+
+        menu?.querySelectorAll('.toolbar-dropdown-option').forEach(opt => {
+            opt.classList.toggle('active', !!active && opt.dataset.command === active);
         });
     },
 
@@ -642,9 +704,11 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * Task 0.4: включает/выключает кнопки тулбара по политике поверхности
-     * (SURFACE_POLICY[surface.kind]). Ключа нет в политике (неизвестный kind) —
-     * не трогаем кнопки. Команда без записи в COMMAND_POLICY_KEY — тоже не трогаем.
+     * Task 0.4 / Task 5 (A1): включает/выключает кнопки и дропдауны тулбара по
+     * политике поверхности (SURFACE_POLICY[surface.kind]). Ключа нет в политике
+     * (неизвестный kind) — не трогаем ничего. Команда без записи в
+     * COMMAND_POLICY_KEY — тоже не трогаем. Дропдауны (align/lists) блокируются
+     * ЦЕЛИКОМ через свой триггер — это закрывает доступ ко всем пунктам меню разом.
      * @param {{kind:string}} surface
      */
     _applyToolbarPolicy(surface) {
@@ -656,6 +720,12 @@ Object.assign(TextBlockManager.prototype, {
             const policyKey = COMMAND_POLICY_KEY[btn.dataset.command];
             if (!policyKey) return;
             btn.disabled = policy[policyKey] === false;
+        });
+
+        Object.entries(DROPDOWN_TRIGGER_POLICY_KEY).forEach(([triggerId, policyKey]) => {
+            const trigger = this.globalToolbar.querySelector(`#${triggerId}`);
+            if (!trigger) return;
+            trigger.disabled = policy[policyKey] === false;
         });
     },
 
