@@ -49,7 +49,8 @@ gitignored working-artifact; здесь фиксируется только то
 | `textblock-core.js` | 303 | `TextBlockManager`/`textBlockManager`, `saveContent`, `execCommand`, `flushActiveEditor`, `finalizeEdit`, standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (§4) |
 | `textblock-formatting.js` | 145 | Наследование inline-стилей на капсулы от соседей/предков (`inheritFormattingToElement`, `applyFormattingToNewNodes`) |
 | `textblock-editor.js` | 1683 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
-| `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок по поверхности (§15), кастомный дропдаун размера шрифта, `applyFontSize`, `normalizeFontSizes` |
+| `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок/дропдаунов по поверхности (§15), дропдауны размера шрифта/выравнивания/списков через `ToolbarDropdown` (§6), `applyFontSize`, `normalizeFontSizes` |
+| `toolbar-dropdown.js` | 129 | `ToolbarDropdown` — общая обёртка `button[aria-haspopup=listbox]` + `div[role=listbox]` для дропдаунов тулбара (§6); НЕ миксин, отдельный класс |
 | `textblock-links-footnotes.js` | 829 | Создание/редактирование капсул, tooltip, контекстное меню, нумерация сносок, `validateLinkUrl` |
 | `textblock-capsule-integrity.js` | 677 | `validateAndRepairCapsules`, 3-слойный prevent-then-heal (см. §5), атомарное удаление капсулы-юнита |
 | `editable-surface.js` | 25 | Контракт `EditableSurface` + `TextBlockSurface` (§15) |
@@ -414,24 +415,38 @@ guard'ов — без этого вертикальная навигация л�
 
 Floating-тулбар (`initGlobalToolbar`) — не привязан к конкретному
 редактору, следует за активной **поверхностью**: точка входа —
-`attachToolbarTo(surface)` (`textblock-toolbar.js:656`) →
-`_applyToolbarPolicy(surface)` (:637), которая гасит кнопки по
-`SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :18-27:
-`createFootnote→footnotes`, `justify*→align`, `createLink→links`,
-`insertUnorderedList`/`insertOrderedList→lists`, `findReplace`, `improveText`);
-обратная операция — `detachToolbar()`.
+`attachToolbarTo(surface)` (`textblock-toolbar.js:739`) →
+`_applyToolbarPolicy(surface)` (:714), которая гасит top-level кнопки по
+`SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :22-27:
+`createFootnote→footnotes`, `createLink→links`, `findReplace`,
+`improveText`) и — отдельно — целиком триггеры дропдаунов выравнивания и
+списков (`DROPDOWN_TRIGGER_POLICY_KEY`, :34-37: `alignTrigger→align`,
+`listsTrigger→lists`; блокировка триггера закрывает разом все пункты его
+меню); обратная операция — `detachToolbar()`.
 Для текстблоков и rich-полей нарушения (§15.4) политика разрешает и списки
 (`lists:true` у обоих kind); в полях нарушений отключена
-кнопка сноски (§15). Известная дырка (задокументирована в коде, :11-17):
+кнопка сноски (§15). Известная дырка (задокументирована в коде, :19-20):
 `fontSize` из политики этим механизмом не применяется — триггер размера
-`#fontSizeTrigger` не несёт `data-command`; безвредно, пока обе политики
+`#fontSizeTrigger` не несёт `data-command` и не входит в
+`DROPDOWN_TRIGGER_POLICY_KEY`; безвредно, пока обе политики
 `fontSize:true`. Кнопки форматирования
-(`bold`/`italic`/`underline`/`strikeThrough`/`justify*`) идут через
+(`bold`/`italic`/`underline`/`strikeThrough`) идут через
 `document.execCommand` (deprecated Web API, но по-прежнему поддержан
-всеми целевыми браузерами — см. §13 про non-goals). Кнопки списков
-(«Маркированный список»/«Нумерованный список») — тот же `execCommand`
-(`insertUnorderedList`/`insertOrderedList`); DOCX-конвертер учит `<ul>/<ol>/<li>`
-стилями Word «List Bullet»/«List Number» на общем пути (§15.2).
+всеми целевыми браузерами — см. §13 про non-goals). Выравнивание и списки
+схлопнуты в дропдауны (`toolbar-dropdown.js::ToolbarDropdown` — общая
+обёртка над паттерном `button[aria-haspopup=listbox]` + `div[role=listbox]`,
+раньше существовавшим только у размера шрифта; три потребителя — размер
+шрифта, выравнивание, списки, монтаж каждого — `_mountToolbarDropdown`): пункты
+дропдауна выравнивания зовут те же `justifyLeft`/`justifyCenter`/
+`justifyRight`/`justifyFull`, дропдаун списков — `insertUnorderedList`/
+`insertOrderedList` плюс «Уровень глубже»/«Уровень выше» (`indent`/
+`outdent` — та же пара команд, что Tab/Shift+Tab внутри `<li>` исполняют
+с клавиатуры, `textblock-editor.js::_handleListTab`). Диспатч команды общий
+для кнопок и пунктов меню — `_runToolbarCommand` (:251). DOCX-конвертер
+даёт каждому элементу `<ul>/<ol>` СОБСТВЕННУЮ нумерацию
+(`numbering.py::create_list_num`) вместо built-in стиля абзаца Word:
+соседние списки не делят счёт маркеров, вложенный список получает свой
+`w:ilvl` и считает независимо (§10, §15.2).
 
 **Кнопка «Корректор» (`✨`, `data-command="improveText"`).** Обрабатывает выделенный
 текст через LLM в двух режимах (кнопки в шапке панели): «Исправить ошибки»
@@ -1405,14 +1420,17 @@ app-импортов). Реестр: `setActive/getActive/clear/flushActive`
 | `textblock` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `violationField` | **—** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** |
 
-`lists` (2026-08, блочная модель нарушений) — кнопки «Маркированный
-список»/«Нумерованный список» (`insertUnorderedList`/`insertOrderedList`,
-`COMMAND_POLICY_KEY` в `textblock-toolbar.js`) добавлены в ОБЩИЙ тулбар:
-доступны и в текстблоках, и в любом rich text-блоке поля нарушения — не
-только там, где раньше жили пункты `descriptionList`. DOCX-конвертер
-(`render_block_segments`, `docx/builders/inline.py`) учит `<ul>/<ol>/<li>` на
-общем пути и рендерит их стилями Word «List Bullet»/«List Number» одинаково
-для текстблоков и rich-полей нарушения.
+`lists` (2026-08, блочная модель нарушений) — дропдаун «Списки»
+(«Маркированный список»/«Нумерованный список» + «Уровень глубже»/«Уровень
+выше», `listsTrigger`/`DROPDOWN_TRIGGER_POLICY_KEY` в `textblock-toolbar.js`,
+см. §6) добавлен в ОБЩИЙ тулбар: доступен и в текстблоках, и в любом rich
+text-блоке поля нарушения — не только там, где раньше жили пункты
+`descriptionList`. DOCX-конвертер (`render_block_segments`,
+`docx/builders/inline.py` + `docx/builders/numbering.py`) учит `<ul>/<ol>/<li>`
+на общем пути: каждый элемент списка получает СВОЙ `w:num`
+(`create_list_num`) вместо built-in стиля Word, вложенность передаётся через
+`w:ilvl` (потолок 8 уровней) — одинаково для текстблоков и rich-полей
+нарушения.
 
 **`capsuleLifecycle` НЕ значит «есть/нет капсулы»** — это «капсульный
 lifecycle (observer, beforeinput, copy/cut/paste/drop, tooltip) ведёт
