@@ -48,25 +48,11 @@ def ensure_rubricator(doc: Document) -> int:
     abstract_id = _next_id(root, qn("w:abstractNum"), qn("w:abstractNumId"))
     num_id = _next_id(root, qn("w:num"), qn("w:numId"))
 
-    abstract = _build_abstract_num(abstract_id)
     num = _build_num(num_id, abstract_id)
     num.set(_MARKER_ATTR, "1")
 
-    # abstractNum строго ПЕРЕД num (иначе Word считает файл повреждённым).
-    # Вставляем наш abstractNum после последнего существующего abstractNum.
-    last_abstract = root.findall(qn("w:abstractNum"))
-    if last_abstract:
-        last_abstract[-1].addnext(abstract)
-    else:
-        root.insert(0, abstract)
-
-    # num вставляем перед первым существующим num, чтобы соблюдать
-    # порядок: все abstractNum идут до всех num.
-    first_num = root.find(qn("w:num"))
-    if first_num is not None:
-        first_num.addprevious(num)
-    else:
-        root.append(num)
+    _insert_abstract_num(root, _build_abstract_num(abstract_id))
+    _insert_num(root, num)
 
     return num_id
 
@@ -138,8 +124,8 @@ def _insert_abstract_num(root, abstract: OxmlElement) -> None:
     """Вставляет abstractNum после последнего существующего.
 
     Половина инварианта «все w:abstractNum строго ДО всех w:num» (иначе Word
-    считает файл повреждённым); вторая половина — _insert_num. Тот же порядок
-    вставки, что в ensure_rubricator выше.
+    считает файл повреждённым); вторая половина — _insert_num. Единственная
+    точка соблюдения инварианта: и рубрикатор, и списки идут через неё.
     """
     existing = root.findall(qn("w:abstractNum"))
     if existing:
