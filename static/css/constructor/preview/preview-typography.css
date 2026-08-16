@@ -144,6 +144,31 @@
     margin-bottom: var(--spacing-xs);
 }
 
+/* Нумерация по уровням вложенности — схема C1 («как в Word»): 1. → a) → i.,
+   цикл по 3 уровня (см. docs/superpowers/specs/2026-08-16-multilevel-lists-design.md).
+   Для ul уровни НЕ переопределяем — браузерный UA-дефолт (disc → circle →
+   square) уже совпадает с C1. acts-ordered-alpha — кастомный @counter-style
+   (суффикс ")"): встроенный list-style-type: lower-alpha даёт суффикс "."
+   (как у decimal), а C1 требует ")". Глубже уровня 2 цикл не расписан
+   (сознательное упрощение, см. textblock-content.css). */
+@counter-style acts-ordered-alpha {
+    system: alphabetic;
+    symbols: "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z";
+    suffix: ") ";
+}
+
+.preview :is(ol, ul) ol {
+    list-style-type: acts-ordered-alpha;
+}
+
+.preview :is(ol, ul) :is(ol, ul) ol {
+    list-style-type: lower-roman;
+}
+
+.preview :is(ol, ul) :is(ol, ul) :is(ol, ul) ol {
+    list-style-type: decimal;
+}
+
 /* Элементы списков */
 .preview li {
     margin-bottom: var(--spacing-xs);

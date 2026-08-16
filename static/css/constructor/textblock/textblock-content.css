@@ -132,7 +132,23 @@
    padding-left обязателен: глобальный reset (base/reset.css) обнуляет padding
    всем элементам, а маркер списка рисуется в этом отступе — без него маркеры
    уезжают за левый край и не видны. list-style задаём явно по той же причине —
-   не полагаемся на браузерный дефолт, который reset мог сдвинуть. */
+   не полагаемся на браузерный дефолт, который reset мог сдвинуть.
+
+   Маркеры по уровням вложенности — схема C1 («как в Word», см.
+   docs/superpowers/specs/2026-08-16-multilevel-lists-design.md): буллиты
+   • → ◦ → ▪, нумерация 1. → a) → i., цикл по 3 уровня. Без явных правил на
+   каждый уровень селектор верхнего уровня ниже глушит браузерный каскад для
+   ЛЮБОЙ вложенности (все уровни унаследовали бы один и тот же disc/decimal).
+   Селекторы через :is(ul, ol) — уровень считается по глубине вложенности
+   независимо от типа списка-предка (ol внутри ul и наоборот). Глубже уровня 3
+   цикл не расписан (после него стиль остаётся как на уровне 3) — сознательное
+   упрощение, глубокая вложенность на практике не встречается. */
+@counter-style acts-ordered-alpha {
+    system: alphabetic;
+    symbols: "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z";
+    suffix: ") ";
+}
+
 .textblock-editor ul,
 .violation-textarea ul {
     list-style: disc outside;
@@ -141,6 +157,39 @@
 .textblock-editor ol,
 .violation-textarea ol {
     list-style: decimal outside;
+}
+
+/* Уровень 1 вложенности (список внутри списка любого типа) */
+.textblock-editor :is(ul, ol) ul,
+.violation-textarea :is(ul, ol) ul {
+    list-style-type: circle;
+}
+
+.textblock-editor :is(ul, ol) ol,
+.violation-textarea :is(ul, ol) ol {
+    list-style-type: acts-ordered-alpha;
+}
+
+/* Уровень 2 вложенности */
+.textblock-editor :is(ul, ol) :is(ul, ol) ul,
+.violation-textarea :is(ul, ol) :is(ul, ol) ul {
+    list-style-type: square;
+}
+
+.textblock-editor :is(ul, ol) :is(ul, ol) ol,
+.violation-textarea :is(ul, ol) :is(ul, ol) ol {
+    list-style-type: lower-roman;
+}
+
+/* Уровень 3 вложенности — цикл начинается заново (как на уровне 0) */
+.textblock-editor :is(ul, ol) :is(ul, ol) :is(ul, ol) ul,
+.violation-textarea :is(ul, ol) :is(ul, ol) :is(ul, ol) ul {
+    list-style-type: disc;
+}
+
+.textblock-editor :is(ul, ol) :is(ul, ol) :is(ul, ol) ol,
+.violation-textarea :is(ul, ol) :is(ul, ol) :is(ul, ol) ol {
+    list-style-type: decimal;
 }
 
 .textblock-editor ul,
