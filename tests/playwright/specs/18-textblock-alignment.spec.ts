@@ -28,14 +28,20 @@ test.describe('Textblock alignment round-trip (TB-1)', () => {
     const editor = page.locator(EDITOR);
     await expect(editor).toHaveText(/Исходный текст/);
 
-    // Выделяем весь текст и жмём «по центру» на глобальном тулбаре.
+    // Выделяем весь текст и жмём «по центру» на глобальном тулбаре. Выравнивание
+    // живёт в дропдауне (#alignPicker), отдельной .toolbar-btn[data-command] у
+    // justify* больше нет. Клики по триггеру и пункту меню не крадут фокус
+    // (pointerdown/mousedown → preventDefault, BUG-3), поэтому выделение
+    // Ctrl+A переживает открытие меню — иначе команда ушла бы в ветку «каретка».
     await editor.click();
     await page.keyboard.press('Control+a');
-    const centerBtn = page.locator(
-      '#globalTextBlockToolbar .toolbar-btn[data-command="justifyCenter"]'
-    );
-    await expect(centerBtn).toBeVisible({ timeout: 3000 });
-    await centerBtn.click();
+    const alignTrigger = page.locator('#globalTextBlockToolbar #alignTrigger');
+    await expect(alignTrigger).toBeVisible({ timeout: 3000 });
+    await alignTrigger.click();
+    await page
+      .locator('#alignMenu .toolbar-dropdown-option[data-command="justifyCenter"]')
+      .click();
+    await expect(page.locator('#alignMenu')).toBeHidden();
 
     // execCommand записал text-align в блочную разметку редактора.
     await expect(editor).toHaveText(/Исходный текст/);
