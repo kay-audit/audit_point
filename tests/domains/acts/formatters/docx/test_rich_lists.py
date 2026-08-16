@@ -353,8 +353,9 @@ def test_two_adjacent_numbered_lists_do_not_share_count(doc):
     first, second, third = _num_ids(paragraphs)
     assert first == second
     assert third != first
-    # Оба списка стартуют с 1 — start уровня в общем abstractNum.
-    assert _abstract_of(doc, first) == _abstract_of(doc, third)
+    # Разные abstractNum: на общем Word считал бы соседей ОДНИМ списком
+    # (сквозной счёт «3.» вместо «1.» и общая подсветка маркеров).
+    assert _abstract_of(doc, first) != _abstract_of(doc, third)
 
 
 def test_separate_render_calls_do_not_share_numbering(doc):

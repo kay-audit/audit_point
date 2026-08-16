@@ -5,7 +5,6 @@ from docx.oxml.ns import qn
 
 from app.domains.acts.formatters.docx.numbering import (
     create_list_num,
-    ensure_list_abstract,
     ensure_rubricator,
 )
 
@@ -125,8 +124,8 @@ def test_apply_numbering_attaches_numpr(doc):
 
 
 # ---------------------------------------------------------------------------
-# Нумерации списков rich-HTML (<ul>/<ol>): один abstractNum на тип, свой num
-# на каждый элемент списка. Геометрия СОЗНАТЕЛЬНО отличается от рубрикатора.
+# Нумерации списков rich-HTML (<ul>/<ol>): своя пара abstractNum + num на
+# КАЖДЫЙ элемент списка. Геометрия СОЗНАТЕЛЬНО отличается от рубрикатора.
 # ---------------------------------------------------------------------------
 
 _UL_GLYPHS = ["•", "◦", "▪"]
@@ -149,48 +148,45 @@ def _num_by_id(doc, num_id: int):
     raise AssertionError(f"num {num_id} не найден")
 
 
-@pytest.mark.parametrize("kind", ["ul", "ol"])
-def test_ensure_list_abstract_idempotent(doc, kind):
-    """Один abstractNum на тип за документ: повтор не плодит дублей."""
-    baseline = len(doc.part.numbering_part.element.findall(qn("w:abstractNum")))
-    first = ensure_list_abstract(doc, kind)
-    second = ensure_list_abstract(doc, kind)
-    assert first == second
-    abstracts = doc.part.numbering_part.element.findall(qn("w:abstractNum"))
-    assert len(abstracts) == baseline + 1
+def _abstract_id_of(doc, num_id: int) -> int:
+    return int(_num_by_id(doc, num_id).find(qn("w:abstractNumId")).get(qn("w:val")))
+
+
+def _list_abstract(doc, kind: str):
+    """Заводит нумерацию списка типа kind и отдаёт её abstractNum."""
+    return _abstract_by_id(doc, _abstract_id_of(doc, create_list_num(doc, kind)))
 
 
 def test_ul_and_ol_abstracts_are_separate(doc):
     """Маркированный и нумерованный — разные abstractNum (разная геометрия)."""
-    assert ensure_list_abstract(doc, "ul") != ensure_list_abstract(doc, "ol")
+    assert _abstract_id_of(doc, create_list_num(doc, "ul")) != _abstract_id_of(
+        doc, create_list_num(doc, "ol")
+    )
 
 
 def test_list_abstract_does_not_reuse_rubricator(doc):
     """Рубрикатор и списки не делят abstractNum — у них разные уровни."""
-    rubricator_num = ensure_rubricator(doc)
-    rubricator_abstract = int(
-        _num_by_id(doc, rubricator_num).find(qn("w:abstractNumId")).get(qn("w:val"))
-    )
-    assert ensure_list_abstract(doc, "ul") != rubricator_abstract
-    assert ensure_list_abstract(doc, "ol") != rubricator_abstract
+    rubricator_abstract = _abstract_id_of(doc, ensure_rubricator(doc))
+    assert _abstract_id_of(doc, create_list_num(doc, "ul")) != rubricator_abstract
+    assert _abstract_id_of(doc, create_list_num(doc, "ol")) != rubricator_abstract
 
 
 @pytest.mark.parametrize("kind", ["ul", "ol"])
 def test_list_abstract_has_9_levels(doc, kind):
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, kind))
+    abstract = _list_abstract(doc, kind)
     assert len(abstract.findall(qn("w:lvl"))) == 9
 
 
 @pytest.mark.parametrize("kind", ["ul", "ol"])
 def test_list_levels_start_at_one(doc, kind):
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, kind))
+    abstract = _list_abstract(doc, kind)
     for lvl in abstract.findall(qn("w:lvl")):
         assert lvl.find(qn("w:start")).get(qn("w:val")) == "1"
 
 
 def test_ul_levels_are_bullets_with_cycling_glyphs(doc):
     """Маркеры «как в Word» (C1): • ◦ ▪ с циклом по 3 уровням."""
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, "ul"))
+    abstract = _list_abstract(doc, "ul")
     for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
         assert lvl.find(qn("w:numFmt")).get(qn("w:val")) == "bullet"
         assert lvl.find(qn("w:lvlText")).get(qn("w:val")) == _UL_GLYPHS[ilvl % 3]
@@ -198,14 +194,14 @@ def test_ul_levels_are_bullets_with_cycling_glyphs(doc):
 
 def test_ol_levels_cycle_number_formats(doc):
     """1. / a) / i. с циклом по 3 уровням (C1)."""
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, "ol"))
+    abstract = _list_abstract(doc, "ol")
     for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
         assert lvl.find(qn("w:numFmt")).get(qn("w:val")) == _OL_FORMATS[ilvl % 3]
 
 
 def test_ol_lvl_text_uses_only_current_level(doc):
     """Счёт уровней независимый: lvlText НЕ накапливает %1.%2 как рубрикатор."""
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, "ol"))
+    abstract = _list_abstract(doc, "ol")
     suffixes = [".", ")", "."]
     expected = [f"%{ilvl + 1}{suffixes[ilvl % 3]}" for ilvl in range(9)]
     actual = [
@@ -222,7 +218,7 @@ def test_list_levels_indent_by_depth(doc, kind):
     Намеренное расхождение с рубрикатором (там left=0) — без отступа
     вложенность в Word не видна.
     """
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, kind))
+    abstract = _list_abstract(doc, kind)
     for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
         ind = lvl.find(qn("w:pPr")).find(qn("w:ind"))
         assert ind.get(qn("w:left")) == str(720 * (ilvl + 1))
@@ -231,7 +227,7 @@ def test_list_levels_indent_by_depth(doc, kind):
 
 @pytest.mark.parametrize("kind", ["ul", "ol"])
 def test_list_levels_left_aligned(doc, kind):
-    abstract = _abstract_by_id(doc, ensure_list_abstract(doc, kind))
+    abstract = _list_abstract(doc, kind)
     for lvl in abstract.findall(qn("w:lvl")):
         assert lvl.find(qn("w:lvlJc")).get(qn("w:val")) == "left"
 
@@ -242,20 +238,32 @@ def test_create_list_num_gives_fresh_id_each_call(doc):
     assert len(set(ids)) == 3
 
 
-def test_create_list_num_reuses_abstract_of_its_kind(doc):
-    """Разные num одного типа ссылаются на ОДИН abstractNum."""
+def test_create_list_num_gives_fresh_abstract_each_call(doc):
+    """Свой abstractNum на каждый список, даже одного типа.
+
+    Общий abstract на тип Word склеил бы в ОДИН логический список: несколько
+    w:num на один abstractNumId без w:lvlOverride ведут сквозной счёт.
+    """
     baseline = len(doc.part.numbering_part.element.findall(qn("w:abstractNum")))
     first, second = create_list_num(doc, "ul"), create_list_num(doc, "ul")
-    abstract_ids = {
-        _num_by_id(doc, num_id).find(qn("w:abstractNumId")).get(qn("w:val"))
-        for num_id in (first, second)
-    }
-    assert len(abstract_ids) == 1
-    assert len(doc.part.numbering_part.element.findall(qn("w:abstractNum"))) == baseline + 1
+    assert _abstract_id_of(doc, first) != _abstract_id_of(doc, second)
+    abstracts = doc.part.numbering_part.element.findall(qn("w:abstractNum"))
+    assert len(abstracts) == baseline + 2
+
+
+def test_each_list_abstract_restarts_from_one(doc):
+    """Механизм рестарта целиком: свежий abstract каждого списка объявляет
+    w:start=1 на уровне 0 — счёт второго <ol> не продолжает первый."""
+    num_ids = [create_list_num(doc, "ol") for _ in range(3)]
+    abstract_ids = [_abstract_id_of(doc, num_id) for num_id in num_ids]
+    assert len(set(abstract_ids)) == 3
+    for abstract_id in abstract_ids:
+        level_zero = _abstract_by_id(doc, abstract_id).findall(qn("w:lvl"))[0]
+        assert level_zero.find(qn("w:start")).get(qn("w:val")) == "1"
 
 
 def test_create_list_num_has_no_lvl_override(doc):
-    """Без lvlOverride: сброс счёта обеспечивает отдельный num, а не override."""
+    """Без lvlOverride: сброс счёта обеспечивает отдельный abstract, а не override."""
     num_id = create_list_num(doc, "ol")
     assert _num_by_id(doc, num_id).find(qn("w:lvlOverride")) is None
 

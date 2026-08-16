@@ -4,23 +4,17 @@
 Используется и плашками-таблицами, и параграфами после них.
 Подробности: docs/superpowers/specs/numbering-pattern.md
 
-Списки rich-HTML — отдельная связка: один abstractNum на ТИП (ul/ol) за
-документ, но свой w:num на КАЖДЫЙ элемент <ul>/<ol>. Отсюда изоляция:
-соседние списки не видят друг друга, каждый стартует с 1, вложенный
-считает независимо. Геометрия уровней списков сознательно отличается от
-рубрикаторной (ненулевой w:ind, lvlText без накопления) — см.
-ensure_list_abstract.
+Списки rich-HTML — отдельная связка: на КАЖДЫЙ элемент <ul>/<ol> заводится
+свой abstractNum И свой num. Отсюда изоляция: соседние списки не связаны
+ничем, каждый стартует с 1, вложенный считает независимо. Геометрия уровней
+списков сознательно отличается от рубрикаторной (ненулевой w:ind, lvlText
+без накопления) — см. _build_list_level.
 """
 from docx.document import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 _MARKER_ATTR = "actsDocxRubricator"  # маркер для идемпотентности
-
-# Маркеры идемпотентности для abstractNum списков. Вешаются на сам
-# w:abstractNum, а не на w:num (как у рубрикатора): нумераций теперь много,
-# а abstract — ровно по одному на тип списка.
-_LIST_MARKER_ATTRS = {"ul": "actsDocxListUl", "ol": "actsDocxListOl"}
 
 # Маркеры уровней «как в Word» (C1), цикл по 3 уровням.
 _UL_BULLETS = ("•", "◦", "▪")
@@ -57,36 +51,20 @@ def ensure_rubricator(doc: Document) -> int:
     return num_id
 
 
-def ensure_list_abstract(doc: Document, kind: str) -> int:
-    """Регистрирует abstractNum для списков типа kind ('ul'/'ol').
-
-    Идемпотентно: за документ создаётся ровно один abstract на тип,
-    повторный вызов возвращает уже существующий abstractNumId.
-    """
-    root = doc.part.numbering_part.element
-    marker = _LIST_MARKER_ATTRS[kind]
-
-    for existing in root.findall(qn("w:abstractNum")):
-        if existing.get(marker) == "1":
-            return int(existing.get(qn("w:abstractNumId")))
-
-    abstract_id = _next_id(root, qn("w:abstractNum"), qn("w:abstractNumId"))
-    abstract = _build_list_abstract_num(abstract_id, kind)
-    abstract.set(marker, "1")
-    _insert_abstract_num(root, abstract)
-    return abstract_id
-
-
 def create_list_num(doc: Document, kind: str) -> int:
-    """Заводит НОВУЮ нумерацию для одного элемента <ul>/<ol>.
+    """Заводит НОВУЮ нумерацию для одного элемента <ul>/<ol> типа kind.
 
-    Свежий w:num на каждый вызов — именно здесь рождается изоляция списков:
-    два соседних <ol> получают разные numId и каждый стартует с 1. Abstract
-    при этом общий на тип (ensure_list_abstract).
+    Свежая пара abstractNum + num на каждый вызов — именно здесь рождается
+    изоляция списков: соседние <ol> не связаны ни счётом (каждый стартует с
+    1 по w:start уровня), ни «семейством» подсветки маркеров в Word. Общий
+    abstract на тип не годится: несколько w:num на один abstractNumId БЕЗ
+    w:lvlOverride Word трактует как ОДИН логический список, и счёт второго
+    продолжает первый.
     """
     root = doc.part.numbering_part.element
-    abstract_id = ensure_list_abstract(doc, kind)
+    abstract_id = _next_id(root, qn("w:abstractNum"), qn("w:abstractNumId"))
     num_id = _next_id(root, qn("w:num"), qn("w:numId"))
+    _insert_abstract_num(root, _build_list_abstract_num(abstract_id, kind))
     _insert_num(root, _build_num(num_id, abstract_id))
     return num_id
 
