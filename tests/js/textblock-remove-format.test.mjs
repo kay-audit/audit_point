@@ -8,9 +8,14 @@
  * НАШЕГО JS-слоя вокруг execCommand: какую команду/value он шлёт браузеру,
  * что removeFormat (в отличие от bold/italic/underline/strikeThrough) не
  * входит в FORMAT_CMDS и не получает range-расширение вокруг капсул, и что
- * результат native-команды уходит в saveContent без дополнительной
- * постобработки (наш код не имеет собственной логики, способной задеть
- * data-link-url/contenteditable капсулы после removeFormat).
+ * результат native-команды доходит до saveContent, не задевая капсулы
+ * (data-link-url / data-footnote-text / contenteditable).
+ *
+ * D2: поверх нативной команды наш слой снимает ещё и БЛОЧНЫЙ формат
+ * (_removeBlockFormat: списки, выравнивание, отступы) — он и разбирает
+ * innerHTML. Здесь редактор-фейк без DOM-API (нет querySelectorAll), поэтому
+ * блочный проход штатно no-op, и тест ниже остаётся тестом ИМЕННО про
+ * сохранность капсулы. Блочный слой — textblock-remove-format-block.test.mjs.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -78,12 +83,13 @@ test('removeFormat не в FORMAT_CMDS: в отличие от bold, не рас
   assert.deepEqual(calls.filter((c) => c === 'expand'), ['expand']);
 });
 
-test('после removeFormat наш JS-слой не постобрабатывает innerHTML — капсула уходит в saveContent как есть', () => {
+test('после removeFormat капсула уходит в saveContent как есть (блочный слой её не разбирает)', () => {
   // HTML ниже имитирует РЕЗУЛЬТАТ уже отработавшего нативного removeFormat
   // (эмпирика Chromium, см. Playwright-спек): жирность снята, capsule с
-  // contenteditable=false и data-footnote-text цела. Проверяем, что НАШ код
-  // не добавляет своей обработки поверх — innerHTML доходит до saveContent
-  // побайтово тем же, каким его оставил браузер.
+  // contenteditable=false и data-footnote-text цела. Проверяем, что поверх
+  // неё наш код ничего не ломает — innerHTML доходит до saveContent побайтово
+  // тем же, каким его оставил браузер (блочного формата тут нет, а капсулу
+  // _removeBlockFormat не трогает по инварианту).
   const afterNativeRemoveFormat =
     'важный текст ' +
     '<span class="text-footnote" data-footnote-id="F1" data-footnote-text="тело сноски" contenteditable="false">сн</span> ' +
