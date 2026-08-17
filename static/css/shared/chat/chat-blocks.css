@@ -399,11 +399,11 @@
 .chat-block-file-icon--pdf    { color: #dc2626; }
 .chat-block-file-icon--doc,
 .chat-block-file-icon--docx   { color: #1d4ed8; }
+.chat-block-file-icon--md     { color: #1d4ed8; }  /* md — тот же синий, что и docx */
 .chat-block-file-icon--xls,
-.chat-block-file-icon--xlsx   { color: #15803d; }
-.chat-block-file-icon--csv,
+.chat-block-file-icon--xlsx,
+.chat-block-file-icon--csv     { color: #15803d; }
 .chat-block-file-icon--txt,
-.chat-block-file-icon--md,
 .chat-block-file-icon--log,
 .chat-block-file-icon--json,
 .chat-block-file-icon--xml,

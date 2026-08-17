@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <!-- Document body with folded top-right corner -->
+  <path d="M5 2.5h10l4 4v15h-14v-19z"/>
+  <!-- Folded corner -->
+  <path d="M15 2.5v4h4"/>
+  <!-- pdf label -->
+  <text x="12" y="15.5" font-family="Arial, Helvetica, sans-serif" font-size="5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" letter-spacing="0.2">pdf</text>
+</svg>
