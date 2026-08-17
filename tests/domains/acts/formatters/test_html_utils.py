@@ -97,7 +97,10 @@ class TestLists:
     """Ревью #4: <ul>/<ol>/<li> больше не склеиваются («перввтор») — каждый
     пункт на своей строке с маркером (clean_html: "- "/"N. "; html_to_markdown:
     полноценный markdown-список, обёрнутый пустой строкой от соседнего
-    контента). Вложенные списки сплющиваются (см. _convert_lists)."""
+    контента). Вложенные списки больше НЕ сплющиваются: получают отступ по
+    уровню (4 пробела/уровень — CommonMark-безопасно и для «- », и для
+    «N. », см. _LIST_INDENT_UNIT) и независимый счётчик; маркер по уровню не
+    меняется — тот же «- »/«N. », что и на уровне 0 (см. _convert_lists)."""
 
     def test_clean_html_bullet_items_on_own_lines(self):
         assert HTMLUtils.clean_html("<ul><li>перв</li><li>втор</li></ul>") == "- перв\n- втор"
@@ -116,11 +119,33 @@ class TestLists:
     def test_clean_html_unclosed_li_closed_by_sibling(self):
         assert HTMLUtils.clean_html("<ul><li>раз<li>два</ul>") == "- раз\n- два"
 
-    def test_clean_html_nested_list_flattened_with_own_numbering(self):
-        """Вложенный список сплющивается в тот же уровень: свой маркер по
-        типу СВОЕГО списка, нумерация вложенного <ol> начинается заново."""
+    def test_clean_html_nested_list_indented_with_own_numbering(self):
+        """Вложенный список больше не сплющивается: получает отступ (4
+        пробела) и независимый счётчик (нумерация вложенного <ol>
+        начинается с 1)."""
         src = "<ul><li>маркер<ol><li>номер</li></ol></li></ul>"
-        assert HTMLUtils.clean_html(src) == "- маркер\n1. номер"
+        assert HTMLUtils.clean_html(src) == "- маркер\n    1. номер"
+
+    def test_clean_html_nested_list_counter_restarts_per_instance(self):
+        """Каждый вложенный список — свой счётчик: второй вложенный <ol>
+        стартует заново с 1, а не продолжает первый."""
+        src = (
+            "<ul>"
+            "<li>a<ol><li>x</li><li>y</li></ol></li>"
+            "<li>b<ol><li>z</li></ol></li>"
+            "</ul>"
+        )
+        expected = "- a\n    1. x\n    2. y\n- b\n    1. z"
+        assert HTMLUtils.clean_html(src) == expected
+
+    def test_clean_html_nested_ol_in_ol_keeps_numbering_at_both_levels(self):
+        """Регрессия ревью: родитель <ol> (маркер «N. », content indent 3) с
+        отступом 2 пробела делал вложенный пункт СИБЛИНГОМ для CommonMark-
+        рендерера (перенумерация, вложенность разваливалась). При 4 пробелах
+        оба уровня остаются нумерованными списками, внешний счёт не сбивается."""
+        src = "<ol><li>a<ol><li>x</li><li>y</li></ol></li><li>b</li></ol>"
+        expected = "1. a\n    1. x\n    2. y\n2. b"
+        assert HTMLUtils.clean_html(src) == expected
 
     def test_clean_html_inline_formatting_inside_item_stripped(self):
         src = "<ul><li><b>жирно</b> текст</li></ul>"
@@ -150,9 +175,26 @@ class TestLists:
         """Список без соседнего контента не обрастает лишними пустыми строками."""
         assert HTMLUtils.html_to_markdown("<ul><li>раз</li></ul>") == "- раз"
 
-    def test_markdown_nested_list_flattened_with_own_numbering(self):
+    def test_markdown_nested_list_indented_with_own_numbering(self):
+        """Вложенный список больше не сплющивается: отступ 4 пробела на
+        уровень, независимый счётчик (нумерация вложенного <ol> с 1)."""
         src = "<ul><li>маркер<ol><li>номер</li></ol></li></ul>"
-        assert HTMLUtils.html_to_markdown(src) == "- маркер  \n1. номер"
+        assert HTMLUtils.html_to_markdown(src) == "- маркер  \n    1. номер"
+
+    def test_markdown_nested_list_indent_scales_with_level_not_glyph(self):
+        """MD не меняет символ маркера по уровням (Markdown-список
+        поддерживает только «-»/«N.») — только отступ 4 пробела на уровень."""
+        src = "<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li></ul>"
+        expected = "- a  \n    - b  \n        - c"
+        assert HTMLUtils.html_to_markdown(src) == expected
+
+    def test_markdown_nested_ol_in_ol_keeps_numbering_at_both_levels(self):
+        """Регрессия ревью, MD-вариант: вложенный <ol> в <ol> — отступ 4
+        пробела (CommonMark-безопасно для content indent «N. » = 3), оба
+        уровня нумерованы, внешний счёт не сбивается."""
+        src = "<ol><li>a<ol><li>x</li><li>y</li></ol></li><li>b</li></ol>"
+        expected = "1. a  \n    1. x  \n    2. y  \n2. b"
+        assert HTMLUtils.html_to_markdown(src) == expected
 
     def test_markdown_inline_formatting_inside_item_survives(self):
         src = "<ul><li><b>жирно</b> текст</li></ul>"

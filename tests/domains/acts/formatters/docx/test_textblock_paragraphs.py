@@ -13,6 +13,7 @@ from docx.shared import Pt
 from app.domains.acts.formatters.docx import DocxFormatter
 from app.domains.acts.formatters.docx.builders.inline import (
     BlockSegment,
+    ListRef,
     split_block_segments,
 )
 from app.domains.acts.schemas.act_content import TextBlockSchema
@@ -113,12 +114,12 @@ def test_split_unclosed_block_not_lost():
 
 
 def test_split_list_markup_gives_item_segments():
-    """V14.1: <li> — такая же граница сегмента, как div/p, со стилем своего
-    списка (прежде весь <ul> оставался одним анонимным сегментом с мягкими
+    """<li> — такая же граница сегмента, как div/p, со ссылкой на свой список
+    (прежде весь <ul> оставался одним анонимным сегментом с мягкими
     переносами). Полное покрытие списков — test_rich_lists.py."""
     assert split_block_segments("<ul><li>x</li><li>y</li></ul>") == [
-        BlockSegment(None, "x", "List Bullet"),
-        BlockSegment(None, "y", "List Bullet"),
+        BlockSegment(None, "x", ListRef(1, "ul", 0)),
+        BlockSegment(None, "y", ListRef(1, "ul", 0)),
     ]
 
 

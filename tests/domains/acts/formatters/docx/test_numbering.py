@@ -1,9 +1,12 @@
-"""Тесты регистрации рубрикатора через oxml."""
+"""Тесты регистрации рубрикатора и нумераций списков через oxml."""
 import pytest
 from docx import Document
 from docx.oxml.ns import qn
 
-from app.domains.acts.formatters.docx.numbering import ensure_rubricator
+from app.domains.acts.formatters.docx.numbering import (
+    create_list_num,
+    ensure_rubricator,
+)
 
 
 def test_ensure_rubricator_returns_int_num_id(doc):
@@ -118,3 +121,183 @@ def test_apply_numbering_attaches_numpr(doc):
     assert num_pr is not None
     assert num_pr.find(qn("w:ilvl")).get(qn("w:val")) == "1"
     assert num_pr.find(qn("w:numId")).get(qn("w:val")) == str(num_id)
+
+
+# ---------------------------------------------------------------------------
+# Нумерации списков rich-HTML (<ul>/<ol>): своя пара abstractNum + num на
+# КАЖДЫЙ элемент списка. Геометрия СОЗНАТЕЛЬНО отличается от рубрикатора.
+# ---------------------------------------------------------------------------
+
+_UL_GLYPHS = ["•", "◦", "▪"]
+_OL_FORMATS = ["decimal", "lowerLetter", "lowerRoman"]
+
+
+def _abstract_by_id(doc, abstract_id: int):
+    root = doc.part.numbering_part.element
+    for abstract in root.findall(qn("w:abstractNum")):
+        if int(abstract.get(qn("w:abstractNumId"))) == abstract_id:
+            return abstract
+    raise AssertionError(f"abstractNum {abstract_id} не найден")
+
+
+def _num_by_id(doc, num_id: int):
+    root = doc.part.numbering_part.element
+    for num in root.findall(qn("w:num")):
+        if int(num.get(qn("w:numId"))) == num_id:
+            return num
+    raise AssertionError(f"num {num_id} не найден")
+
+
+def _abstract_id_of(doc, num_id: int) -> int:
+    return int(_num_by_id(doc, num_id).find(qn("w:abstractNumId")).get(qn("w:val")))
+
+
+def _list_abstract(doc, kind: str):
+    """Заводит нумерацию списка типа kind и отдаёт её abstractNum."""
+    return _abstract_by_id(doc, _abstract_id_of(doc, create_list_num(doc, kind)))
+
+
+def test_ul_and_ol_abstracts_are_separate(doc):
+    """Маркированный и нумерованный — разные abstractNum (разная геометрия)."""
+    assert _abstract_id_of(doc, create_list_num(doc, "ul")) != _abstract_id_of(
+        doc, create_list_num(doc, "ol")
+    )
+
+
+def test_list_abstract_does_not_reuse_rubricator(doc):
+    """Рубрикатор и списки не делят abstractNum — у них разные уровни."""
+    rubricator_abstract = _abstract_id_of(doc, ensure_rubricator(doc))
+    assert _abstract_id_of(doc, create_list_num(doc, "ul")) != rubricator_abstract
+    assert _abstract_id_of(doc, create_list_num(doc, "ol")) != rubricator_abstract
+
+
+@pytest.mark.parametrize("kind", ["ul", "ol"])
+def test_list_abstract_has_9_levels(doc, kind):
+    abstract = _list_abstract(doc, kind)
+    assert len(abstract.findall(qn("w:lvl"))) == 9
+
+
+@pytest.mark.parametrize("kind", ["ul", "ol"])
+def test_list_levels_start_at_one(doc, kind):
+    abstract = _list_abstract(doc, kind)
+    for lvl in abstract.findall(qn("w:lvl")):
+        assert lvl.find(qn("w:start")).get(qn("w:val")) == "1"
+
+
+def test_ul_levels_are_bullets_with_cycling_glyphs(doc):
+    """Маркеры «как в Word» (C1): • ◦ ▪ с циклом по 3 уровням."""
+    abstract = _list_abstract(doc, "ul")
+    for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
+        assert lvl.find(qn("w:numFmt")).get(qn("w:val")) == "bullet"
+        assert lvl.find(qn("w:lvlText")).get(qn("w:val")) == _UL_GLYPHS[ilvl % 3]
+
+
+def test_ol_levels_cycle_number_formats(doc):
+    """1. / a) / i. с циклом по 3 уровням (C1)."""
+    abstract = _list_abstract(doc, "ol")
+    for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
+        assert lvl.find(qn("w:numFmt")).get(qn("w:val")) == _OL_FORMATS[ilvl % 3]
+
+
+def test_ol_lvl_text_uses_only_current_level(doc):
+    """Счёт уровней независимый: lvlText НЕ накапливает %1.%2 как рубрикатор."""
+    abstract = _list_abstract(doc, "ol")
+    suffixes = [".", ")", "."]
+    expected = [f"%{ilvl + 1}{suffixes[ilvl % 3]}" for ilvl in range(9)]
+    actual = [
+        lvl.find(qn("w:lvlText")).get(qn("w:val"))
+        for lvl in abstract.findall(qn("w:lvl"))
+    ]
+    assert actual == expected
+
+
+@pytest.mark.parametrize("kind", ["ul", "ol"])
+def test_list_levels_indent_by_depth(doc, kind):
+    """Ступенька вложенности: left = 720×(уровень+1), hanging = 360.
+
+    Намеренное расхождение с рубрикатором (там left=0) — без отступа
+    вложенность в Word не видна.
+    """
+    abstract = _list_abstract(doc, kind)
+    for ilvl, lvl in enumerate(abstract.findall(qn("w:lvl"))):
+        ind = lvl.find(qn("w:pPr")).find(qn("w:ind"))
+        assert ind.get(qn("w:left")) == str(720 * (ilvl + 1))
+        assert ind.get(qn("w:hanging")) == "360"
+
+
+@pytest.mark.parametrize("kind", ["ul", "ol"])
+def test_list_levels_left_aligned(doc, kind):
+    abstract = _list_abstract(doc, kind)
+    for lvl in abstract.findall(qn("w:lvl")):
+        assert lvl.find(qn("w:lvlJc")).get(qn("w:val")) == "left"
+
+
+def test_create_list_num_gives_fresh_id_each_call(doc):
+    """Изоляция списков рождается здесь: свой w:num на каждый <ul>/<ol>."""
+    ids = [create_list_num(doc, "ol") for _ in range(3)]
+    assert len(set(ids)) == 3
+
+
+def test_create_list_num_gives_fresh_abstract_each_call(doc):
+    """Свой abstractNum на каждый список, даже одного типа.
+
+    Общий abstract на тип Word склеил бы в ОДИН логический список: несколько
+    w:num на один abstractNumId без w:lvlOverride ведут сквозной счёт.
+    """
+    baseline = len(doc.part.numbering_part.element.findall(qn("w:abstractNum")))
+    first, second = create_list_num(doc, "ul"), create_list_num(doc, "ul")
+    assert _abstract_id_of(doc, first) != _abstract_id_of(doc, second)
+    abstracts = doc.part.numbering_part.element.findall(qn("w:abstractNum"))
+    assert len(abstracts) == baseline + 2
+
+
+def test_each_list_abstract_restarts_from_one(doc):
+    """Механизм рестарта целиком: свежий abstract каждого списка объявляет
+    w:start=1 на уровне 0 — счёт второго <ol> не продолжает первый."""
+    num_ids = [create_list_num(doc, "ol") for _ in range(3)]
+    abstract_ids = [_abstract_id_of(doc, num_id) for num_id in num_ids]
+    assert len(set(abstract_ids)) == 3
+    for abstract_id in abstract_ids:
+        level_zero = _abstract_by_id(doc, abstract_id).findall(qn("w:lvl"))[0]
+        assert level_zero.find(qn("w:start")).get(qn("w:val")) == "1"
+
+
+def test_create_list_num_has_no_lvl_override(doc):
+    """Без lvlOverride: сброс счёта обеспечивает отдельный abstract, а не override."""
+    num_id = create_list_num(doc, "ol")
+    assert _num_by_id(doc, num_id).find(qn("w:lvlOverride")) is None
+
+
+def test_abstract_nums_precede_nums_after_list_registration(doc):
+    """Инвариант OOXML: все w:abstractNum строго ДО всех w:num.
+
+    Нарушение — Word объявляет файл повреждённым. Проверяем на смеси
+    рубрикатора и нескольких списков обоих типов.
+    """
+    ensure_rubricator(doc)
+    create_list_num(doc, "ul")
+    create_list_num(doc, "ol")
+    create_list_num(doc, "ul")
+    root = doc.part.numbering_part.element
+    tags = [
+        child.tag.rsplit("}", 1)[-1]
+        for child in root
+        if child.tag.rsplit("}", 1)[-1] in ("abstractNum", "num")
+    ]
+    assert tags == sorted(tags, key=lambda t: 0 if t == "abstractNum" else 1)
+
+
+def test_list_num_ids_do_not_collide_with_rubricator(doc):
+    """num_id рубрикатора не переиспользуется списками (иначе общий счёт)."""
+    rubricator = ensure_rubricator(doc)
+    list_ids = [create_list_num(doc, "ul"), create_list_num(doc, "ol")]
+    assert rubricator not in list_ids
+    assert len(set(list_ids)) == 2
+
+
+def test_ensure_rubricator_stays_idempotent_after_lists(doc):
+    """Маркер рубрикатора на w:num не путается с нумерациями списков."""
+    first = ensure_rubricator(doc)
+    create_list_num(doc, "ul")
+    create_list_num(doc, "ol")
+    assert ensure_rubricator(doc) == first

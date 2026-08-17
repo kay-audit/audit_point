@@ -103,6 +103,8 @@
     --toolbar-select-height: 2rem;
     --toolbar-font-size-min-width: 4.5rem;
     --toolbar-fontsize-menu-max-height: 18rem;
+    --toolbar-dropdown-trigger-min-width: 3.25rem;
+    --toolbar-dropdown-menu-min-width: 12rem;
     --toolbar-heading-min-width: 5.5rem;
     --toolbar-count-min-width: 1.25rem;
     --toolbar-count-height: 1.25rem;

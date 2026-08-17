@@ -1,14 +1,29 @@
-"""Регистрация multilevel-рубрикатора через oxml.
+"""Регистрация multilevel-рубрикатора и нумераций списков через oxml.
 
-Один abstractNum + один num на весь документ. Без lvlOverride.
+Рубрикатор — один abstractNum + один num на весь документ, без lvlOverride.
 Используется и плашками-таблицами, и параграфами после них.
 Подробности: docs/superpowers/specs/numbering-pattern.md
+
+Списки rich-HTML — отдельная связка: на КАЖДЫЙ элемент <ul>/<ol> заводится
+свой abstractNum И свой num. Отсюда изоляция: соседние списки не связаны
+ничем, каждый стартует с 1, вложенный считает независимо. Геометрия уровней
+списков сознательно отличается от рубрикаторной (ненулевой w:ind, lvlText
+без накопления) — см. _build_list_level.
 """
 from docx.document import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 _MARKER_ATTR = "actsDocxRubricator"  # маркер для идемпотентности
+
+# Маркеры уровней «как в Word» (C1), цикл по 3 уровням.
+_UL_BULLETS = ("•", "◦", "▪")
+_OL_FORMATS = ("decimal", "lowerLetter", "lowerRoman")
+_OL_SUFFIXES = (".", ")", ".")
+
+# Геометрия отступа пункта: ступенька на уровень + выступ под маркер (twips).
+_LIST_INDENT_STEP = 720
+_LIST_HANGING = 360
 
 
 def ensure_rubricator(doc: Document) -> int:
@@ -27,26 +42,30 @@ def ensure_rubricator(doc: Document) -> int:
     abstract_id = _next_id(root, qn("w:abstractNum"), qn("w:abstractNumId"))
     num_id = _next_id(root, qn("w:num"), qn("w:numId"))
 
-    abstract = _build_abstract_num(abstract_id)
     num = _build_num(num_id, abstract_id)
     num.set(_MARKER_ATTR, "1")
 
-    # abstractNum строго ПЕРЕД num (иначе Word считает файл повреждённым).
-    # Вставляем наш abstractNum после последнего существующего abstractNum.
-    last_abstract = root.findall(qn("w:abstractNum"))
-    if last_abstract:
-        last_abstract[-1].addnext(abstract)
-    else:
-        root.insert(0, abstract)
+    _insert_abstract_num(root, _build_abstract_num(abstract_id))
+    _insert_num(root, num)
 
-    # num вставляем перед первым существующим num, чтобы соблюдать
-    # порядок: все abstractNum идут до всех num.
-    first_num = root.find(qn("w:num"))
-    if first_num is not None:
-        first_num.addprevious(num)
-    else:
-        root.append(num)
+    return num_id
 
+
+def create_list_num(doc: Document, kind: str) -> int:
+    """Заводит НОВУЮ нумерацию для одного элемента <ul>/<ol> типа kind.
+
+    Свежая пара abstractNum + num на каждый вызов — именно здесь рождается
+    изоляция списков: соседние <ol> не связаны ни счётом (каждый стартует с
+    1 по w:start уровня), ни «семейством» подсветки маркеров в Word. Общий
+    abstract на тип не годится: несколько w:num на один abstractNumId БЕЗ
+    w:lvlOverride Word трактует как ОДИН логический список, и счёт второго
+    продолжает первый.
+    """
+    root = doc.part.numbering_part.element
+    abstract_id = _next_id(root, qn("w:abstractNum"), qn("w:abstractNumId"))
+    num_id = _next_id(root, qn("w:num"), qn("w:numId"))
+    _insert_abstract_num(root, _build_list_abstract_num(abstract_id, kind))
+    _insert_num(root, _build_num(num_id, abstract_id))
     return num_id
 
 
@@ -77,6 +96,29 @@ def apply_numbering(paragraph, num_id: int, ilvl: int) -> None:
 def _next_id(root, tag: str, id_attr: str) -> int:
     existing = [int(el.get(id_attr)) for el in root.findall(tag) if el.get(id_attr)]
     return (max(existing) + 1) if existing else 1
+
+
+def _insert_abstract_num(root, abstract: OxmlElement) -> None:
+    """Вставляет abstractNum после последнего существующего.
+
+    Половина инварианта «все w:abstractNum строго ДО всех w:num» (иначе Word
+    считает файл повреждённым); вторая половина — _insert_num. Единственная
+    точка соблюдения инварианта: и рубрикатор, и списки идут через неё.
+    """
+    existing = root.findall(qn("w:abstractNum"))
+    if existing:
+        existing[-1].addnext(abstract)
+    else:
+        root.insert(0, abstract)
+
+
+def _insert_num(root, num: OxmlElement) -> None:
+    """Вставляет num перед первым существующим — см. _insert_abstract_num."""
+    first_num = root.find(qn("w:num"))
+    if first_num is not None:
+        first_num.addprevious(num)
+    else:
+        root.append(num)
 
 
 def _build_abstract_num(abstract_id: int) -> OxmlElement:
@@ -129,6 +171,60 @@ def _build_level(ilvl: int) -> OxmlElement:
     # ничего не выходит, абзац не сдвигается вправо при углублении.
     ind.set(qn("w:left"), "0")
     ind.set(qn("w:firstLine"), "0")
+    p_pr.append(ind)
+    lvl.append(p_pr)
+
+    return lvl
+
+
+def _build_list_abstract_num(abstract_id: int, kind: str) -> OxmlElement:
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(qn("w:abstractNumId"), str(abstract_id))
+
+    mlt = OxmlElement("w:multiLevelType")
+    mlt.set(qn("w:val"), "multilevel")
+    abstract.append(mlt)
+
+    for ilvl in range(9):
+        abstract.append(_build_list_level(ilvl, kind))
+
+    return abstract
+
+
+def _build_list_level(ilvl: int, kind: str) -> OxmlElement:
+    """Уровень списка. Геометрия НЕ рубрикаторная — расхождение намеренное.
+
+    Отличий два. Первое: lvlText берёт только счётчик ТЕКУЩЕГО уровня
+    («%2.», а не «%1.%2.») — каждый уровень считает независимо (C1). Второе:
+    w:ind с ненулевым left — без него ступенька вложенности в Word не видна
+    (у рубрикатора left=0, и «гармонизировать» их нельзя).
+    """
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), str(ilvl))
+
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+    lvl.append(start)
+
+    fmt = OxmlElement("w:numFmt")
+    fmt.set(qn("w:val"), "bullet" if kind == "ul" else _OL_FORMATS[ilvl % 3])
+    lvl.append(fmt)
+
+    lvl_text = OxmlElement("w:lvlText")
+    if kind == "ul":
+        lvl_text.set(qn("w:val"), _UL_BULLETS[ilvl % 3])
+    else:
+        lvl_text.set(qn("w:val"), f"%{ilvl + 1}{_OL_SUFFIXES[ilvl % 3]}")
+    lvl.append(lvl_text)
+
+    lvl_jc = OxmlElement("w:lvlJc")
+    lvl_jc.set(qn("w:val"), "left")
+    lvl.append(lvl_jc)
+
+    p_pr = OxmlElement("w:pPr")
+    ind = OxmlElement("w:ind")
+    ind.set(qn("w:left"), str(_LIST_INDENT_STEP * (ilvl + 1)))
+    ind.set(qn("w:hanging"), str(_LIST_HANGING))
     p_pr.append(ind)
     lvl.append(p_pr)
 

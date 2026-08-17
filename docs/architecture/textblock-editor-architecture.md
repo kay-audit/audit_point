@@ -49,7 +49,8 @@ gitignored working-artifact; здесь фиксируется только то
 | `textblock-core.js` | 303 | `TextBlockManager`/`textBlockManager`, `saveContent`, `execCommand`, `flushActiveEditor`, `finalizeEdit`, standalone-предикаты `isCapsuleNode`/`isZeroWidthNode` (§4) |
 | `textblock-formatting.js` | 145 | Наследование inline-стилей на капсулы от соседей/предков (`inheritFormattingToElement`, `applyFormattingToNewNodes`) |
 | `textblock-editor.js` | 1683 | DOM-создание редактора, caret-guard-система, обработчики focus/blur/input/keydown/paste (свой буфер/Word/внешний HTML, §7), Shift-навигация и `.node-selected` капсулы-юнита (§5) |
-| `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок по поверхности (§15), кастомный дропдаун размера шрифта, `applyFontSize`, `normalizeFontSizes` |
+| `textblock-toolbar.js` | 732 | Глобальный floating-тулбар, `attachToolbarTo`/`detachToolbar` + политика кнопок/дропдаунов по поверхности (§15), дропдауны размера шрифта/выравнивания/списков через `ToolbarDropdown` (§6), `applyFontSize`, `normalizeFontSizes` |
+| `toolbar-dropdown.js` | 129 | `ToolbarDropdown` — общая обёртка `button[aria-haspopup=listbox]` + `div[role=listbox]` для дропдаунов тулбара (§6); НЕ миксин, отдельный класс |
 | `textblock-links-footnotes.js` | 829 | Создание/редактирование капсул, tooltip, контекстное меню, нумерация сносок, `validateLinkUrl` |
 | `textblock-capsule-integrity.js` | 677 | `validateAndRepairCapsules`, 3-слойный prevent-then-heal (см. §5), атомарное удаление капсулы-юнита |
 | `editable-surface.js` | 25 | Контракт `EditableSurface` + `TextBlockSurface` (§15) |
@@ -414,24 +415,137 @@ guard'ов — без этого вертикальная навигация л�
 
 Floating-тулбар (`initGlobalToolbar`) — не привязан к конкретному
 редактору, следует за активной **поверхностью**: точка входа —
-`attachToolbarTo(surface)` (`textblock-toolbar.js:656`) →
-`_applyToolbarPolicy(surface)` (:637), которая гасит кнопки по
-`SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :18-27:
-`createFootnote→footnotes`, `justify*→align`, `createLink→links`,
-`insertUnorderedList`/`insertOrderedList→lists`, `findReplace`, `improveText`);
-обратная операция — `detachToolbar()`.
+`attachToolbarTo(surface)` (`textblock-toolbar.js:739`) →
+`_applyToolbarPolicy(surface)` (:714), которая гасит top-level кнопки по
+`SURFACE_POLICY[surface.kind]` (маппинг `COMMAND_POLICY_KEY`, :22-27:
+`createFootnote→footnotes`, `createLink→links`, `findReplace`,
+`improveText`) и — отдельно — целиком триггеры дропдаунов выравнивания и
+списков (`DROPDOWN_TRIGGER_POLICY_KEY`, :34-37: `alignTrigger→align`,
+`listsTrigger→lists`; блокировка триггера закрывает разом все пункты его
+меню); обратная операция — `detachToolbar()`.
 Для текстблоков и rich-полей нарушения (§15.4) политика разрешает и списки
 (`lists:true` у обоих kind); в полях нарушений отключена
-кнопка сноски (§15). Известная дырка (задокументирована в коде, :11-17):
+кнопка сноски (§15). Известная дырка (задокументирована в коде, :19-20):
 `fontSize` из политики этим механизмом не применяется — триггер размера
-`#fontSizeTrigger` не несёт `data-command`; безвредно, пока обе политики
+`#fontSizeTrigger` не несёт `data-command` и не входит в
+`DROPDOWN_TRIGGER_POLICY_KEY`; безвредно, пока обе политики
 `fontSize:true`. Кнопки форматирования
-(`bold`/`italic`/`underline`/`strikeThrough`/`justify*`) идут через
+(`bold`/`italic`/`underline`/`strikeThrough`) идут через
 `document.execCommand` (deprecated Web API, но по-прежнему поддержан
-всеми целевыми браузерами — см. §13 про non-goals). Кнопки списков
-(«Маркированный список»/«Нумерованный список») — тот же `execCommand`
-(`insertUnorderedList`/`insertOrderedList`); DOCX-конвертер учит `<ul>/<ol>/<li>`
-стилями Word «List Bullet»/«List Number» на общем пути (§15.2).
+всеми целевыми браузерами — см. §13 про non-goals). Выравнивание и списки
+схлопнуты в дропдауны (`toolbar-dropdown.js::ToolbarDropdown` — общая
+обёртка над паттерном `button[aria-haspopup=listbox]` + `div[role=listbox]`,
+раньше существовавшим только у размера шрифта; три потребителя — размер
+шрифта, выравнивание, списки, монтаж каждого — `_mountToolbarDropdown`): пункты
+дропдауна выравнивания зовут те же `justifyLeft`/`justifyCenter`/
+`justifyRight`/`justifyFull`, дропдаун списков — `insertUnorderedList`/
+`insertOrderedList` плюс «Уровень глубже»/«Уровень выше» (`indent`/
+`outdent` — та же пара команд, что Tab/Shift+Tab внутри `<li>` исполняют
+с клавиатуры, `textblock-editor.js::_handleListTab`). Диспатч команды общий
+для кнопок и пунктов меню — `_runToolbarCommand` (:251). DOCX-конвертер
+даёт каждому элементу `<ul>/<ol>` СОБСТВЕННУЮ нумерацию
+(`numbering.py::create_list_num`) вместо built-in стиля абзаца Word:
+соседние списки не делят счёт маркеров, вложенный список получает свой
+`w:ilvl` и считает независимо (§10, §15.2).
+
+**Многоуровневость: Tab/Shift+Tab.** `_handleListTab` (`textblock-editor.js:1473`)
+перехватывает голый `Tab`/`Shift+Tab` (без Ctrl/Meta/Alt; ветка в
+`handleEditorKeydown` стоит РАНЬШЕ капсульных) **только если** каретка
+внутри `<li>` — вне списка `preventDefault` не зовётся, нативный переход
+фокуса между поверхностями сохраняется. «Каретка внутри `<li>`» определяет
+`_caretListItem(range, editor)` (`:1496`) — обёртка над `_listItemAncestor`
+(`:1519`), разбирающая случай «range заякорен на элементе»: Chrome при
+Ctrl+A ставит `startContainer` = сам редактор (offset 0), и голый
+`_listItemAncestor` от редактора возвращал null — Tab уводил фокус и рушил
+выделение, целиком состоящее из пунктов списка. Внутри `<li>` —
+`execCommand('outdent')` (Shift+Tab) либо `execCommand('indent')`; потолок
+глубины `MAX_LIST_LEVEL = 8` (`textblock-core.js:59`, экспортируемая
+константа — девятый и последний уровень, который умеет описать
+`w:abstractNum` в OOXML) Tab-ветка сама НЕ сравнивает — его держит гейт
+`execCommand` (ниже), единственное место с этим числом. На потолке клавиша
+ВСЁ РАВНО проглатывается (`preventDefault` зовётся по факту «каретка в
+`<li>`»), но `indent` тихо не идёт — иначе Tab на дне списка увёл бы фокус
+из редактора.
+
+**Гейт `indent`/`outdent` — в ядре, не в тулбаре.** `execCommand`
+(`textblock-core.js:282`) ДО нативной команды проверяет для
+`LIST_LEVEL_CMDS = ['indent', 'outdent']` (`:50`) два условия: (1) каретка
+внутри `<li>` (`_caretListItem` от текущего range) — вне списка команда
+тихо не идёт (`return false`), потому что вне списка Chromium заворачивает
+абзац в `<blockquote>`, которого нет в allowlist профиля `'acts'` (§9.3) —
+отступ выглядел бы применённым в живом DOM, а на перезагрузке (санитайзер
+срезал бы неизвестный тег) молча исчезал; (2) для `indent` — текущий
+уровень (`_listLevel`, `textblock-editor.js:1536`) меньше потолка
+`MAX_LIST_LEVEL` — иначе пункт меню «Уровень глубже» углублял бы до уровней
+9+, которые DOCX-сборщик (`inline.py`) молча клампит на `ilvl 8`. Гейт
+стоит именно в `execCommand`, потому что через него проходят ВСЕ пути (Tab
+с клавиатуры, пункт меню дропдауна, программный вызов) — эта точка защищает
+данные независимо от источника вызова; `_handleListTab` (выше) сам
+проверяет лишь «каретка в `<li>`» для раннего `return`, потолок не
+дублирует. Отдельно, UI-слой отражает то же условие как ПОДСКАЗКУ:
+`_updateListsTriggerState` (`textblock-toolbar.js:622`) вычисляет тот же
+`_caretListItem` от текущей каретки и ставит пунктам «Уровень
+глубже»/«Уровень выше» `aria-disabled="true"` вне списка —
+видны, но серые, курсор `not-allowed` (`textblock-toolbar.css`); клик по
+такому пункту `ToolbarDropdown` гасит до `onSelect` (`toolbar-dropdown.js:123`),
+меню остаётся открытым. Два независимых механизма НЕ дублируют друг друга
+один-в-один: `aria-disabled` — только UX-подсказка (раньше пункт молча
+кликался и ничего не делал), гейт в `execCommand` — единственный, что
+реально защищает данные (перекрывает и Tab, и программный вызов, которые
+мимо UI дропдауна вообще не идут). Ещё два стража на уровне тулбара:
+`_runToolbarCommand` (`textblock-toolbar.js:263`) гейтит сам диспатч по
+политике АКТИВНОЙ поверхности (`_isCommandAllowedForSurface`, `:335` —
+карта `COMMAND_POLICY_KEY` теперь покрывает и команды из дропдаунов), а
+`hideToolbar` (`textblock-core.js`) закрывает все дропдауны
+(`_closeToolbarDropdowns`, `textblock-toolbar.js:348`) — без этого открытое
+меню переживало смену поверхности и его пункт исполнялся уже на
+поверхности с `lists:false`.
+
+**Нормализация вложенности — обязательный шаг.** Chromium после
+`execCommand('indent')` порождает НЕВАЛИДНУЮ разметку:
+`<ul><li>a</li><ul><li>b</li></ul></ul>` (список прямо внутри списка, минуя
+`<li>`). `_normalizeListNesting(root)` (`:1545`) приводит к валидной
+`<ul><li>a<ul><li>b</li></ul></li></ul>` — каждый `ul|ol`, чей родитель
+`ul|ol`, переезжает внутрь ПРЕДЫДУЩЕГО соседнего `<li>` (нет такого —
+создаётся пустой); идемпотентно, работает и на живом DOM (каретка переезжает
+с поддеревом), и строкой на detached `<template>` (`_normalizeListNestingHtml`,
+`:1571`). Две точки вызова: `execCommand` — после ЛЮБОЙ `LIST_STRUCTURE_CMDS`
+(`indent`/`outdent`/`insertUnorderedList`/`insertOrderedList`,
+`textblock-core.js:56`), сразу после `document.execCommand`, ДО `saveContent`
+(`:305-308`); и БЕЗУСЛОВНО в `saveContent` (`:144-149`) — правка могла
+прийти мимо `execCommand` (paste, undo, внешний источник). Без второй точки
+невалидная вложенность попала бы в модель — её не понимают ни
+DOCX-сегментатор (`inline.py::_TopLevelSplitter`), ни MD/TXT
+(`html_utils.py::_convert_lists`), ни CSS превью (селекторы `:is(ul, ol) ul`
+считают уровень по глубине вложенности тегов). Парсер DOCX при этом обязан
+ТЕРПЕТЬ невалидную вложенность старых записей — он уже работает на стеке
+глубины (`_list_stack`), не на строгой структуре.
+
+**`removeFormat` снимает и блочное форматирование (D2).** Нативный
+`execCommand('removeFormat')` по спецификации трогает только inline —
+`execCommand` (`textblock-core.js`) добирает блочное отдельным
+проходом `_removeBlockFormat(root)` (`textblock-editor.js:1618`) сразу
+после нативной команды: разворачивает `<ul>/<ol>` в `<br>`-разделённый
+поток (`_unwrapListBlock`, `:1703` — содержимое `<li>` переносится на место
+списка через DOM-перемещение узлов, не пересборку строкой), тем же приёмом
+разворачивает `<blockquote>` (`_unwrapPlainBlock`, `:1730` — артефакт
+`indent` вне списка), снимает 4 блочных CSS-свойства
+(`BLOCK_FORMAT_PROPS = ['text-align', 'margin-left', 'padding-left',
+'text-indent']`, `:14`) и атрибут `align`. **Скоуп — по выделению, как у
+нативной команды** (раньше проход шёл по всему блоку и одно выделенное
+жирное слово сносило ВСЕ списки редактора, что тут же персистилось):
+невырожденное выделение → только узлы, пересекающие range
+(`range.intersectsNode`); стили самого корня чистятся, лишь когда range
+покрывает всё содержимое (`_rangeCoversContents`, `:1671` — тогда Ctrl+A
+по-прежнему снимает `text-align` с редактора, куда `justify*` пишет его при
+отсутствии блочных детей); схлопнутая каретка → только её цепочка предков
+(`_caretAncestorChain`); range нет вовсе (программный вызов) → блок
+целиком, прежняя семантика. **Капсулы выживают**: перенос — это перемещение
+существующих DOM-узлов (капсула как узел не пересоздаётся), а проход по
+стилям явно пропускает капсулу (`this._isCapsule(el)` → `continue`, её
+`style` не трогается). Иконка кнопки — inline SVG «ластик» вместо прежнего
+`✕` (тот же приём инлайн-SVG, что уже используется в
+`appendix-number-dropdown.js`).
 
 **Кнопка «Корректор» (`✨`, `data-command="improveText"`).** Обрабатывает выделенный
 текст через LLM в двух режимах (кнопки в шапке панели): «Исправить ошибки»
@@ -1297,6 +1411,37 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
   сохранении не переписывает (он покрывает только новые правки), но при
   экспорте такая сноска больше не создаётся — единый критерий пустоты
   `payload.strip()` (`inline.py`) зеркалит фронт-нумерацию (`text.trim()`).
+- **Юнит-тесты многоуровневости — на рукописном мини-DOM, живое поведение —
+  отдельной Playwright-спекой.** `_normalizeListNesting`/`_removeBlockFormat`
+  покрыты через `tests/js/_mini-dom.mjs` — узкое подмножество DOM
+  (теги/атрибуты/текстовые узлы, void-теги; ни комментариев/CDATA, ни
+  автозакрытия тегов по правилам HTML5-парсера), заведённое взамен
+  jsdom/linkedom (их нет в devDependencies — только playwright и
+  fast-check), — юнит-тесты не умеют исполнить `document.execCommand`
+  вовсе. Что именно Chromium порождает после `execCommand('indent')`, снимает
+  ли `removeFormat` список без потери капсул и переживает ли вложенность
+  round-trip через санитайзер `acts` (DOMPurify недоступен в node) — покрыто
+  `tests/playwright/specs/29-textblock-multilevel-lists.spec.ts` (10 сценариев,
+  §14).
+- **MD/TXT: маркер списка по уровням НЕ меняется, только отступ.** В отличие
+  от DOCX (`w:lvlText` циклится по 3 уровня, `numbering.py`) и
+  редактора/превью (CSS `list-style-type` по уровню, ниже),
+  `html_utils.py::_convert_lists` даёт вложенности только отступ (4 пробела
+  на уровень — CommonMark-безопасно и под `- `, и под `N. `; см. комментарий
+  к `_LIST_INDENT_UNIT`) — маркер остаётся тем же `- `/`N. `, что на уровне 0
+  (сознательно: нумерованный список Markdown поддерживает только цифровые
+  маркеры, а .txt/.md — не визуальный рендер «как в Word»).
+- **CSS-маркеры по уровням расписаны только на уровни 0-3, глубже цикл
+  визуально НЕ продолжается.** DOCX (`numbering.py`, `ilvl % 3`) циклит
+  маркер по всем 9 уровням (0,1,2,0,1,2,…); CSS
+  (`textblock-content.css`/`preview-typography.css`, растущая цепочка
+  `:is(ul, ol) ul`) стилизует явно только уровни 0-3 — из-за возрастающей
+  специфичности вложенных `:is()`-селекторов правило уровня 3 (визуально
+  совпадающее с уровнем 0) остаётся самым специфичным и для ЛЮБОЙ более
+  глубокой вложенности, поэтому уровни 4+ выглядят как уровень 3 и не
+  возвращаются к паттерну уровней 1/2. Не потеря данных (в DOCX/модели
+  уровни по-прежнему различаются и считают независимо) — только визуальный
+  разрыв редактор/превью ↔ DOCX на очень глубокой вложенности.
 - **Превью текстблока — print-precise, supersedes B-22** (Task C, 2026-07):
   на печатном листе (`.preview-sheet .preview-textblock-content`,
   `preview-typography.css`) line-height теперь одинарный Word-интервал DOCX
@@ -1326,6 +1471,9 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
 `textblock-capsule-composition.test.mjs`, `textblock-capsule-dedup-determinism.test.mjs`,
 `textblock-clipboard.test.mjs`, `textblock-finalize-edit.test.mjs`,
 `textblock-parity.test.mjs`, `textblock-remove-format.test.mjs`,
+`textblock-remove-format-block.test.mjs` (блочная очистка, D2, §6),
+`textblock-list-nesting.test.mjs` (нормализация вложенности и политика
+Tab/Shift+Tab, §6),
 `textblock-whole-capsule-selection.test.mjs` (капсула-юнит, §5),
 `textblock-word-paste.test.mjs` (§7), `diff-renderer-textblock-profile.test.mjs`.
 Поиск/замена (§12) — отдельно: `act-search-engine.test.mjs`,
@@ -1333,17 +1481,35 @@ segments: [], footnoteBody: true, footnoteEl }` — `segments` всегда `[]`
 (§15): `editable-surface.test.mjs`, `editor-registry.test.mjs`,
 `editor-controller.test.mjs`, `editor-surface-wiring.test.mjs`,
 `editor-drop.test.mjs`, `editor-drop-capsule-routing.test.mjs`,
-`toolbar-attach-policy.test.mjs`, `flush-pending-edits.test.mjs`,
+`toolbar-attach-policy.test.mjs`, `toolbar-command-dispatch.test.mjs`
+(диспатч `_runToolbarCommand`, §6), `toolbar-dropdown.test.mjs`
+(`ToolbarDropdown`, §6), `flush-pending-edits.test.mjs`,
 `violation-rich-fields.test.mjs`, `violation-rich-surface.test.mjs`,
 `violation-single-commit.test.mjs`, `violation-field-empty.test.mjs`,
 `corrector-persist-surface.test.mjs`, `formalizer-apply-surface.test.mjs`,
 `formalizer-rich-adapters.test.mjs`,
 `rich-text.test.mjs`. E2E (Playwright) — спеки
 `24-violation-field-drop`/`25-violation-find-replace`/`26-corrector-ownership`
-+ дополненная `16-capsule-integrity`. Стаб DOM — `_browser-stub.mjs`; zero-width
-символы — `chr(0xFEFF)`/`chr(0x200B)`, не raw escape в исходнике теста (см.
-правило проекта про invisible-символы только escape'ами в коде, но
-литеральные значения в рантайм-строках тестов допустимы).
++ дополненная `16-capsule-integrity` + `29-textblock-multilevel-lists`
+(живое поведение Chromium под многоуровневыми списками, 10 сценариев: Tab/
+Shift+Tab меняют уровень пункта и дают валидную вложенность; голый Tab вне
+списка не перехвачен (фокус уходит нативно, `<blockquote>` не появляется);
+пункты меню «Уровень глубже»/«Уровень выше» делают то же, что клавиатура;
+гейт `indent` вне списка — тихий no-op ДО и ПОСЛЕ перезагрузки акта, плюс
+`aria-disabled` пункта меню; многоуровневый список переживает сохранение и
+перезагрузку (round-trip через bleach); капсулы ссылки/сноски внутри пункта
+целы после `indent`/`outdent`; расширенный `removeFormat` снимает список и
+выравнивание, капсулы целы (D2); `removeFormat` по частичному выделению не
+трогает список вне выделения; пункт меню «Уровень глубже» упирается в
+потолок `MAX_LIST_LEVEL`; дропдауны выравнивания/списков открываются
+и применяют команду, не теряя выделение редактора (BUG-3); см. §13).
+Стаб DOM — `_browser-stub.mjs` (узлы без дерева, без парсинга `innerHTML`);
+`_mini-dom.mjs` — отдельный, более полный стаб именно для списочной
+нормализации/блочного `removeFormat` (реальный обход дерева + сериализация
+обратно в HTML, узкое подмножество HTML5 — см. §13 про его границы).
+Zero-width символы — `chr(0xFEFF)`/`chr(0x200B)`, не raw escape в исходнике
+теста (см. правило проекта про invisible-символы только escape'ами в коде,
+но литеральные значения в рантайм-строках тестов допустимы).
 
 **Backend (`pytest`, `tests/domains/acts/formatters/docx/`)**:
 
@@ -1405,14 +1571,17 @@ app-импортов). Реестр: `setActive/getActive/clear/flushActive`
 | `textblock` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `violationField` | **—** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** |
 
-`lists` (2026-08, блочная модель нарушений) — кнопки «Маркированный
-список»/«Нумерованный список» (`insertUnorderedList`/`insertOrderedList`,
-`COMMAND_POLICY_KEY` в `textblock-toolbar.js`) добавлены в ОБЩИЙ тулбар:
-доступны и в текстблоках, и в любом rich text-блоке поля нарушения — не
-только там, где раньше жили пункты `descriptionList`. DOCX-конвертер
-(`render_block_segments`, `docx/builders/inline.py`) учит `<ul>/<ol>/<li>` на
-общем пути и рендерит их стилями Word «List Bullet»/«List Number» одинаково
-для текстблоков и rich-полей нарушения.
+`lists` (2026-08, блочная модель нарушений) — дропдаун «Списки»
+(«Маркированный список»/«Нумерованный список» + «Уровень глубже»/«Уровень
+выше», `listsTrigger`/`DROPDOWN_TRIGGER_POLICY_KEY` в `textblock-toolbar.js`,
+см. §6) добавлен в ОБЩИЙ тулбар: доступен и в текстблоках, и в любом rich
+text-блоке поля нарушения — не только там, где раньше жили пункты
+`descriptionList`. DOCX-конвертер (`render_block_segments`,
+`docx/builders/inline.py` + `docx/builders/numbering.py`) учит `<ul>/<ol>/<li>`
+на общем пути: каждый элемент списка получает СВОЙ `w:num`
+(`create_list_num`) вместо built-in стиля Word, вложенность передаётся через
+`w:ilvl` (потолок 8 уровней) — одинаково для текстблоков и rich-полей
+нарушения.
 
 **`capsuleLifecycle` НЕ значит «есть/нет капсулы»** — это «капсульный
 lifecycle (observer, beforeinput, copy/cut/paste/drop, tooltip) ведёт

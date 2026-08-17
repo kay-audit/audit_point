@@ -3,7 +3,8 @@
 Один программный акт, задействующий ВСЕ возможности модели данных:
 дерево 4 уровней, все 7 подвидов таблиц (TABLE_KINDS), объединения ячеек
 (colSpan/rowSpan + spanOrigin), кастомные colWidths, спецсимволы в ячейках,
-текстблок с formatting и inline-разметкой (b/i/u/s, ссылка, сноска),
+текстблок с formatting и inline-разметкой (b/i/u/s, ссылка, сноска) и
+списками (многоуровневый <ul>, два соседних <ol> с вложенным),
 нарушение со всеми 10 полями блочной модели (все 3 типа блоков —
 текст/картинка/таблица — и нестандартный fieldOrder), пустая таблица и узел
 type='item' с прикреплённой таблицей (известный кандидат на потерю в DOCX).
@@ -94,6 +95,17 @@ MARKERS_ALL_FORMATS = [
     "GOLDEN_TB_STRIKE",
     "GOLDEN_TB_LINK_TEXT",
     "GOLDEN_TB_FOOTNOTE_ANCHOR",
+    # Списки текстблока: многоуровневый <ul> и два соседних <ol> (изоляция
+    # нумерации). Текст пунктов доезжает во всех форматах — в DOCX это
+    # абзацы со своим w:numPr, в MD/TXT строки с текстовым маркером.
+    "GOLDEN_TB_UL_L0",
+    "GOLDEN_TB_UL_L1",
+    "GOLDEN_TB_UL_L2",
+    "GOLDEN_TB_UL_BACK_L0",
+    "GOLDEN_TB_OL1_ITEM1",
+    "GOLDEN_TB_OL1_ITEM2",
+    "GOLDEN_TB_OL2_ITEM1",
+    "GOLDEN_TB_OL_NESTED",
     # Нарушение (блочная модель): контент всех 10 полей и всех 3 типов блоков.
     "GOLDEN_V_VIOLATED",
     "GOLDEN_V_ESTABLISHED",
@@ -292,6 +304,26 @@ def build_golden_act_dict() -> dict:
                 '<span class="text-footnote" '
                 f'data-footnote-text="{MARKER_FOOTNOTE_TEXT}">'
                 "GOLDEN_TB_FOOTNOTE_ANCHOR</span>"
+                # Маркированный список на 3 уровня с возвратом на верхний.
+                "<ul>"
+                "<li>GOLDEN_TB_UL_L0"
+                "<ul>"
+                "<li>GOLDEN_TB_UL_L1"
+                "<ul><li>GOLDEN_TB_UL_L2</li></ul>"
+                "</li>"
+                "</ul>"
+                "</li>"
+                "<li>GOLDEN_TB_UL_BACK_L0</li>"
+                "</ul>"
+                # Два СОСЕДНИХ <ol>: изоляция нумерации (второй стартует с 1,
+                # а не продолжает счёт первого) — регрессия правки §3.1.
+                "<ol>"
+                "<li>GOLDEN_TB_OL1_ITEM1</li>"
+                "<li>GOLDEN_TB_OL1_ITEM2"
+                "<ol><li>GOLDEN_TB_OL_NESTED</li></ol>"
+                "</li>"
+                "</ol>"
+                "<ol><li>GOLDEN_TB_OL2_ITEM1</li></ol>"
             ),
         },
     }

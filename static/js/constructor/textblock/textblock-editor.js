@@ -10,6 +10,12 @@ import { getStructureLimits } from '../violation/violation-image-validator.js';
 import { TextBlockSurface } from './editable-surface.js';
 import { EditorRegistry, SURFACE_POLICY } from './editor-registry.js';
 
+/** Блочные CSS-свойства, которые снимает «очистить форматирование» (D2). */
+const BLOCK_FORMAT_PROPS = ['text-align', 'margin-left', 'padding-left', 'text-indent'];
+
+/** Быстрый признак «в HTML-строке вообще есть список» (дешёвый гейт). */
+const LIST_TAG_RE = /<(ul|ol)[\s>]/i;
+
 Object.assign(TextBlockManager.prototype, {
     /**
      * Создаёт DOM-элемент текстового блока с редактором.
@@ -1364,6 +1370,15 @@ Object.assign(TextBlockManager.prototype, {
             }
         }
 
+        // Tab / Shift+Tab меняют уровень пункта списка (B3). Ветка стоит РАНЬШЕ
+        // капсульных: Tab — структурная команда, каретную логику капсул ей
+        // проходить незачем. Модификаторы Ctrl/Meta/Alt оставляем системе
+        // (переключение поверхностей/окон).
+        if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey &&
+            this._handleListTab(e, editor)) {
+            return;
+        }
+
         // «Вся капсула как юнит»: Shift+←/→ у границы капсулы расширяет выделение
         // за ВСЮ капсулу одним шагом (атом при выделении, как node-selection).
         // Только Shift, без Ctrl/Meta/Alt.
@@ -1440,6 +1455,302 @@ Object.assign(TextBlockManager.prototype, {
             e.stopPropagation();
             editor.blur();
         }
+    },
+
+    /**
+     * @private Tab / Shift+Tab внутри пункта списка меняет его уровень.
+     * Возвращает true, если клавиша перехвачена (тогда вызывающий обязан
+     * остановиться). Каретка ВНЕ списка → false и НИКАКОГО preventDefault:
+     * нативный переход фокуса между поверхностями обязан сохраниться.
+     * Углубление на потолке глубины клавишу всё равно проглатывает (иначе Tab на
+     * дне списка увёл бы фокус из редактора): preventDefault зовётся по факту
+     * «каретка в <li>», а сам потолок (MAX_LIST_LEVEL) держит гейт execCommand —
+     * единственное место, где число сравнивается.
+     * @param {KeyboardEvent} e
+     * @param {HTMLElement} editor
+     * @returns {boolean}
+     */
+    _handleListTab(e, editor) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return false;
+        const li = this._caretListItem(sel.getRangeAt(0), editor);
+        if (!li) return false;
+
+        e.preventDefault();
+        this.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        return true;
+    },
+
+    /**
+     * @private Пункт списка, В КОТОРОМ стоит НАЧАЛО диапазона, ИЛИ null. Обёртка
+     * над _listItemAncestor, разбирающая случай «range заякорен на ЭЛЕМЕНТЕ»:
+     * Chrome при Ctrl+A ставит startContainer = сам редактор (offset 0), а
+     * _listItemAncestor от редактора возвращает null (цикл не стартует) — гейт
+     * уровня, Tab-ветка и подсветка пунктов меню разом слепли на выделении,
+     * целиком состоящем из пунктов списка. Резолвим вглубь: дочерний узел по
+     * startOffset, а если это сам список — его первый <li>.
+     * @param {Range} range
+     * @param {HTMLElement} editor
+     * @returns {Element|null}
+     */
+    _caretListItem(range, editor) {
+        if (!range || !editor) return null;
+        let node = range.startContainer;
+        if (node && node.nodeType === 1 && (node === editor || this._isListElement(node))) {
+            const kids = node.childNodes || [];
+            let probe = kids[range.startOffset] || kids[kids.length - 1] || null;
+            if (this._isListElement(probe)) {
+                probe = Array.from(probe.children || []).find(ch => ch.tagName === 'LI') || probe;
+            }
+            node = probe || node;
+        }
+        return this._listItemAncestor(node, editor);
+    },
+
+    /**
+     * @private Ближайший предок-<li> узла в пределах редактора, ИЛИ null.
+     * Параллель _capsuleAncestor (textblock-core.js): та же дисциплина обхода —
+     * не выходим за editor. Литерал 3 вместо Node.TEXT_NODE — по тем же
+     * соображениям, что и там (без зависимости от глобала Node).
+     * @param {Node} node
+     * @param {HTMLElement} editor
+     * @returns {Element|null}
+     */
+    _listItemAncestor(node, editor) {
+        let el = node && node.nodeType === 3 ? node.parentNode : node;
+        while (el && el !== editor && editor && typeof editor.contains === 'function'
+                && editor.contains(el)) {
+            if (el.tagName === 'LI') return el;
+            el = el.parentNode;
+        }
+        return null;
+    },
+
+    /**
+     * @private 0-based глубина пункта списка: число списков-предков минус один.
+     * Пункт списка верхнего уровня — 0.
+     * @param {Element} li
+     * @param {HTMLElement} editor
+     * @returns {number}
+     */
+    _listLevel(li, editor) {
+        let level = -1;
+        let el = li;
+        while (el && el !== editor) {
+            if (this._isListElement(el)) level++;
+            el = el.parentNode;
+        }
+        return level < 0 ? 0 : level;
+    },
+
+    /** @private Узел — <ul>/<ol>? */
+    _isListElement(el) {
+        return !!(el && el.nodeType === 1 && (el.tagName === 'UL' || el.tagName === 'OL'));
+    },
+
+    /**
+     * @private Приводит вложенность списков к ВАЛИДНОЙ. Chromium после
+     * execCommand('indent') порождает список прямо внутри списка, минуя <li>
+     * (`<ul><li>a</li><ul><li>b</li></ul></ul>`) — такую разметку не понимают ни
+     * сегментатор DOCX, ни MD/TXT-конвертер, ни CSS превью. Правило: каждый
+     * ul|ol, чей родитель — ul|ol, переезжает внутрь предыдущего соседнего <li>
+     * (нет такого — создаём пустой).
+     *
+     * Работает и на живом DOM редактора (каретка переезжает вместе с поддеревом),
+     * и на DocumentFragment из <template> (строковый путь ниже). Идемпотентно.
+     * @param {HTMLElement|DocumentFragment} root
+     */
+    _normalizeListNesting(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        // Снимок ДО мутаций: переносы меняют состав childNodes, но не
+        // родительские связи ещё не обойдённых списков — порядок обхода
+        // (сверху вниз) остаётся корректным.
+        const lists = Array.from(root.querySelectorAll('ul, ol'));
+        for (const list of lists) {
+            const parent = list.parentNode;
+            if (!this._isListElement(parent)) continue;
+            let host = list.previousElementSibling;
+            if (!host || host.tagName !== 'LI') {
+                host = document.createElement('li');
+                parent.insertBefore(host, list);
+            }
+            host.appendChild(list);
+        }
+    },
+
+    /**
+     * @private Та же нормализация, но строка→строка — для стока saveContent
+     * (правка могла прийти мимо execCommand: paste, undo, внешний источник).
+     * Парсит в detached <template>, живой DOM не трогает. HTML без списков
+     * возвращается тем же значением (дешёвый гейт, ср. _repairCapsulesReport).
+     * @param {string} html
+     * @returns {string}
+     */
+    _normalizeListNestingHtml(html) {
+        if (typeof html !== 'string' || !LIST_TAG_RE.test(html)) return html;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        this._normalizeListNesting(tpl.content);
+        return tpl.innerHTML;
+    },
+
+    /**
+     * @private D2: снимает БЛОЧНОЕ форматирование — то, что нативный
+     * execCommand('removeFormat') по спецификации не трогает: списки
+     * (разворачиваются в строки, разделённые <br>), blockquote (артефакт
+     * indent вне списка), выравнивание и отступы.
+     *
+     * СКОУП — ПО ВЫДЕЛЕНИЮ, как у нативной команды: проход по всему блоку
+     * сносил бы ВСЕ списки и выравнивание редактора из-за одного выделенного
+     * жирного слова (и тут же персистил это через saveContent).
+     *  - невырожденное выделение: только узлы, пересекающие диапазон; стили
+     *    самого корня — лишь когда диапазон покрывает всё его содержимое
+     *    (иначе Ctrl+A не смог бы снять text-align с редактора);
+     *  - схлопнутая каретка: только её собственная цепочка предков (список/
+     *    blockquote, в которых она стоит), а не весь редактор;
+     *  - диапазона нет вовсе (программный вызов): прежняя семантика — блок целиком.
+     *
+     * ИНВАРИАНТ: капсулы ссылок/сносок обязаны выжить — их содержимое не
+     * разбирается, style не чистится (у капсулы он свой, не блочный).
+     * @param {HTMLElement} root Редактор (или любой контейнер).
+     * @param {Range} [range] Диапазон-скоуп; по умолчанию — текущее выделение.
+     */
+    _removeBlockFormat(root, range) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+
+        const sel = (typeof window !== 'undefined' && typeof window.getSelection === 'function')
+            ? window.getSelection() : null;
+        const scope = range || ((sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null);
+
+        let inScope;
+        let clearRoot;
+        if (!scope) {
+            inScope = () => true;
+            clearRoot = true;
+        } else if (!scope.collapsed && typeof scope.intersectsNode === 'function') {
+            inScope = (el) => scope.intersectsNode(el);
+            clearRoot = this._rangeCoversContents(scope, root);
+        } else {
+            const chain = this._caretAncestorChain(scope.startContainer, root);
+            inScope = (el) => chain.has(el);
+            clearRoot = false;
+        }
+
+        // Состав целей считаем ДО первой мутации: развороты списков двигают
+        // узлы, и границы диапазона после них проверять уже нельзя.
+        // Списки — изнутри наружу: в document order вложенный список идёт ПОСЛЕ
+        // своего контейнера, поэтому обратный порядок разворачивает сначала его
+        // (иначе внешний унёс бы вложенный вместе с <li>).
+        const lists = Array.from(root.querySelectorAll('ul, ol')).reverse().filter(inScope);
+        // blockquote — то, во что Chromium заворачивает indent ВНЕ списка.
+        const quotes = Array.from(root.querySelectorAll('blockquote')).reverse().filter(inScope);
+        // Выравнивание и отступы — плюс сам редактор: justify* в contenteditable
+        // без блочных детей пишет text-align прямо на корне.
+        const styled = Array.from(root.querySelectorAll('*')).filter(inScope);
+        if (clearRoot) styled.push(root);
+
+        lists.forEach(list => this._unwrapListBlock(list));
+        quotes.forEach(bq => this._unwrapPlainBlock(bq));
+        for (const el of styled) {
+            if (this._isCapsule && this._isCapsule(el)) continue;
+            if (el.style && typeof el.style.removeProperty === 'function') {
+                BLOCK_FORMAT_PROPS.forEach(prop => el.style.removeProperty(prop));
+            }
+            if (typeof el.removeAttribute === 'function') el.removeAttribute('align');
+        }
+    },
+
+    /**
+     * @private Диапазон покрывает ВСЁ содержимое контейнера? Литералы 0/2 —
+     * Range.START_TO_START / Range.END_TO_END (без зависимости от глобала Range,
+     * тем же соображением, что литералы Node.* в _listItemAncestor).
+     * @param {Range} range
+     * @param {HTMLElement} root
+     * @returns {boolean}
+     */
+    _rangeCoversContents(range, root) {
+        if (typeof range.compareBoundaryPoints !== 'function'
+            || typeof document.createRange !== 'function') return false;
+        const whole = document.createRange();
+        whole.selectNodeContents(root);
+        return range.compareBoundaryPoints(0, whole) <= 0
+            && range.compareBoundaryPoints(2, whole) >= 0;
+    },
+
+    /**
+     * @private Элементы-предки узла в пределах контейнера (сам контейнер НЕ
+     * входит) — скоуп блочной очистки для схлопнутой каретки.
+     * @param {Node} node
+     * @param {HTMLElement} root
+     * @returns {Set<Element>}
+     */
+    _caretAncestorChain(node, root) {
+        const chain = new Set();
+        let el = node && node.nodeType === 3 ? node.parentNode : node;
+        while (el && el !== root && typeof root.contains === 'function' && root.contains(el)) {
+            if (el.nodeType === 1) chain.add(el);
+            el = el.parentNode;
+        }
+        return chain;
+    },
+
+    /**
+     * @private Разворачивает <ul>/<ol> в поток: содержимое каждого <li> уходит
+     * на место списка, пункты разделяются <br>. Ведущий <br> ставится, только
+     * если перед списком уже есть содержимое (иначе получили бы пустую строку).
+     * @param {Element} list
+     */
+    _unwrapListBlock(list) {
+        const parent = list.parentNode;
+        if (!parent) return;
+        const items = Array.from(list.children || []).filter(ch => ch.tagName === 'LI');
+        items.forEach((li, idx) => {
+            if (idx > 0 || this._hasContentBefore(list)) {
+                parent.insertBefore(document.createElement('br'), list);
+            }
+            while (li.firstChild) parent.insertBefore(li.firstChild, list);
+        });
+        // Остаток: опустошённые <li> и пробельные узлы выбрасываем, любое
+        // непустое содержимое (чужая разметка внутри списка) выносим наружу.
+        while (list.firstChild) {
+            const node = list.firstChild;
+            const emptyItem = node.nodeType === 1 && node.tagName === 'LI' && !node.firstChild;
+            const blankText = node.nodeType === 3 && !/\S/.test(node.data || '');
+            if (emptyItem || blankText) list.removeChild(node);
+            else parent.insertBefore(node, list);
+        }
+        parent.removeChild(list);
+    },
+
+    /**
+     * @private Разворачивает блочный контейнер (blockquote) в поток, сохраняя
+     * его содержимое.
+     * @param {Element} block
+     */
+    _unwrapPlainBlock(block) {
+        const parent = block.parentNode;
+        if (!parent) return;
+        if (block.firstChild && this._hasContentBefore(block)) {
+            parent.insertBefore(document.createElement('br'), block);
+        }
+        while (block.firstChild) parent.insertBefore(block.firstChild, block);
+        parent.removeChild(block);
+    },
+
+    /**
+     * @private Перед узлом есть значимое содержимое (элемент или непробельный
+     * текст)? Решает, нужен ли разделяющий <br> при разворачивании блока.
+     * @param {Node} node
+     * @returns {boolean}
+     */
+    _hasContentBefore(node) {
+        let sib = node.previousSibling;
+        while (sib) {
+            if (sib.nodeType === 1) return true;
+            if (sib.nodeType === 3 && /\S/.test(sib.data || '')) return true;
+            sib = sib.previousSibling;
+        }
+        return false;
     },
 
     /**

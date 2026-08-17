@@ -42,6 +42,28 @@ export function isZeroWidthNode(n) {
     return false;
 }
 
+/**
+ * Команды УРОВНЯ пункта списка: осмысленны только внутри <li> и потому
+ * гейтятся по каретке (см. execCommand). Создание списка (insert*List) сюда не
+ * входит — оно стартует как раз вне списка.
+ */
+const LIST_LEVEL_CMDS = ['indent', 'outdent'];
+
+/**
+ * Потолок глубины списка (0-based): уровень 8 — девятый и последний, который
+ * умеет описать w:abstractNum в OOXML (9 уровней). Глубже не уводит ни Tab, ни
+ * пункт меню «уровень глубже» — оба приходят в execCommand, где стоит гейт.
+ * Живёт в core (базовый класс), т.к. проверка — часть гейта; textblock-editor.js
+ * импортирует отсюда, чтобы число 8 не дублировалось.
+ */
+export const MAX_LIST_LEVEL = 8;
+
+/**
+ * Команды, меняющие СТРУКТУРУ списка: после них разметка проходит нормализацию
+ * вложенности (_normalizeListNesting, textblock-editor.js).
+ */
+const LIST_STRUCTURE_CMDS = [...LIST_LEVEL_CMDS, 'insertUnorderedList', 'insertOrderedList'];
+
 export class TextBlockManager {
     constructor() {
         this.selectedTextBlock = null;
@@ -67,6 +89,14 @@ export class TextBlockManager {
     hideToolbar() {
         if (this.globalToolbar) {
             this.globalToolbar.classList.add('hidden');
+        }
+        // Открытое меню класс hidden на тулбаре НЕ закрывает: дропдаун держит
+        // своё состояние сам. Без явного закрытия меню переживает смену
+        // поверхности (detachToolbar → hideToolbar) и всплывает при re-attach
+        // уже над ДРУГОЙ поверхностью. Метод миксина тулбара — зовём защитно
+        // (hideToolbar есть у всех поверхностей и вызывается рано).
+        if (typeof this._closeToolbarDropdowns === 'function') {
+            this._closeToolbarDropdowns();
         }
     }
 
@@ -128,8 +158,14 @@ export class TextBlockManager {
             // Снимаем caret-guard'ы + чиним инварианты капсул (дубль-id,
             // расщеплённый клон, пустой data-*) ПЕРЕД записью в БД.
             const stripped = this._stripGuards ? this._stripGuards(content) : content;
+            // Вложенность списков приводим к валидной и здесь, а не только на
+            // пути indent/outdent: правка могла прийти мимо execCommand (paste,
+            // undo, внешний источник), а невалидную разметку не понимают ни
+            // DOCX-сегментатор, ни MD/TXT, ни CSS превью.
+            const normalized = this._normalizeListNestingHtml
+                ? this._normalizeListNestingHtml(stripped) : stripped;
             textBlock.content = this.validateAndRepairCapsules
-                ? this.validateAndRepairCapsules(stripped) : stripped;
+                ? this.validateAndRepairCapsules(normalized) : normalized;
             // TB-5: changelog пишем в общем стоке saveContent, чтобы правки МИМО
             // input-события (смена размера, Enter-ветки, HTML-paste, нативное
             // удаление) тоже попадали в аудит-историю. _recordDebounced
@@ -248,6 +284,27 @@ export class TextBlockManager {
 
         this.activeEditor.focus();
 
+        // Гейт уровня списка: indent/outdent осмысленны только внутри <li>.
+        // Вне списка Chromium заворачивает абзац в <blockquote>, которого нет в
+        // allowlist санитайзера 'acts' — отступ выглядел бы применённым, а на
+        // перезагрузке молча исчезал. Тихий no-op, нативная команда не идёт.
+        // Гейт стоит ЗДЕСЬ, а не в тулбаре: через execCommand проходят все пути
+        // (меню, Tab/Shift+Tab, программный вызов), дизейбл кнопки покрыл бы
+        // только один. Здесь же — потолок глубины: раньше MAX_LIST_LEVEL знала
+        // ТОЛЬКО Tab-ветка (_handleListTab), и пункт меню «уровень глубже»
+        // углублял до уровней 9+, которые DOCX-сборщик (inline.py) молча
+        // клампит на ilvl 8.
+        if (LIST_LEVEL_CMDS.includes(command) && typeof this._caretListItem === 'function') {
+            const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
+            const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+            const li = range ? this._caretListItem(range, this.activeEditor) : null;
+            if (!li) return false;
+            if (command === 'indent' && typeof this._listLevel === 'function'
+                    && this._listLevel(li, this.activeEditor) >= MAX_LIST_LEVEL) {
+                return false;
+            }
+        }
+
         // Атомарность капсулы: inline-форматные команды по выделению, заходящему
         // ВНУТРЬ тела маркера, иначе клонируют его (дубль ссылки). Расширяем
         // выделение за целые капсулы (как уже делает applyFontSize). Блочные
@@ -266,6 +323,19 @@ export class TextBlockManager {
         const result = document.execCommand(command, false, value);
 
         if (result) {
+            // Структурные команды списка: Chromium после indent/outdent кладёт
+            // вложенный <ul>/<ol> прямо внутрь списка, минуя <li>. Чиним ДО
+            // записи в модель — и живой DOM (каретка переезжает с поддеревом),
+            // и то, что уйдёт в saveContent.
+            if (LIST_STRUCTURE_CMDS.includes(command)
+                    && typeof this._normalizeListNesting === 'function') {
+                this._normalizeListNesting(this.activeEditor);
+            }
+            // D2: нативный removeFormat снимает только inline-формат — блочный
+            // (список, выравнивание, отступы) добираем своим проходом.
+            if (command === 'removeFormat' && typeof this._removeBlockFormat === 'function') {
+                this._removeBlockFormat(this.activeEditor);
+            }
             const textBlockId = this.activeEditor.dataset.textBlockId;
             this.saveContent(textBlockId, this.activeEditor.innerHTML);
         }

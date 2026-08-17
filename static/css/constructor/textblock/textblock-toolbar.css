@@ -159,27 +159,44 @@
     box-shadow: var(--input-shadow-focus);
 }
 
-/* BUG-3: кастомный дропдаун размера шрифта (вместо нативного <select>, который
-   крал фокус у contenteditable и схлопывал выделение). Триггер — обычная
-   toolbar-btn; список открывается под ней без потери фокуса редактора. */
-.toolbar-fontsize {
+/* Task 5 (A1): общий вид дропдаунов тулбара — ToolbarDropdown
+   (static/js/constructor/textblock/toolbar-dropdown.js). Три потребителя:
+   размер шрифта (BUG-3 — мигрировал сюда с нативного <select>, который крал
+   фокус у contenteditable и схлопывал выделение), выравнивание, списки.
+   Триггер — обычная toolbar-btn; список открывается под ней без потери
+   фокуса редактора. */
+.toolbar-dropdown {
     position: relative;
     display: flex;
     align-items: center;
 }
 
-.toolbar-fontsize-trigger {
+.toolbar-dropdown-trigger {
     gap: var(--spacing-xs);
+}
+
+/* Размер шрифта показывает значение ("14") — шире, чем icon-only триггеры. */
+.toolbar-fontsize-trigger {
     min-width: var(--toolbar-font-size-min-width);
 }
 
-.toolbar-fontsize-caret {
+/* Выравнивание/списки — только иконка + caret. */
+.toolbar-dropdown-trigger-icon {
+    min-width: var(--toolbar-dropdown-trigger-min-width);
+}
+
+.toolbar-dropdown-icon {
+    font-size: var(--font-size-sm);
+    line-height: 1;
+}
+
+.toolbar-dropdown-caret {
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
     line-height: 1;
 }
 
-.toolbar-fontsize-menu {
+.toolbar-dropdown-menu {
     position: absolute;
     top: calc(100% + var(--spacing-xs));
     left: 0;
@@ -189,19 +206,28 @@
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-lg);
     padding: var(--spacing-xs);
-    max-height: var(--toolbar-fontsize-menu-max-height);
-    overflow-y: auto;
-    min-width: var(--toolbar-font-size-min-width);
+    min-width: var(--toolbar-dropdown-menu-min-width);
     display: flex;
     flex-direction: column;
     gap: var(--textblock-mark-padding);
 }
 
-.toolbar-fontsize-menu.hidden {
+.toolbar-dropdown-menu.hidden {
     display: none;
 }
 
-.toolbar-fontsize-option {
+/* Размер шрифта: палитра длиннее, чем помещается без прокрутки — уже (число
+   без подписи), поэтому min-width уже общего дропдаун-меню. */
+.toolbar-fontsize-menu {
+    max-height: var(--toolbar-fontsize-menu-max-height);
+    overflow-y: auto;
+    min-width: var(--toolbar-font-size-min-width);
+}
+
+.toolbar-dropdown-option {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-sm);
     border-radius: var(--radius-xs);
     cursor: pointer;
@@ -212,15 +238,44 @@
     transition: var(--transition-all);
 }
 
-.toolbar-fontsize-option:hover {
+.toolbar-dropdown-option:hover {
     background: var(--bg-secondary);
     color: var(--primary);
 }
 
-.toolbar-fontsize-option.active {
+.toolbar-dropdown-option.active {
     background: var(--primary-subtle);
     color: var(--primary);
     font-weight: var(--font-weight-semibold);
+}
+
+/* Доделка: indent/outdent вне <li> — execCommand их тихо гасит (гейт в
+   textblock-core.js), пункт остаётся видимым, но неактивным (по образцу
+   .toolbar-btn:disabled). role="option" — не форм-контрол, поэтому состояние
+   через aria-disabled, не через IDL-свойство disabled. */
+.toolbar-dropdown-option[aria-disabled="true"] {
+    opacity: var(--opacity-subtle);
+    cursor: not-allowed;
+}
+
+.toolbar-dropdown-option[aria-disabled="true"]:hover {
+    background: transparent;
+    color: var(--text-primary);
+}
+
+/* Подсказка клавиши (Tab / Shift+Tab у пунктов indent/outdent) — прижата к
+   правому краю пункта меню. */
+.toolbar-dropdown-hint {
+    margin-left: auto;
+    padding-left: var(--spacing-md);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
+.toolbar-dropdown-separator {
+    height: var(--border-width-thin);
+    background: var(--border);
+    margin: var(--spacing-xs) 0;
 }
 
 #headingSelect {

@@ -41,6 +41,7 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 
 from app.domains.acts.formatters.docx.footnotes import add_footnote
+from app.domains.acts.formatters.docx.numbering import apply_numbering, create_list_num
 from app.domains.acts.formatters.docx.styles import Fonts
 
 
@@ -494,13 +495,28 @@ _TEXT_ALIGN_RE = re.compile(
 _PLACEHOLDER_BR_RE = re.compile(r"^\s*<br\b[^>]*>\s*$", re.IGNORECASE)
 
 
-# Списки rich-HTML (V14.1): тег списка → built-in стиль абзаца Word. "List
-# Bullet" — тот же стиль, которым уже размечались пункты descriptionList, так
-# что оформление акта не меняется. Стиль несёт маркер/нумерацию и отступ; для
-# нумерованных списков Word ведёт СКВОЗНУЮ нумерацию стиля "List Number" —
-# два отдельных <ol> в одном документе продолжают счёт, а не начинают с 1
-# (ограничение built-in стилей, отдельный numId под каждый список не заводим).
-LIST_TAG_STYLES = {"ul": "List Bullet", "ol": "List Number"}
+# Теги списков rich-HTML. Каждый ВСТРЕЧЕННЫЙ элемент <ul>/<ol> — отдельный
+# список документа (см. ListRef.instance), вложенный в том числе.
+_LIST_TAGS = frozenset({"ul", "ol"})
+
+# Потолок глубины: w:abstractNum знает ровно 9 уровней (0..8), глубже
+# уровень зажимается — пункт остаётся пунктом, но ступеньку не набирает.
+_MAX_LIST_LEVEL = 8
+
+
+@dataclass(frozen=True)
+class ListRef:
+    """Ссылка сегмента-пункта на конкретный список документа.
+
+    instance — порядковый номер элемента <ul>/<ol> в пределах одного content;
+    рендер заводит на каждый instance свой w:num, отсюда изоляция: соседние
+    списки не делят счёт, вложенный стартует заново. kind — 'ul'/'ol'
+    (выбирает abstractNum с маркерами или номерами). level — 0-based глубина
+    вложенности, она же ilvl в w:numPr.
+    """
+    instance: int
+    kind: str
+    level: int
 
 
 @dataclass(frozen=True)
@@ -509,13 +525,12 @@ class BlockSegment:
 
     alignment — значение text-align блочного элемента (None = не задано,
     рендер подставит дефолт justify); html — внутренняя разметка сегмента
-    (пустая строка = пустой абзац-строка); list_style — стиль абзаца для
-    сегмента-пункта списка (LIST_TAG_STYLES ближайшего <ul>/<ol>), None у
-    обычного сегмента.
+    (пустая строка = пустой абзац-строка); list_ref — ссылка на список для
+    сегмента-пункта (ближайший открытый <ul>/<ol>), None у обычного сегмента.
     """
     alignment: str | None
     html: str
-    list_style: str | None = None
+    list_ref: ListRef | None = None
 
 
 # text-align сегмента → выравнивание Word. Потребитель — render_block_segments
@@ -541,12 +556,11 @@ def split_block_segments(html: str) -> list[BlockSegment]:
     рендерит их мягкими переносами w:br, как раньше. Пустой/пробельный
     контент даёт пустой список (рендер сам добавит абзац-строку).
 
-    Списки (V14.1): <ul>/<ol> сами абзаца не дают, а задают list_style своим
-    <li>; каждый <li> — отдельный сегмент (свой абзац Word со стилем списка).
-    Вложенные списки СПЛЮЩИВАЮТСЯ: пункт вложенного списка становится обычным
-    сегментом того же уровня со стилем СВОЕГО списка — текст сохраняется,
-    ступенька отступа теряется (built-in стили "List Bullet 2"/"List Number 2"
-    сознательно не используются, см. LIST_TAG_STYLES).
+    Списки: <ul>/<ol> сами абзаца не дают, а задают list_ref своим <li>;
+    каждый <li> — отдельный сегмент (свой абзац Word со своей нумерацией).
+    Вложенные списки СОХРАНЯЮТ уровень: пункт вложенного списка получает
+    ListRef с бОльшим level и СВОИМ instance, поэтому в Word считает
+    независимо и рисуется со своей ступенькой отступа.
     """
     if not html:
         return []
@@ -571,9 +585,9 @@ class _TopLevelSplitter(HTMLParser):
     (мягкий перенос w:br, наследует align родителя) — прежнее поведение. Так
     превью (каскад CSS) и DOCX не расходятся по выравниванию.
 
-    Пункт списка <li> — тоже граница сегмента (V14.1): открывающий <ul>/<ol>
-    кладёт свой стиль на стек списков, каждый <li> внутри становится
-    контейнером с этим стилем. Сам <ul>/<ol> абзаца не даёт.
+    Пункт списка <li> — тоже граница сегмента: открывающий <ul>/<ol> кладёт
+    себя на стек списков, каждый <li> внутри становится контейнером со
+    ссылкой на верхний список стека. Сам <ul>/<ol> абзаца не даёт.
     """
 
     def __init__(self):
@@ -581,13 +595,17 @@ class _TopLevelSplitter(HTMLParser):
         self._segments: list[BlockSegment] = []
         self._buf: list[str] = []
         # Стек открытых блоков-КОНТЕЙНЕРОВ (границ сегмента): элемент —
-        # [align, emitted_child, list_style]. Пусто = верхний уровень
+        # [align, emitted_child, list_ref]. Пусто = верхний уровень
         # (анонимный сегмент).
         self._ctx_stack: list[list] = []
-        # Стек открытых <ul>/<ol>: элемент — (стиль абзаца, глубина _ctx_stack
-        # на момент открытия). Глубина нужна, чтобы </ul> закрыл незакрытые
-        # <li> (частая разметка вида <ul><li>a<li>b</ul>).
-        self._list_stack: list[tuple[str, int]] = []
+        # Стек открытых <ul>/<ol>: элемент — (kind, instance, глубина
+        # _ctx_stack на момент открытия). Глубина нужна, чтобы </ul> закрыл
+        # незакрытые <li> (частая разметка вида <ul><li>a<li>b</ul>).
+        self._list_stack: list[tuple[str, int, int]] = []
+        # Сквозной счётчик элементов <ul>/<ol> контента: даёт instance для
+        # ListRef. Инкрементится на КАЖДОМ открывающем теге списка, включая
+        # вложенные, — это и есть правило «один <ul>/<ol> = один w:num».
+        self._list_instances = 0
         # Глубина открытых НЕ-контейнерных элементов (span/b/… и вложенных div/p
         # без align) внутри текущего буфера. Пока >0 — мы внутри сырой разметки
         # сегмента, новые div/p там тоже сырые (буфер держим сбалансированным).
@@ -599,12 +617,13 @@ class _TopLevelSplitter(HTMLParser):
             self._buf.append(raw)
             return
         if self._inner_depth == 0:
-            if tag in LIST_TAG_STYLES:
-                self._open_list(LIST_TAG_STYLES[tag])
+            if tag in _LIST_TAGS:
+                self._open_list(tag)
                 return
             if tag == "li" and self._list_stack:
-                # Пункт — свой абзац со стилем БЛИЖАЙШЕГО списка: вложенный
-                # список сплющивается в тот же уровень (см. split_block_segments).
+                # Пункт — свой абзац со ссылкой на БЛИЖАЙШИЙ список; уровень =
+                # глубина стека списков, поэтому вложенный пункт уезжает на
+                # свой ilvl вместо сплющивания (см. split_block_segments).
                 # Собственный text-align <li> приоритетнее; при его отсутствии
                 # наследуется align объемлющего контейнера (открытого div/p с
                 # align — только такие контейнеры и попадают в _ctx_stack, см.
@@ -613,9 +632,11 @@ class _TopLevelSplitter(HTMLParser):
                 inherited_align = own_align if own_align is not None else (
                     self._ctx_stack[-1][0] if self._ctx_stack else None
                 )
+                kind, instance, _ = self._list_stack[-1]
+                level = min(len(self._list_stack) - 1, _MAX_LIST_LEVEL)
                 self._open_container(
                     inherited_align,
-                    list_style=self._list_stack[-1][0],
+                    list_ref=ListRef(instance, kind, level),
                 )
                 return
             if tag in ("div", "p"):
@@ -640,7 +661,7 @@ class _TopLevelSplitter(HTMLParser):
             self._inner_depth -= 1
             self._buf.append(f"</{tag}>")
             return
-        if tag in LIST_TAG_STYLES and self._list_stack:
+        if tag in _LIST_TAGS and self._list_stack:
             self._close_list()
             return
         if self._ctx_stack:
@@ -664,29 +685,34 @@ class _TopLevelSplitter(HTMLParser):
         self._flush_anonymous()
         return self._segments
 
-    def _open_container(self, align: str | None, list_style: str | None = None) -> None:
+    def _open_container(self, align: str | None, list_ref: ListRef | None = None) -> None:
         self._flush_before_block()
-        self._ctx_stack.append([align, False, list_style])
+        self._ctx_stack.append([align, False, list_ref])
 
     def _close_container(self) -> None:
         inner = _normalize_segment_html("".join(self._buf))
         self._buf.clear()
-        align, emitted_child, list_style = self._ctx_stack.pop()
+        align, emitted_child, list_ref = self._ctx_stack.pop()
         if inner:
-            self._segments.append(BlockSegment(align, inner, list_style))
+            self._segments.append(BlockSegment(align, inner, list_ref))
         elif not emitted_child:
             # Пустой блок-лист = пустая строка-абзац (как <div><br></div>).
-            self._segments.append(BlockSegment(align, "", list_style))
+            self._segments.append(BlockSegment(align, "", list_ref))
         # else: пустой хвост после дочерних сегментов — не плодим пустой абзац.
 
-    def _open_list(self, style: str) -> None:
-        """<ul>/<ol>: своего абзаца не даёт, только задаёт стиль пунктам."""
+    def _open_list(self, kind: str) -> None:
+        """<ul>/<ol>: своего абзаца не даёт, только регистрирует список.
+
+        Каждый открывающий тег — НОВЫЙ instance, включая вложенный: так
+        вложенный список получает собственную нумерацию и считает независимо.
+        """
         self._flush_before_block()
-        self._list_stack.append((style, len(self._ctx_stack)))
+        self._list_instances += 1
+        self._list_stack.append((kind, self._list_instances, len(self._ctx_stack)))
 
     def _close_list(self) -> None:
         """</ul>/</ol>: закрывает пункты, оставшиеся незакрытыми внутри списка."""
-        _, depth = self._list_stack.pop()
+        _, _, depth = self._list_stack.pop()
         while len(self._ctx_stack) > depth:
             self._close_container()
 
@@ -700,16 +726,16 @@ class _TopLevelSplitter(HTMLParser):
 
     def _flush_partial(self) -> None:
         """Кусок текущего контейнера ДО вложенного блока — свой сегмент с align
-        и стилем списка контейнера; чисто пробельный кусок пропускаем (браузер
-        его схлопывает). Так текст пункта ДО вложенного списка
+        и ссылкой на список контейнера; чисто пробельный кусок пропускаем
+        (браузер его схлопывает). Так текст пункта ДО вложенного списка
         (<li>текст<ul>…</ul></li>) остаётся маркированным."""
         text = "".join(self._buf)
         self._buf.clear()
         if not text.strip(" \t\r\n"):
             return
-        align, _, list_style = self._ctx_stack[-1]
+        align, _, list_ref = self._ctx_stack[-1]
         self._segments.append(
-            BlockSegment(align, _normalize_segment_html(text), list_style)
+            BlockSegment(align, _normalize_segment_html(text), list_ref)
         )
 
     def _flush_anonymous(self) -> None:
@@ -758,10 +784,12 @@ def render_block_segments(
     последний — без прямого форматирования (наследует Normal), как у
     прежней одноабзацной модели.
 
-    Список из самого HTML (V14.1, <ul>/<ol>) — сегмент-пункт получает СВОЙ
-    list_style на любой позиции, включая first_paragraph (метка поля
-    «Причины:» тогда стоит внутри первого пункта — маркер у всех пунктов
-    списка одинаковый).
+    Список из самого HTML (<ul>/<ol>) — сегмент-пункт получает СВОЙ w:numPr
+    на любой позиции, включая first_paragraph (метка поля «Причины:» тогда
+    стоит внутри первого пункта — нумерация у всех пунктов списка общая).
+    Нумерации заводятся по ходу: локальный кеш instance → num_id живёт ровно
+    на этот вызов, поэтому разные текстблоки и разные поля нарушения получают
+    независимые списки автоматически.
 
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
@@ -779,17 +807,18 @@ def render_block_segments(
         return [para]
 
     paragraphs: list[Paragraph] = []
+    num_ids: dict[int, int] = {}  # ListRef.instance → numId в numbering.xml
     for i, segment in enumerate(segments):
-        if i == 0:
-            if first_paragraph is not None:
-                para = first_paragraph
-                if segment.list_style:
-                    para.style = segment.list_style
-            else:
-                para = doc.add_paragraph(style=segment.list_style)
+        if i == 0 and first_paragraph is not None:
+            para = first_paragraph
         else:
-            para = doc.add_paragraph(style=segment.list_style)
+            para = doc.add_paragraph()
         para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
+        if segment.list_ref is not None:
+            ref = segment.list_ref
+            if ref.instance not in num_ids:
+                num_ids[ref.instance] = create_list_num(doc, ref.kind)
+            apply_numbering(para, num_ids[ref.instance], ilvl=ref.level)
         apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
         paragraphs.append(para)
 
