@@ -3,6 +3,6 @@
   <path d="M5 2.5h10l4 4v15h-14v-19z"/>
   <!-- Folded corner -->
   <path d="M15 2.5v4h4"/>
-  <!-- md label -->
-  <text x="12" y="15.5" font-family="Arial, Helvetica, sans-serif" font-size="5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" letter-spacing="0.2">md</text>
+  <!-- pdf label -->
+  <text x="12" y="15.5" font-family="Arial, Helvetica, sans-serif" font-size="5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" letter-spacing="0.2">pdf</text>
 </svg>
