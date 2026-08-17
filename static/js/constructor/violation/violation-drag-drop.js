@@ -14,6 +14,15 @@ import { BLOCK_TYPE_META } from './violation-block-types.js';
 const DRAG_PAYLOAD_TYPE = 'application/x-violation-block';
 
 /**
+ * Мёртвая зона вокруг середины блока (px): пока курсор не отошёл от середины
+ * дальше DEAD_BAND, позиция вставки не переключается. Без гистерезиса дрожание
+ * курсора на один пиксель у середины гоняет индикатор «перед блоком» ⇄ «после
+ * блока» и он мигает. 12px — примерно строка текста: заметно больше дрожания
+ * руки, но заметно меньше половины самого низкого блока.
+ */
+const MIDDLE_DEAD_BAND_PX = 12;
+
+/**
  * Читает полезную нагрузку перетаскивания: из dataTransfer (drop), иначе — из
  * снимка на менеджере (dragover: getData во время drag браузер не отдаёт).
  * @param {Event} e - Событие drag&drop
@@ -41,6 +50,31 @@ function isSameField(payload, violation, fieldKey) {
 
 // Расширение ViolationManager
 Object.assign(ViolationManager.prototype, {
+    /**
+     * Вооружает обёртку блока перетаскиванием — но ТОЛЬКО если нажатие пришлось
+     * на шапку `.content-item-label`.
+     *
+     * По умолчанию у обёртки `draggable = false` (renderBlocks), иначе любое
+     * протягивание мышью в теле блока — выделение текста, ресайз колонки
+     * таблицы, выделение ячеек — начинало бы drag блока. Chromium читает
+     * `draggable` в момент старта перетаскивания, поэтому включать флаг на
+     * mousedown достаточно; снимается он в disarmBlockDrag (mouseup/dragend).
+     *
+     * @param {MouseEvent} e - Событие mousedown на обёртке блока
+     * @param {HTMLElement} wrapper - Обёртка блока (.content-item-wrapper)
+     */
+    armBlockDrag(e, wrapper) {
+        wrapper.draggable = !!e.target?.closest?.('.content-item-label');
+    },
+
+    /**
+     * Снимает разрешение на перетаскивание (mouseup / конец drag).
+     * @param {HTMLElement} wrapper - Обёртка блока (.content-item-wrapper)
+     */
+    disarmBlockDrag(wrapper) {
+        if (wrapper) wrapper.draggable = false;
+    },
+
     /**
      * Начало перетаскивания блока: полезная нагрузка + миниатюра.
      * @param {Event} e - Событие dragstart
@@ -79,6 +113,8 @@ Object.assign(ViolationManager.prototype, {
 
         // Сбрасываем последний индекс и флаг коммита при начале перетаскивания.
         this.lastDragOverIndex = null;
+        this._lastDragOverElement = null;
+        this._pendingDragOver = null;
         this._dropCommitted = false;
     },
 
@@ -118,35 +154,82 @@ Object.assign(ViolationManager.prototype, {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
 
+        // dragover летит десятками событий в секунду, а его полезная работа —
+        // getBoundingClientRect + перестановка индикатора в DOM (layout на
+        // каждое событие). Поэтому синхронно снимаем только курсор и блок под
+        // ним, а расчёт позиции откладываем до кадра. preventDefault выше —
+        // всегда синхронно, иначе браузер не разрешит drop.
+        this._pendingDragOver = {
+            hoveredElement: e.target?.closest?.('.content-item-wrapper') || null,
+            mouseY: e.clientY,
+            container,
+        };
+
+        if (this._dragOverFrameScheduled) return;
+        this._dragOverFrameScheduled = true;
+        requestAnimationFrame(() => {
+            this._dragOverFrameScheduled = false;
+            const pending = this._pendingDragOver;
+            this._pendingDragOver = null;
+            // Кадр мог прийти уже после drop/dragend — тогда делать нечего.
+            if (pending) this._applyDragOverPosition(pending);
+        });
+    },
+
+    /**
+     * Пересчитывает позицию вставки и двигает индикатор — тело dragover,
+     * вызывается не чаще раза в кадр.
+     *
+     * @param {{hoveredElement: HTMLElement|null, mouseY: number, container: HTMLElement}} pending
+     *        Снимок последнего dragover.
+     */
+    _applyDragOverPosition({ hoveredElement, mouseY, container }) {
         const draggingElement = document.querySelector('.dragging');
         if (!draggingElement) return;
 
-        const currentElement = e.target.closest('.content-item-wrapper');
-
-        if (!currentElement || currentElement === draggingElement) {
+        if (!hoveredElement || hoveredElement === draggingElement) {
             return;
         }
 
-        // Получаем границы текущего элемента
-        const rect = currentElement.getBoundingClientRect();
-        const mouseY = e.clientY;
+        // Индексы блока под курсором и перетаскиваемого блока в контейнере.
+        const allWrappers = [...container.querySelectorAll('.content-item-wrapper')];
+        const currentIndex = allWrappers.indexOf(hoveredElement);
+        if (currentIndex === -1) return;
+        const draggedIndex = allWrappers.indexOf(draggingElement);
+
+        const rect = hoveredElement.getBoundingClientRect();
         const elementMiddle = rect.top + rect.height / 2;
 
-        // Определяем, в какую половину элемента попал курсор
-        const isTopHalf = mouseY < elementMiddle;
+        // В какую половину элемента попал курсор
+        let targetPosition = mouseY < elementMiddle ? currentIndex : currentIndex + 1;
 
-        // Получаем индекс текущего элемента
-        const allWrappers = [...container.querySelectorAll('.content-item-wrapper')];
-        const currentIndex = allWrappers.indexOf(currentElement);
-
-        // Проверяем, изменилась ли позиция с последнего вызова
-        const targetPosition = isTopHalf ? currentIndex : currentIndex + 1;
+        // Гистерезис у середины: пока курсор не отошёл от неё дальше мёртвой
+        // зоны, держим уже показанную позицию. Действует только в пределах
+        // одного блока — переход на другой блок всегда пересчитывает позицию.
+        if (this.lastDragOverIndex !== null
+            && this._lastDragOverElement === hoveredElement
+            && Math.abs(mouseY - elementMiddle) <= MIDDLE_DEAD_BAND_PX) {
+            targetPosition = this.lastDragOverIndex;
+        }
+        this._lastDragOverElement = hoveredElement;
 
         if (this.lastDragOverIndex === targetPosition) {
             return; // Позиция не изменилась, не делаем ничего
         }
 
         this.lastDragOverIndex = targetPosition;
+
+        // Позиции draggedIndex и draggedIndex+1 — вставка туда, где блок и так
+        // лежит: полоска прямо над/под перетаскиваемым блоком ничего не обещает,
+        // поэтому индикатор в них не показываем. Сам индекс при этом сохраняем
+        // (а не сбрасываем в null): handleDrop по нему сделает честный no-op,
+        // тогда как fallback на targetIndex при null уехал бы на блок под
+        // курсором и порядок всё-таки поменялся бы.
+        if (draggedIndex !== -1
+            && (targetPosition === draggedIndex || targetPosition === draggedIndex + 1)) {
+            this.removeInsertIndicators(container);
+            return;
+        }
 
         // Рисуем индикатор позиции вместо физического сдвига элемента (#6):
         // DOM больше не переставляется оптимистично, порядок вычисляется в
@@ -178,6 +261,10 @@ Object.assign(ViolationManager.prototype, {
         e.preventDefault();
         e.stopPropagation();
 
+        // Отложенный кадр dragover больше не нужен — иначе он дорисует индикатор
+        // уже в перерисованный контейнер.
+        this._pendingDragOver = null;
+
         const blocks = violation?.[fieldKey]?.blocks || [];
         const fromIndex = blocks.findIndex(block => block.id === payload.blockId);
         if (fromIndex === -1) return;
@@ -208,6 +295,10 @@ Object.assign(ViolationManager.prototype, {
     handleDragEnd(e, violation, fieldKey, container) {
         e.target.classList.remove('dragging');
 
+        // Снимаем разрешение на drag: следующее перетаскивание снова обязано
+        // начаться с шапки (armBlockDrag).
+        this.disarmBlockDrag(e.currentTarget || e.target);
+
         // Снимаем индикатор позиции.
         this.removeInsertIndicators(container);
 
@@ -222,6 +313,8 @@ Object.assign(ViolationManager.prototype, {
         // Сбрасываем состояние для следующего drag.
         this._dropCommitted = false;
         this.lastDragOverIndex = null;
+        this._lastDragOverElement = null;
+        this._pendingDragOver = null;
         this._dragPayload = null;
     }
 });
