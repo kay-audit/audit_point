@@ -1235,25 +1235,6 @@ export const ChatRenderer = {
     },
 
     /**
-     *  Возвращает SVG-разметку иконки для расширения файла.
-     *
-     *  Используются иконки из Heroicons (https://github.com/tailwindlabs/heroicons),
-     *  лицензия MIT. Иконки выбраны так, чтобы форма передавала тип:
-     *  ``document`` (общий листок) — для текстовых документов и данных;
-     *  ``table-cells`` — для таблиц (xlsx); ``presentation-chart-bar`` —
-     *  для презентаций; ``photo`` — для изображений; ``code-bracket`` —
-     *  для кода/SQL; ``archive-box`` — для архивов. Цвет приходит из
-     *  CSS-класса ``chat-block-file-icon--<ext>`` (см. ``chat-blocks.css``),
-     *  внутри SVG — только обводка через ``currentColor``.
-     *
-     *  Никаких текстовых лейблов внутри иконок — различие по цвету,
-     *  а имя файла в чате уже выводится текстом рядом.
-     *
-     *  @param {string} ext — расширение вида ``.pdf`` или пустая строка
-     *  @returns {string} — inline SVG markup
-     *  @private
-     */
-    /**
      * Базовый URL каталога иконок. Каждая иконка — отдельный .svg
      * (см. ``static/icons/chat/<name>-<size>.svg``): редактируется
      * и перерисовывается без рестарта, hard refresh достаточно.
@@ -1272,12 +1253,13 @@ export const ChatRenderer = {
         'file-image-24':        'file-image-24.svg',
         'file-code-24':         'file-code-24.svg',
         'file-archive-24':      'file-archive-24.svg',
-        // Индивидуальные иконки по расширению (PR#49+):
+        // Индивидуальные иконки с текстовым ярлыком формата внутри:
         'file-docx-24':         'file-docx-24.svg',
-        'file-md-24':           'file-md-24.svg',
         'file-xlsx-24':         'file-xlsx-24.svg',
         'file-pptx-24':         'file-pptx-24.svg',
+        'file-md-24':           'file-md-24.svg',
         'file-txt-24':          'file-txt-24.svg',
+        'file-pdf-24':          'file-pdf-24.svg',
     },
 
     /**
@@ -1292,27 +1274,27 @@ export const ChatRenderer = {
      * @private
      */
     _ICON_FORM: {
-        '.pdf':  'file-generic-24',
-        // Документы Microsoft / OpenDocument: новые форматы — индивидуально,
+        '.pdf':  'file-pdf-24',
+        // Документы Microsoft: новые форматы — индивидуально,
         // старые — общая универсальная группа.
         '.docx': 'file-docx-24',
         '.doc':  'file-generic-24',
         // Таблицы: новые — индивидуально, старые — старая spreadsheet-иконка.
         '.xlsx': 'file-xlsx-24',
         '.xls':  'file-spreadsheet-24',
+        '.csv':  'file-spreadsheet-24',
         // Презентации: новые — индивидуально, старые — старая presentation-иконка.
         '.pptx': 'file-pptx-24',
         '.ppt':  'file-presentation-24',
         // Текстовые / документация: каждый со своим ярлыком.
         '.md':   'file-md-24',
         '.txt':  'file-txt-24',
-        '.csv':  'file-spreadsheet-24',
         '.log':  'file-generic-24',
         '.json': 'file-generic-24',
         '.xml':  'file-generic-24',
         '.yaml': 'file-generic-24',
         '.yml':  'file-generic-24',
-        // Изображения — единая file-24.svg (нравится в дизайне).
+        // Изображения — единая file-image-24.svg.
         '.png':  'file-image-24',
         '.jpg':  'file-image-24',
         '.jpeg': 'file-image-24',
@@ -1362,9 +1344,23 @@ export const ChatRenderer = {
     },
 
     /**
-     * Inline-SVG иконки по расширению. Пустая строка если кеш не заполнен.
-     * @param {string} ext — расширение вида ``.pdf``
-     * @returns {string}
+     * Возвращает SVG-разметку иконки для расширения файла.
+     *
+     * Два вида иконок по принципу выбора:
+     *   • офисные и текстовые форматы (docx, xlsx, pptx, md, txt, pdf) —
+     *     своя иконка с коротким текстовым ярлыком внутри (формат видно
+     *     даже в мелком масштабе);
+     *   • всё остальное (старые doc/xls/ppt, картинки, код, архивы) —
+     *     общие иконки по форме из набора Heroicons, цвет берётся из
+     *     CSS-класса ``chat-block-file-icon--<ext>``.
+     *
+     * Цвет приходит из ``chat-block-file-icon--<ext>``, внутри SVG —
+     * только обводка через ``currentColor``. Имя файла в чате уже
+     * выводится текстом рядом, дублировать его внутри иконки не нужно
+     * (за исключением коротких ярлыков формата).
+     *
+     * @param {string} ext — расширение вида ``.pdf`` или пустая строка
+     * @returns {string} — inline SVG markup
      * @private
      */
     _getFileIconSvg(ext) {
