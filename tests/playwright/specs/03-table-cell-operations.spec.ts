@@ -82,6 +82,8 @@ test.describe('Table cell operations @smoke', () => {
     await expect(textarea).toBeVisible();
     await expect(textarea).toBeFocused();
 
+    // Сид-значение ячейки затираем выделением: набор идёт с чистого листа.
+    await textarea.press('Control+a');
     await textarea.pressSequentially('первая часть');
 
     // Пауза дольше дебаунса автосейва (3с) — textarea не должна быть удалена
