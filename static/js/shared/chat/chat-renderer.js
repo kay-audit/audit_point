@@ -1265,7 +1265,7 @@ export const ChatRenderer = {
     /**
      * Расширение → логическое имя иконки.
      *
-     * Новые форматы (docx/md/xlsx/pptx/txt) получают индивидуальные иконки,
+     * Форматы с ярлыком (pdf/docx/xlsx/pptx/md/txt) получают индивидуальные иконки,
      * цвета определяются CSS-классом ``chat-block-file-icon--<ext>``.
      * Старые форматы (doc/xls/ppt) и редкие (json/xml/yaml) идут в общие
      * группы (generic/spreadsheet/presentation) — отдельные иконки под них
