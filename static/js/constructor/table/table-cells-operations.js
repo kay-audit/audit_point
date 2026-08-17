@@ -132,13 +132,26 @@ export class TableCellsOperations {
     }
 
     /**
-     * H5-A: коммитит pending-редактирование ячейки, если оно есть.
-     * Используется перед сохранением (Ctrl+S), чтобы значение из textarea
-     * успело попасть в grid[r][c].content состояния до saveState.
+     * H5-A: коммитит pending-редактирование ячейки, если оно есть. Используется
+     * периодическим автосейвом и перед сохранением (Ctrl+S), чтобы значение из
+     * textarea успело попасть в grid[r][c].content состояния до saveState.
      *
-     * Каждая `.editing`-ячейка содержит textarea, у которой listener 'blur'
-     * вызывает finishEditing → cellData.content = textarea.value.trim().
-     * Достаточно сделать blur — он триггерит весь pipeline синхронно.
+     * До M.26 значение ячейки попадало в state только на blur/Enter, поэтому
+     * коммит делал textarea.blur() — это синхронно триггерило finishEditing.
+     * После M.26 (write-through, cell-write-through.js::applyCellInput пишет в
+     * grid[r][c].content на каждый input) содержимое и так уже актуально, но
+     * blur всё ещё вызывался из автосейва каждые ~3с и попутно гасил
+     * редактирование: finishEditing делает cellEl.textContent = ..., что удаляет
+     * textarea из DOM и роняет фокус посреди набора текста пользователем.
+     *
+     * Коммит теперь недеструктивен: читает textarea.value.trim() и пишет
+     * напрямую в grid[row][col].content (тот же гвард !isSpanned, что в
+     * finishEditing), не трогая DOM/фокус/классы — textarea остаётся в ячейке,
+     * ввод не прерывается.
+     *
+     * ChangelogTracker и afterTableCellChanged здесь намеренно НЕ вызываются —
+     * это не окончание правки, а промежуточная синхронизация; реальное
+     * завершение (blur/Enter/Escape) по-прежнему проходит через finishEditing.
      *
      * @returns {boolean} true если был хотя бы один pending edit
      */
@@ -147,9 +160,18 @@ export class TableCellsOperations {
         const editingCells = document.querySelectorAll('#itemsContainer td.editing, #itemsContainer th.editing');
         editingCells.forEach(cell => {
             const textarea = cell.querySelector('textarea');
-            if (textarea) {
-                textarea.blur();
-                committed = true;
+            if (!textarea) return;
+            committed = true;
+
+            const tableId = cell.dataset.tableId;
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+            const table = resolveTable(tableId);
+
+            if (table && table.grid && table.grid[row] && table.grid[row][col]) {
+                if (!table.grid[row][col].isSpanned) {
+                    table.grid[row][col].content = textarea.value.trim();
+                }
             }
         });
         return committed;
