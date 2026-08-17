@@ -1169,7 +1169,8 @@ class PaginatedResponse(BaseModel, Generic[T]):
   "images":     { "max_file_size", "max_total_size_per_act", "allowed_mime_types",
                   "max_items_per_violation", "image_max_height_percent" },
   "tables":     { "max_rows", "max_cols", "min_col_width_px", "per_node" },
-  "textblocks": { "font_size_min", "font_size_max", "font_size_default", "per_node" },
+  "textblocks": { "font_size_min", "font_size_max", "font_size_default", "per_node",
+                  "max_list_level" },
   "violations": { "per_node" },
   "sanitizer":  { "allowed_tags", "allowed_css_properties", "allowed_data_attrs" },
   "editor_telemetry_enabled": true

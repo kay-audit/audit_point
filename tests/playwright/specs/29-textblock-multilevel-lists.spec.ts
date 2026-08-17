@@ -77,6 +77,49 @@ async function listDepthOf(editor, needle: string): Promise<number> {
 }
 
 /**
+ * Число <li> БЕЗ собственного текста (весь текст — во вложенном списке).
+ * Такие пункты — след пустых <li>-хостов: их маркеры выстраивались в одну
+ * строку («a) i. 1. Текст») и давали фантомные строки в MD/TXT.
+ */
+async function countMarkerOnlyItems(editor): Promise<number> {
+  return editor.evaluate((ed: HTMLElement) =>
+    Array.from(ed.querySelectorAll('li')).filter((li) => {
+      const own = Array.from(li.childNodes)
+        .filter(
+          (n) =>
+            !(n.nodeType === 1 && ['UL', 'OL'].includes((n as HTMLElement).tagName))
+        )
+        .map((n) => n.textContent || '')
+        .join('');
+      return own.trim() === '';
+    }).length
+  );
+}
+
+/** Ставит каретку в конец текстового узла, содержащего `needle`. */
+async function placeCaretAfter(page, needle: string): Promise<void> {
+  await page.evaluate((text: string) => {
+    const ed = document.querySelector(
+      '.textblock-editor[data-text-block-id="txt-seed-1"]'
+    ) as HTMLElement;
+    const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if (node.textContent && node.textContent.includes(text)) {
+        const range = document.createRange();
+        range.setStart(node, node.textContent.length);
+        range.collapse(true);
+        const sel = window.getSelection()!;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        ed.focus();
+        return;
+      }
+    }
+  }, needle);
+}
+
+/**
  * После сохранения и перезагрузки акта H3 может предложить восстановить
  * несинхронизированный локальный черновик (диалог «Найден несохранённый
  * черновик» с кнопками Восстановить/Отклонить, см. 18-textblock-alignment).
@@ -123,6 +166,77 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     await page.keyboard.press('Shift+Tab');
     expect(await listDepthOf(editor, 'Второй пункт')).toBe(0);
     expect(await hasOnlyValidListNesting(editor)).toBe(true);
+  });
+
+  test('Повторный indent одного пункта не копит уровни и пустые пункты (БАГ-1)', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await makeUnorderedList(page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Второй пункт');
+
+    await page.keyboard.press('Tab');
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(1);
+
+    // Второй и третий Tab: пункт — единственный в своём подсписке, углублять
+    // нечего. Раньше Chromium давал список-сироту, нормализатор подставлял
+    // ПУСТОЙ <li>-хост, и его маркер добавлялся к строке пункта.
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(1);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
+    expect(await countMarkerOnlyItems(editor)).toBe(0);
+    // Текст пункта — ровно свой, без приклеенных маркеров чужих уровней.
+    await expect(editor).toHaveText(/Второй пункт/);
+  });
+
+  test('indent соседнего пункта продолжает существующий подсписок, а не создаёт второй (БАГ-2)', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    // Нумерованный список: «Исходный текст» (A), «Пункт B», «Пункт C».
+    await editor.click();
+    await page.keyboard.press('Control+a');
+    await page.locator('#listsTrigger').click();
+    await page
+      .locator('#listsMenu .toolbar-dropdown-option[data-command="insertOrderedList"]')
+      .click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт B');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт C');
+
+    await placeCaretAfter(page, 'Пункт B');
+    await page.keyboard.press('Tab');
+    expect(await listDepthOf(editor, 'Пункт B')).toBe(1);
+
+    await placeCaretAfter(page, 'Пункт C');
+    await page.keyboard.press('Tab');
+    expect(await listDepthOf(editor, 'Пункт C')).toBe(1);
+
+    // Оба подпункта — в ОДНОМ <ol> (нумерация продолжается: 1., 2.), а не в двух
+    // сиблингах, где второй счёт стартовал бы заново.
+    expect(
+      await editor.evaluate((ed: HTMLElement) => {
+        const items = Array.from(ed.querySelectorAll('li'));
+        const b = items.find((li) => (li.textContent || '').startsWith('Пункт B'));
+        const c = items.find((li) => (li.textContent || '').startsWith('Пункт C'));
+        return !!b && !!c && b.parentElement === c.parentElement;
+      })
+    ).toBe(true);
+    expect(
+      await editor.evaluate((ed: HTMLElement) => ed.querySelectorAll('li > ol, li > ul').length)
+    ).toBe(1);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
+    expect(await countMarkerOnlyItems(editor)).toBe(0);
   });
 
   test('Tab вне списка не перехвачен — фокус уходит нативно, blockquote не появляется', async ({
@@ -397,17 +511,20 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     await expect(editor).toHaveText(/обычный жирный текст/);
   });
 
-  test('Пункт меню «Уровень глубже» не углубляет ниже потолка (MAX_LIST_LEVEL)', async ({
+  test('Пункт меню «Уровень глубже» не углубляет ниже потолка (настройка MAX_LIST_LEVEL)', async ({
     page,
   }) => {
     await openTextblock(page);
     const editor = page.locator(EDITOR);
     await editor.click();
 
-    // = MAX_LIST_LEVEL из static/js/constructor/textblock/textblock-core.js:
-    // 0-based уровень 8 — девятый и последний, который умеет описать
-    // w:abstractNum в OOXML (глубже inline.py молча клампит на ilvl 8).
-    const MAX_LIST_LEVEL = 8;
+    // Потолок — настройка ACTS__TEXTBLOCKS__MAX_LIST_LEVEL (дефолт 4), которую
+    // фронт получает через GET /acts/limits. Читаем действующее значение у самого
+    // редактора, а не хардкодим: гейт сравнивает ровно с ним.
+    const ceiling: number = await page.evaluate(
+      () => (window as any).textBlockManager._listLevelCeiling()
+    );
+    expect(ceiling).toBeGreaterThan(0);
 
     await page.evaluate((maxLevel) => {
       const ed = document.querySelector(
@@ -415,10 +532,12 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
       ) as HTMLElement;
       const tbm = (window as any).textBlockManager;
       tbm.activeEditor = ed;
-      // maxLevel+1 вложенных списков → у самого глубокого <li> уровень maxLevel.
-      let html = '<ul><li>Дно списка</li></ul>';
-      for (let i = maxLevel - 1; i >= 0; i--) html = `<ul><li>Уровень ${i}${html}</li></ul>`;
-      ed.innerHTML = html;
+      // maxLevel+1 вложенных списков; на дне ДВА пункта — у «Дна списка» есть
+      // предыдущий сиблинг, т.е. углубление было бы возможно, и остановит его
+      // именно потолок, а не правило «первый пункт уровня не углубляется».
+      let html = '<li>Сосед снизу</li><li>Дно списка</li>';
+      for (let i = maxLevel; i >= 1; i--) html = `<li>Уровень ${i}<ul>${html}</ul></li>`;
+      ed.innerHTML = `<ul>${html}</ul>`;
       const items = ed.querySelectorAll('li');
       const range = document.createRange();
       range.selectNodeContents(items[items.length - 1]);
@@ -427,25 +546,31 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
       sel.removeAllRanges();
       sel.addRange(range);
       ed.focus();
-    }, MAX_LIST_LEVEL);
+    }, ceiling);
 
-    expect(await listDepthOf(editor, 'Дно списка')).toBe(MAX_LIST_LEVEL);
+    expect(await listDepthOf(editor, 'Дно списка')).toBe(ceiling);
     const before = await editor.innerHTML();
 
-    // Каретка внутри <li>, поэтому пункт меню активен (aria-disabled ставится
-    // только вне списка) — потолок держит гейт execCommand, не UI-слой.
+    // На потолке пункт меню помечен aria-disabled (UI-слой,
+    // _updateListsTriggerState): кликабельный, но безответный пункт читался бы
+    // как сломанная кнопка. Форс-клик — проверка нижнего гейта execCommand.
     await page.locator('#listsTrigger').click();
     const indentOption = page.locator(
       '#listsMenu .toolbar-dropdown-option[data-command="indent"]'
     );
-    await expect(indentOption).toHaveAttribute('aria-disabled', 'false');
-    await indentOption.click();
+    await expect(indentOption).toHaveAttribute('aria-disabled', 'true');
+    // «Уровень выше» на потолке остаётся доступным — наверх выходить можно.
+    await expect(
+      page.locator('#listsMenu .toolbar-dropdown-option[data-command="outdent"]')
+    ).toHaveAttribute('aria-disabled', 'false');
+    await indentOption.click({ force: true });
 
     // Structural check: глубина DOM не выросла, разметка не изменилась вовсе.
     // Что тот же пункт меню РАБОТАЕТ под потолком — отдельный тест выше
     // («Пункты меню „Уровень глубже“/„Уровень выше“ делают то же, что Tab»).
-    expect(await listDepthOf(editor, 'Дно списка')).toBe(MAX_LIST_LEVEL);
+    expect(await listDepthOf(editor, 'Дно списка')).toBe(ceiling);
     expect(await editor.innerHTML()).toBe(before);
+    await page.keyboard.press('Escape');
   });
 
   test('Дропдауны тулбара открываются, применяют команду и не теряют выделение редактора (BUG-3)', async ({

@@ -161,9 +161,9 @@ class TextblocksSettings(BaseModel):
     """
     Границы форматирования текстблоков (размер шрифта редактора).
 
-    Единый источник границ размера шрифта для GET /acts/limits и фронт-тулбара
-    (кламп размера в дропдауне). Дефолты границ совпадают с фолбэками схемы
-    (FONT_SIZE_MIN/FONT_SIZE_MAX).
+    Единый источник границ размера шрифта и глубины списков для GET /acts/limits
+    и фронт-тулбара (кламп размера в дропдауне, потолок «Уровень глубже»).
+    Дефолты границ совпадают с фолбэками схемы (FONT_SIZE_MIN/FONT_SIZE_MAX).
     """
     font_size_min: int = Field(default=8, gt=0)
     font_size_max: int = Field(default=72, gt=0)
@@ -175,6 +175,12 @@ class TextblocksSettings(BaseModel):
     # серверный гейт в ActContentService._validate_tree. Отдаётся через
     # GET /acts/limits (textblocks.per_node).
     per_node: int = Field(default=10, gt=0)
+    # Потолок глубины вложенности списков в редакторе (0-based: 4 — пятый
+    # уровень). Это UI-граница — глубже не уводят ни Tab, ни пункт меню
+    # «Уровень глубже» (гейт execCommand читает значение через /acts/limits).
+    # le=8 — жёсткий предел формата: w:abstractNum в OOXML описывает 9 уровней,
+    # и DOCX-экспорт клампит на ilvl 8 независимо от этой настройки.
+    max_list_level: int = Field(default=4, gt=0, le=8)
 
 
 class SanitizerSettings(BaseModel):

@@ -92,6 +92,45 @@ _LI_CLOSE_RE = re.compile(r"</li\s*>", re.IGNORECASE)
 _LIST_INDENT_UNIT = "    "
 
 
+def _li_has_own_content(content: str, start: int) -> bool:
+    """Есть ли у пункта СВОЙ текст — от ``start`` (сразу после ``<li>``) до
+    первой структурной границы (вложенный ``<ul>``/``<ol>``, ``</li>``,
+    следующий ``<li>``, закрытие списка).
+
+    Нужна страховкой: пустой ``<li>``-хост (``<li><ol>…</ol></li>``) — след
+    прежней нормализации вложенности и внешнего HTML. Своего текста у него нет,
+    но маркер эмитился как у обычного пункта, и в TXT/MD появлялась фантомная
+    строка «- » перед подсписком (в браузере такой хост рисует маркер без
+    текста, а DOCX-сборщик абзац для него и вовсе не создаёт).
+
+    Любой инлайн-тег (``<br>``, ``<span>``, ``<b>``) содержимым СЧИТАЕТСЯ —
+    проверка сознательно консервативна: пункт из одного ``<br>`` создал сам
+    пользователь, а не нормализатор, и маркер ему положен.
+    """
+    i, n = start, len(content)
+    while i < n:
+        if content[i] == "<":
+            m = _TAG_RE.match(content, i)
+            if m:
+                tag = m.group(0)
+                if (
+                    _LIST_OPEN_RE.match(tag) or _LIST_CLOSE_RE.match(tag)
+                    or _LI_OPEN_RE.match(tag) or _LI_CLOSE_RE.match(tag)
+                ):
+                    return False
+                return True  # <br>/<span>/прочий инлайн — содержимое есть
+            i += 1
+            continue
+        nxt = content.find("<", i)
+        chunk = content[i:] if nxt == -1 else content[i:nxt]
+        if chunk.strip():
+            return True
+        if nxt == -1:
+            return False
+        i = nxt
+    return False
+
+
 def _convert_lists(content: str, *, blank_line_around: bool = False) -> str:
     """Схлопывает <ul>/<ol>/<li> в синтетические <div>-абзацы с текстовым
     маркером перед содержимым пункта («- » для <ul>, «N. » для <ol>, счётчик
@@ -169,8 +208,15 @@ def _convert_lists(content: str, *, blank_line_around: bool = False) -> str:
                 if _LI_OPEN_RE.match(tag) and list_stack:
                     if li_open:
                         out.append("</div>")
+                        li_open = False
                     else:
                         _flush_pending()
+                    if not _li_has_own_content(content, m.end()):
+                        # Пустой <li>-хост подсписка: ни маркера, ни строки, ни
+                        # номера (счётчик не двигаем — иначе соседние пункты
+                        # получили бы дырку в нумерации).
+                        i = m.end()
+                        continue
                     kind, count = list_stack[-1]
                     count += 1
                     list_stack[-1][1] = count

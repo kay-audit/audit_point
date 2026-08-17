@@ -6,6 +6,7 @@ import { PreviewManager } from '../preview/preview.js';
 import { AppState } from '../state/state-core.js';
 import { ChangelogTracker } from '../changelog-tracker.js';
 import { EditorRegistry } from './editor-registry.js';
+import { getStructureLimits } from '../violation/violation-image-validator.js';
 
 /**
  * Узел — inline-капсула (ссылка/сноска, contenteditable=false-атом)?
@@ -50,13 +51,13 @@ export function isZeroWidthNode(n) {
 const LIST_LEVEL_CMDS = ['indent', 'outdent'];
 
 /**
- * Потолок глубины списка (0-based): уровень 8 — девятый и последний, который
- * умеет описать w:abstractNum в OOXML (9 уровней). Глубже не уводит ни Tab, ни
- * пункт меню «уровень глубже» — оба приходят в execCommand, где стоит гейт.
- * Живёт в core (базовый класс), т.к. проверка — часть гейта; textblock-editor.js
- * импортирует отсюда, чтобы число 8 не дублировалось.
+ * ЖЁСТКИЙ предел глубины списка (0-based): уровень 8 — девятый и последний,
+ * который умеет описать w:abstractNum в OOXML (9 уровней); глубже DOCX-сборщик
+ * (inline.py) молча клампит на ilvl 8. Это НЕ настройка, а физическая граница
+ * формата — UI-потолок задаёт конфигурация (ACTS__TEXTBLOCKS__MAX_LIST_LEVEL,
+ * см. _listLevelCeiling), и она этим пределом прижимается.
  */
-export const MAX_LIST_LEVEL = 8;
+const HARD_MAX_LIST_LEVEL = 8;
 
 /**
  * Команды, меняющие СТРУКТУРУ списка: после них разметка проходит нормализацию
@@ -277,6 +278,25 @@ export class TextBlockManager {
     }
 
     /**
+     * Потолок глубины списка (0-based) НА МОМЕНТ ПРОВЕРКИ: UI-настройка
+     * ACTS__TEXTBLOCKS__MAX_LIST_LEVEL (GET /acts/limits → getStructureLimits),
+     * прижатая жёстким пределом формата HARD_MAX_LIST_LEVEL.
+     *
+     * Значение читаем вызовом каждый раз, а не константой на импорте: ответ
+     * /acts/limits приходит асинхронно (до него действует фолбэк AppConfig), да
+     * и зафиксированное на module-level значение в графе с циклом импортов дало
+     * бы undefined. Единственное место сравнения глубины — гейт execCommand
+     * ниже; тулбар зовёт этот же метод, чтобы гасить пункт «Уровень глубже».
+     * @returns {number}
+     */
+    _listLevelCeiling() {
+        const configured = getStructureLimits()?.maxListLevel;
+        return (typeof configured === 'number' && configured > 0)
+            ? Math.min(configured, HARD_MAX_LIST_LEVEL)
+            : HARD_MAX_LIST_LEVEL;
+    }
+
+    /**
      * Выполняет команду форматирования
      */
     execCommand(command, value = null) {
@@ -290,18 +310,35 @@ export class TextBlockManager {
         // перезагрузке молча исчезал. Тихий no-op, нативная команда не идёт.
         // Гейт стоит ЗДЕСЬ, а не в тулбаре: через execCommand проходят все пути
         // (меню, Tab/Shift+Tab, программный вызов), дизейбл кнопки покрыл бы
-        // только один. Здесь же — потолок глубины: раньше MAX_LIST_LEVEL знала
-        // ТОЛЬКО Tab-ветка (_handleListTab), и пункт меню «уровень глубже»
-        // углублял до уровней 9+, которые DOCX-сборщик (inline.py) молча
-        // клампит на ilvl 8.
+        // только один. Здесь же — потолок глубины (_listLevelCeiling): раньше
+        // его знала ТОЛЬКО Tab-ветка (_handleListTab), и пункт меню «уровень
+        // глубже» углублял мимо него.
         if (LIST_LEVEL_CMDS.includes(command) && typeof this._caretListItem === 'function') {
             const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
             const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
             const li = range ? this._caretListItem(range, this.activeEditor) : null;
             if (!li) return false;
-            if (command === 'indent' && typeof this._listLevel === 'function'
-                    && this._listLevel(li, this.activeEditor) >= MAX_LIST_LEVEL) {
-                return false;
+            if (command === 'indent') {
+                if (typeof this._listLevel === 'function'
+                        && this._listLevel(li, this.activeEditor) >= this._listLevelCeiling()) {
+                    return false;
+                }
+                // Углубление делаем САМИ (_indentListItem, textblock-editor.js):
+                // нативный indent порождает список-сироту, из которого валидную
+                // форму без пустого <li>-хоста не собрать (маркеры хостов
+                // выстраивались в строку), и не сливает подсписки одного типа.
+                // Сток тот же, что у нативной ветки ниже: нормализация
+                // (страховка на чужую разметку в блоке) → saveContent.
+                if (typeof this._indentListItem === 'function') {
+                    if (!this._indentListItem(li)) return false;
+                    if (typeof this._normalizeListNesting === 'function') {
+                        this._normalizeListNesting(this.activeEditor);
+                    }
+                    this.saveContent(
+                        this.activeEditor.dataset.textBlockId, this.activeEditor.innerHTML,
+                    );
+                    return true;
+                }
             }
         }
 

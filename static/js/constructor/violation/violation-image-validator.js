@@ -41,6 +41,8 @@ export const DEFAULT_STRUCTURE_LIMITS = {
     fontSizeMax: AppConfig.limits.textblock.fontSizeMax,
     // Базовый размер текстблока (px) — единый источник для редактора/превью.
     fontSizeDefault: AppConfig.limits.textblock.fontSizeDefault,
+    // Потолок глубины вложенности списков (0-based) — гейт indent/Tab.
+    maxListLevel: AppConfig.limits.textblock.maxListLevel,
     // B-13/#7: макс. число блоков на узел — фолбэк до ответа /acts/limits.
     textBlocksPerNode: AppConfig.content.limits.textBlocksPerNode,
     violationsPerNode: AppConfig.content.limits.violationsPerNode,
@@ -92,6 +94,8 @@ export function loadImageLimits() {
                 if (typeof tb.font_size_default === 'number') _structure.fontSizeDefault = tb.font_size_default;
                 // B-13: серверный лимит числа текстблоков на узел.
                 if (typeof tb.per_node === 'number') _structure.textBlocksPerNode = tb.per_node;
+                // Потолок глубины списков редактора (гейт indent/Tab).
+                if (typeof tb.max_list_level === 'number') _structure.maxListLevel = tb.max_list_level;
             }
             const vio = data && data.violations;
             if (vio) {
@@ -129,8 +133,8 @@ export function getImageLimits() {
  *
  * @returns {{maxRows:number, maxCols:number, minColWidthPx:number,
  *            fontSizeMin:number, fontSizeMax:number, fontSizeDefault:number,
- *            textBlocksPerNode:number, violationsPerNode:number,
- *            tablesPerNode:number}}
+ *            maxListLevel:number, textBlocksPerNode:number,
+ *            violationsPerNode:number, tablesPerNode:number}}
  */
 export function getStructureLimits() {
     return _structure;

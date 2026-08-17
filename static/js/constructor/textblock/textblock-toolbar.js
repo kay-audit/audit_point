@@ -636,16 +636,26 @@ Object.assign(TextBlockManager.prototype, {
         // отсюда зовём защитно. Он же (а не «сырой» _listItemAncestor) разбирает
         // range, заякоренный на самом редакторе: иначе Ctrl+A над списком красил
         // бы пункты уровня как недоступные — ровно то, что гейт разрешает.
-        let inList = false;
+        let li = null;
         if (typeof this._caretListItem === 'function' && this.activeEditor) {
             const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
             const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
-            inList = !!(range && this._caretListItem(range, this.activeEditor));
+            li = range ? this._caretListItem(range, this.activeEditor) : null;
         }
+        const inList = !!li;
+        // Потолок глубины (_listLevelCeiling — настройка ACTS__TEXTBLOCKS__
+        // MAX_LIST_LEVEL) гасит «Уровень глубже» так же, как отсутствие списка:
+        // сам гейт execCommand на потолке молчит, а кликабельный пункт без
+        // эффекта читается как сломанная кнопка. «Уровень выше» на потолке
+        // остаётся активным — наверх выходить можно.
+        const atCeiling = !!(li && typeof this._listLevel === 'function'
+            && this._listLevel(li, this.activeEditor) >= this._listLevelCeiling());
 
         menu?.querySelectorAll('.toolbar-dropdown-option').forEach(opt => {
             opt.classList.toggle('active', !!active && opt.dataset.command === active);
-            if (opt.dataset.command === 'indent' || opt.dataset.command === 'outdent') {
+            if (opt.dataset.command === 'indent') {
+                opt.setAttribute('aria-disabled', (inList && !atCeiling) ? 'false' : 'true');
+            } else if (opt.dataset.command === 'outdent') {
                 opt.setAttribute('aria-disabled', inList ? 'false' : 'true');
             }
         });
