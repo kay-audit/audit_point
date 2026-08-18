@@ -79,7 +79,8 @@ export class ViolationManager {
         this._documentDropController = null;
         // Текущий активный контейнер для paste (только когда мышь внутри)
         this.currentActiveContainer = null;
-        // Позиция курсора для вставки (null означает конец списка)
+        // Позиция вставки перетаскиваемых файлов, снятая последним dragover
+        // (null означает конец списка). За мышью вне drag больше не следим.
         this.cursorInsertPosition = null;
         // Unsubscribe ESC-хэндлера активной зоны в EscapeStack
         // (push в _setActiveZone, снятие в _resetActiveZone/destroy).

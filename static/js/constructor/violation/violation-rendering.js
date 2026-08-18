@@ -73,10 +73,11 @@ Object.assign(ViolationManager.prototype, {
                 blockElement.addEventListener('mousedown', (e) => this.armBlockDrag(e, blockElement));
                 blockElement.addEventListener('mouseup', () => this.disarmBlockDrag(blockElement));
                 blockElement.addEventListener('dragstart', (e) => this.handleDragStart(e, violation, fieldKey, index, block));
-                blockElement.addEventListener('dragover', (e) => this.handleDragOver(e, violation, fieldKey, container));
                 blockElement.addEventListener('dragenter', (e) => this.handleDragEnter(e));
                 blockElement.addEventListener('dragleave', (e) => this.handleDragLeave(e));
-                blockElement.addEventListener('drop', (e) => this.handleDrop(e, violation, fieldKey, index, container));
+                // dragover/drop — на КОНТЕЙНЕРЕ поля (setupBlockDragAndDrop):
+                // над зазором между карточками обёртки нет, а drop туда должен
+                // работать. dragend остаётся здесь — он приходит источнику drag.
                 blockElement.addEventListener('dragend', (e) => this.handleDragEnd(e, violation, fieldKey, container));
             }
 

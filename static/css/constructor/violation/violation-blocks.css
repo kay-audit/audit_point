@@ -87,18 +87,37 @@
     white-space: nowrap;
 }
 
-/* Индикатор позиции вставки (mousemove по контейнеру / файловый drag),
-   показывается и в пустом контейнере (violation-6).
-   Появление — короткий fade + раскрытие по вертикали: индикатор пересоздаётся
-   на каждую смену позиции, поэтому «переезд» полоски читается как движение, а
-   не как мигание. */
-.violation-blocks-items .insert-indicator {
+/* Индикатор позиции вставки — ОВЕРЛЕЙ на границе обёртки, только на время
+   перетаскивания (внутреннего или файлового). Полоска — псевдоэлемент, а не
+   узел в потоке: настоящий flex-ребёнок раздвигал карточки на каждое движение
+   курсора. По той же причине она рисуется ВНУТРИ обёртки, у самого её края:
+   `.content-item-wrapper` обрезает содержимое по скруглению (overflow: hidden),
+   и полоска, вынесенная в зазор, была бы срезана.
+   Появление — короткий fade + раскрытие по вертикали, чтобы «переезд» полоски
+   читался как движение, а не как мигание. */
+.content-item-wrapper.drop-before::before,
+.content-item-wrapper.drop-after::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
     height: var(--tree-drop-indicator-height, 3px);
     background: var(--insert-indicator-gradient);
     border-radius: var(--radius-sm);
+    box-shadow: var(--highlight-insert-shadow);
     pointer-events: none;
-    flex-shrink: 0;
+    z-index: var(--z-dropdown);
     animation: insertIndicatorAppear 100ms var(--ease-in-out-smooth);
+}
+
+.content-item-wrapper.drop-before::before {
+    top: 0;
+    transform-origin: top;
+}
+
+.content-item-wrapper.drop-after::after {
+    bottom: 0;
+    transform-origin: bottom;
 }
 
 @keyframes insertIndicatorAppear {
@@ -116,7 +135,8 @@
    в base/animations.css сжимает длительность, но анимацию не снимает — а
    transform-раскрытие здесь и есть то самое движение. */
 @media (prefers-reduced-motion: reduce) {
-    .violation-blocks-items .insert-indicator {
+    .content-item-wrapper.drop-before::before,
+    .content-item-wrapper.drop-after::after {
         animation: none;
     }
 }

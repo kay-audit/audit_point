@@ -145,29 +145,18 @@ Object.assign(ViolationManager.prototype, {
         contentContainer.addEventListener('mouseleave', () => {
             if (this.currentActiveContainer === contentContainer) {
                 this._resetActiveZone();
-                this.removeInsertIndicators(itemsContainer);
             }
         });
 
-        // Движение мыши — позиция вставки для paste/меню.
-        contentContainer.addEventListener('mousemove', (e) => {
-            if (violation[fieldKey].enabled && this.currentActiveContainer === contentContainer) {
-                const position = this.calculateCursorPosition(e, itemsContainer);
-                this.cursorInsertPosition = position;
-
-                // В пустом контейнере при простом наведении индикатор не
-                // показываем (не прячем подсказку «ПКМ...»); при файловом drag
-                // его рисует dragover в violation-file-upload.js — mousemove
-                // во время drag не приходит.
-                if (itemsContainer.querySelector('.content-item-wrapper')) {
-                    this.updateInsertIndicator(itemsContainer, position);
-                }
-            }
-        });
+        // Слежения за мышью здесь нет: индикатор места вставки показывается
+        // ТОЛЬКО при активном перетаскивании (внутреннем — violation-drag-drop.js,
+        // файловом — violation-file-upload.js), а ПКМ-меню считает позицию в
+        // момент клика (calculateCursorPosition ниже).
 
         // В режиме просмотра — только чтение: без приёма файлов и без меню.
         if (!isReadOnly) {
             this.setupFileDragAndDrop(itemsContainer, violation, fieldKey, contentContainer);
+            this.setupBlockDragAndDrop(itemsContainer, violation, fieldKey);
 
             itemsContainer.addEventListener('contextmenu', (e) => {
                 // Внутри редактируемого текста (contenteditable-хост rich-поля,
@@ -283,36 +272,42 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Визуализирует индикатор места вставки
+     * Показывает индикатор места вставки — ОВЕРЛЕЕМ, без единого узла в потоке.
+     *
+     * Раньше полоска была настоящим flex-ребёнком контейнера, и её появление
+     * раздвигало карточки. Теперь это псевдоэлемент обёртки: позиция
+     * `position` — граница, помечаем ближайшую к ней обёртку классом
+     * `drop-before` (вставка перед ней) либо последнюю — `drop-after`
+     * (вставка в конец). Раскладка блоков при этом не меняется.
+     *
+     * В пустом контейнере рисовать не на чем: там место вставки единственное,
+     * а состояние приёма показывает подсветка зоны (`drag-over-file`).
+     *
      * @param {HTMLElement} container - Контейнер блоков
      * @param {number} position - Позиция для вставки
      */
     updateInsertIndicator(container, position) {
-        // Удаляем предыдущие индикаторы
         this.removeInsertIndicators(container);
 
         const wrappers = Array.from(container.querySelectorAll('.content-item-wrapper'));
+        if (wrappers.length === 0) return;
 
-        // Создаем индикатор
-        const indicator = document.createElement('div');
-        indicator.className = 'insert-indicator';
-
-        if (wrappers.length === 0 || position >= wrappers.length) {
-            // Пустой контейнер или вставка в конец
-            container.appendChild(indicator);
+        if (position >= wrappers.length) {
+            wrappers[wrappers.length - 1].classList.add('drop-after');
         } else {
-            // Вставка в начало или между элементами
-            container.insertBefore(indicator, wrappers[position]);
+            wrappers[Math.max(0, position)].classList.add('drop-before');
         }
     },
 
     /**
-     * Удаляет все индикаторы позиции вставки из контейнера
+     * Снимает индикатор позиции вставки со всех обёрток контейнера.
      * @param {HTMLElement} container - Контейнер блоков
      */
     removeInsertIndicators(container) {
-        const indicators = container.querySelectorAll('.insert-indicator');
-        indicators.forEach(ind => ind.remove());
+        container.querySelectorAll('.content-item-wrapper').forEach((wrapper) => {
+            wrapper.classList.remove('drop-before');
+            wrapper.classList.remove('drop-after');
+        });
     },
 
     /**

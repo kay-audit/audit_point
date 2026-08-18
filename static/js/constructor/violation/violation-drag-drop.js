@@ -48,8 +48,70 @@ function isSameField(payload, violation, fieldKey) {
     return !!payload && payload.violationId === violation.id && payload.fieldKey === fieldKey;
 }
 
+/**
+ * Перетаскивание файлов (картинок) — зона ответственности
+ * violation-file-upload.js: его слушатели висят на том же контейнере, и
+ * перестановка блоков в такой drag не вмешивается.
+ * @param {Event} e - Событие drag&drop
+ * @returns {boolean}
+ */
+function isFileDrag(e) {
+    return !!e.dataTransfer?.types?.includes?.('Files');
+}
+
+/**
+ * Ближайший к курсору ЗАЗОР между обёртками — позиция вставки для случая,
+ * когда под курсором обёртки нет (зазор, отступы контейнера, сама полоска
+ * индикатора). Границы: 0 — над первой обёрткой, N — под последней,
+ * промежуточные — середина зазора между соседями.
+ *
+ * @param {HTMLElement[]} wrappers - Обёртки блоков в порядке контейнера
+ * @param {number} mouseY - Координата курсора
+ * @returns {number|null} Позиция вставки; null — обёрток нет
+ */
+function nearestGapPosition(wrappers, mouseY) {
+    if (wrappers.length === 0) return null;
+
+    const rects = wrappers.map(wrapper => wrapper.getBoundingClientRect());
+    let best = 0;
+    let bestDistance = Infinity;
+
+    for (let i = 0; i <= rects.length; i++) {
+        let gapY;
+        if (i === 0) gapY = rects[0].top;
+        else if (i === rects.length) gapY = rects[rects.length - 1].bottom;
+        else gapY = (rects[i - 1].bottom + rects[i].top) / 2;
+
+        const distance = Math.abs(mouseY - gapY);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = i;
+        }
+    }
+
+    return best;
+}
+
 // Расширение ViolationManager
 Object.assign(ViolationManager.prototype, {
+    /**
+     * Вешает приём перестановки блоков на КОНТЕЙНЕР поля, а не на каждую
+     * обёртку: над зазором между карточками обёртки нет, и без контейнерного
+     * `preventDefault` браузер запрещал там drop — блок отскакивал назад.
+     * Вызывается один раз на контейнер (createBlocksField), перерисовка блоков
+     * его не пересоздаёт.
+     *
+     * @param {HTMLElement} container - Контейнер блоков поля (.violation-blocks-items)
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     */
+    setupBlockDragAndDrop(container, violation, fieldKey) {
+        container.addEventListener('dragover',
+            (e) => this.handleDragOver(e, violation, fieldKey, container));
+        container.addEventListener('drop',
+            (e) => this.handleDrop(e, violation, fieldKey, container));
+    },
+
     /**
      * Вооружает обёртку блока перетаскиванием — но ТОЛЬКО если нажатие пришлось
      * на шапку `.content-item-label`.
@@ -148,16 +210,20 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Перемещение над блоком: индикатор позиции вставки.
+     * Перемещение над контейнером поля: индикатор позиции вставки.
      * @param {Event} e - Событие dragover
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldKey - Ключ поля реестра
      * @param {HTMLElement} container - Контейнер блоков поля
      */
     handleDragOver(e, violation, fieldKey, container) {
+        // Файлы — не наш drag (их принимает violation-file-upload.js).
+        if (isFileDrag(e)) return;
         // Блок из другого поля/нарушения — зону не подсвечиваем и drop не примем.
         if (!isSameField(this._dragPayload, violation, fieldKey)) return;
 
+        // preventDefault по ВСЕЙ площади контейнера, а не только над обёртками:
+        // иначе drop в зазор между карточками браузер не разрешит.
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
 
@@ -194,31 +260,43 @@ Object.assign(ViolationManager.prototype, {
         const draggingElement = document.querySelector('.dragging');
         if (!draggingElement) return;
 
-        if (!hoveredElement || hoveredElement === draggingElement) {
-            return;
-        }
+        // Курсор над самим перетаскиваемым блоком: показанную позицию держим —
+        // блок закрывает собой ровно то место, откуда его взяли.
+        if (hoveredElement === draggingElement) return;
 
         // Индексы блока под курсором и перетаскиваемого блока в контейнере.
         const allWrappers = [...container.querySelectorAll('.content-item-wrapper')];
-        const currentIndex = allWrappers.indexOf(hoveredElement);
-        if (currentIndex === -1) return;
         const draggedIndex = allWrappers.indexOf(draggingElement);
 
-        const rect = hoveredElement.getBoundingClientRect();
-        const elementMiddle = rect.top + rect.height / 2;
+        let targetPosition;
 
-        // В какую половину элемента попал курсор
-        let targetPosition = mouseY < elementMiddle ? currentIndex : currentIndex + 1;
+        if (hoveredElement) {
+            const currentIndex = allWrappers.indexOf(hoveredElement);
+            if (currentIndex === -1) return;
 
-        // Гистерезис у середины: пока курсор не отошёл от неё дальше мёртвой
-        // зоны, держим уже показанную позицию. Действует только в пределах
-        // одного блока — переход на другой блок всегда пересчитывает позицию.
-        if (this.lastDragOverIndex !== null
-            && this._lastDragOverElement === hoveredElement
-            && Math.abs(mouseY - elementMiddle) <= MIDDLE_DEAD_BAND_PX) {
-            targetPosition = this.lastDragOverIndex;
+            const rect = hoveredElement.getBoundingClientRect();
+            const elementMiddle = rect.top + rect.height / 2;
+
+            // В какую половину элемента попал курсор
+            targetPosition = mouseY < elementMiddle ? currentIndex : currentIndex + 1;
+
+            // Гистерезис у середины: пока курсор не отошёл от неё дальше мёртвой
+            // зоны, держим уже показанную позицию. Действует только в пределах
+            // одного блока — переход на другой блок всегда пересчитывает позицию.
+            if (this.lastDragOverIndex !== null
+                && this._lastDragOverElement === hoveredElement
+                && Math.abs(mouseY - elementMiddle) <= MIDDLE_DEAD_BAND_PX) {
+                targetPosition = this.lastDragOverIndex;
+            }
+            this._lastDragOverElement = hoveredElement;
+        } else {
+            // Обёртки под курсором нет — это зазор между карточками или отступы
+            // контейнера: берём ближайший зазор по вертикали. Гистерезис здесь
+            // не нужен, он привязан к середине конкретного блока.
+            targetPosition = nearestGapPosition(allWrappers, mouseY);
+            if (targetPosition === null) return;
+            this._lastDragOverElement = null;
         }
-        this._lastDragOverElement = hoveredElement;
 
         if (this.lastDragOverIndex === targetPosition) {
             return; // Позиция не изменилась, не делаем ничего
@@ -257,10 +335,11 @@ Object.assign(ViolationManager.prototype, {
      * @param {Event} e - Событие drop
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldKey - Ключ поля реестра
-     * @param {number} targetIndex - Индекс целевого блока
      * @param {HTMLElement} container - Контейнер блоков поля
      */
-    handleDrop(e, violation, fieldKey, targetIndex, container) {
+    handleDrop(e, violation, fieldKey, container) {
+        if (isFileDrag(e)) return;
+
         const payload = readDragPayload(e, this);
         // Чужое поле/нарушение — молча игнорируем (перенос между полями не поддержан).
         if (!isSameField(payload, violation, fieldKey)) return;
@@ -272,18 +351,24 @@ Object.assign(ViolationManager.prototype, {
         // ближайшего repaint) — позиция вставки осталась бы от предыдущего
         // события, и блок лёг бы не туда, куда указывал курсор. Досчитываем
         // синхронно, после чего отложенный кадр не нужен: он дорисовал бы
-        // индикатор уже в перерисованный контейнер.
-        const pendingDragOver = this._pendingDragOver;
+        // индикатор уже в перерисованный контейнер. Снимка может не быть вовсе
+        // (drop без единого dragover) — тогда считаем по самому drop'у.
+        const pendingDragOver = this._pendingDragOver || {
+            hoveredElement: e.target?.closest?.('.content-item-wrapper') || null,
+            mouseY: e.clientY,
+            container,
+        };
         this._pendingDragOver = null;
-        if (pendingDragOver) this._applyDragOverPosition(pendingDragOver);
+        this._applyDragOverPosition(pendingDragOver);
 
         const blocks = violation?.[fieldKey]?.blocks || [];
         const fromIndex = blocks.findIndex(block => block.id === payload.blockId);
         if (fromIndex === -1) return;
 
-        // Позиция вставки: точная из dragover (учитывает верх/низ половину
-        // элемента), иначе — индекс блока под курсором (fallback без dragover).
-        const toIndex = this.lastDragOverIndex !== null ? this.lastDragOverIndex : targetIndex;
+        // Позиция вставки — из dragover (учитывает половину блока, зазор и
+        // гистерезис). Без неё считать нечего: контейнер молча ничего не двигает.
+        const toIndex = this.lastDragOverIndex;
+        if (toIndex === null) return;
 
         // Index-based перестановка (#6): DOM больше НЕ сдвинут оптимистично,
         // порядок считаем из данных. Сам splice — в мутаторе (§5.10a), там же
