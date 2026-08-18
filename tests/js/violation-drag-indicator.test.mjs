@@ -253,13 +253,16 @@ test('гистерезис не мешает переходу на другой 
     assert.deepEqual(vm._indicatorCalls.at(-1), { type: 'show', position: 4 });
 });
 
-test('кадр, пришедший после drop, индикатор не дорисовывает', () => {
+test('drop досчитывает dragover, кадр которого не успел прийти; поздний кадр молчит', () => {
     const wrappers = [makeWrapper(0), makeWrapper(100), makeWrapper(200)];
     const container = makeContainer(wrappers);
     const vm = makeVm(wrappers, 0);
     vm.renderBlocks = () => {};
-    vm.moveBlock = () => true;
+    const moved = [];
+    vm.moveBlock = (_violation, _fieldKey, from, to) => { moved.push([from, to]); return true; };
 
+    // Курсор в самом низу третьего блока — позиция 3. Кадр НЕ прогоняем: кнопку
+    // отпустили раньше ближайшего repaint.
     vm.handleDragOver(dragOverEvent(wrappers[2], 295), VIOLATION, FIELD, container);
 
     const violation = {
@@ -275,7 +278,44 @@ test('кадр, пришедший после drop, индикатор не до
         violation, FIELD, 2, container,
     );
 
-    flushFrames();
+    assert.deepEqual(moved, [[0, 3]], 'вставка туда, куда указывал курсор, а не на блок под ним');
 
-    assert.equal(vm._indicatorCalls.length, 0, 'снимок dragover снят при drop');
+    const callsAtDrop = vm._indicatorCalls.length;
+    flushFrames();
+    assert.equal(vm._indicatorCalls.length, callsAtDrop,
+        'снимок снят при drop — поздний кадр в перерисованный контейнер не рисует');
+});
+
+test('mouseup мимо блока снимает разрешение на drag', () => {
+    // Кнопку отпустили за пределами обёртки, drag так и не начался: ни mouseup
+    // на обёртке, ни dragend не придут — разоружает одноразовый слушатель
+    // документа, иначе следующее протягивание в теле блока утащило бы блок.
+    const vm = new ViolationManager();
+    const wrapper = { draggable: false };
+    const docHandlers = [];
+    const origAdd = globalThis.document.addEventListener;
+    globalThis.document.addEventListener = (type, handler, options) => {
+        if (type === 'mouseup') docHandlers.push({ handler, options });
+    };
+    try {
+        vm.armBlockDrag(mouseDownEvent(true), wrapper);
+    } finally { globalThis.document.addEventListener = origAdd; }
+
+    assert.equal(docHandlers.length, 1);
+    assert.equal(docHandlers[0].options.once, true, 'слушатель одноразовый — не копится');
+    docHandlers[0].handler();
+    assert.equal(wrapper.draggable, false);
+});
+
+test('нажатие в теле блока слушателя на документ не вешает', () => {
+    const vm = new ViolationManager();
+    const wrapper = { draggable: false };
+    let added = 0;
+    const origAdd = globalThis.document.addEventListener;
+    globalThis.document.addEventListener = () => { added++; };
+    try {
+        vm.armBlockDrag(mouseDownEvent(false), wrapper);
+    } finally { globalThis.document.addEventListener = origAdd; }
+
+    assert.equal(added, 0);
 });

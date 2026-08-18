@@ -65,6 +65,13 @@ Object.assign(ViolationManager.prototype, {
      */
     armBlockDrag(e, wrapper) {
         wrapper.draggable = !!e.target?.closest?.('.content-item-label');
+        if (!wrapper.draggable) return;
+        // Кнопку могли отпустить МИМО обёртки, так и не начав перетаскивание
+        // (курсор ушёл до порога drag): тогда не будет ни mouseup на обёртке,
+        // ни dragend — флаг остался бы взведённым, и следующее протягивание
+        // в теле блока утащило бы весь блок. Слушатель одноразовый, поэтому
+        // между перерисовками не накапливается.
+        document.addEventListener('mouseup', () => this.disarmBlockDrag(wrapper), { once: true });
     },
 
     /**
@@ -261,9 +268,14 @@ Object.assign(ViolationManager.prototype, {
         e.preventDefault();
         e.stopPropagation();
 
-        // Отложенный кадр dragover больше не нужен — иначе он дорисует индикатор
-        // уже в перерисованный контейнер.
+        // Последний dragover мог не получить свой кадр (кнопку отпустили раньше
+        // ближайшего repaint) — позиция вставки осталась бы от предыдущего
+        // события, и блок лёг бы не туда, куда указывал курсор. Досчитываем
+        // синхронно, после чего отложенный кадр не нужен: он дорисовал бы
+        // индикатор уже в перерисованный контейнер.
+        const pendingDragOver = this._pendingDragOver;
         this._pendingDragOver = null;
+        if (pendingDragOver) this._applyDragOverPosition(pendingDragOver);
 
         const blocks = violation?.[fieldKey]?.blocks || [];
         const fromIndex = blocks.findIndex(block => block.id === payload.blockId);
