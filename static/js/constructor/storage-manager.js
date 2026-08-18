@@ -12,7 +12,7 @@ import { LifecycleHelper } from './lifecycle-helper.js';
 import { AppState } from './state/state-core.js';
 // ActsManagerPage не импортируется: constructor → portal — неправильное направление
 // зон. Используем lazy через window.ActsManagerPage (см. invalidateCache-вызов ниже).
-import { APIClient } from '../shared/api.js';
+import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
 import { AppConfig } from '../shared/app-config.js';
 import { DialogManager } from '../shared/dialog/dialog-confirm.js';
 import { Notifications } from '../shared/notifications.js';
@@ -123,6 +123,18 @@ export class StorageManager {
      * @type {boolean}
      */
     static _dbSaveFailureNotified = false;
+
+    /**
+     * Флаг «автоматические PUT в БД остановлены до перезагрузки страницы».
+     * Взводится при 409 content-conflict (акт сохранил кто-то другой) и при
+     * потере лока: ретрай в обеих ситуациях обречён, а тик каждые 2 минуты
+     * спамил бы сервер заведомо провальными запросами. Снимок-черновик при
+     * этом остаётся последним носителем правок; выбор версии пользователь
+     * делает после перезагрузки (диалог конфликта в _maybeRestoreDraft).
+     * @private
+     * @type {boolean}
+     */
+    static _dbAutoSaveHalted = false;
 
     /**
      * Обработчик window 'online' для немедленного повторного сохранения
@@ -331,6 +343,7 @@ export class StorageManager {
             // и не грязный, но это защита в глубину на случай случайной пометки.
             if (AppConfig.readOnlyMode?.isReadOnly) return;
             if (this._dbSaveInProgress) return; // B-15: другое сохранение уже пишет
+            if (this._dbAutoSaveHalted) return; // 409-конфликт/потеря лока: ретрай обречён
             if (this.hasUnsyncedChanges() && window.currentActId) {
                 this._dbSaveInProgress = true;
                 try {
@@ -339,12 +352,49 @@ export class StorageManager {
                     // §9 offline: ошибку не глотаем — предупреждаем (один раз
                     // до успеха) и подписываемся на восстановление соединения.
                     console.error('Периодическое сохранение в БД не удалось:', err);
-                    this._notifyDbSaveFailure();
+                    this._handleDbSaveFailure(err);
                 } finally {
                     this._dbSaveInProgress = false;
                 }
             }
         }, AppConfig.localStorage.periodicSaveInterval);
+    }
+
+    /**
+     * Различает причину сбоя фонового сохранения в БД и выбирает честную
+     * реакцию (образец ручного пути — NavigationManager._handleSaveExportError):
+     *  - 409 content-conflict: акт сохранил кто-то другой — ретрай обречён
+     *    (expected_updated_at устарел). Останавливаем авто-PUT до перезагрузки,
+     *    снимок-черновик НЕ трогаем, говорим честно кто изменил акт;
+     *  - потеря лока: ретрай так же обречён (лока больше нет) — останавливаем
+     *    авто-PUT, снимок остаётся, без ложного «повторная попытка автоматически»;
+     *  - прочие сбои (сеть/5xx): прежняя offline-машинерия — дедуп-предупреждение
+     *    и ретрай по 'online'.
+     * @private
+     * @param {Error} err ошибка из APIClient.saveActContent
+     */
+    static _handleDbSaveFailure(err) {
+        if (err instanceof ContentConflictError) {
+            this._dbAutoSaveHalted = true;
+            const editedBy = err.lastEditedBy
+                ? `пользователем ${err.lastEditedBy}`
+                : 'другим пользователем';
+            Notifications.warning(
+                `Акт изменён ${editedBy}. Ваши правки сохранены локально как черновик. `
+                + 'Обновите страницу, чтобы выбрать версию.'
+            );
+            return;
+        }
+        if (err instanceof LockLostError) {
+            this._dbAutoSaveHalted = true;
+            Notifications.warning(
+                'Блокировка акта потеряна — автосохранение в базу остановлено. '
+                + 'Ваши правки сохранены локально как черновик. Обновите страницу, '
+                + 'чтобы продолжить работу.'
+            );
+            return;
+        }
+        this._notifyDbSaveFailure();
     }
 
     /**
@@ -381,6 +431,7 @@ export class StorageManager {
     static async _retryDbSave() {
         if (AppState._dragInProgress) return;
         if (this._dbSaveInProgress) return; // B-15
+        if (this._dbAutoSaveHalted) return; // 409-конфликт/потеря лока: ретрай обречён
         if (!this.hasUnsyncedChanges() || !window.currentActId) return;
         this._dbSaveInProgress = true;
         try {
@@ -656,6 +707,17 @@ export class StorageManager {
      */
     static setBaseUpdatedAt(updatedAt) {
         this._baseUpdatedAt = updatedAt || null;
+    }
+
+    /**
+     * Серверный updated_at последней синхронизации (или null, если база не
+     * установлена). Уходит эхом в expected_updated_at каждого PUT /content —
+     * той же строкой, что пришла с сервера, без преобразований дат.
+     *
+     * @returns {string|null}
+     */
+    static getBaseUpdatedAt() {
+        return this._baseUpdatedAt;
     }
 
     /**
@@ -1214,6 +1276,9 @@ export class StorageManager {
         this._teardownEventHandlers();
 
         this._resetDbSaveFailureState();
+        // Остановка авто-PUT (409-конфликт/потеря лока) действует «до
+        // перезагрузки» — teardown сессии конструктора её и завершает.
+        this._dbAutoSaveHalted = false;
 
         // Сбрасываем счётчик трекинга: teardown не должен оставить отслеживание
         // выключенным, если асинхронная операция (save/generate/load) отключила

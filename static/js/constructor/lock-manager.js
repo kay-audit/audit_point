@@ -621,7 +621,10 @@ export class LockManager {
                 if (typeof AppState !== 'undefined' && AppState?.exportData) {
                     if (Number.isInteger(effectiveActId) && effectiveActId > 0) {
                         try {
-                            const data = AppState.exportData();
+                            // B-16: экспорт через StorageManager.exportActData —
+                            // с flush'ем зависших правок активного редактора
+                            // (прямой AppState.exportData() терял последние символы).
+                            const data = StorageManager.exportActData();
                             // Прикрепляем changelog в тот же PUT — серверная аудит-запись синхронна
                             // с фактическим сохранением контента, без отдельного запроса.
                             if (typeof ChangelogTracker !== 'undefined' && typeof ChangelogTracker.flush === 'function') {
@@ -630,6 +633,17 @@ export class LockManager {
                                     data.changelog = changelog;
                                 }
                             }
+                            // OCC: серверная метка уходит эхом (та же строка, что
+                            // пришла с сервера) — устаревшая база даст честный 409
+                            // вместо молчаливой перезаписи чужих правок.
+                            const expectedUpdatedAt = StorageManager.getBaseUpdatedAt?.() ?? null;
+                            if (expectedUpdatedAt) {
+                                data.expected_updated_at = expectedUpdatedAt;
+                            }
+                            // Обычный awaited fetch (не sendBeacon) — выход идёт
+                            // по явному действию/таймеру при живой странице,
+                            // ответ читается штатно. Beacon-путь unload'а живёт
+                            // отдельно (_beforeUnloadHandler) и сюда не попадает.
                             const saveResp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${effectiveActId}/content`), {
                                 method: 'PUT',
                                 headers: {
@@ -639,15 +653,27 @@ export class LockManager {
                             });
 
                             if (!saveResp.ok) {
+                                // Снимок-черновик в localStorage не трогаем — он
+                                // остаётся последним носителем несохранённых правок
+                                // (диалог конфликта предложит выбор при открытии).
                                 console.error(`[LockManager] Ошибка сохранения контента (код ${saveResp.status})`);
                             } else {
                                 console.log('[LockManager] Контент акта сохранён');
+                                // Фиксируем свежую базу из ответа PUT — снимок,
+                                // записанный до редиректа (beforeunload), не
+                                // останется со старым baseUpdatedAt (ложный
+                                // конфликт при следующем открытии).
+                                const saveResult = await saveResp.json().catch(() => null);
+                                if (saveResult?.updated_at) {
+                                    StorageManager.setBaseUpdatedAt(saveResult.updated_at);
+                                }
                                 // #5: PUT подтверждён — коммитим отложенный снимок аудита нарушений.
                                 window.ViolationAudit?.confirmSave?.();
-                                // Синхронизируем флаг StorageManager после успешного сохранения
-                                if (typeof StorageManager !== 'undefined' && typeof StorageManager.markAsSyncedWithDB === 'function') {
-                                    StorageManager.markAsSyncedWithDB();
-                                }
+                                // Правки в БД — осиротевший снимок-черновик больше
+                                // не нужен (иначе следующее открытие акта показало
+                                // бы ложный диалог восстановления/конфликта).
+                                StorageManager.removeSnapshot(effectiveActId);
+                                StorageManager.markAsSyncedWithDB();
                             }
                         } catch (saveErr) {
                             console.error('LockManager: ошибка при сохранении контента конструктора:', saveErr);

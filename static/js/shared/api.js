@@ -35,6 +35,24 @@ export class LockLostError extends Error {
 window.LockLostError = LockLostError;
 
 /**
+ * Ошибка "конфликт содержимого": PUT /content с expected_updated_at вернул
+ * 409 с code='content-conflict' — акт с момента загрузки нашего состояния
+ * сохранил кто-то другой (вторая вкладка, перехват истёкшего лока), и наш
+ * PUT перезаписал бы его правки. Метки в extra — ISO-строки с сервера.
+ */
+export class ContentConflictError extends Error {
+    constructor(message, extra = {}) {
+        super(message || 'Содержимое акта изменено другим пользователем');
+        this.name = 'ContentConflictError';
+        this.code = 'content-conflict';
+        this.currentUpdatedAt = extra?.current_updated_at ?? null;
+        this.lastEditedBy = extra?.last_edited_by ?? null;
+        this.lastEditedAt = extra?.last_edited_at ?? null;
+    }
+}
+window.ContentConflictError = ContentConflictError;
+
+/**
  * PERSIST-6: предел тела запроса для fetch с keepalive. Спецификация
  * ограничивает суммарное тело всех keepalive-запросов ~64KB; при превышении
  * fetch(..., {keepalive:true}) бросает синхронно. Порог держим чуть ниже 64KB
@@ -679,10 +697,12 @@ export class APIClient {
     /**
      * Предлагает восстановить несинхронизированный черновик акта (H3).
      *
-     * Решение принимает чистый предикат shouldOfferRestore: восстановление
-     * предлагается только если акт с момента снимка никто не менял
-     * (baseUpdatedAt снимка == серверный updated_at). Устаревший или
-     * повреждённый снимок молча удаляется; при отказе пользователя — тоже.
+     * Решение принимает чистый предикат shouldOfferRestore: 'restore' —
+     * акт с момента снимка никто не менял (baseUpdatedAt снимка == серверный
+     * updated_at), обычный диалог восстановления; 'conflict' — акт менялся,
+     * честный диалог конфликта (кто и когда менял — из metadata GET /content),
+     * восстановление черновика перезапишет чужие правки. Структурно битый
+     * снимок молча удаляется; при отказе пользователя — тоже.
      * При согласии данные снимка подставляются в content и дальше идут
      * штатным путём загрузки (reconcile/normalize/нумерация/рендер).
      *
@@ -700,26 +720,58 @@ export class APIClient {
             window.StorageManager.removeSnapshot(actId);
             return false;
         }
-        if (verdict !== 'restore') {
+        if (verdict !== 'restore' && verdict !== 'conflict') {
             return false;
         }
 
-        const savedAtDate = new Date(snapshot.savedAt);
-        const savedAtText = Number.isFinite(savedAtDate.getTime())
-            ? savedAtDate.toLocaleString('ru-RU')
-            : snapshot.savedAt;
+        const savedAtText = this._formatDraftTimestamp(snapshot.savedAt);
 
-        const confirmed = await DialogManager.show({
-            title: 'Несохранённый черновик',
-            message: `Найден несохранённый черновик от ${savedAtText}. Восстановить?`,
-            icon: '📝',
-            confirmText: 'Восстановить',
-            cancelText: 'Отклонить'
-        });
-
-        if (!confirmed) {
-            window.StorageManager.removeSnapshot(actId);
-            return false;
+        if (verdict === 'conflict') {
+            // Акт менялся после снимка: восстановление перезапишет чужие правки.
+            // Говорим честно, кто и когда менял (metadata из GET /content), и
+            // отдаём выбор пользователю. После восстановления baseUpdatedAt уже
+            // указывает на свежий серверный updated_at (setBaseUpdatedAt в
+            // _applyActContent прошёл раньше), так что последующий PUT легально
+            // пройдёт optimistic-проверку expected_updated_at.
+            const meta = content?.metadata || {};
+            const editedBy = meta.last_edited_by
+                ? `пользователем ${meta.last_edited_by}`
+                : 'другим пользователем';
+            const editedAtText = meta.last_edited_at
+                ? ` (${this._formatDraftTimestamp(meta.last_edited_at)})`
+                : '';
+            const choice = await DialogManager.show({
+                title: 'Конфликт версий',
+                message: `Найден ваш черновик от ${savedAtText}, но акт с тех пор `
+                    + `изменён ${editedBy}${editedAtText}. Восстановление черновика `
+                    + 'ПЕРЕЗАПИШЕТ эти изменения.',
+                icon: '⚠️',
+                confirmText: 'Восстановить мой черновик',
+                cancelText: 'Оставить версию из БД',
+                // Escape/клик мимо диалога — НЕ выбор судьбы черновика:
+                // грузим версию из БД, но снимок оставляем (диалог вернётся
+                // при следующем открытии). Удаление — только явной кнопкой.
+                escapeResult: 'dismissed'
+            });
+            if (choice !== true) {
+                if (choice === false) {
+                    // Явная кнопка «Оставить версию из БД» — черновик больше не нужен.
+                    window.StorageManager.removeSnapshot(actId);
+                }
+                return false;
+            }
+        } else {
+            const confirmed = await DialogManager.show({
+                title: 'Несохранённый черновик',
+                message: `Найден несохранённый черновик от ${savedAtText}. Восстановить?`,
+                icon: '📝',
+                confirmText: 'Восстановить',
+                cancelText: 'Отклонить'
+            });
+            if (!confirmed) {
+                window.StorageManager.removeSnapshot(actId);
+                return false;
+            }
         }
 
         content.tree = snapshot.data.tree;
@@ -728,6 +780,22 @@ export class APIClient {
         content.violations = snapshot.data.violations || {};
         console.log('Черновик акта восстановлен из localStorage (снимок от', snapshot.savedAt, ')');
         return true;
+    }
+
+    /**
+     * Человекочитаемая метка времени для диалогов черновика.
+     * Нечитаемое значение возвращается как есть (лучше сырая строка, чем
+     * «Invalid Date» в тексте диалога).
+     *
+     * @private
+     * @param {string} value ISO-строка времени
+     * @returns {string}
+     */
+    static _formatDraftTimestamp(value) {
+        const date = new Date(value);
+        return Number.isFinite(date.getTime())
+            ? date.toLocaleString('ru-RU')
+            : String(value);
     }
 
     /**
@@ -777,6 +845,43 @@ export class APIClient {
     }
 
     /**
+     * OCC: прикрепляет к payload PUT /content метку expected_updated_at —
+     * серверный updated_at, зафиксированный StorageManager при последней
+     * синхронизации (GET/PUT). КРИТИЧНО: строка уходит ЭХОМ, той же, что
+     * пришла с сервера — без прогона через new Date(...).toISOString()
+     * (naive-метка без tz сдвинулась бы на wall-clock и дала ложный 409).
+     * Если база не установлена (null) — поле не отправляется, сервер
+     * пропускает optimistic-проверку.
+     *
+     * @private
+     * @param {Object} data payload PUT /content (мутируется)
+     */
+    static _attachExpectedUpdatedAt(data) {
+        const expectedUpdatedAt = window.StorageManager?.getBaseUpdatedAt?.() ?? null;
+        if (expectedUpdatedAt) {
+            data.expected_updated_at = expectedUpdatedAt;
+        }
+    }
+
+    /**
+     * Разбирает 409-ответ PUT /content в типизированную ошибку:
+     * envelope с code='content-conflict' → ContentConflictError (акт сохранил
+     * кто-то другой, метки/автор в extra), любой другой 409 → LockLostError
+     * (лок снят — прежняя семантика).
+     *
+     * @private
+     * @param {Response} resp 409-ответ сервера
+     * @returns {Promise<ContentConflictError|LockLostError>}
+     */
+    static async _parseConflictError(resp) {
+        const body = await resp.json().catch(() => null);
+        if (body?.code === 'content-conflict') {
+            return new ContentConflictError(body.detail, body.extra);
+        }
+        return new LockLostError();
+    }
+
+    /**
      * Сохраняет содержимое акта в БД
      *
      * @param {number} actId - ID акта
@@ -823,6 +928,7 @@ export class APIClient {
             }
             data.saveType = saveType;
             data.changelog = window.ChangelogTracker ? window.ChangelogTracker.flush() : [];
+            this._attachExpectedUpdatedAt(data);
 
             const resp = await this._fetchWithTimeout(AppConfig.api.getUrl(`/api/v1/acts/${actId}/content`), {
                 method: 'PUT',
@@ -838,11 +944,13 @@ export class APIClient {
                 } else if (resp.status === 404) {
                     throw new Error('Акт не найден');
                 } else if (resp.status === 409) {
-                    // Лок потерян (автовыход по неактивности успел снять блокировку
-                    // пока вкладка была в фоне). Кидаем типизированную ошибку,
-                    // вызывающая сторона (navigation-manager) делает редирект на список
-                    // с тем же sessionStorage-флагом, что и autoExit.
-                    throw new LockLostError();
+                    // Два разных 409: content-conflict (optimistic-проверка
+                    // expected_updated_at — акт сохранил кто-то другой) и потеря
+                    // лока (автовыход по неактивности успел снять блокировку пока
+                    // вкладка была в фоне). Различаем по code в envelope; для лока
+                    // вызывающая сторона (navigation-manager) делает редирект на
+                    // список с тем же sessionStorage-флагом, что и autoExit.
+                    throw await this._parseConflictError(resp);
                 } else if (resp.status === 422) {
                     // Серверная структурная валидация таблиц (P6a): рваная сетка,
                     // несовпадение числа ширин, объединение за границами,
@@ -990,6 +1098,7 @@ export class APIClient {
             }
             data.saveType = 'manual';
             data.changelog = window.ChangelogTracker ? window.ChangelogTracker.flush() : [];
+            this._attachExpectedUpdatedAt(data);
 
             const body = JSON.stringify(data);
             // PERSIST-6: keepalive только если тело влезает в лимит — иначе
@@ -1014,7 +1123,8 @@ export class APIClient {
                 }
             );
             if (!resp.ok) {
-                if (resp.status === 409) throw new LockLostError();
+                // 409: content-conflict или потеря лока — различаем по envelope.
+                if (resp.status === 409) throw await this._parseConflictError(resp);
                 throw new Error(`Аварийное сохранение в БД не удалось (HTTP ${resp.status})`);
             }
             const result = await resp.json();

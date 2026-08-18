@@ -3,7 +3,9 @@
  *
  * shouldOfferRestore решает судьбу снимка localStorage при загрузке акта:
  * 'restore' — предложить восстановление (акт не менялся с момента снимка),
- * 'discard' — молча удалить (устарел/повреждён), 'none' — снимка нет.
+ * 'conflict' — акт менялся после снимка, выбор версии за пользователем
+ * (диалог конфликта; молча снимок НЕ удаляется),
+ * 'discard' — молча удалить (структурно повреждён), 'none' — снимка нет.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,9 +33,16 @@ test('метки совпадают посимвольно → restore', () => {
   assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'restore');
 });
 
-test('метки не совпадают (акт менялся) → discard', () => {
+// Сознательная смена семантики: раньше расхождение меток давало 'discard'
+// (черновик молча уничтожался), теперь — 'conflict' (выбор за пользователем).
+test('метки не совпадают (акт менялся) → conflict, а не молчаливый discard', () => {
   const snap = makeSnapshot();
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T11:30:00.000000'), 'discard');
+  assert.equal(shouldOfferRestore(snap, '2026-06-11T11:30:00.000000'), 'conflict');
+});
+
+test('акт менялся: серверная метка позже базы снимка → conflict', () => {
+  const snap = makeSnapshot({ baseUpdatedAt: '2026-06-10T09:00:00.000000' });
+  assert.equal(shouldOfferRestore(snap, '2026-06-12T09:00:00.000000'), 'conflict');
 });
 
 test('один момент времени в разной записи → restore (эпоха-фоллбэк)', () => {
@@ -68,9 +77,19 @@ test('повреждённый снимок (data без дерева) → disca
   assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'discard');
 });
 
-test('нечитаемые метки времени → discard, а не ложный restore', () => {
+test('структурно битый снимок при расходящихся метках → всё равно discard, не conflict', () => {
+  // 'conflict' — только для восстановимых снимков: диалог конфликта не должен
+  // предлагать восстановить черновик, из которого нечего восстановить.
+  const snap = makeSnapshot({ data: { tables: {} } });
+  assert.equal(shouldOfferRestore(snap, '2026-06-12T10:00:00.000000'), 'discard');
+});
+
+// Сознательная смена: нечитаемые, но присутствующие метки — снимок структурно
+// валиден, а «менялся ли акт» проверить нельзя. Раньше — молчаливый discard;
+// теперь честный диалог конфликта (пользователь сам решает судьбу правок).
+test('нечитаемые метки времени → conflict, а не ложный restore и не молчаливый discard', () => {
   const snap = makeSnapshot({ baseUpdatedAt: 'не-дата' });
-  assert.equal(shouldOfferRestore(snap, 'тоже-не-дата'), 'discard');
+  assert.equal(shouldOfferRestore(snap, 'тоже-не-дата'), 'conflict');
 });
 
 test('#10 (Variant Б): несогласованный, но свежий снимок → restore (не discard)', () => {
