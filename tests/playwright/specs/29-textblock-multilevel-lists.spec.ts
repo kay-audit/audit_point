@@ -39,7 +39,12 @@ async function makeUnorderedList(page) {
     .click();
 }
 
-/** Каждый ul/ol в редакторе содержит ТОЛЬКО <li>-детей — признак валидной вложенности. */
+/**
+ * Валидная вложенность: каждый ul/ol содержит ТОЛЬКО <li>-детей И ни один <li>
+ * не лежит прямо в другом <li>. Вторая половина — форма, которую порождал
+ * нативный outdent: браузер рисует маркер такого пункта посреди чужой строки,
+ * а DOCX/MD/TXT считают его частью хозяина.
+ */
 async function hasOnlyValidListNesting(editor): Promise<boolean> {
   return editor.evaluate((ed: HTMLElement) => {
     const lists = ed.querySelectorAll('ul, ol');
@@ -47,6 +52,9 @@ async function hasOnlyValidListNesting(editor): Promise<boolean> {
       for (const child of Array.from(list.children)) {
         if (child.tagName !== 'LI') return false;
       }
+    }
+    for (const li of Array.from(ed.querySelectorAll('li'))) {
+      if (li.parentElement && li.parentElement.tagName === 'LI') return false;
     }
     return true;
   });
@@ -305,9 +313,9 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
   });
 
   test('Tab по выделению из нескольких пунктов углубляет их все', async ({ page }) => {
-    // Нативная команда двигала всё выделение; своя реализация обязана вести
-    // себя так же, иначе Shift+Tab (он остался нативным) поднимал бы больше,
-    // чем опустил Tab.
+    // Нативная команда двигала всё выделение; обе свои реализации обязаны вести
+    // себя так же и симметрично друг другу: иначе Shift+Tab поднимал бы
+    // больше пунктов, чем опустил Tab.
     await openTextblock(page);
     const editor = page.locator(EDITOR);
 
@@ -329,6 +337,62 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     ).toBe(1);
     expect(await countMarkerOnlyItems(editor)).toBe(0);
     expect(await hasOnlyValidListNesting(editor)).toBe(true);
+  });
+
+  test('indent → outdent → indent возвращает пункт на тот же уровень, форма остаётся валидной', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await makeUnorderedList(page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Второй пункт');
+
+    await page.keyboard.press('Tab');
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(1);
+    const nested = await editor.innerHTML();
+
+    // Shift+Tab исполняет свой outdent: пункт встаёт следом за хозяином, а
+    // опустевший подсписок исчезает — раньше браузер ронял пункт рядом с
+    // подсписком либо прямо внутрь чужого <li>.
+    await page.keyboard.press('Shift+Tab');
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(0);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
+    expect(await countMarkerOnlyItems(editor)).toBe(0);
+    expect(await editor.evaluate((ed: HTMLElement) => ed.querySelectorAll('ul, ol').length)).toBe(1);
+
+    // Обратно — та же разметка, что после первого Tab (round-trip).
+    await page.keyboard.press('Tab');
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(1);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
+    expect(await editor.innerHTML()).toBe(nested);
+  });
+
+  test('Shift+Tab на верхнем уровне выводит пункт из списка абзацем (чистый split)', async ({
+    page,
+  }) => {
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await makeUnorderedList(page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Второй пункт');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Третий пункт');
+
+    await placeCaretAfter(page, 'Второй пункт');
+    await page.keyboard.press('Shift+Tab');
+
+    // Пункт больше не в списке, а его соседи остались пунктами по обе стороны.
+    expect(await listDepthOf(editor, 'Второй пункт')).toBe(-1);
+    expect(await listDepthOf(editor, 'Исходный текст')).toBe(0);
+    expect(await listDepthOf(editor, 'Третий пункт')).toBe(0);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
+    expect(await editor.innerHTML()).not.toMatch(/<blockquote/i);
+    await expect(editor).toHaveText(/Второй пункт/);
   });
 
   test('Tab вне списка не перехвачен — фокус уходит нативно, blockquote не появляется', async ({
