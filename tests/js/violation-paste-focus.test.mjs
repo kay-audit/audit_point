@@ -8,8 +8,10 @@
  *  - вставку в поля ввода и contenteditable-редактор не перехватываем
  *    (isEditableTarget);
  *  - целевую зону определяем по фокусу (document.activeElement.closest(
- *    '.violation-blocks-wrapper')), вставляем в КОНЕЦ поля; ключ поля берём
- *    из dataset контейнера блоков.
+ *    '.violation-blocks-wrapper')); ключ поля берём из dataset контейнера блоков;
+ *  - позицию вставки — тоже по фокусу (insertIndexFromFocus): каретка внутри
+ *    блока кладёт новый блок сразу ЗА ним, фокус в зоне без блока — в конец
+ *    поля. К hover-позиции курсора возврата нет.
  *
  * Плюс §5.8: узкое исключение из contenteditable-guard'а — картинки при каретке
  * в rich-поле САМОЙ зоны (shouldInterceptImagesFromEditable).
@@ -56,13 +58,30 @@ test('isEditableTarget: textarea/input/contenteditable → true, прочее �
 
 // --- §5.8: shouldInterceptImagesFromEditable — узкое исключение из guard'а ---
 
-/** Каретка в rich-поле: contenteditable + (опционально) внутри зоны. */
-function editableTarget({ inZone, zone = { id: 'zone' }, field = {} } = { inZone: false }) {
+/**
+ * Каретка в rich-поле: contenteditable + (опционально) внутри зоны.
+ * `blockId` — id блока, в обёртке которого стоит каретка (null — вне блоков).
+ */
+function editableTarget(
+    { inZone, zone = { id: 'zone' }, field = {}, blockId = null } = { inZone: false },
+) {
     return {
         tagName: 'SPAN',
         closest: (s) => {
             if (s === '[contenteditable="true"]') return field;
             if (s === '.violation-blocks-wrapper') return inZone ? zone : null;
+            if (s === '.content-item-wrapper') return blockId ? { dataset: { blockId } } : null;
+            return null;
+        },
+    };
+}
+
+/** Фокус в зоне: внутри обёртки блока blockId либо (null) на самой зоне. */
+function focusInZone(zone, blockId = null) {
+    return {
+        closest: (s) => {
+            if (s === '.violation-blocks-wrapper') return zone;
+            if (s === '.content-item-wrapper') return blockId ? { dataset: { blockId } } : null;
             return null;
         },
     };
@@ -125,31 +144,74 @@ function textPasteEvent(text, target) {
     };
 }
 
-test('#19: зона берётся по фокусу, текст вставляется текст-блоком в КОНЕЦ поля', async () => {
+/** Перехватывает addBlockAtPosition и отдаёт снимок аргументов вставки. */
+function captureBlockInsert(vm) {
+    const captured = {};
+    vm.addBlockAtPosition = (v, fieldKey, type, container, insertIndex, extra) => {
+        Object.assign(captured, { fieldKey, type, container, insertIndex, content: extra.content });
+        captured.called = true;
+        return true;
+    };
+    return captured;
+}
+
+test('#19: зона берётся по фокусу, текст вставляется текст-блоком', async () => {
     AppConfig.readOnlyMode.isReadOnly = false;
     const vm = new ViolationManager();
     const violation = makeViolation(2); // уже 2 блока
     vm.activeViolations.set('v1', violation);
 
     const zone = makeZone('v1');
-    document.activeElement = { closest: (s) => (s === '.violation-blocks-wrapper' ? zone : null) };
+    // Фокус в зоне, но не в блоке (клик по самому контейнеру).
+    document.activeElement = focusInZone(zone);
 
-    let captured = null;
-    vm.addBlockAtPosition = (v, fieldKey, type, container, insertIndex, extra) => {
-        captured = { fieldKey, type, container, insertIndex, content: extra.content };
-        return true;
-    };
+    const captured = captureBlockInsert(vm);
 
     const handler = capturePasteHandler(vm);
     await handler(textPasteEvent('Кейс 3. описание'));
 
-    assert.ok(captured, 'вставка выполнена по фокусу');
+    assert.ok(captured.called, 'вставка выполнена по фокусу');
     assert.equal(captured.fieldKey, FIELD, 'ключ поля взят из dataset зоны');
     assert.equal(captured.type, BLOCK_TYPES.TEXT, 'любой текст буфера — текст-блок');
     assert.equal(captured.content, 'Кейс 3. описание',
         'префикс «Кейс N» больше не разбирается — текст уходит как есть');
-    assert.equal(captured.insertIndex, 2, 'вставка в конец поля (после 2 существующих)');
+    assert.equal(captured.insertIndex, 2, 'фокус вне блоков — вставка в конец поля');
     assert.equal(captured.container, zone, 'контейнер = зона по фокусу');
+});
+
+test('фокус внутри блока — новый блок ложится СРАЗУ ЗА ним, а не в конец', async () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation(3); // блоки x0, x1, x2
+    vm.activeViolations.set('v1', violation);
+
+    const zone = makeZone('v1');
+    document.activeElement = focusInZone(zone, 'x0');
+
+    const captured = captureBlockInsert(vm);
+
+    const handler = capturePasteHandler(vm);
+    await handler(textPasteEvent('второй абзац'));
+
+    assert.equal(captured.insertIndex, 1, 'после блока x0, а не в конец (было бы 3)');
+});
+
+test('фокус в блоке, которого уже нет в модели — вставка в конец', async () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation(2);
+    vm.activeViolations.set('v1', violation);
+
+    const zone = makeZone('v1');
+    // Обёртка пережила блок (stale DOM между мутацией и ререндером).
+    document.activeElement = focusInZone(zone, 'ghost');
+
+    const captured = captureBlockInsert(vm);
+
+    const handler = capturePasteHandler(vm);
+    await handler(textPasteEvent('текст'));
+
+    assert.equal(captured.insertIndex, 2, 'неизвестный блок — падаем на конец поля');
 });
 
 test('#19-Б: Ctrl+V в contenteditable не перехватывается даже при фокусе на зоне', async () => {
@@ -239,9 +301,33 @@ test('§5.8: Ctrl+V картинкой при каретке в rich-поле з
     assert.ok(captured, 'конвейер картинок запущен из rich-поля зоны');
     assert.equal(captured.container, zone, 'контейнер = зона от каретки (e.target)');
     assert.equal(captured.fieldKey, FIELD, 'ключ поля взят из dataset зоны');
-    assert.equal(captured.insertIndex, 2, 'вставка в конец поля');
+    assert.equal(captured.insertIndex, 2, 'каретка вне блоков — вставка в конец поля');
     assert.deepEqual(captured.files, [file]);
     assert.equal(e._prevented(), true, 'вставку картинки перехватили');
+});
+
+test('§5.8: каретка в rich-поле блока — картинка встаёт сразу за этим блоком', async () => {
+    AppConfig.readOnlyMode.isReadOnly = false;
+    const vm = new ViolationManager();
+    const violation = makeViolation(3); // блоки x0, x1, x2
+    vm.activeViolations.set('v1', violation);
+
+    const zone = makeZone('v1');
+    document.activeElement = null;
+    const target = editableTarget({ inZone: true, zone, blockId: 'x1' });
+
+    let captured = null;
+    vm.promptQualityThenInsertImages = (v, fieldKey, container, insertIndex) => {
+        captured = { insertIndex };
+    };
+
+    const file = { name: 'a.png', type: 'image/png', size: 100 };
+    const e = pasteEvent([{ type: 'image/png', getAsFile: () => file }], target);
+
+    const handler = capturePasteHandler(vm);
+    await handler(e);
+
+    assert.equal(captured.insertIndex, 2, 'после блока x1, а не в конец (было бы 3)');
 });
 
 test('§5.8: текстовая ветка НЕ исполняется для каретки в rich-поле (дубль текста)', async () => {
@@ -419,7 +505,7 @@ test('№5: «Только изображение» — конвейер зон�
     assert.deepEqual(calls.map(c => c.route), ['image']);
     assert.equal(calls[0].container, zone);
     assert.equal(calls[0].fieldKey, FIELD);
-    assert.equal(calls[0].insertIndex, 2, 'вставка в конец поля');
+    assert.equal(calls[0].insertIndex, 2, 'каретка вне блоков — вставка в конец поля');
     assert.deepEqual(calls[0].files, [imageFile]);
 });
 
