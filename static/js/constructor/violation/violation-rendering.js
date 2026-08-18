@@ -88,6 +88,12 @@ Object.assign(ViolationManager.prototype, {
         // прежние обёртки уже выброшены, гистерезису не за что держаться.
         this.lastDragOverIndex = null;
         this._lastDragOverElement = null;
+
+        // Мультивыделение адресуется id блоков, а не DOM-ссылками: обёртки
+        // выше созданы заново, подсветку восстанавливаем по id (и вычищаем id
+        // блоков, которых в поле больше нет). `?.` — на случай вызова
+        // renderBlocks в изоляции, до домешивания violation-blocks.js.
+        this._syncBlockSelectionClasses?.(violation, fieldKey, container);
     },
 
     /**

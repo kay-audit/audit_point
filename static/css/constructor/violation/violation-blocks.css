@@ -205,6 +205,20 @@
     border-color: var(--warning);
 }
 
+/* Мультивыделение блоков (клик по шапке, Ctrl/Shift — violation-block-selection.js).
+   Класс ставится/снимается по id блока после каждой перерисовки поля
+   (_syncBlockSelectionClasses). Только цвет рамки и кольцо-тень: ни ширины
+   рамки, ни отступов — выделение НЕ должно двигать layout соседних карточек.
+   Шапка выделенного блока подкрашена — именно она зона клика и старта drag. */
+.content-item-wrapper.block-selected {
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring-subtle);
+}
+
+.content-item-wrapper.block-selected .content-item-label {
+    background: var(--primary-subtle);
+}
+
 /* Ручка перетаскивания с подписью типа блока — единственная зона, с которой
    начинается перетаскивание блока (armBlockDrag, violation-drag-drop.js) */
 .content-item-label {

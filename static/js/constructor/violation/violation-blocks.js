@@ -10,6 +10,10 @@
  * мутатору не видны: лимит числа блоков ПО ПОЛЮ (#4) и лимиты картинок
  * (тип/magic/байты).
  *
+ * Здесь же — проводка мультивыделения блоков (состояние —
+ * violation-block-selection.js): document-слушатель клика, восстановление
+ * подсветки после перерисовки.
+ *
  * Перенос блоков между полями — сознательный non-goal первой итерации
  * (спека §7): контейнер каждого поля работает только со своими блоками.
  */
@@ -31,6 +35,9 @@ import { BLOCK_TYPES, BLOCK_TYPE_META, createImageBlock } from './violation-bloc
 import { sniffImageMagic, RECOGNIZED_IMAGE_FORMATS } from './violation-file-reading.js';
 import { downscaleImage, resolveActualFilename } from './violation-image-resize.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
+import { EscapeStack } from '../../shared/escape-stack.js';
+import { isEditableTarget } from '../../shared/editable-target.js';
+import { pluralizeBlocks } from './violation-block-selection.js';
 
 /** localStorage-ключ предвыбора режима качества (Q3 всё равно спрашивает каждый раз). */
 const IMAGE_QUALITY_MODE_KEY = 'violation_image_quality_mode';
@@ -45,6 +52,17 @@ const IMAGE_QUALITY_MODE_KEY = 'violation_image_quality_mode';
 function fieldBlocks(violation, fieldKey) {
     const blocks = violation?.[fieldKey]?.blocks;
     return Array.isArray(blocks) ? blocks : [];
+}
+
+/**
+ * id блоков поля в порядке хранения — адресация мультивыделения (диапазоны,
+ * групповые операции) идёт только по ним.
+ * @param {Object} violation - Объект нарушения
+ * @param {string} fieldKey - Ключ поля реестра
+ * @returns {string[]}
+ */
+function fieldBlockIds(violation, fieldKey) {
+    return fieldBlocks(violation, fieldKey).map(block => block.id);
 }
 
 // Расширение ViolationManager
@@ -391,6 +409,11 @@ Object.assign(ViolationManager.prototype, {
         // сюда не доходит и не должен ронять активный редактор).
         this._teardownActiveRichField(violation.id);
 
+        // Любая вставка контента снимает выделение: пачка новых блоков сдвигает
+        // список, и подсвеченные «до вставки» блоки перестают быть тем, что
+        // пользователь набрал глазами. Ctrl+V, ПКМ-меню и тулбар приходят сюда.
+        this.clearBlockSelection();
+
         if (itemsContainer) {
             this.renderBlocks(violation, fieldKey, itemsContainer);
         }
@@ -428,8 +451,166 @@ Object.assign(ViolationManager.prototype, {
         return true;
     },
 
+    // ── Мультивыделение блоков поля (violation-block-selection.js) ────────────
+
     /**
-     * Валидирует ТИП пачки файлов ДО чтения (H6/#26).
+     * Вешает document-слушатель мультивыделения: ЛКМ по шапке блока выделяет,
+     * ЛКМ где угодно ещё — снимает выделение.
+     *
+     * Слушатели глобальные (а не на контейнере поля) по двум причинам: снятие
+     * выделения обязано ловить клики ВНЕ поля (тулбар, другое нарушение, пустое
+     * место страницы), а перерисовка поля не должна их терять — контейнеры
+     * пересоздаются, document живёт всегда. Ставятся один раз из initialize().
+     *
+     * Фаза перехвата — как у setupPasteHandler: клик по пункту контекстного
+     * меню или кнопке тулбара может быть погашен stopPropagation'ом, а снять
+     * выделение мы обязаны в любом случае.
+     */
+    setupBlockSelectionHandlers() {
+        document.addEventListener('click', (e) => this._handleBlockSelectionClick(e), true);
+    },
+
+    /**
+     * ЛКМ: по шапке блока — выделение (Ctrl — toggle, Shift — диапазон),
+     * в любом другом месте — сброс.
+     * @param {MouseEvent} e - Событие click
+     */
+    _handleBlockSelectionClick(e) {
+        // Только основная кнопка: у ПКМ свой путь (contextmenu ниже) и своя
+        // политика — выделение под курсором он сохраняет.
+        if (e.button) return;
+
+        const label = e.target?.closest?.('.content-item-label');
+        const wrapper = label?.closest?.('.content-item-wrapper');
+        const itemsContainer = wrapper?.closest?.('.violation-blocks-items');
+        if (!itemsContainer) {
+            this.clearBlockSelection();
+            return;
+        }
+
+        // В режиме просмотра выделять нечего: групповые операции (перенос,
+        // удаление) закрыты гейтами мутаторов, подсветка обещала бы их зря.
+        if (AppConfig.readOnlyMode?.isReadOnly) {
+            this.clearBlockSelection();
+            return;
+        }
+
+        const violationId = itemsContainer.dataset?.violationId;
+        const fieldKey = itemsContainer.dataset?.fieldKey;
+        const blockId = wrapper.dataset?.blockId;
+        const violation = violationId ? this.activeViolations.get(violationId) : null;
+        if (!violation || !fieldKey || !blockId) {
+            this.clearBlockSelection();
+            return;
+        }
+
+        this.blockSelection.applyClick(
+            violationId, fieldKey, blockId, e, fieldBlockIds(violation, fieldKey));
+        this._syncSelectionEscapeLayer();
+        this._syncBlockSelectionClasses(violation, fieldKey, itemsContainer);
+    },
+
+    /**
+     * Сбрасывает выделение и его подсветку. Идемпотентен.
+     */
+    clearBlockSelection() {
+        this.blockSelection.clear();
+        this._syncSelectionEscapeLayer();
+        this._clearBlockSelectionClasses();
+    },
+
+    /**
+     * Держит слой ESC в стеке ровно пока выделение непусто.
+     *
+     * Постоянный слой здесь не годится: он встал бы в стек один раз при старте
+     * — то есть НИЖЕ слоя активной зоны нарушений (тот кладётся на каждый
+     * mouseenter), и ESC до выделения не доходил бы вовсе. Сентинел PASS при
+     * пустом выделении оставлен страховкой на случай, если состояние очистили
+     * в обход clearBlockSelection.
+     */
+    _syncSelectionEscapeLayer() {
+        if (this.blockSelection.isEmpty()) {
+            if (this._escapeSelectionUnsub) {
+                const unsub = this._escapeSelectionUnsub;
+                this._escapeSelectionUnsub = null;
+                unsub();
+            }
+            return;
+        }
+
+        if (this._escapeSelectionUnsub) return;
+        this._escapeSelectionUnsub = EscapeStack.push(() => {
+            if (this.blockSelection.isEmpty()) return EscapeStack.PASS;
+            this.clearBlockSelection();
+        });
+    },
+
+    /**
+     * Снимает класс выделения со ВСЕХ обёрток документа.
+     */
+    _clearBlockSelectionClasses() {
+        document.querySelectorAll?.('.content-item-wrapper.block-selected')
+            ?.forEach?.(wrapper => wrapper.classList.remove('block-selected'));
+    },
+
+    /**
+     * Восстанавливает подсветку выделения по id — вызывается ПОСЛЕ каждой
+     * перерисовки поля (renderBlocks всегда пересоздаёт обёртки, DOM-ссылки на
+     * них протухают) и после каждого клика.
+     *
+     * Заодно вычищает id блоков, которых в поле больше нет: удаление, откат
+     * версии и загрузка другого акта оставили бы выделение из мёртвых id, и
+     * групповое удаление молча промахнулось бы.
+     *
+     * Подсветка снимается со всего документа, а не только с `container`:
+     * выделение живёт ровно в одном поле, и клик, переносящий его в соседнее,
+     * иначе оставил бы подсвеченными обёртки прежнего.
+     *
+     * @param {Object} violation - Объект нарушения (владелец перерисованного поля)
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} container - Контейнер блоков поля (.violation-blocks-items)
+     */
+    _syncBlockSelectionClasses(violation, fieldKey, container) {
+        const selection = this.blockSelection;
+        if (violation && fieldKey) {
+            selection.prune(violation.id, fieldKey, fieldBlockIds(violation, fieldKey));
+            this._syncSelectionEscapeLayer();
+        }
+
+        this._clearBlockSelectionClasses();
+        if (selection.isEmpty()) return;
+
+        // Контейнер поля-владельца: перерисовываемое поле годится только если
+        // выделение принадлежит ему; иначе ищем владельца в документе (при
+        // первичной сборке карточки его там ещё нет — но его обёртки тогда и не
+        // трогались, подсветка на них уцелела).
+        const owner = (container && selection.isScope(violation?.id, fieldKey))
+            ? container
+            : this._findBlocksItemsContainer(selection.violationId, selection.fieldKey);
+
+        owner?.querySelectorAll?.('.content-item-wrapper')?.forEach?.((wrapper) => {
+            if (selection.ids.has(wrapper.dataset?.blockId)) {
+                wrapper.classList.add('block-selected');
+            }
+        });
+    },
+
+    /**
+     * Контейнер блоков поля в документе (адрес поля лежит в его dataset).
+     * @param {string|null} violationId - ID нарушения
+     * @param {string|null} fieldKey - Ключ поля реестра
+     * @returns {HTMLElement|null}
+     */
+    _findBlocksItemsContainer(violationId, fieldKey) {
+        if (!violationId || !fieldKey) return null;
+        return document.querySelector?.(
+            `.violation-blocks-items[data-violation-id="${violationId}"]`
+            + `[data-field-key="${fieldKey}"]`) || null;
+    },
+
+    /**
+     * Валидирует ТИП пачки файлов
+ ДО чтения (H6/#26).
      *
      * Общая точка для всех трёх способов приёма (выбор файлов, drag&drop,
      * Ctrl+V). Здесь — только тип (MIME), число блоков поля и абсурдный сырой

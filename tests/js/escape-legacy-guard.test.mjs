@@ -72,6 +72,12 @@ const { tableManager } = await import('../../static/js/constructor/table/table-c
 /** Слушатели legacy-обработчиков (всё, что зарегистрировано при импорте модулей). */
 const legacyListeners = keydownListeners.slice();
 
+// Их трое, а не двое: помимо снятия выделения дерева и ячеек, граф тянет
+// violation-init → ViolationManager.initialize, а тот вешает document-keydown
+// мультивыделения блоков (Delete по выделению). К ESC он отношения не имеет —
+// Escape отсеивается первой же строкой обработчика, — но в цепочке document
+// живёт и здесь считается.
+
 // Свой listener EscapeStack ставит лениво — при первом push.
 EscapeStack.push(() => {})();
 const stackListener = keydownListeners[legacyListeners.length];
@@ -105,7 +111,8 @@ function dispatchEscape() {
 }
 
 test('legacy-обработчики ESC зарегистрированы (иначе тесты ниже ничего не проверяют)', () => {
-    assert.equal(legacyListeners.length, 2, 'по одному document-listener keydown у дерева и таблиц');
+    assert.equal(legacyListeners.length, 3,
+        'по одному document-listener keydown у дерева, таблиц и мультивыделения блоков');
     assert.equal(typeof stackListener, 'function', 'listener EscapeStack перехвачен');
 });
 
