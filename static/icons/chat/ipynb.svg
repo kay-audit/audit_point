@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <!-- Document body with folded top-right corner -->
+  <path d="M5 2.5h10l4 4v15h-14v-19z"/>
+  <!-- Folded corner -->
+  <path d="M15 2.5v4h4"/>
+  <!-- ipynb label; пять букв — font-size 4 + textLength 11 сжимает их под
+       внутреннюю ширину корпуса (12.5), чтобы буквы не упёрлись в обводку -->
+  <text x="12" y="15.5" font-family="Arial, Helvetica, sans-serif" font-size="4" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" textLength="11" lengthAdjust="spacingAndGlyphs">ipynb</text>
+</svg>

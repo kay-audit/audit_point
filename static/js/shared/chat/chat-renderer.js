@@ -1248,11 +1248,8 @@ export const ChatRenderer = {
      */
     _ICON_URLS: {
         'file-generic-24':      'file-generic-24.svg',
-        'file-spreadsheet-24':  'file-spreadsheet-24.svg',
-        'file-presentation-24': 'file-presentation-24.svg',
         'file-image-24':        'file-image-24.svg',
         'file-code-24':         'file-code-24.svg',
-        'file-archive-24':      'file-archive-24.svg',
         // Индивидуальные иконки с текстовым ярлыком формата внутри:
         'file-docx-24':         'file-docx-24.svg',
         'file-xlsx-24':         'file-xlsx-24.svg',
@@ -1260,6 +1257,11 @@ export const ChatRenderer = {
         'file-md-24':           'file-md-24.svg',
         'file-txt-24':          'file-txt-24.svg',
         'file-pdf-24':          'file-pdf-24.svg',
+        // Индивидуальные тематические иконки (узкий формат):
+        'csv':                  'csv.svg',
+        'ipynb':                'ipynb.svg',
+        'py':                   'py.svg',
+        'zip':                  'zip.svg',
     },
 
     /**
@@ -1267,9 +1269,27 @@ export const ChatRenderer = {
      *
      * Форматы с ярлыком (pdf/docx/xlsx/pptx/md/txt) получают индивидуальные иконки,
      * цвета определяются CSS-классом ``chat-block-file-icon--<ext>``.
-     * Старые форматы (doc/xls/ppt) и редкие (json/xml/yaml) идут в общие
-     * группы (generic/spreadsheet/presentation) — отдельные иконки под них
-     * не нужны, чтобы не раздувать набор.
+     * Старый формат ``.doc`` и редкие (json/xml/yaml) идут в общую группу
+     * ``generic`` — отдельные иконки под них не нужны, чтобы не раздувать набор.
+     *
+     * Legacy Excel (``xls``) и legacy PowerPoint (``ppt``) временно
+     * идут на ``csv.svg``: штатные ``file-spreadsheet-24.svg`` и
+     * ``file-presentation-24.svg`` визуально корявые, исключены из
+     * ``_ICON_URLS`` и удалены с диска. Возврат на индивидуальные
+     * иконки под эти форматы — когда появятся нормальные SVG.
+     *
+     * Все архивы (``.zip``/``.rar``/``.7z``/``.gz``/``.tar``) идут на
+     * ``zip.svg`` (WinRAR-стиль: стопка книг с ремнём). Штатная
+     * ``file-archive-24.svg`` признана визуально корявой, исключена из
+     * ``_ICON_URLS`` и удалена с диска. ``zip.svg`` рисуется
+     * фирменными цветами и ``currentColor`` игнорирует — аналогично
+     * ``py.svg``.
+     *
+     * Тематические иконки для узких форматов (``csv``/``ipynb``/``py``/``zip``):
+     * ключ без суффикса ``-24``, потому что иконка одна в своём роде и
+     * размер ни о чём не говорит. ``py.svg`` и ``zip.svg`` используют
+     * фирменные цвета и игнорируют CSS-цвет — узнаваемость логотипа
+     * важнее, чем общая палитра карточки.
      *
      * @private
      */
@@ -1279,13 +1299,19 @@ export const ChatRenderer = {
         // старые — общая универсальная группа.
         '.docx': 'file-docx-24',
         '.doc':  'file-generic-24',
-        // Таблицы: новые — индивидуально, старые — старая spreadsheet-иконка.
+        // Таблицы: xlsx — индивидуально, xls — на csv.svg
+        // (file-spreadsheet-24.svg визуально корявая и удалена, csv.svg
+        // временно идёт и на .xls, пока не подобрана нормальная иконка
+        // для legacy-Excel).
         '.xlsx': 'file-xlsx-24',
-        '.xls':  'file-spreadsheet-24',
-        '.csv':  'file-spreadsheet-24',
-        // Презентации: новые — индивидуально, старые — старая presentation-иконка.
+        '.xls':  'csv',
+        '.csv':  'csv',
+        // Презентации: pptx — индивидуально, ppt — табличная csv.svg
+        // (file-presentation-24.svg визуально корявая и удалена, csv.svg
+        // временно идёт и на .ppt, пока не подобрана нормальная иконка
+        // для legacy-PowerPoint).
         '.pptx': 'file-pptx-24',
-        '.ppt':  'file-presentation-24',
+        '.ppt':  'csv',
         // Текстовые / документация: каждый со своим ярлыком.
         '.md':   'file-md-24',
         '.txt':  'file-txt-24',
@@ -1302,18 +1328,19 @@ export const ChatRenderer = {
         '.bmp':  'file-image-24',
         '.webp': 'file-image-24',
         '.svg':  'file-image-24',
-        // Код / SQL / ноутбуки — единая code-иконка.
+        // Код: общая code-иконка для «просто кода» (sql/js/ts),
+        // ipynb и py — свои тематические (логотип Python, ярлык «ipynb»).
         '.sql':  'file-code-24',
-        '.ipynb':'file-code-24',
-        '.py':   'file-code-24',
+        '.ipynb':'ipynb',
+        '.py':   'py',
         '.js':   'file-code-24',
         '.ts':   'file-code-24',
-        // Архивы.
-        '.zip':  'file-archive-24',
-        '.rar':  'file-archive-24',
-        '.7z':   'file-archive-24',
-        '.gz':   'file-archive-24',
-        '.tar':  'file-archive-24',
+        // Архивы — все форматы на zip.svg (WinRAR-стиль).
+        '.zip':  'zip',
+        '.rar':  'zip',
+        '.7z':   'zip',
+        '.gz':   'zip',
+        '.tar':  'zip',
     },
 
     /**
