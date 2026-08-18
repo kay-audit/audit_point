@@ -5,11 +5,14 @@
  *  - `sessionLockLost`     — блокировка снята (неактивность), но последний save
  *                            вернул 409 → изменения НЕ в БД (честное сообщение,
  *                            БЕЗ ложного «сохранено»);
+ *  - `sessionExitSaveFailed`— выходной save упал НЕ по 409 (сеть/5xx/422):
+ *                            изменения НЕ в БД, но остаются в локальном
+ *                            черновике (тоже без ложного «сохранено»);
  *  - `sessionAutoExited`   — автовыход по неактивности, акт успешно сохранён;
  *  - `sessionExitedWithSave`— обычный выход с сохранением.
  *
- * Приоритет: lockLost > autoExited > exitedWithSave (lock-lost важнее всего —
- * это единственный случай потери данных из БД).
+ * Приоритет: lockLost > saveFailed > autoExited > exitedWithSave (случаи
+ * «изменения НЕ в БД» важнее всего — плашки об успехе лгали бы).
  *
  * Чистая функция без DOM/sessionStorage — тестируется в node:test.
  */
@@ -17,6 +20,7 @@
 /**
  * @typedef {Object} SessionExitFlags
  * @property {boolean} lockLost       Блокировка снята, save вернул 409.
+ * @property {boolean} saveFailed     Выходной save упал не по 409 — не сохранено.
  * @property {boolean} autoExited     Автовыход по неактивности (сохранено).
  * @property {boolean} exitedWithSave Обычный выход с сохранением.
  */
@@ -44,6 +48,18 @@ export function pickSessionExitNotice(flags) {
             message: 'Блокировка акта была снята из-за длительного бездействия. '
                 + 'Последние изменения НЕ сохранены в базе данных, но остаются '
                 + 'в локальном черновике этого браузера.',
+            icon: '⚠️',
+            type: 'warning',
+            confirmText: 'Понятно',
+        };
+    }
+    if (flags?.saveFailed) {
+        return {
+            flag: 'sessionExitSaveFailed',
+            title: 'Изменения не сохранены',
+            message: 'Редактирование завершено, но сохранить изменения в базу '
+                + 'данных не удалось. Последние правки остаются в локальном '
+                + 'черновике этого браузера — откройте акт, чтобы восстановить их.',
             icon: '⚠️',
             type: 'warning',
             confirmText: 'Понятно',
