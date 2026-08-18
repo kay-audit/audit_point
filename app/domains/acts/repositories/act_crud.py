@@ -635,7 +635,7 @@ class ActCrudRepository(BaseRepository):
                 needs_created_date, needs_directive_number,
                 needs_invoice_check, needs_service_note,
                 validation_status, validation_issues,
-                created_at, updated_at, created_by,
+                created_at, updated_at, content_version, created_by,
                 last_edited_by, last_edited_at
             FROM {self.acts}
             WHERE id = $1
@@ -712,6 +712,7 @@ class ActCrudRepository(BaseRepository):
             validation_issues=_parse_validation_issues(act_row["validation_issues"]),
             created_at=act_row["created_at"],
             updated_at=act_row["updated_at"],
+            content_version=act_row["content_version"],
             created_by=act_row["created_by"],
             last_edited_by=act_row["last_edited_by"],
             last_edited_at=act_row["last_edited_at"],
@@ -722,15 +723,17 @@ class ActCrudRepository(BaseRepository):
         return await self._fetch_act(act_id)
 
     async def get_edit_stamp(self, act_id: int) -> dict:
-        """Метка последнего изменения акта для optimistic-проверки сохранения.
+        """Метка последнего изменения СОДЕРЖИМОГО для optimistic-проверки.
 
-        SELECT ... FOR UPDATE: вызывается ВНУТРИ транзакции записи контента,
-        чтобы конкурирующее сохранение дождалось коммита и увидело свежий
-        updated_at — между проверкой и записью нет TOCTOU-окна.
+        content_version — счётчик версий контента (инкрементируется только
+        _update_edit_timestamp при сохранении контента, НЕ-контентные записи
+        его не трогают). SELECT ... FOR UPDATE: вызывается ВНУТРИ транзакции
+        записи контента, чтобы конкурирующее сохранение дождалось коммита и
+        увидело свежий счётчик — между проверкой и записью нет TOCTOU-окна.
         """
         row = await self.conn.fetchrow(
             f"""
-            SELECT updated_at, last_edited_by, last_edited_at
+            SELECT content_version, last_edited_by, last_edited_at
             FROM {self.acts}
             WHERE id = $1
             FOR UPDATE

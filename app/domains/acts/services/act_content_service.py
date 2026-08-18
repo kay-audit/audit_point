@@ -5,7 +5,6 @@
 """
 
 import logging
-from datetime import datetime
 
 from app.core.config import Settings
 from app.db.types import DbConn
@@ -36,19 +35,6 @@ from app.domains.acts.settings import ActsSettings
 from app.domains.acts.utils.html_sanitizer import sanitize_act_data, sanitize_tree_nodes
 
 logger = logging.getLogger("audit_workstation.service.acts.content")
-
-
-def _normalize_updated_at(value: datetime) -> datetime:
-    """Нормализует метку для optimistic-сравнения: tz-суффикс отбрасывается.
-
-    acts.updated_at — TIMESTAMP без таймзоны: asyncpg отдаёт naive datetime,
-    pydantic сериализует его наивной ISO-строкой (с микросекундами), фронт
-    возвращает её эхом — обе стороны сравнения naive и совпадают побитово.
-    Если клиентский путь добавил tz-суффикс к той же wall-clock строке,
-    суффикс отбрасывается БЕЗ конвертации: значение из БД и есть это
-    wall-clock время, перевод в другую зону исказил бы его.
-    """
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 class ActContentService:
@@ -150,11 +136,11 @@ class ActContentService:
         async with self.conn.transaction():
             # Optimistic-проверка конкурентного редактирования (две вкладки
             # одного пользователя, перехват истёкшего лока — сценарии, которые
-            # Redis-лок не закрывает). Чтение метки — SELECT ... FOR UPDATE
+            # Redis-лок не закрывает). Чтение счётчика — SELECT ... FOR UPDATE
             # внутри этой же транзакции: конкурирующее сохранение ждёт нашего
-            # коммита и видит уже свежий updated_at.
-            if data.expected_updated_at is not None:
-                await self._check_content_conflict(act_id, data.expected_updated_at)
+            # коммита и видит уже свежий content_version.
+            if data.expected_content_version is not None:
+                await self._check_content_conflict(act_id, data.expected_content_version)
 
             # Вычисляем diff ДО сохранения
             diff = await self._audit.compute_content_diff(act_id, data)
@@ -221,25 +207,24 @@ class ActContentService:
         # поэтому убран. Toast о статусе остаётся на фронте (api.js).
         return result
 
-    async def _check_content_conflict(self, act_id: int, expected: datetime) -> None:
-        """Сверяет expected_updated_at клиента с текущим acts.updated_at.
+    async def _check_content_conflict(self, act_id: int, expected: int) -> None:
+        """Сверяет expected_content_version клиента с текущим acts.content_version.
 
-        Расхождение означает, что с момента загрузки клиентского состояния
-        акт сохранил кто-то другой — бросаем ContentConflictError (409),
-        транзакция откатывается, ничего не записано. Сравнение точное, до
-        микросекунд (round-trip через pydantic их сохраняет); tz-семантика —
-        см. _normalize_updated_at.
+        Счётчик инкрементируется только сохранением контента, поэтому
+        расхождение означает, что с момента загрузки клиентского состояния
+        контент акта сохранил кто-то другой (НЕ-контентные записи — правка
+        метаданных, пересчёт total_parts — счётчик не трогают и ложного 409
+        не дают). При конфликте — ContentConflictError (409), транзакция
+        откатывается, ничего не записано.
         """
         stamp = await self._crud.get_edit_stamp(act_id)
-        current = stamp["updated_at"]
-        if current is not None and (
-            _normalize_updated_at(expected) == _normalize_updated_at(current)
-        ):
+        current = stamp["content_version"]
+        if expected == current:
             return
         last_edited_at = stamp["last_edited_at"]
         raise ContentConflictError(
             "Содержимое акта изменено с момента загрузки — сохранение отклонено",
-            current_updated_at=current.isoformat() if current else None,
+            current_content_version=current,
             last_edited_by=stamp["last_edited_by"],
             last_edited_at=last_edited_at.isoformat() if last_edited_at else None,
         )

@@ -46,10 +46,10 @@ class ActLockError(AppError):
 class ContentConflictError(AppError):
     """Содержимое акта изменено конкурентно (optimistic-проверка не прошла).
 
-    Клиент прислал expected_updated_at, не совпавший с текущим
-    acts.updated_at: с момента загрузки его состояния акт сохранил кто-то
-    другой (вторая вкладка, перехват истёкшего лока). Метки в extra —
-    ISO-строки (naive, как сериализует pydantic TIMESTAMP без tz).
+    Клиент прислал expected_content_version, не совпавший с текущим
+    acts.content_version: с момента загрузки его состояния контент акта
+    сохранил кто-то другой (вторая вкладка, перехват истёкшего лока).
+    last_edited_at в extra — ISO-строка (для текста уведомления).
     """
     status_code = 409
     code: ClassVar[str] = "content-conflict"
@@ -57,13 +57,13 @@ class ContentConflictError(AppError):
     def __init__(
         self,
         message: str,
-        current_updated_at: str | None = None,
+        current_content_version: int | None = None,
         last_edited_by: str | None = None,
         last_edited_at: str | None = None,
     ) -> None:
         super().__init__(message)
         self.extra = {
-            "current_updated_at": current_updated_at,
+            "current_content_version": current_content_version,
             "last_edited_by": last_edited_by,
             "last_edited_at": last_edited_at,
         }

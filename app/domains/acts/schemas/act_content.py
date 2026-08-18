@@ -6,7 +6,6 @@ Pydantic схемы для валидации данных актов.
 """
 
 import re
-from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -681,13 +680,14 @@ class ActDataSchema(BaseModel):
         pattern=r"^(manual|periodic|auto)$",
         description="Тип сохранения: manual (Ctrl+S), periodic (2мин), auto (debounced)"
     )
-    expected_updated_at: datetime | None = Field(
+    expected_content_version: int | None = Field(
         default=None,
         description=(
-            "Optimistic-проверка конкурентного редактирования: acts.updated_at, "
-            "от которого порождено состояние клиента (metadata.updated_at из "
-            "GET /content или updated_at из ответа PUT). Расхождение с текущим "
-            "значением в БД → 409 content-conflict. None — проверка пропускается."
+            "Optimistic-проверка конкурентного редактирования: "
+            "acts.content_version, от которого порождено состояние клиента "
+            "(metadata.content_version из GET /content или content_version из "
+            "ответа PUT). Расхождение с текущим значением в БД → "
+            "409 content-conflict. None — проверка пропускается."
         ),
     )
 

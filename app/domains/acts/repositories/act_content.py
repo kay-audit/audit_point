@@ -120,7 +120,7 @@ class ActContentRepository(BaseRepository):
         )
         await self._sync_invoices(act_id, audit_act_id, data, audit_point_map)
         await self._sync_directives(act_id, audit_act_id, data, audit_point_map)
-        updated_at = await self._update_edit_timestamp(
+        stamp = await self._update_edit_timestamp(
             act_id, username,
             validation_status=validation_status,
             validation_issues=validation_issues or [],
@@ -131,13 +131,17 @@ class ActContentRepository(BaseRepository):
         # updated_at отдаётся фронту: он запоминает его как базу метаданных
         # снимка-черновика localStorage (baseUpdatedAt) для решения о
         # восстановлении черновика при следующей загрузке акта.
+        # content_version — свежий счётчик версий содержимого: фронт эхом
+        # возвращает его в expected_content_version следующего PUT
+        # (optimistic-проверка конкурентного редактирования).
         # dropped_orphans — суммарное число записей словарей, отброшенных
         # orphan-фильтром (нет узла-владельца в дереве); сервис включает его
         # в warning пользователю.
         return {
             "status": "success",
             "message": "Содержимое акта сохранено",
-            "updated_at": updated_at,
+            "updated_at": stamp["updated_at"] if stamp else None,
+            "content_version": stamp["content_version"] if stamp else None,
             "dropped_orphans": dropped_tables + dropped_textblocks + dropped_violations,
         }
 
@@ -705,7 +709,12 @@ class ActContentRepository(BaseRepository):
     ):
         """Обновляет метку редактирования и состояние валидации акта.
 
-        Возвращает фактическое значение updated_at отдельным SELECT
+        Единственная точка инкремента content_version — счётчика версий
+        СОДЕРЖИМОГО для optimistic-проверки PUT /content. Правки метаданных
+        и update_total_parts_for_km бампят только updated_at и счётчик не
+        трогают — поэтому НЕ-контентные записи не дают ложных 409.
+
+        Возвращает фактические updated_at и content_version отдельным SELECT
         (не UPDATE ... RETURNING — для совместимости с Greenplum).
         """
         await self.conn.execute(
@@ -714,6 +723,7 @@ class ActContentRepository(BaseRepository):
             SET last_edited_by = $1,
                 last_edited_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP,
+                content_version = content_version + 1,
                 validation_status = $3,
                 validation_issues = $4::jsonb
             WHERE id = $2
@@ -723,7 +733,7 @@ class ActContentRepository(BaseRepository):
             validation_status,
             json.dumps(validation_issues or [], ensure_ascii=False),
         )
-        return await self.conn.fetchval(
-            f"SELECT updated_at FROM {self.acts} WHERE id = $1",
+        return await self.conn.fetchrow(
+            f"SELECT updated_at, content_version FROM {self.acts} WHERE id = $1",
             act_id
         )

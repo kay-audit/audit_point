@@ -248,18 +248,18 @@ class TestSaveActContent:
         assert body["extra"]["locked_by"] == "other-user"
 
     def test_save_content_optimistic_conflict_returns_409(self):
-        """Устаревший expected_updated_at → 409 c code 'content-conflict' и extra."""
+        """Отстающий expected_content_version → 409 c code 'content-conflict' и extra."""
         svc = _make_content_service()
         svc.save_content.side_effect = ContentConflictError(
             "Содержимое акта изменено с момента загрузки — сохранение отклонено",
-            current_updated_at="2026-08-18T10:30:45.123456",
+            current_content_version=8,
             last_edited_by="67890",
             last_edited_at="2026-08-18T10:30:45.123456",
         )
         app = _build_app(content_service=svc)
 
         payload = _valid_save_payload()
-        payload["expected_updated_at"] = "2026-08-18T10:25:00.000001"
+        payload["expected_content_version"] = 7
 
         with TestClient(app) as client:
             resp = client.put("/api/v1/acts/42/content", json=payload)
@@ -267,12 +267,12 @@ class TestSaveActContent:
         assert resp.status_code == 409
         body = resp.json()
         assert body["code"] == "content-conflict"
-        assert body["extra"]["current_updated_at"] == "2026-08-18T10:30:45.123456"
+        assert body["extra"]["current_content_version"] == 8
         assert body["extra"]["last_edited_by"] == "67890"
         assert body["extra"]["last_edited_at"] == "2026-08-18T10:30:45.123456"
 
-    def test_save_content_accepts_expected_updated_at(self):
-        """Поле expected_updated_at проходит схему и доезжает до сервиса datetime'ом."""
+    def test_save_content_accepts_expected_content_version(self):
+        """Поле expected_content_version проходит схему и доезжает до сервиса int'ом."""
         svc = _make_content_service()
         svc.save_content.return_value = {
             "status": "success",
@@ -281,16 +281,32 @@ class TestSaveActContent:
         app = _build_app(content_service=svc)
 
         payload = _valid_save_payload()
-        payload["expected_updated_at"] = "2026-08-18T10:30:45.123456"
+        payload["expected_content_version"] = 7
 
         with TestClient(app) as client:
             resp = client.put("/api/v1/acts/42/content", json=payload)
 
         assert resp.status_code == 200, resp.text
         data = svc.save_content.await_args.args[1]
-        assert data.expected_updated_at == dt.datetime(
-            2026, 8, 18, 10, 30, 45, 123456,
-        )
+        assert data.expected_content_version == 7
+
+    def test_save_content_response_includes_content_version(self):
+        """PUT отдаёт свежий content_version — эхо-базу следующего OCC-PUT."""
+        svc = _make_content_service()
+        svc.save_content.return_value = {
+            "status": "success",
+            "message": "Содержимое сохранено",
+            "content_version": 8,
+        }
+        app = _build_app(content_service=svc)
+
+        with TestClient(app) as client:
+            resp = client.put(
+                "/api/v1/acts/42/content", json=_valid_save_payload(),
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["content_version"] == 8
 
     def test_save_content_no_edit_permission_returns_403(self):
         """Роль 'Участник' (viewer) → 403 через InsufficientRightsError."""

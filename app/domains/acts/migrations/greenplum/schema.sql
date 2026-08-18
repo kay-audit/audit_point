@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}acts (
     -- Системные поля
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Счётчик версий СОДЕРЖИМОГО (optimistic-проверка PUT /content).
+    -- Инкрементируется ТОЛЬКО при сохранении контента (_update_edit_timestamp);
+    -- правки метаданных и total_parts его не трогают — в отличие от updated_at.
+    content_version INTEGER NOT NULL DEFAULT 0,
     created_by VARCHAR(50) NOT NULL,
     last_edited_by VARCHAR(50),
     last_edited_at TIMESTAMP,
