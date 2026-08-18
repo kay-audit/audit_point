@@ -880,6 +880,7 @@ export class ActsManagerPage {
      */
     static async _checkSessionExit() {
         const notice = pickSessionExitNotice({
+            contentConflict: !!sessionStorage.getItem('sessionExitContentConflict'),
             lockLost: !!sessionStorage.getItem('sessionLockLost'),
             saveFailed: !!sessionStorage.getItem('sessionExitSaveFailed'),
             autoExited: !!sessionStorage.getItem('sessionAutoExited'),
@@ -888,7 +889,8 @@ export class ActsManagerPage {
         if (!notice) return;
 
         // Снимаем ВСЕ exit-флаги: показали максимум по приоритету, прочие — устаревшие.
-        ['sessionLockLost', 'sessionExitSaveFailed', 'sessionAutoExited', 'sessionExitedWithSave']
+        ['sessionExitContentConflict', 'sessionLockLost', 'sessionExitSaveFailed',
+            'sessionAutoExited', 'sessionExitedWithSave']
             .forEach((k) => sessionStorage.removeItem(k));
 
         await DialogManager.alert({

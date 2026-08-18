@@ -6,12 +6,11 @@
  * Гарантирует одиночный unlock: предотвращает дублирующее снятие блокировки через sendBeacon.
  */
 import { loadActConfig } from './act-config.js';
-import { ChangelogTracker } from './changelog-tracker.js';
 import { InactivityWatchdog } from './inactivity-watchdog.js';
 import { LifecycleHelper } from './lifecycle-helper.js';
 import { AppState } from './state/state-core.js';
 import { StorageManager } from './storage-manager.js';
-import { APIClient } from '../shared/api.js';
+import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
 import { AppConfig } from '../shared/app-config.js';
 import { AuthManager } from '../shared/auth.js';
 import { DialogManager } from '../shared/dialog/dialog-confirm.js';
@@ -626,106 +625,39 @@ export class LockManager {
                 if (typeof AppState !== 'undefined' && AppState?.exportData) {
                     if (Number.isInteger(effectiveActId) && effectiveActId > 0) {
                         try {
-                            // Сериализуемся с периодическим PUT (как forceSaveToDb,
-                            // api.js): дожидаемся in-flight запроса и ДЕРЖИМ гард на
-                            // время своего PUT — параллельный периодический save с
-                            // тем же expected_updated_at дал бы само-конфликт 409.
-                            // Новый периодический saveActContent при взведённом
-                            // гарде сам себя пропустит.
+                            // Выходной save идёт ЕДИНЫМ путём APIClient.saveActContent —
+                            // тем же, что Ctrl+S и периодика: общий in-flight гард
+                            // (+опубликованный _saveInFlightPromise, который чтит
+                            // forceSaveToDb), таймаут, flush+эпоха-гейт finalizeDbSave,
+                            // разбор 409 (_parseConflictError), обновление баз OCC.
+                            // Прежний сырой fetch дублировал ~90 строк и ставил гард
+                            // без промиса — forceSaveToDb проскакивал wait и слал
+                            // конкурентный PUT. Дожидаемся чужого PUT (иначе
+                            // saveActContent no-op'нется по гарду); между выходом из
+                            // цикла и вызовом нет await — гард захватывается синхронно.
                             while (APIClient._saveInFlight && APIClient._saveInFlightPromise) {
                                 try {
                                     await APIClient._saveInFlightPromise;
                                 } catch {
-                                    /* чужой PUT упал — не наша забота, продолжаем выходной save */
+                                    /* чужой PUT упал — выходной save всё равно нужен */
                                 }
                             }
-                            APIClient._saveInFlight = true;
-                            try {
-                                // PERSIST-4: эпоха грязности ДО сериализации — как в
-                                // saveActContent. Правки, напечатанные во время await
-                                // PUT, в отправленную data не попадают; финал ниже
-                                // (finalizeDbSave) не должен их похоронить.
-                                const epochBeforeSave = StorageManager.getDirtyEpoch();
-
-                                // B-16: экспорт через StorageManager.exportActData —
-                                // с flush'ем зависших правок активного редактора
-                                // (прямой AppState.exportData() терял последние
-                                // символы). Трекинг выключаем только вокруг
-                                // синхронной сериализации (flush не двигает эпоху).
-                                StorageManager.disableTracking();
-                                let data;
-                                try {
-                                    data = StorageManager.exportActData();
-                                } finally {
-                                    StorageManager.enableTracking();
-                                }
-                                // Прикрепляем changelog в тот же PUT — серверная аудит-запись синхронна
-                                // с фактическим сохранением контента, без отдельного запроса.
-                                if (typeof ChangelogTracker !== 'undefined' && typeof ChangelogTracker.flush === 'function') {
-                                    const changelog = ChangelogTracker.flush();
-                                    if (changelog && changelog.length > 0) {
-                                        data.changelog = changelog;
-                                    }
-                                }
-                                // OCC: серверная метка уходит эхом (та же строка, что
-                                // пришла с сервера) — устаревшая база даст честный 409
-                                // вместо молчаливой перезаписи чужих правок.
-                                const expectedUpdatedAt = StorageManager.getBaseUpdatedAt?.() ?? null;
-                                if (expectedUpdatedAt) {
-                                    data.expected_updated_at = expectedUpdatedAt;
-                                }
-                                // Обычный awaited fetch (не sendBeacon) — выход идёт
-                                // по явному действию/таймеру при живой странице,
-                                // ответ читается штатно. Beacon-путь unload'а живёт
-                                // отдельно (_beforeUnloadHandler) и сюда не попадает.
-                                const saveResp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${effectiveActId}/content`), {
-                                    method: 'PUT',
-                                    headers: {
-                                        'Content-Type': 'application/json'
-                                    },
-                                    body: JSON.stringify(data)
-                                });
-
-                                if (!saveResp.ok) {
-                                    // Снимок-черновик в localStorage не трогаем — он
-                                    // остаётся последним носителем несохранённых правок
-                                    // (диалог конфликта предложит выбор при открытии).
-                                    // Плашка на списке актов обязана быть честной:
-                                    // 409 (лок снят / content-conflict) — существующая
-                                    // «изменения НЕ в БД, остались в черновике»; прочие
-                                    // ошибки — «сохранить не удалось» вместо ложного
-                                    // «вышли с сохранением».
-                                    messageFlag = saveResp.status === 409
-                                        ? 'sessionLockLost'
-                                        : 'sessionExitSaveFailed';
-                                    console.error(`[LockManager] Ошибка сохранения контента (код ${saveResp.status})`);
-                                } else {
-                                    console.log('[LockManager] Контент акта сохранён');
-                                    // Фиксируем свежую базу из ответа PUT — снимок,
-                                    // записанный до редиректа (beforeunload), не
-                                    // останется со старым baseUpdatedAt (ложный
-                                    // конфликт при следующем открытии).
-                                    const saveResult = await saveResp.json().catch(() => null);
-                                    if (saveResult?.updated_at) {
-                                        StorageManager.setBaseUpdatedAt(saveResult.updated_at);
-                                    }
-                                    // #5: PUT подтверждён — коммитим отложенный снимок аудита нарушений.
-                                    window.ViolationAudit?.confirmSave?.();
-                                    // PERSIST-4/A1: единый финал успешного PUT — снимок
-                                    // снимается и акт помечается синхронизированным
-                                    // ТОЛЬКО при стабильной эпохе. Правки, внесённые
-                                    // между exportActData и ответом PUT, в data не
-                                    // попали — их носителем остаётся снимок (beforeunload
-                                    // перед редиректом перепишет его свежей базой).
-                                    StorageManager.finalizeDbSave(effectiveActId, epochBeforeSave);
-                                }
-                            } finally {
-                                APIClient._saveInFlight = false;
-                            }
+                            await APIClient.saveActContent(effectiveActId, { saveType: 'manual' });
+                            console.log('[LockManager] Контент акта сохранён');
                         } catch (saveErr) {
-                            // Сеть/исключение — контент НЕ в БД: плашка не должна
-                            // утверждать сохранение; снимок остаётся в localStorage.
-                            messageFlag = 'sessionExitSaveFailed';
+                            // Контент НЕ в БД: плашка на списке актов обязана быть
+                            // честной, а не «вышли с сохранением». Снимок-черновик
+                            // остаётся в localStorage носителем правок (диалог
+                            // конфликта/восстановления предложит выбор при открытии).
+                            if (saveErr instanceof ContentConflictError) {
+                                // Конфликт версий — свой флаг: плашка «лок снят по
+                                // бездействию» лгала бы о причине.
+                                messageFlag = 'sessionExitContentConflict';
+                            } else if (saveErr instanceof LockLostError) {
+                                messageFlag = 'sessionLockLost';
+                            } else {
+                                messageFlag = 'sessionExitSaveFailed';
+                            }
                             console.error('LockManager: ошибка при сохранении контента конструктора:', saveErr);
                         }
                     } else {

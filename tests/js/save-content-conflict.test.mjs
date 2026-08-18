@@ -1,17 +1,19 @@
 /**
  * Тесты optimistic-конкуренции сохранения акта (OCC, H3-конфликт).
  *
- * Три гарантии:
- *  1. Каждый PUT /content уносит expected_updated_at ЭХОМ — той же строкой,
- *     что пришла с сервера (StorageManager.getBaseUpdatedAt), без прогона
- *     через new Date(...).toISOString(); при неустановленной базе поле
- *     не отправляется вовсе.
+ * Гарантии:
+ *  1. Каждый PUT /content уносит expected_content_version ЭХОМ — тем же int,
+ *     что пришёл с сервера (StorageManager.getBaseContentVersion); 0 —
+ *     ВАЛИДНОЕ значение (проверка на null/undefined, не на falsy); при
+ *     неустановленной базе поле не отправляется вовсе.
  *  2. 409 с code='content-conflict' разбирается в типизированную
- *     ContentConflictError (метки/автор из extra), прочие 409 остаются
- *     LockLostError; снимок-черновик при конфликте НЕ удаляется.
- *  3. Периодический тик при content-conflict/потере лока останавливает
- *     дальнейшие авто-PUT (флаг до перезагрузки) и говорит честно, без
- *     ложного «повторная попытка — автоматически».
+ *     ContentConflictError (current_content_version/автор/метка из extra),
+ *     прочие 409 остаются LockLostError; снимок при конфликте НЕ удаляется.
+ *  3. content-conflict/потеря лока в любом пути останавливают авто-PUT
+ *     (единый handleContentConflict, halt до перезагрузки/входа в акт),
+ *     уведомление честное и ОДНО (без дублей при mash'е Ctrl+S);
+ *     forceSaveToDb при halt не шлёт заведомо обречённый PUT;
+ *     markAsSyncedWithDB (успешный save / вход в новый акт) снимает halt.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
@@ -29,10 +31,6 @@ const realSuccess = Notifications.success;
 const realWarning = Notifications.warning;
 const realError = Notifications.error;
 
-// Naive-метка pydantic (без tz): прогон через Date исказил бы её — тест
-// ловит именно посимвольное эхо.
-const BASE_UPDATED_AT = '2026-08-18T10:00:00.123456';
-
 let removeCalls;
 let warnings;
 
@@ -43,7 +41,7 @@ beforeEach(() => {
   StorageManager._dbAutoSaveHalted = false;
   StorageManager._dbSaveFailureNotified = false;
   StorageManager._onlineRetryHandler = null;
-  StorageManager.setBaseUpdatedAt(null);
+  StorageManager.setBaseContentVersion(null);
   APIClient._saveInFlight = false;
   APIClient._saveInFlightPromise = null;
 
@@ -72,7 +70,7 @@ afterEach(() => {
   StorageManager._trackingDepth = 0;
   StorageManager._setState('saved');
   StorageManager._dbAutoSaveHalted = false;
-  StorageManager.setBaseUpdatedAt(null);
+  StorageManager.setBaseContentVersion(null);
   APIClient._fetchWithTimeout = realFetch;
   StorageManager.exportActData = realExport;
   StorageManager.removeSnapshot = realRemove;
@@ -87,7 +85,12 @@ afterEach(() => {
 function okResponse() {
   return {
     ok: true,
-    json: async () => ({ updated_at: '2026-08-18T11:00:00.000000', validation_status: 'ok', validation_issues: [] }),
+    json: async () => ({
+      updated_at: '2026-08-18T11:00:00.000000',
+      content_version: 6,
+      validation_status: 'ok',
+      validation_issues: [],
+    }),
   };
 }
 
@@ -100,7 +103,7 @@ function conflictResponse(extra = {}) {
       detail: 'Содержимое акта изменено другим пользователем',
       code: 'content-conflict',
       extra: {
-        current_updated_at: '2026-08-18T10:30:00.000000',
+        current_content_version: 7,
         last_edited_by: 'ivanov',
         last_edited_at: '2026-08-18T10:30:00.000000',
         ...extra,
@@ -109,10 +112,10 @@ function conflictResponse(extra = {}) {
   };
 }
 
-// ─── 1. Эхо expected_updated_at в payload PUT ────────────────────────────────
+// ─── 1. Эхо expected_content_version в payload PUT ───────────────────────────
 
-test('OCC: saveActContent уносит expected_updated_at той же строкой, что пришла с сервера', async () => {
-  StorageManager.setBaseUpdatedAt(BASE_UPDATED_AT);
+test('OCC: saveActContent уносит expected_content_version тем же int, что пришёл с сервера', async () => {
+  StorageManager.setBaseContentVersion(5);
   let sentBody = null;
   APIClient._fetchWithTimeout = async (url, options) => {
     sentBody = JSON.parse(options.body);
@@ -121,12 +124,13 @@ test('OCC: saveActContent уносит expected_updated_at той же стро�
 
   await APIClient.saveActContent(7, { saveType: 'manual' });
 
-  assert.equal(sentBody.expected_updated_at, BASE_UPDATED_AT,
-    'метка ушла эхом, посимвольно — без преобразований дат');
+  assert.equal(sentBody.expected_content_version, 5, 'версия ушла эхом, без преобразований');
+  assert.equal(StorageManager.getBaseContentVersion(), 6,
+    'база обновлена из content_version ответа PUT');
 });
 
-test('OCC: база не установлена (null) → поле expected_updated_at не отправляется', async () => {
-  StorageManager.setBaseUpdatedAt(null);
+test('OCC: версия 0 — валидная база, уходит в payload (не отбрасывается как falsy)', async () => {
+  StorageManager.setBaseContentVersion(0);
   let sentBody = null;
   APIClient._fetchWithTimeout = async (url, options) => {
     sentBody = JSON.parse(options.body);
@@ -135,12 +139,25 @@ test('OCC: база не установлена (null) → поле expected_upd
 
   await APIClient.saveActContent(7, { saveType: 'manual' });
 
-  assert.equal('expected_updated_at' in sentBody, false,
+  assert.equal(sentBody.expected_content_version, 0);
+});
+
+test('OCC: база не установлена (null) → поле expected_content_version не отправляется', async () => {
+  StorageManager.setBaseContentVersion(null);
+  let sentBody = null;
+  APIClient._fetchWithTimeout = async (url, options) => {
+    sentBody = JSON.parse(options.body);
+    return okResponse();
+  };
+
+  await APIClient.saveActContent(7, { saveType: 'manual' });
+
+  assert.equal('expected_content_version' in sentBody, false,
     'без базы optimistic-проверка на сервере пропускается — поле не шлём');
 });
 
-test('OCC: forceSaveToDb уносит expected_updated_at тем же эхом', async () => {
-  StorageManager.setBaseUpdatedAt(BASE_UPDATED_AT);
+test('OCC: forceSaveToDb уносит expected_content_version тем же эхом', async () => {
+  StorageManager.setBaseContentVersion(5);
   let sentBody = null;
   APIClient._fetchWithTimeout = async (url, options) => {
     sentBody = JSON.parse(options.body);
@@ -149,13 +166,14 @@ test('OCC: forceSaveToDb уносит expected_updated_at тем же эхом',
 
   await APIClient.forceSaveToDb(7);
 
-  assert.equal(sentBody.expected_updated_at, BASE_UPDATED_AT);
+  assert.equal(sentBody.expected_content_version, 5);
+  assert.equal(StorageManager.getBaseContentVersion(), 6);
 });
 
 // ─── 2. Разбор 409 ───────────────────────────────────────────────────────────
 
 test('409 content-conflict → ContentConflictError с полями из extra, снимок не удалён', async () => {
-  StorageManager.setBaseUpdatedAt(BASE_UPDATED_AT);
+  StorageManager.setBaseContentVersion(5);
   APIClient._fetchWithTimeout = async () => conflictResponse();
 
   await assert.rejects(
@@ -164,7 +182,7 @@ test('409 content-conflict → ContentConflictError с полями из extra, 
       assert.ok(err instanceof ContentConflictError, 'типизированная ошибка конфликта');
       assert.equal(err.lastEditedBy, 'ivanov');
       assert.equal(err.lastEditedAt, '2026-08-18T10:30:00.000000');
-      assert.equal(err.currentUpdatedAt, '2026-08-18T10:30:00.000000');
+      assert.equal(err.currentContentVersion, 7);
       return true;
     }
   );
@@ -198,7 +216,7 @@ test('409 с нечитаемым телом → LockLostError (разбор н�
   );
 });
 
-// ─── 3. Реакция периодического сейва: остановка авто-PUT + честные слова ─────
+// ─── 3. Единый handleContentConflict: halt + честные слова, без дублей ───────
 
 test('content-conflict в фоновом сейве: авто-PUT остановлены, сообщение честное', () => {
   const err = new ContentConflictError('конфликт', { last_edited_by: 'ivanov' });
@@ -214,10 +232,19 @@ test('content-conflict в фоновом сейве: авто-PUT останов
     'ложного «повторная попытка — автоматически» больше нет');
 });
 
-test('content-conflict без имени редактора → «другим пользователем»', () => {
-  const err = new ContentConflictError('конфликт', {});
+test('handleContentConflict не дублирует уведомление при уже взведённом halt (mash Ctrl+S)', () => {
+  const err = new ContentConflictError('конфликт', { last_edited_by: 'ivanov' });
 
-  StorageManager._handleDbSaveFailure(err);
+  StorageManager.handleContentConflict(err);
+  StorageManager.handleContentConflict(err);
+  StorageManager.handleContentConflict(err);
+
+  assert.equal(warnings.length, 1, 'уведомление показано ровно один раз на halt-цикл');
+  assert.equal(StorageManager._dbAutoSaveHalted, true);
+});
+
+test('content-conflict без имени редактора → «другим пользователем»', () => {
+  StorageManager.handleContentConflict(new ContentConflictError('конфликт', {}));
 
   assert.match(warnings[0], /Акт изменён другим пользователем/);
 });
@@ -252,6 +279,40 @@ test('после остановки _retryDbSave (ретрай по online) — 
   }
 
   assert.equal(putCalls, 0, 'остановленный авто-сейв не шлёт PUT даже по online');
+});
+
+test('forceSaveToDb при взведённом halt не шлёт обречённый PUT, а сразу кидает конфликт', async () => {
+  StorageManager._dbAutoSaveHalted = true;
+  let putCalls = 0;
+  APIClient._fetchWithTimeout = async () => { putCalls++; return okResponse(); };
+
+  await assert.rejects(
+    APIClient.forceSaveToDb(7),
+    (err) => err instanceof ContentConflictError
+  );
+  assert.equal(putCalls, 0, 'PUT не отправлен');
+});
+
+test('markAsSyncedWithDB снимает halt: вход в новый акт (in-page переключение) размораживает автосейв', async () => {
+  // Halt взведён на акте A…
+  StorageManager.handleContentConflict(new ContentConflictError('конфликт', {}));
+  assert.equal(StorageManager._dbAutoSaveHalted, true);
+
+  // …переключение на акт B: bootstrap (_loadActIntoView) зовёт markAsSyncedWithDB.
+  StorageManager.markAsSyncedWithDB();
+  assert.equal(StorageManager._dbAutoSaveHalted, false, 'halt акта A не глушит акт B');
+
+  // Периодический сейв акта B снова работает (ретрай-путь тот же).
+  StorageManager._setState('unsaved');
+  globalThis.currentActId = 8;
+  let putCalls = 0;
+  APIClient._fetchWithTimeout = async () => { putCalls++; return okResponse(); };
+  try {
+    await StorageManager._retryDbSave();
+  } finally {
+    delete globalThis.currentActId;
+  }
+  assert.equal(putCalls, 1, 'авто-PUT нового акта отправляется');
 });
 
 test('destroy сбрасывает остановку авто-PUT (новая сессия конструктора — с чистого листа)', () => {

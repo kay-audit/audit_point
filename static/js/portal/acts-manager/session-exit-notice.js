@@ -2,25 +2,31 @@
  * Выбор плашки о завершении сессии конструктора на странице списка актов.
  *
  * При уходе из конструктора в sessionStorage ставится один из флагов:
- *  - `sessionLockLost`     — блокировка снята (неактивность), но последний save
- *                            вернул 409 → изменения НЕ в БД (честное сообщение,
- *                            БЕЗ ложного «сохранено»);
- *  - `sessionExitSaveFailed`— выходной save упал НЕ по 409 (сеть/5xx/422):
+ *  - `sessionExitContentConflict` — выходной save отвергнут optimistic-
+ *                            проверкой (409 content-conflict): контент акта
+ *                            изменил другой пользователь, изменения НЕ в БД,
+ *                            но остаются в локальном черновике;
+ *  - `sessionLockLost`     — блокировка снята (неактивность), последний save
+ *                            вернул 409 по локу → изменения НЕ в БД (честное
+ *                            сообщение, БЕЗ ложного «сохранено»);
+ *  - `sessionExitSaveFailed`— выходной save упал по иной причине (сеть/5xx/422):
  *                            изменения НЕ в БД, но остаются в локальном
  *                            черновике (тоже без ложного «сохранено»);
  *  - `sessionAutoExited`   — автовыход по неактивности, акт успешно сохранён;
  *  - `sessionExitedWithSave`— обычный выход с сохранением.
  *
- * Приоритет: lockLost > saveFailed > autoExited > exitedWithSave (случаи
- * «изменения НЕ в БД» важнее всего — плашки об успехе лгали бы).
+ * Приоритет: contentConflict > lockLost > saveFailed > autoExited >
+ * exitedWithSave (случаи «изменения НЕ в БД» важнее всего — плашки об
+ * успехе лгали бы; конфликт — самый специфичный и actionable из них).
  *
  * Чистая функция без DOM/sessionStorage — тестируется в node:test.
  */
 
 /**
  * @typedef {Object} SessionExitFlags
- * @property {boolean} lockLost       Блокировка снята, save вернул 409.
- * @property {boolean} saveFailed     Выходной save упал не по 409 — не сохранено.
+ * @property {boolean} contentConflict Save отвергнут конфликтом версий (409).
+ * @property {boolean} lockLost       Блокировка снята, save вернул 409 по локу.
+ * @property {boolean} saveFailed     Выходной save упал по иной причине — не сохранено.
  * @property {boolean} autoExited     Автовыход по неактивности (сохранено).
  * @property {boolean} exitedWithSave Обычный выход с сохранением.
  */
@@ -41,6 +47,19 @@
  * @returns {SessionExitNotice|null}
  */
 export function pickSessionExitNotice(flags) {
+    if (flags?.contentConflict) {
+        return {
+            flag: 'sessionExitContentConflict',
+            title: 'Изменения не сохранены: конфликт версий',
+            message: 'Пока вы работали, акт изменил другой пользователь, поэтому '
+                + 'при выходе изменения не были записаны в базу данных. Ваши '
+                + 'правки остаются в локальном черновике этого браузера — '
+                + 'откройте акт, чтобы выбрать версию.',
+            icon: '⚠️',
+            type: 'warning',
+            confirmText: 'Понятно',
+        };
+    }
     if (flags?.lockLost) {
         return {
             flag: 'sessionLockLost',

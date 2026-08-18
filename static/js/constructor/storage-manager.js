@@ -107,13 +107,27 @@ export class StorageManager {
     /**
      * Серверный updated_at акта на момент последней успешной синхронизации
      * с БД (из ответа GET-контента или PUT-сохранения). Пишется в метаданные
-     * снимка localStorage (baseUpdatedAt) и используется решением о
-     * восстановлении черновика (H3): восстановление предлагается только
-     * если акт с момента снимка никто не менял.
+     * снимка localStorage (baseUpdatedAt) как справочное поле для диагностики;
+     * в решении о восстановлении черновика больше НЕ участвует — updated_at
+     * бампится и НЕ-контентными записями (метаданные, соседние части КМ),
+     * из-за чего давал ложные конфликты. Источник истины OCC — content_version.
      * @private
      * @type {string|null}
      */
     static _baseUpdatedAt = null;
+
+    /**
+     * Серверный acts.content_version на момент последней успешной
+     * синхронизации с БД (metadata из GET-контента или ответ PUT). База
+     * optimistic-конкуренции: уходит эхом в expected_content_version каждого
+     * PUT /content и пишется в снимок черновика (baseContentVersion) для
+     * решения о восстановлении (H3). Инкрементируется бэкендом ТОЛЬКО при
+     * записи контента — правки метаданных/соседних частей КМ его не трогают.
+     * 0 — валидное значение (акт ещё ни разу не сохранял контент).
+     * @private
+     * @type {number|null}
+     */
+    static _baseContentVersion = null;
 
     /**
      * Флаг «о сбое сохранения в БД уже предупреждали» (§9 offline).
@@ -217,6 +231,14 @@ export class StorageManager {
      * @type {number}
      */
     static FOREIGN_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+    /**
+     * Префикс ключей бэкапов конфликтных черновиков (см. stashConflictSnapshot).
+     * Конвенция — как у stateKeyPrefix (`audit_workstation_state`), отдельное
+     * пространство ключей, которое штатная перезапись снимка не трогает.
+     * @type {string}
+     */
+    static CONFLICT_BACKUP_KEY_PREFIX = 'audit_workstation_conflict';
 
     /**
      * Инициализация менеджера хранилища
@@ -364,7 +386,7 @@ export class StorageManager {
      * Различает причину сбоя фонового сохранения в БД и выбирает честную
      * реакцию (образец ручного пути — NavigationManager._handleSaveExportError):
      *  - 409 content-conflict: акт сохранил кто-то другой — ретрай обречён
-     *    (expected_updated_at устарел). Останавливаем авто-PUT до перезагрузки,
+     *    (expected_content_version устарел). Останавливаем авто-PUT до перезагрузки,
      *    снимок-черновик НЕ трогаем, говорим честно кто изменил акт;
      *  - потеря лока: ретрай так же обречён (лока больше нет) — останавливаем
      *    авто-PUT, снимок остаётся, без ложного «повторная попытка автоматически»;
@@ -375,14 +397,7 @@ export class StorageManager {
      */
     static _handleDbSaveFailure(err) {
         if (err instanceof ContentConflictError) {
-            this._dbAutoSaveHalted = true;
-            const editedBy = err.lastEditedBy
-                ? `пользователем ${err.lastEditedBy}`
-                : 'другим пользователем';
-            Notifications.warning(
-                `Акт изменён ${editedBy}. Ваши правки сохранены локально как черновик. `
-                + 'Обновите страницу, чтобы выбрать версию.'
-            );
+            this.handleContentConflict(err);
             return;
         }
         if (err instanceof LockLostError) {
@@ -395,6 +410,41 @@ export class StorageManager {
             return;
         }
         this._notifyDbSaveFailure();
+    }
+
+    /**
+     * Единая реакция на ContentConflictError из ЛЮБОГО пути сохранения
+     * (периодический тик, Ctrl+S/кнопка, переключение акта, клик по ссылке,
+     * quota-эскалация): ретрай с той же базой обречён, поэтому останавливаем
+     * автоматические PUT до перезагрузки/входа в акт и показываем ОДНО честное
+     * уведомление (кто изменил акт; правки — в локальном черновике). Повторные
+     * вызовы при уже взведённом halt уведомление не дублируют — иначе mash
+     * Ctrl+S спамил бы одинаковыми тостами.
+     *
+     * @param {ContentConflictError} err ошибка конфликта из APIClient
+     */
+    static handleContentConflict(err) {
+        if (!this._dbAutoSaveHalted) {
+            const editedBy = err?.lastEditedBy
+                ? `пользователем ${err.lastEditedBy}`
+                : 'другим пользователем';
+            Notifications.warning(
+                `Акт изменён ${editedBy}. Ваши правки сохранены локально как черновик. `
+                + 'Обновите страницу, чтобы выбрать версию.'
+            );
+        }
+        this._dbAutoSaveHalted = true;
+    }
+
+    /**
+     * Остановлены ли автоматические PUT в БД (409-конфликт/потеря лока).
+     * Публичный предикат для внешних save-путей (forceSaveToDb не должен
+     * слать заведомо обречённый запрос).
+     *
+     * @returns {boolean}
+     */
+    static isDbAutoSaveHalted() {
+        return this._dbAutoSaveHalted;
     }
 
     /**
@@ -545,7 +595,14 @@ export class StorageManager {
                         Notifications.success('Изменения сохранены');
                     } catch (err) {
                         console.error('Ошибка сохранения:', err);
-                        Notifications.error('Не удалось сохранить изменения');
+                        if (err instanceof ContentConflictError) {
+                            // Конфликт версий: честное уведомление + остановка
+                            // авто-PUT (единая обработка); generic-тост — ложь
+                            // («не удалось» без причины и без судьбы правок).
+                            this.handleContentConflict(err);
+                        } else {
+                            Notifications.error('Не удалось сохранить изменения');
+                        }
 
                         const continueAnyway = await DialogManager.show({
                             title: 'Ошибка сохранения',
@@ -657,11 +714,16 @@ export class StorageManager {
     /**
      * Помечает состояние как синхронизированное с БД.
      * Заодно сбрасывает offline-машинерию (предупреждение о сбое сохранения
-     * можно показывать снова, подписка на 'online' больше не нужна).
+     * можно показывать снова, подписка на 'online' больше не нужна) и
+     * остановку авто-PUT: «мы в синхроне с БД» опровергает «ретрай обречён».
+     * Это же снимает halt при in-page переключении акта — bootstrap нового
+     * акта (_loadActIntoView) зовёт markAsSyncedWithDB, и конфликт акта A
+     * не глушит автосейв акта B (destroy при смене акта не вызывается).
      */
     static markAsSyncedWithDB() {
         this._setState('saved');
         this._resetDbSaveFailureState();
+        this._dbAutoSaveHalted = false;
     }
 
     /**
@@ -711,13 +773,36 @@ export class StorageManager {
 
     /**
      * Серверный updated_at последней синхронизации (или null, если база не
-     * установлена). Уходит эхом в expected_updated_at каждого PUT /content —
-     * той же строкой, что пришла с сервера, без преобразований дат.
+     * установлена). Справочное значение (метаданные снимка черновика);
+     * в OCC-проверке не участвует — см. getBaseContentVersion.
      *
      * @returns {string|null}
      */
     static getBaseUpdatedAt() {
         return this._baseUpdatedAt;
+    }
+
+    /**
+     * Запоминает серверный acts.content_version (база OCC). Вызывается после
+     * успешного GET-контента (metadata.content_version) и успешного PUT
+     * (content_version из ответа). 0 — валидное значение; всё, что не целое
+     * число, сбрасывает базу в null (optimistic-проверка выключается).
+     *
+     * @param {number|null} version Счётчик версий контента с сервера
+     */
+    static setBaseContentVersion(version) {
+        this._baseContentVersion = Number.isInteger(version) ? version : null;
+    }
+
+    /**
+     * Текущая база OCC — acts.content_version последней синхронизации
+     * (или null, если база не установлена). Уходит эхом (тем же int) в
+     * expected_content_version каждого PUT /content.
+     *
+     * @returns {number|null}
+     */
+    static getBaseContentVersion() {
+        return this._baseContentVersion;
     }
 
     /**
@@ -786,7 +871,10 @@ export class StorageManager {
             const snapshot = {
                 actId,
                 savedAt: new Date().toISOString(),
+                // Справочное поле (диагностика: по какой серверной метке снят
+                // черновик). Решение о восстановлении принимает baseContentVersion.
                 baseUpdatedAt: this._baseUpdatedAt,
+                baseContentVersion: this._baseContentVersion,
                 version: 2,
                 // B-16: flush зависших правок + сериализация одной воронкой —
                 // снимок не уедет без последних символов активного редактора.
@@ -931,6 +1019,12 @@ export class StorageManager {
             })
             .catch((err) => {
                 console.error('B-3: аварийное сохранение в БД не удалось:', err);
+                if (err instanceof ContentConflictError) {
+                    // Конфликт версий: совет «экспортируйте акт» неуместен —
+                    // правки уже защищены снимком, дальше единая обработка.
+                    this.handleContentConflict(err);
+                    return;
+                }
                 Notifications.error(
                     'Локальное хранилище переполнено, а сохранить в базу данных не удалось. '
                     + 'Экспортируйте акт в файл, чтобы не потерять изменения.'
@@ -989,6 +1083,79 @@ export class StorageManager {
     }
 
     /**
+     * Ключ localStorage бэкапа конфликтного черновика (конвенция префиксов —
+     * как у audit_workstation_state).
+     * @private
+     * @param {number|string} actId ID акта
+     * @returns {string}
+     */
+    static _conflictBackupKey(actId) {
+        return `${this.CONFLICT_BACKUP_KEY_PREFIX}:${actId}`;
+    }
+
+    /**
+     * Перемещает текущий снимок-черновик акта в бэкап-ключ конфликта.
+     *
+     * Вызывается при dismiss (Escape/клик мимо) диалога конфликта: обычный
+     * снимок нельзя оставлять на месте — первая же пометка dirty после
+     * загрузки (даже фоновая нормализация) перезаписала бы его DB-контентом
+     * со свежей базой, и конфликтный черновик молча погиб бы. В бэкап-ключе
+     * его штатная перезапись не достаёт; диалог конфликта вернётся при
+     * следующем открытии акта (_maybeRestoreDraft проверяет бэкап).
+     *
+     * @param {number|string} actId ID акта
+     */
+    static stashConflictSnapshot(actId) {
+        const snapshot = this.readSnapshot(actId);
+        if (!snapshot) return;
+        try {
+            localStorage.setItem(this._conflictBackupKey(actId), JSON.stringify(snapshot));
+            this.removeSnapshot(actId);
+        } catch (error) {
+            // Бэкап не записался (quota) — оставляем обычный снимок на месте:
+            // хоть какой-то носитель правок лучше, чем никакого.
+            console.error('Не удалось отложить конфликтный черновик в бэкап:', error);
+        }
+    }
+
+    /**
+     * Читает бэкап конфликтного черновика акта.
+     * Повреждённый (не-JSON) бэкап удаляется, возвращается null.
+     *
+     * @param {number|string} actId ID акта
+     * @returns {Object|null} Снимок той же формы, что readSnapshot, или null
+     */
+    static readConflictBackup(actId) {
+        const key = this._conflictBackupKey(actId);
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (error) {
+            console.error('Повреждённый бэкап конфликтного черновика — удаляем:', error);
+            try {
+                localStorage.removeItem(key);
+            } catch { /* ignore */ }
+            return null;
+        }
+    }
+
+    /**
+     * Удаляет бэкап конфликтного черновика акта.
+     * Вызывается при явном выборе судьбы бэкапа в диалоге конфликта
+     * (восстановили либо оставили версию из БД) и для протухших бэкапов.
+     *
+     * @param {number|string} actId ID акта
+     */
+    static removeConflictBackup(actId) {
+        try {
+            localStorage.removeItem(this._conflictBackupKey(actId));
+        } catch (error) {
+            console.error('Ошибка удаления бэкапа конфликтного черновика:', error);
+        }
+    }
+
+    /**
      * Удаляет ПРОТУХШИЕ снимки других актов и legacy-ключи старого формата.
      *
      * PERSIST-3: снимки соседних актов больше НЕ стираются огулом — иначе
@@ -1002,12 +1169,19 @@ export class StorageManager {
      */
     static _purgeForeignSnapshots(currentActId) {
         const prefix = `${AppConfig.localStorage.stateKeyPrefix}:`;
+        const conflictPrefix = `${this.CONFLICT_BACKUP_KEY_PREFIX}:`;
         const currentKey = this._snapshotKey(currentActId);
         const now = Date.now();
         const toRemove = [];
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
-            if (!key || !key.startsWith(prefix) || key === currentKey) {
+            if (!key) continue;
+            // Бэкапы конфликтных черновиков (в т.ч. текущего акта) протухают
+            // тем же TTL: свежий бэкап — носитель правок (не трогаем), стухший
+            // за 7 дней явно заброшен — высвобождаем место.
+            const isSnapshotKey = key.startsWith(prefix) && key !== currentKey;
+            const isConflictKey = key.startsWith(conflictPrefix);
+            if (!isSnapshotKey && !isConflictKey) {
                 continue;
             }
             if (this._isForeignSnapshotStale(key, now)) {

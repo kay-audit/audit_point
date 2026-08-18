@@ -35,17 +35,18 @@ export class LockLostError extends Error {
 window.LockLostError = LockLostError;
 
 /**
- * Ошибка "конфликт содержимого": PUT /content с expected_updated_at вернул
- * 409 с code='content-conflict' — акт с момента загрузки нашего состояния
- * сохранил кто-то другой (вторая вкладка, перехват истёкшего лока), и наш
- * PUT перезаписал бы его правки. Метки в extra — ISO-строки с сервера.
+ * Ошибка "конфликт содержимого": PUT /content с expected_content_version
+ * вернул 409 с code='content-conflict' — контент акта с момента загрузки
+ * нашего состояния сохранил кто-то другой (вторая вкладка, перехват
+ * истёкшего лока), и наш PUT перезаписал бы его правки. В extra —
+ * current_content_version (int), last_edited_by, last_edited_at (ISO-строка).
  */
 export class ContentConflictError extends Error {
     constructor(message, extra = {}) {
         super(message || 'Содержимое акта изменено другим пользователем');
         this.name = 'ContentConflictError';
         this.code = 'content-conflict';
-        this.currentUpdatedAt = extra?.current_updated_at ?? null;
+        this.currentContentVersion = extra?.current_content_version ?? null;
         this.lastEditedBy = extra?.last_edited_by ?? null;
         this.lastEditedAt = extra?.last_edited_at ?? null;
     }
@@ -465,19 +466,21 @@ export class APIClient {
                 ? content.metadata.is_process_based
                 : true;
 
-            // H3: запоминаем серверный updated_at — базу метаданных снимка
-            // черновика (baseUpdatedAt). Обновляется при каждой успешной
+            // H3/OCC: запоминаем базы синхронизации — content_version (источник
+            // истины optimistic-конкуренции и решения о черновике) и updated_at
+            // (справочная метка снимка). Обновляются при каждой успешной
             // синхронизации (GET здесь, PUT в saveActContent).
-            const serverUpdatedAt = content.metadata?.updated_at ?? null;
-            window.StorageManager.setBaseUpdatedAt(serverUpdatedAt);
+            const serverContentVersion = content.metadata?.content_version ?? null;
+            window.StorageManager.setBaseContentVersion(serverContentVersion);
+            window.StorageManager.setBaseUpdatedAt(content.metadata?.updated_at ?? null);
 
             // H3: восстановление несинхронизированного черновика из localStorage.
-            // Предлагается ТОЛЬКО если акт с момента снимка никто не менял
-            // (baseUpdatedAt снимка совпадает с серверным updated_at);
-            // устаревший снимок молча удаляется.
+            // Без вопросов — только если контент с момента снимка никто не менял
+            // (baseContentVersion снимка == серверный content_version); при
+            // расхождении судьбу решает пользователь в диалоге конфликта.
             let draftRestored = false;
             if (!AppConfig.readOnlyMode.isReadOnly) {
-                draftRestored = await this._maybeRestoreDraft(actId, content, serverUpdatedAt);
+                draftRestored = await this._maybeRestoreDraft(actId, content, serverContentVersion);
             }
 
             // M.13-фронт: последний рубеж от несогласованных данных (сироты
@@ -730,41 +733,97 @@ export class APIClient {
      * Предлагает восстановить несинхронизированный черновик акта (H3).
      *
      * Решение принимает чистый предикат shouldOfferRestore: 'restore' —
-     * акт с момента снимка никто не менял (baseUpdatedAt снимка == серверный
-     * updated_at), обычный диалог восстановления; 'conflict' — акт менялся,
-     * честный диалог конфликта (кто и когда менял — из metadata GET /content),
-     * восстановление черновика перезапишет чужие правки. Структурно битый
-     * снимок молча удаляется; при отказе пользователя — тоже.
+     * контент с момента снимка никто не менял (baseContentVersion снимка ==
+     * серверный content_version), обычный диалог восстановления; 'conflict' —
+     * контент менялся, честный диалог конфликта (кто и когда менял — из
+     * metadata GET /content), восстановление черновика перезапишет чужие
+     * правки. Структурно битый снимок молча удаляется; при отказе — тоже.
+     *
+     * Если обычного снимка нет (или он структурно бит), дополнительно
+     * проверяется бэкап-ключ конфликтного черновика (audit_workstation_
+     * conflict:{actId}) — туда снимок откладывается при dismiss'е диалога
+     * конфликта, чтобы штатная перезапись снимка его не уничтожила.
+     * Судьба бэкапа: restore → данные из бэкапа + бэкап удаляется;
+     * «Оставить версию из БД» → бэкап удаляется; dismiss → бэкап остаётся.
+     *
      * При согласии данные снимка подставляются в content и дальше идут
      * штатным путём загрузки (reconcile/normalize/нумерация/рендер).
      *
      * @private
      * @param {number} actId ID акта
      * @param {Object} content Контент акта из GET (мутируется при восстановлении)
-     * @param {string|null} serverUpdatedAt Серверный updated_at акта
+     * @param {number|null} serverContentVersion Серверный acts.content_version
      * @returns {Promise<boolean>} true если черновик восстановлен
      */
-    static async _maybeRestoreDraft(actId, content, serverUpdatedAt) {
+    static async _maybeRestoreDraft(actId, content, serverContentVersion) {
         const snapshot = window.StorageManager.readSnapshot(actId);
-        const verdict = shouldOfferRestore(snapshot, serverUpdatedAt);
+        const verdict = shouldOfferRestore(snapshot, serverContentVersion);
 
+        if (verdict === 'restore' || verdict === 'conflict') {
+            return this._offerDraft(actId, content, snapshot, verdict, {
+                onKeepDb: () => window.StorageManager.removeSnapshot(actId),
+                // Dismiss конфликта: снимок ПЕРЕМЕЩАЕТСЯ в бэкап-ключ — на
+                // прежнем месте его перезаписал бы первый же markAsUnsaved
+                // (даже фоновая нормализация при загрузке) DB-контентом со
+                // свежей базой, и конфликтный черновик молча погиб бы.
+                onDismissConflict: () => window.StorageManager.stashConflictSnapshot(actId),
+                // Снимок остаётся носителем правок до успешного PUT
+                // (finalizeDbSave снимет его штатно).
+                onRestore: () => {},
+            });
+        }
         if (verdict === 'discard') {
             window.StorageManager.removeSnapshot(actId);
-            return false;
-        }
-        if (verdict !== 'restore' && verdict !== 'conflict') {
-            return false;
         }
 
+        // Обычного снимка нет — проверяем бэкап конфликтного черновика,
+        // отложенный dismiss'ом прошлой сессии.
+        const backup = window.StorageManager.readConflictBackup(actId);
+        const backupVerdict = shouldOfferRestore(backup, serverContentVersion);
+        if (backupVerdict === 'discard') {
+            window.StorageManager.removeConflictBackup(actId);
+            return false;
+        }
+        if (backupVerdict !== 'restore' && backupVerdict !== 'conflict') {
+            return false;
+        }
+        // 'restore' здесь означает: content_version бэкапа совпал с сервером
+        // (версию откатили / с тех пор ничего не менялось) — обычный диалог.
+        return this._offerDraft(actId, content, backup, backupVerdict, {
+            onKeepDb: () => window.StorageManager.removeConflictBackup(actId),
+            // Dismiss: бэкап уже в своём ключе — остаётся до следующего открытия.
+            onDismissConflict: () => {},
+            // Восстановленные данные станут обычным несинхронизированным
+            // состоянием (applyRestoredDraftState перепишет обычный снимок
+            // свежей базой) — бэкап больше не нужен.
+            onRestore: () => window.StorageManager.removeConflictBackup(actId),
+        });
+    }
+
+    /**
+     * Показывает диалог судьбы черновика (обычный или конфликтный) и
+     * применяет выбор пользователя к content.
+     *
+     * @private
+     * @param {number} actId ID акта
+     * @param {Object} content Контент акта из GET (мутируется при восстановлении)
+     * @param {Object} snapshot Снимок ({savedAt, data, ...}) — обычный или бэкап
+     * @param {'restore'|'conflict'} verdict Вердикт shouldOfferRestore
+     * @param {{onKeepDb: Function, onDismissConflict: Function, onRestore: Function}} handlers
+     *   Судьба носителя снимка: явный выбор версии БД / dismiss конфликта /
+     *   восстановление (различается для обычного снимка и бэкапа)
+     * @returns {Promise<boolean>} true если черновик восстановлен
+     */
+    static async _offerDraft(actId, content, snapshot, verdict, handlers) {
         const savedAtText = this._formatDraftTimestamp(snapshot.savedAt);
 
         if (verdict === 'conflict') {
-            // Акт менялся после снимка: восстановление перезапишет чужие правки.
-            // Говорим честно, кто и когда менял (metadata из GET /content), и
-            // отдаём выбор пользователю. После восстановления baseUpdatedAt уже
-            // указывает на свежий серверный updated_at (setBaseUpdatedAt в
-            // _applyActContent прошёл раньше), так что последующий PUT легально
-            // пройдёт optimistic-проверку expected_updated_at.
+            // Контент менялся после снимка: восстановление перезапишет чужие
+            // правки. Говорим честно, кто и когда менял (metadata из GET), и
+            // отдаём выбор пользователю. После восстановления база OCC уже
+            // указывает на свежий серверный content_version (setBaseContentVersion
+            // в _applyActContent прошёл раньше), так что последующий PUT
+            // легально пройдёт optimistic-проверку.
             const meta = content?.metadata || {};
             const editedBy = meta.last_edited_by
                 ? `пользователем ${meta.last_edited_by}`
@@ -781,14 +840,16 @@ export class APIClient {
                 confirmText: 'Восстановить мой черновик',
                 cancelText: 'Оставить версию из БД',
                 // Escape/клик мимо диалога — НЕ выбор судьбы черновика:
-                // грузим версию из БД, но снимок оставляем (диалог вернётся
+                // грузим версию из БД, черновик сохраняется (диалог вернётся
                 // при следующем открытии). Удаление — только явной кнопкой.
                 escapeResult: 'dismissed'
             });
             if (choice !== true) {
                 if (choice === false) {
                     // Явная кнопка «Оставить версию из БД» — черновик больше не нужен.
-                    window.StorageManager.removeSnapshot(actId);
+                    handlers.onKeepDb();
+                } else {
+                    handlers.onDismissConflict();
                 }
                 return false;
             }
@@ -801,11 +862,12 @@ export class APIClient {
                 cancelText: 'Отклонить'
             });
             if (!confirmed) {
-                window.StorageManager.removeSnapshot(actId);
+                handlers.onKeepDb();
                 return false;
             }
         }
 
+        handlers.onRestore();
         content.tree = snapshot.data.tree;
         content.tables = snapshot.data.tables || {};
         content.textBlocks = snapshot.data.textBlocks || {};
@@ -852,9 +914,12 @@ export class APIClient {
                 throw new Error('Ошибка сохранения дефолтной структуры');
             }
 
-            // H3: PUT бампит updated_at на сервере — фиксируем новую базу
-            // для метаданных снимка черновика.
+            // OCC/H3: PUT бампит content_version (и updated_at) на сервере —
+            // фиксируем новые базы для OCC и метаданных снимка черновика.
             const result = await resp.json().catch(() => null);
+            if (Number.isInteger(result?.content_version)) {
+                window.StorageManager.setBaseContentVersion(result.content_version);
+            }
             if (result?.updated_at) {
                 window.StorageManager.setBaseUpdatedAt(result.updated_at);
             }
@@ -877,21 +942,20 @@ export class APIClient {
     }
 
     /**
-     * OCC: прикрепляет к payload PUT /content метку expected_updated_at —
-     * серверный updated_at, зафиксированный StorageManager при последней
-     * синхронизации (GET/PUT). КРИТИЧНО: строка уходит ЭХОМ, той же, что
-     * пришла с сервера — без прогона через new Date(...).toISOString()
-     * (naive-метка без tz сдвинулась бы на wall-clock и дала ложный 409).
-     * Если база не установлена (null) — поле не отправляется, сервер
-     * пропускает optimistic-проверку.
+     * OCC: прикрепляет к payload PUT /content expected_content_version —
+     * серверный acts.content_version, зафиксированный StorageManager при
+     * последней синхронизации (GET/PUT). Уходит эхом тем же int; 0 —
+     * ВАЛИДНОЕ значение (акт ещё ни разу не сохранял контент), поэтому
+     * проверка на null/undefined, а не на falsy. Если база не установлена —
+     * поле не отправляется, сервер пропускает optimistic-проверку.
      *
      * @private
      * @param {Object} data payload PUT /content (мутируется)
      */
-    static _attachExpectedUpdatedAt(data) {
-        const expectedUpdatedAt = window.StorageManager?.getBaseUpdatedAt?.() ?? null;
-        if (expectedUpdatedAt) {
-            data.expected_updated_at = expectedUpdatedAt;
+    static _attachExpectedContentVersion(data) {
+        const expectedVersion = window.StorageManager?.getBaseContentVersion?.();
+        if (expectedVersion !== null && expectedVersion !== undefined) {
+            data.expected_content_version = expectedVersion;
         }
     }
 
@@ -960,7 +1024,7 @@ export class APIClient {
             }
             data.saveType = saveType;
             data.changelog = window.ChangelogTracker ? window.ChangelogTracker.flush() : [];
-            this._attachExpectedUpdatedAt(data);
+            this._attachExpectedContentVersion(data);
 
             const resp = await this._fetchWithTimeout(AppConfig.api.getUrl(`/api/v1/acts/${actId}/content`), {
                 method: 'PUT',
@@ -977,11 +1041,11 @@ export class APIClient {
                     throw new Error('Акт не найден');
                 } else if (resp.status === 409) {
                     // Два разных 409: content-conflict (optimistic-проверка
-                    // expected_updated_at — акт сохранил кто-то другой) и потеря
-                    // лока (автовыход по неактивности успел снять блокировку пока
-                    // вкладка была в фоне). Различаем по code в envelope; для лока
-                    // вызывающая сторона (navigation-manager) делает редирект на
-                    // список с тем же sessionStorage-флагом, что и autoExit.
+                    // expected_content_version — контент сохранил кто-то другой)
+                    // и потеря лока (автовыход по неактивности успел снять
+                    // блокировку пока вкладка была в фоне). Различаем по code в
+                    // envelope; для лока вызывающая сторона (navigation-manager)
+                    // делает редирект на список с тем же флагом, что и autoExit.
                     throw await this._parseConflictError(resp);
                 } else if (resp.status === 422) {
                     // Серверная структурная валидация таблиц (P6a): рваная сетка,
@@ -1004,8 +1068,11 @@ export class APIClient {
             const result = await resp.json();
             console.log('Акт сохранен в БД:', result);
 
-            // H3: фиксируем новый серверный updated_at (бэкенд бампит его при
-            // каждом сохранении) — база для метаданных будущих снимков.
+            // OCC/H3: фиксируем новые базы из ответа PUT — content_version
+            // (эхо следующего expected_content_version) и справочный updated_at.
+            if (Number.isInteger(result?.content_version)) {
+                window.StorageManager.setBaseContentVersion(result.content_version);
+            }
             if (result?.updated_at) {
                 window.StorageManager.setBaseUpdatedAt(result.updated_at);
             }
@@ -1062,10 +1129,15 @@ export class APIClient {
             window.EditorTelemetry?.track?.('save_failure');
             // Для LockLostError не показываем toast — вызывающая сторона сделает
             // редирект на список с плашкой autoExit (одинаковый UX с фоновым autoExit'ом).
+            // Для ContentConflictError — тоже: единое честное уведомление показывает
+            // StorageManager.handleContentConflict у вызывающих сторон, generic-тост
+            // здесь был бы дублем без судьбы правок.
             // Для периодического (фонового) сохранения toast на каждый тик не
             // показываем — дедуплицированное предупреждение и ретрай по 'online'
             // делает StorageManager (§9 offline).
-            if (!(err instanceof LockLostError) && saveType !== 'periodic') {
+            if (!(err instanceof LockLostError)
+                && !(err instanceof ContentConflictError)
+                && saveType !== 'periodic') {
                 Notifications.error(`Не удалось сохранить акт: ${err.message}`);
             }
             throw err;
@@ -1099,6 +1171,14 @@ export class APIClient {
         if (!username) {
             throw new Error('Пользователь не авторизован');
         }
+        // Автосохранение остановлено (409-конфликт/потеря лока): PUT с той же
+        // базой заведомо обречён — не шлём его, а сразу отдаём типизированную
+        // ошибку (вызывающие стороны обработают её тем же путём, что живой 409).
+        if (window.StorageManager?.isDbAutoSaveHalted?.()) {
+            throw new ContentConflictError(
+                'Сохранение остановлено: акт изменён другим пользователем'
+            );
+        }
         // #11: сериализуемся с обычным (периодическим) PUT. Дожидаемся его
         // завершения, затем ДЕРЖИМ _saveInFlight на время своего PUT — новый
         // периодический saveActContent тогда сам себя пропустит (гард in-flight),
@@ -1130,7 +1210,7 @@ export class APIClient {
             }
             data.saveType = 'manual';
             data.changelog = window.ChangelogTracker ? window.ChangelogTracker.flush() : [];
-            this._attachExpectedUpdatedAt(data);
+            this._attachExpectedContentVersion(data);
 
             const body = JSON.stringify(data);
             // PERSIST-6: keepalive только если тело влезает в лимит — иначе
@@ -1160,6 +1240,10 @@ export class APIClient {
                 throw new Error(`Аварийное сохранение в БД не удалось (HTTP ${resp.status})`);
             }
             const result = await resp.json();
+            // OCC/H3: новые базы из ответа PUT (см. saveActContent).
+            if (Number.isInteger(result?.content_version)) {
+                window.StorageManager.setBaseContentVersion(result.content_version);
+            }
             if (result?.updated_at) window.StorageManager.setBaseUpdatedAt(result.updated_at);
             // #5: PUT подтверждён — коммитим отложенный снимок аудита нарушений.
             window.ViolationAudit?.confirmSave?.();

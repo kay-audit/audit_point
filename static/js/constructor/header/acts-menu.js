@@ -17,7 +17,7 @@ import { linkFootnoteContextMenu } from '../textblock/textblock-links-footnotes.
 import { violationManager } from '../violation/violation-init.js';
 import { ActsBroadcast } from '../../portal/acts-manager/acts-broadcast.js';
 import { CreateActDialog } from '../../portal/acts-manager/dialog-create-act.js';
-import { APIClient } from '../../shared/api.js';
+import { APIClient, ContentConflictError } from '../../shared/api.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { AuthManager } from '../../shared/auth.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
@@ -515,7 +515,14 @@ export class ActsMenuManager {
                     Notifications.success('Изменения сохранены');
                 } catch (err) {
                     console.error('Ошибка сохранения:', err);
-                    Notifications.error('Не удалось сохранить изменения');
+                    if (err instanceof ContentConflictError) {
+                        // Конфликт версий: единое честное уведомление + остановка
+                        // обречённых авто-PUT; остаёмся на текущем акте — судьбу
+                        // правок пользователь решит после обновления страницы.
+                        StorageManager.handleContentConflict(err);
+                    } else {
+                        Notifications.error('Не удалось сохранить изменения');
+                    }
                     return;
                 }
             }

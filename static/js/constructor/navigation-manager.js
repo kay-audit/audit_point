@@ -9,7 +9,7 @@ import { FormatMenuManager } from './header/format-menu-manager.js';
 import { StorageManager } from './storage-manager.js';
 import { ValidationAct } from './validation/validation-act.js';
 import { ValidationTable } from './validation/validation-table.js';
-import { APIClient, LockLostError } from '../shared/api.js';
+import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
 import { AppConfig } from '../shared/app-config.js';
 import { Notifications } from '../shared/notifications.js';
 
@@ -165,6 +165,15 @@ export class NavigationManager {
      * @private
      */
     static _handleSaveExportError(error) {
+        if (error instanceof ContentConflictError) {
+            // Конфликт версий (409 content-conflict на ручном save): единое
+            // честное уведомление + остановка обречённых авто-PUT — через общий
+            // обработчик StorageManager. Generic-тост «Произошла ошибка» здесь
+            // лгал бы недосказанностью (правки живы, в локальном черновике).
+            console.warn('[NavigationManager] ContentConflictError на save → честное уведомление, авто-PUT остановлены');
+            StorageManager.handleContentConflict(error);
+            return;
+        }
         if (typeof LockLostError !== 'undefined' && error instanceof LockLostError) {
             console.warn('[NavigationManager] LockLostError на save → редирект на список актов (изменения НЕ в БД)');
             sessionStorage.setItem('sessionLockLost', 'true');
