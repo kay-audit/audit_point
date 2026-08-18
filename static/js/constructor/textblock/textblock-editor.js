@@ -1515,6 +1515,51 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
+     * @private Пункты списка, которые задевает диапазон, в порядке документа.
+     * Схлопнутая каретка (и стабовый Range без intersectsNode) — ровно один
+     * пункт, тот же, что у _caretListItem.
+     *
+     * При вложенности берётся пункт, ВНУТРИ которого других задетых пунктов
+     * нет (углублять надо именно его), либо пункт, накрытый диапазоном
+     * ЦЕЛИКОМ — такой едет со всем своим поддеревом, и его потомки из набора
+     * выбывают. Иначе выделение внутри подпункта двигало бы весь родительский
+     * пункт, а выделение целого пункта — только его дно.
+     * @param {Range} range
+     * @param {HTMLElement} editor
+     * @returns {Element[]}
+     */
+    _selectedListItems(range, editor) {
+        const caretItem = this._caretListItem(range, editor);
+        if (!caretItem || typeof range.intersectsNode !== 'function'
+                || typeof editor.querySelectorAll !== 'function') {
+            return caretItem ? [caretItem] : [];
+        }
+        const touched = Array.from(editor.querySelectorAll('li'))
+            .filter(li => range.intersectsNode(li));
+        const kept = touched.filter(li => this._rangeCoversNode(range, li)
+            || !touched.some(other => other !== li && li.contains(other)));
+        const tops = kept.filter(li => !kept.some(other => other !== li && other.contains(li)));
+        return tops.length ? tops : [caretItem];
+    },
+
+    /**
+     * @private Диапазон накрывает узел целиком? Константы how — литералами
+     * (0 = START_TO_START, 2 = END_TO_END) по тем же соображениям, что и
+     * литерал 3 вместо Node.TEXT_NODE: без зависимости от глобала Range.
+     * @param {Range} range
+     * @param {Node} node
+     * @returns {boolean}
+     */
+    _rangeCoversNode(range, node) {
+        if (typeof document.createRange !== 'function'
+                || typeof range.compareBoundaryPoints !== 'function') return false;
+        const nodeRange = document.createRange();
+        nodeRange.selectNode(node);
+        return range.compareBoundaryPoints(0, nodeRange) <= 0
+            && range.compareBoundaryPoints(2, nodeRange) >= 0;
+    },
+
+    /**
      * @private Ближайший предок-<li> узла в пределах редактора, ИЛИ null.
      * Параллель _capsuleAncestor (textblock-core.js): та же дисциплина обхода —
      * не выходим за editor. Литерал 3 вместо Node.TEXT_NODE — по тем же
@@ -1583,8 +1628,9 @@ Object.assign(TextBlockManager.prototype, {
         const host = li.previousElementSibling;
         if (!host || host.tagName !== 'LI') return false;
 
-        // Каретка стоит в узлах САМОГО пункта — переезд их не разрушает, но
-        // Chromium теряет выделение при перемещении содержащего узла.
+        // Каретка стоит в узлах САМОГО пункта: они переезжают вместе с ним и
+        // остаются валидными — снимок по ним и пересобирается (живой Range
+        // переезда не переживает, см. _captureCaretRange).
         const caret = this._captureCaretRange();
         this._sublistHost(host, list.tagName).appendChild(li);
         this._restoreCaretRange(caret);
@@ -1610,26 +1656,41 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * @private Снимок каретки (клон Range), переживающий перемещение узлов.
-     * Стабы Range в node-тестах его не умеют — тогда снимка нет, восстановление
-     * тихо пропускается.
-     * @returns {Range|null}
+     * @private Снимок каретки/выделения ПЛОСКИМИ значениями (узел + смещение).
+     * Клон Range не годится: Range живой, и удаление узла из документа (а
+     * перенос <li> начинается именно с удаления) по спеке переставляет границы
+     * ВСЕХ живых диапазонов, включая клон, на место удалённого узла в СТАРОМ
+     * родителе — каретка уезжала бы из пункта в промежуток внешнего списка.
+     * Сами узлы переезжают вместе с пунктом и остаются валидными, по ним
+     * диапазон и пересобирается.
+     * @returns {{sc: Node, so: number, ec: Node, eo: number}|null}
      */
     _captureCaretRange() {
         const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
         if (!sel || sel.rangeCount === 0) return null;
         const range = sel.getRangeAt(0);
-        return (range && typeof range.cloneRange === 'function') ? range.cloneRange() : null;
+        if (!range || !range.startContainer) return null;
+        return {
+            sc: range.startContainer,
+            so: range.startOffset || 0,
+            ec: range.endContainer || range.startContainer,
+            eo: (range.endContainer ? range.endOffset : range.startOffset) || 0,
+        };
     },
 
     /**
-     * @private Возвращает каретку по снимку _captureCaretRange.
-     * @param {Range|null} range
+     * @private Возвращает каретку/выделение по снимку _captureCaretRange.
+     * Стабы node-тестов Range не собирают — тогда восстановление пропускается.
+     * @param {{sc: Node, so: number, ec: Node, eo: number}|null} snapshot
      */
-    _restoreCaretRange(range) {
-        if (!range) return;
+    _restoreCaretRange(snapshot) {
+        if (!snapshot || !snapshot.sc) return;
         const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
         if (!sel || typeof sel.removeAllRanges !== 'function') return;
+        if (typeof document.createRange !== 'function') return;
+        const range = document.createRange();
+        range.setStart(snapshot.sc, snapshot.so);
+        range.setEnd(snapshot.ec, snapshot.eo);
         sel.removeAllRanges();
         sel.addRange(range);
     },

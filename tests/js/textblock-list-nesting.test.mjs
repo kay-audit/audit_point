@@ -417,6 +417,79 @@ function runExecCommand(html, caretPick, command) {
   return { result, html: editor.innerHTML, saved, execCalls };
 }
 
+/**
+ * Range-подобный объект: начало диапазона в startNode, задеты пункты touched.
+ * Настоящего Range в харнессе нет — нужны ровно те поля, что читают
+ * _caretListItem и _selectedListItems.
+ * @param {object} startNode Узел начала диапазона.
+ * @param {object[]} touched Пункты, которые диапазон задевает.
+ * @returns {object}
+ */
+function rangeOver(startNode, touched) {
+  return {
+    startContainer: startNode,
+    startOffset: 0,
+    intersectsNode: (node) => touched.includes(node),
+  };
+}
+
+/**
+ * Ставит выделение из готового Range-подобного объекта (стаб getSelection).
+ * @param {object} range
+ * @returns {() => void} Восстановление прежнего getSelection.
+ */
+function stubSelectionRange(range) {
+  const origSel = globalThis.getSelection;
+  globalThis.getSelection = () => ({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range });
+  return () => { globalThis.getSelection = origSel; };
+}
+
+test('_selectedListItems: выделение по нескольким пунктам отдаёт их все', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li><li>c</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems(rangeOver(items[1].firstChild, [items[1], items[2]]), editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b', 'c']);
+});
+
+test('_selectedListItems: выделение внутри подпункта не тащит родительский пункт', () => {
+  // range.intersectsNode правдив и для предка — углублять надо дно выделения,
+  // иначе поехал бы весь пункт «a» вместе с подсписком.
+  const editor = parseHtml('<ul><li>a<ul><li>b</li></ul></li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems(rangeOver(items[1].firstChild, [items[0], items[1]]), editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b']);
+});
+
+test('_selectedListItems: схлопнутая каретка — ровно её пункт', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems({ startContainer: items[1].firstChild, startOffset: 0 }, editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b']);
+});
+
+test('execCommand(indent): выделение по двум пунктам углубляет ОБА в один подсписок', () => {
+  // Нативная команда двигала всё выделение; своя реализация обязана вести себя
+  // так же, иначе Tab по нескольким строкам сдвигал бы только первую.
+  const editor = parseHtml('<ul><li>a</li><li>b</li><li>c</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  const saved = [];
+  m.saveContent = (id, content) => saved.push(content);
+  const restore = stubSelectionRange(rangeOver(items[1].firstChild, [items[1], items[2]]));
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = (cmd) => { throw new Error(`нативная команда ${cmd}`); };
+  let result;
+  try {
+    result = m.execCommand('indent');
+  } finally { globalThis.document.execCommand = origExec; restore(); }
+
+  assert.equal(result, true);
+  assert.equal(editor.innerHTML, '<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>');
+  assert.equal(saved.length, 1, 'модель пишется один раз на команду, а не на пункт');
+});
+
 test('execCommand(indent): пункт уезжает в подсписок предыдущего, нативная команда НЕ идёт', () => {
   // Углубление делает _indentListItem: нативный indent порождал список-сироту,
   // из которого валидную форму без пустого <li>-хоста уже не собрать.

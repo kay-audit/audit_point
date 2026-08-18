@@ -319,10 +319,16 @@ export class TextBlockManager {
             const li = range ? this._caretListItem(range, this.activeEditor) : null;
             if (!li) return false;
             if (command === 'indent') {
-                if (typeof this._listLevel === 'function'
-                        && this._listLevel(li, this.activeEditor) >= this._listLevelCeiling()) {
-                    return false;
-                }
+                // Углубляем ВСЕ пункты выделения, а не только тот, где начало
+                // диапазона: нативная команда двигала выделение целиком, и Tab
+                // по нескольким строкам списка обязан работать так же (outdent
+                // остался нативным и селекцию обрабатывает сам).
+                const items = (typeof this._selectedListItems === 'function')
+                    ? this._selectedListItems(range, this.activeEditor) : [li];
+                const movable = items.filter(item => typeof this._listLevel !== 'function'
+                    || this._listLevel(item, this.activeEditor) < this._listLevelCeiling());
+                if (!movable.length) return false;
+
                 // Углубление делаем САМИ (_indentListItem, textblock-editor.js):
                 // нативный indent порождает список-сироту, из которого валидную
                 // форму без пустого <li>-хоста не собрать (маркеры хостов
@@ -330,7 +336,11 @@ export class TextBlockManager {
                 // Сток тот же, что у нативной ветки ниже: нормализация
                 // (страховка на чужую разметку в блоке) → saveContent.
                 if (typeof this._indentListItem === 'function') {
-                    if (!this._indentListItem(li)) return false;
+                    let changed = false;
+                    for (const item of movable) {
+                        if (this._indentListItem(item)) changed = true;
+                    }
+                    if (!changed) return false;
                     if (typeof this._normalizeListNesting === 'function') {
                         this._normalizeListNesting(this.activeEditor);
                     }

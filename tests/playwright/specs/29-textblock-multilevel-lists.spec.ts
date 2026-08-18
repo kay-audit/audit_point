@@ -119,6 +119,44 @@ async function placeCaretAfter(page, needle: string): Promise<void> {
   }, needle);
 }
 
+/** Выделяет от начала текста `from` до конца текста `to` (по текстовым узлам). */
+async function selectAcross(page, from: string, to: string): Promise<void> {
+  await page.evaluate(([fromText, toText]: string[]) => {
+    const ed = document.querySelector(
+      '.textblock-editor[data-text-block-id="txt-seed-1"]'
+    ) as HTMLElement;
+    const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+    let start: Node | null = null;
+    let end: Node | null = null;
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if (!start && node.textContent?.includes(fromText)) start = node;
+      if (node.textContent?.includes(toText)) end = node;
+    }
+    if (!start || !end) return;
+    const range = document.createRange();
+    range.setStart(start, 0);
+    range.setEnd(end, end.textContent!.length);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ed.focus();
+  }, [from, to]);
+}
+
+/** Собственный текст каждого <li> (без текста вложенных списков), в порядке документа. */
+async function ownItemTexts(editor): Promise<string[]> {
+  return editor.evaluate((ed: HTMLElement) =>
+    Array.from(ed.querySelectorAll('li')).map((li) =>
+      Array.from(li.childNodes)
+        .filter((n) => !(n.nodeType === 1 && ['UL', 'OL'].includes((n as HTMLElement).tagName)))
+        .map((n) => n.textContent || '')
+        .join('')
+        .trim()
+    )
+  );
+}
+
 /**
  * После сохранения и перезагрузки акта H3 может предложить восстановить
  * несинхронизированный локальный черновик (диалог «Найден несохранённый
@@ -237,6 +275,60 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     ).toBe(1);
     expect(await hasOnlyValidListNesting(editor)).toBe(true);
     expect(await countMarkerOnlyItems(editor)).toBe(0);
+  });
+
+  test('после Tab печать продолжается в углублённом пункте (каретка не уезжает)', async ({
+    page,
+  }) => {
+    // Снимок каретки — плоскими значениями (узел + смещение): живой Range при
+    // переносе <li> спека переставляет в СТАРЫЙ список, и набор уходил бы мимо
+    // пункта. Прежние сценарии этого не ловили — каретку они ставили заново
+    // перед каждым Tab.
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await makeUnorderedList(page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт B');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт C');
+
+    await placeCaretAfter(page, 'Пункт B');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type(' продолжение');
+
+    expect(await listDepthOf(editor, 'Пункт B продолжение')).toBe(1);
+    const texts = await ownItemTexts(editor);
+    expect(texts).toContain('Пункт B продолжение');
+    expect(texts).toContain('Пункт C');
+  });
+
+  test('Tab по выделению из нескольких пунктов углубляет их все', async ({ page }) => {
+    // Нативная команда двигала всё выделение; своя реализация обязана вести
+    // себя так же, иначе Shift+Tab (он остался нативным) поднимал бы больше,
+    // чем опустил Tab.
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await makeUnorderedList(page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт B');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Пункт C');
+
+    await selectAcross(page, 'Пункт B', 'Пункт C');
+    await page.keyboard.press('Tab');
+
+    expect(await listDepthOf(editor, 'Пункт B')).toBe(1);
+    expect(await listDepthOf(editor, 'Пункт C')).toBe(1);
+    // Оба — в ОДНОМ подсписке (нумерация продолжается), пустых хостов нет.
+    expect(
+      await editor.evaluate((ed: HTMLElement) => ed.querySelectorAll('li > ol, li > ul').length)
+    ).toBe(1);
+    expect(await countMarkerOnlyItems(editor)).toBe(0);
+    expect(await hasOnlyValidListNesting(editor)).toBe(true);
   });
 
   test('Tab вне списка не перехвачен — фокус уходит нативно, blockquote не появляется', async ({
