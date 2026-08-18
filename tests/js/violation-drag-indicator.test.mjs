@@ -42,10 +42,16 @@ function flushFrames() {
     frames.splice(0).forEach((cb) => cb());
 }
 
+// id обёрток уникальны в пределах прогона: пачку перетаскивания dragover
+// адресует по data-block-id, а не по DOM-ссылке на .dragging.
+let wrapperSeq = 0;
+
 /** Обёртка блока с геометрией: [top; top+height) по вертикали. */
 function makeWrapper(top, height = 100) {
+    wrapperSeq += 1;
     return {
         draggable: false,
+        dataset: { blockId: `B${wrapperSeq}` },
         getBoundingClientRect: () => ({ top, height, bottom: top + height }),
     };
 }
@@ -81,7 +87,11 @@ function dragOverEvent(hovered, clientY) {
  */
 function makeVm(wrappers, draggingIndex) {
     const vm = new ViolationManager();
-    vm._dragPayload = { violationId: VIOLATION.id, fieldKey: FIELD, blockId: 'X' };
+    vm._dragPayload = {
+        violationId: VIOLATION.id,
+        fieldKey: FIELD,
+        blockIds: [wrappers[draggingIndex]?.dataset.blockId],
+    };
 
     const calls = [];
     vm.updateInsertIndicator = (_container, position) => calls.push({ type: 'show', position });
@@ -192,7 +202,7 @@ test('dragover троттлится кадром: серия событий сч
 test('dragover чужого поля кадр не планирует', () => {
     const wrappers = [makeWrapper(0), makeWrapper(100)];
     const vm = makeVm(wrappers, 0);
-    vm._dragPayload = { violationId: 'v1', fieldKey: 'reasons', blockId: 'R1' };
+    vm._dragPayload = { violationId: 'v1', fieldKey: 'reasons', blockIds: ['R1'] };
 
     vm.handleDragOver(dragOverEvent(wrappers[1], 150), VIOLATION, FIELD, makeContainer(wrappers));
 
@@ -313,6 +323,29 @@ test('зазор рядом с перетаскиваемым блоком ин�
     assert.equal(vm.lastDragOverIndex, 1, 'индекс сохранён — drop останется no-op');
 });
 
+test('пачка: индикатор молчит внутри неё и рисуется там, где порядок меняется', () => {
+    // Тащим B и C (смежная пачка): любой зазор внутри прогона — честный no-op.
+    const wrappers = [makeWrapper(0), makeWrapper(100), makeWrapper(200), makeWrapper(300)];
+    const container = makeContainer(wrappers);
+    const vm = makeVm(wrappers, 1);
+    vm._dragPayload = {
+        violationId: VIOLATION.id,
+        fieldKey: FIELD,
+        blockIds: [wrappers[1].dataset.blockId, wrappers[2].dataset.blockId],
+    };
+
+    // Зазор B|C (позиция 2) — внутри пачки.
+    vm.handleDragOver(dragOverEvent(wrappers[2], 210), VIOLATION, FIELD, container);
+    flushFrames();
+    assert.deepEqual(vm._indicatorCalls.at(-1), { type: 'hide' });
+    assert.equal(vm.lastDragOverIndex, 2, 'индекс сохранён — drop останется no-op');
+
+    // Низ последнего блока (позиция 4) — пачка реально переезжает.
+    vm.handleDragOver(dragOverEvent(wrappers[3], 395), VIOLATION, FIELD, container);
+    flushFrames();
+    assert.deepEqual(vm._indicatorCalls.at(-1), { type: 'show', position: 4 });
+});
+
 test('без активного перетаскивания индикатор не появляется', () => {
     const wrappers = [makeWrapper(0), makeWrapper(100)];
     const container = makeContainer(wrappers);
@@ -424,7 +457,7 @@ test('drop досчитывает dragover, кадр которого не ус�
     const vm = makeVm(wrappers, 0);
     vm.renderBlocks = () => {};
     const moved = [];
-    vm.moveBlock = (_violation, _fieldKey, from, to) => { moved.push([from, to]); return true; };
+    vm.moveBlocks = (_violation, _fieldKey, ids, to) => { moved.push([ids, to]); return true; };
 
     // Курсор в самом низу третьего блока — позиция 3. Кадр НЕ прогоняем: кнопку
     // отпустили раньше ближайшего repaint.
@@ -445,7 +478,8 @@ test('drop досчитывает dragover, кадр которого не ус�
         violation, FIELD, container,
     );
 
-    assert.deepEqual(moved, [[0, 3]], 'вставка туда, куда указывал курсор, а не на блок под ним');
+    assert.deepEqual(moved, [[[wrappers[0].dataset.blockId], 3]],
+        'вставка туда, куда указывал курсор, а не на блок под ним');
 
     const callsAtDrop = vm._indicatorCalls.length;
     flushFrames();

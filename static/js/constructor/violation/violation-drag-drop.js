@@ -1,14 +1,21 @@
 /**
  * Drag & Drop блоков ВНУТРИ одного поля нарушения.
  *
- * Полезная нагрузка перетаскивания — {violationId, fieldKey, blockId}: drop в
+ * Полезная нагрузка перетаскивания — {violationId, fieldKey, blockIds}: drop в
  * контейнер другого поля (или другого нарушения) игнорируется, перенос блоков
  * между полями — сознательный non-goal первой итерации (спека §7).
- * Перестановка — мутатором moveBlock (там read-only-guard и превью).
+ * Перестановка — мутатором moveBlocks (там read-only-guard и превью).
+ *
+ * Пачка, а не один блок: за шапку ВЫДЕЛЕННОГО блока тащится всё выделение
+ * (violation-block-selection.js), за шапку невыделенного — выделение
+ * схлопывается на него, и едет он один. Одиночное перетаскивание — частный
+ * случай пачки из одного id, отдельного пути для него нет.
  */
 
 import { ViolationManager } from './violation-core.js';
 import { BLOCK_TYPE_META } from './violation-block-types.js';
+import { planBlocksReorder } from './violation-mutations.js';
+import { pluralizeBlocks } from './violation-block-selection.js';
 
 /** MIME-тип полезной нагрузки внутреннего перетаскивания блока. */
 const DRAG_PAYLOAD_TYPE = 'application/x-violation-block';
@@ -27,7 +34,7 @@ const MIDDLE_DEAD_BAND_PX = 12;
  * снимка на менеджере (dragover: getData во время drag браузер не отдаёт).
  * @param {Event} e - Событие drag&drop
  * @param {ViolationManager} manager
- * @returns {{violationId: string, fieldKey: string, blockId: string}|null}
+ * @returns {{violationId: string, fieldKey: string, blockIds: string[]}|null}
  */
 function readDragPayload(e, manager) {
     try {
@@ -145,18 +152,32 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Начало перетаскивания блока: полезная нагрузка + миниатюра.
+     * Начало перетаскивания: полезная нагрузка (пачка id) + миниатюра.
+     *
+     * Взялись за шапку блока ВНЕ выделения — выделение схлопывается на него
+     * (тот же приём, что у таблиц с ПКМ по невыделенной ячейке): тащить пачку,
+     * в которую пользователь не целился, было бы сюрпризом.
+     *
      * @param {Event} e - Событие dragstart
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldKey - Ключ поля реестра
      * @param {number} index - Индекс перетаскиваемого блока
-     * @param {Object} block - Блок
+     * @param {Object} block - Блок, за шапку которого взялись
      */
     handleDragStart(e, violation, fieldKey, index, block) {
         const wrapper = e.currentTarget;
         wrapper.classList.add('dragging');
 
-        const payload = { violationId: violation.id, fieldKey, blockId: block.id };
+        const orderedIds = (violation?.[fieldKey]?.blocks || []).map(b => b.id);
+        if (!this.blockSelection.isSelected(violation.id, fieldKey, block.id)) {
+            this.blockSelection.applyClick(violation.id, fieldKey, block.id, {}, orderedIds);
+            this._syncSelectionEscapeLayer();
+            this._syncBlockSelectionClasses(
+                violation, fieldKey, wrapper?.closest?.('.violation-blocks-items'));
+        }
+        const blockIds = this.blockSelection.idsInOrder(violation.id, fieldKey, orderedIds);
+
+        const payload = { violationId: violation.id, fieldKey, blockIds };
         this._dragPayload = payload;
 
         e.dataTransfer.effectAllowed = 'move';
@@ -166,7 +187,7 @@ Object.assign(ViolationManager.prototype, {
         e.dataTransfer.setData(DRAG_PAYLOAD_TYPE, JSON.stringify(payload));
 
         // Создаем миниатюру
-        const miniature = this.createDragMiniature(block);
+        const miniature = this.createDragMiniature(block, blockIds.length);
         miniature.style.position = 'absolute';
         miniature.style.top = '-1000px';
         miniature.id = 'drag-miniature-temp';
@@ -188,13 +209,20 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Создает миниатюру блока для drag-and-drop
-     * @param {Object} block - Блок
+     * Создает миниатюру перетаскивания: тип блока — для одиночного, счётный
+     * бейдж — для пачки (в ней блоки разных типов, иконка одного соврала бы).
+     * @param {Object} block - Блок, за шапку которого взялись
+     * @param {number} [count] - Сколько блоков едет
      * @returns {HTMLElement} Миниатюра
      */
-    createDragMiniature(block) {
+    createDragMiniature(block, count = 1) {
         const miniature = document.createElement('div');
         miniature.className = 'drag-miniature';
+
+        if (count > 1) {
+            miniature.innerHTML = `⋮⋮ ${count} ${pluralizeBlocks(count)}`;
+            return miniature;
+        }
 
         const meta = BLOCK_TYPE_META[block.type];
         miniature.innerHTML = meta ? `${meta.dragIcon} ${meta.label}` : ' ';
@@ -264,9 +292,9 @@ Object.assign(ViolationManager.prototype, {
         // блок закрывает собой ровно то место, откуда его взяли.
         if (hoveredElement === draggingElement) return;
 
-        // Индексы блока под курсором и перетаскиваемого блока в контейнере.
+        // Обёртки контейнера в порядке поля — по ним считаются и позиция
+        // вставки, и индексы перетаскиваемой пачки (адресация по data-block-id).
         const allWrappers = [...container.querySelectorAll('.content-item-wrapper')];
-        const draggedIndex = allWrappers.indexOf(draggingElement);
 
         let targetPosition;
 
@@ -304,14 +332,20 @@ Object.assign(ViolationManager.prototype, {
 
         this.lastDragOverIndex = targetPosition;
 
-        // Позиции draggedIndex и draggedIndex+1 — вставка туда, где блок и так
-        // лежит: полоска прямо над/под перетаскиваемым блоком ничего не обещает,
-        // поэтому индикатор в них не показываем. Сам индекс при этом сохраняем
-        // (а не сбрасываем в null): handleDrop по нему сделает честный no-op,
-        // тогда как fallback на targetIndex при null уехал бы на блок под
-        // курсором и порядок всё-таки поменялся бы.
-        if (draggedIndex !== -1
-            && (targetPosition === draggedIndex || targetPosition === draggedIndex + 1)) {
+        // Честный no-op: позиция, при которой итоговый порядок не меняется,
+        // ничего не обещает — индикатор в ней не рисуем. Для одиночного блока
+        // это классические «прямо над собой» и «прямо под собой», для пачки —
+        // любой зазор внутри уже смежного прогона. Считает тот же планировщик,
+        // что и мутатор, чтобы подсветка и модель не разошлись.
+        // Сам индекс при этом сохраняем (а не сбрасываем в null): handleDrop по
+        // нему сделает честный no-op, тогда как fallback при null уехал бы на
+        // блок под курсором и порядок всё-таки поменялся бы.
+        const moving = new Set(this._dragPayload?.blockIds || []);
+        const movedIndices = [];
+        allWrappers.forEach((wrapper, index) => {
+            if (moving.has(wrapper.dataset?.blockId)) movedIndices.push(index);
+        });
+        if (!planBlocksReorder(allWrappers.length, movedIndices, targetPosition)) {
             this.removeInsertIndicators(container);
             return;
         }
@@ -361,10 +395,6 @@ Object.assign(ViolationManager.prototype, {
         this._pendingDragOver = null;
         this._applyDragOverPosition(pendingDragOver);
 
-        const blocks = violation?.[fieldKey]?.blocks || [];
-        const fromIndex = blocks.findIndex(block => block.id === payload.blockId);
-        if (fromIndex === -1) return;
-
         // Позиция вставки — из dragover (учитывает половину блока, зазор и
         // гистерезис). Без неё считать нечего: контейнер молча ничего не двигает.
         const toIndex = this.lastDragOverIndex;
@@ -372,8 +402,8 @@ Object.assign(ViolationManager.prototype, {
 
         // Index-based перестановка (#6): DOM больше НЕ сдвинут оптимистично,
         // порядок считаем из данных. Сам splice — в мутаторе (§5.10a), там же
-        // read-only-guard и превью; отказ мутатора не коммитим.
-        if (!this.moveBlock(violation, fieldKey, fromIndex, toIndex)) return;
+        // read-only-guard, честный no-op и превью; отказ мутатора не коммитим.
+        if (!this.moveBlocks(violation, fieldKey, payload.blockIds, toIndex)) return;
 
         // Коммит состоялся — handleDragEnd не должен перерисовывать повторно.
         this._dropCommitted = true;
