@@ -104,7 +104,6 @@
     height: var(--tree-drop-indicator-height, 3px);
     background: var(--insert-indicator-gradient);
     border-radius: var(--radius-sm);
-    box-shadow: var(--highlight-insert-shadow);
     pointer-events: none;
     z-index: var(--z-dropdown);
     animation: insertIndicatorAppear 100ms var(--ease-in-out-smooth);
