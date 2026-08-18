@@ -686,8 +686,19 @@ export class APIClient {
         const pos = loadViewPosition(localStorage, actId);
         if (!pos) return;
 
+        // Чуть раньше в _applyActContent (renderAll/PreviewManager.update)
+        // контент акта уже отрисован для ТЕКУЩЕГО шага — goToStep здесь нужен
+        // только чтобы (при необходимости) переключить видимость шага, а НЕ
+        // чтобы рендерить контент повторно: skipRender гасит второй
+        // ItemsRenderer.renderAll()/PreviewManager.update(). Зовём безусловно
+        // (не только когда pos.step отличается от текущего) — если шаг уже
+        // тот же, это просто дешёвый идемпотентный no-op визуально, зато
+        // тулбар/read-only-ограничения шага 2 (initGlobalToolbar,
+        // _applyReadOnlyToContent — идемпотентны, не рендер) гарантированно
+        // применяются и для НОВОГО контента акта, даже если предыдущий акт
+        // уже был на этом же шаге.
         if (window.App && window.App.goToStep) {
-            window.App.goToStep(pos.step, { persist: false });
+            window.App.goToStep(pos.step, { persist: false, skipRender: true });
         }
 
         requestAnimationFrame(() => {

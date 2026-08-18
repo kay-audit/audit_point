@@ -231,8 +231,14 @@ export class App {
      *   false — при восстановлении позиции из APIClient._applyActContent, где
      *   window.currentActId ещё не гарантированно обновлён на загружаемый акт
      *   (см. view-position-store.js).
+     * @param {boolean} [options.skipRender=false] - Не перерендеривать контент
+     *   шага (ItemsRenderer.renderAll / PreviewManager.update). true — при
+     *   восстановлении позиции: _applyActContent уже отрендерил содержимое
+     *   акта один раз, повторный рендер только дублирует работу. Тулбар шага 2
+     *   (initGlobalToolbar) и read-only-ограничения на контент всё равно
+     *   применяются — это не рендер, а разовая инициализация/политика.
      */
-    static goToStep(stepNum, { persist = true } = {}) {
+    static goToStep(stepNum, { persist = true, skipRender = false } = {}) {
         // Обновляем текущий шаг
         AppState.currentStep = stepNum;
         if (persist && !this._actSwitchInProgress && window.currentActId) {
@@ -240,7 +246,7 @@ export class App {
         }
 
         this._updateStepVisibility(stepNum);
-        this._handleStepTransition(stepNum);
+        this._handleStepTransition(stepNum, skipRender);
 
         HelpManager.updateTooltip();
     }
@@ -270,11 +276,15 @@ export class App {
      * Обработка специфичной логики при переходе на шаг
      * @private
      * @param {number} stepNum - Номер шага
+     * @param {boolean} [skipRender=false] - Пропустить повторный рендер контента
+     *   (см. goToStep). Тулбар/read-only-ограничения применяются в любом случае.
      */
-    static _handleStepTransition(stepNum) {
+    static _handleStepTransition(stepNum, skipRender = false) {
         if (stepNum === 2) {
             textBlockManager.initGlobalToolbar();
-            ItemsRenderer.renderAll();
+            if (!skipRender) {
+                ItemsRenderer.renderAll();
+            }
 
             // Применяем режим только чтения к новым элементам
             if (AppConfig.readOnlyMode?.isReadOnly) {
@@ -282,7 +292,9 @@ export class App {
             }
         } else {
             textBlockManager.hideToolbar();
-            requestAnimationFrame(() => PreviewManager.update());
+            if (!skipRender) {
+                requestAnimationFrame(() => PreviewManager.update());
+            }
         }
     }
 
@@ -306,23 +318,38 @@ export class App {
     }
 
     /**
-     * Снимает текущий скролл панелей и якорный узел превью.
+     * Снимает скролл панелей и якорный узел превью — ТОЛЬКО для шага,
+     * который сейчас реально виден (.step-content без класса hidden).
+     * Скрытый шаг (display:none) даёт scrollTop=0 и нулевые rect'ы для всех
+     * элементов — если бы мы всё равно писали эти нули в scroll, merge в
+     * _saveViewPosition затёр бы честно сохранённую позицию видимого на тот
+     * момент шага. Поэтому поля скрытого шага просто отсутствуют в
+     * возвращаемом scroll (undefined) — _saveViewPosition оставляет для них
+     * прежнее значение.
      * @private
-     * @returns {{scroll: {treeColumn: number, previewColumn: number, step2: number}, anchorNodeId: string|null}}
+     * @returns {{scroll: {treeColumn?: number, previewColumn?: number, step2?: number}, anchorNodeId: string|null|undefined}}
      */
     static _captureScrollAndAnchor() {
-        const treeColumn = document.getElementById('treeColumn');
-        const previewColumn = document.getElementById('previewColumn');
+        const step1 = document.getElementById('step1');
         const step2 = document.getElementById('step2');
+        const step1Visible = !!step1 && !step1.classList.contains('hidden');
+        const step2Visible = !!step2 && !step2.classList.contains('hidden');
 
-        return {
-            scroll: {
-                treeColumn: treeColumn ? treeColumn.scrollTop : 0,
-                previewColumn: previewColumn ? previewColumn.scrollTop : 0,
-                step2: step2 ? step2.scrollTop : 0,
-            },
-            anchorNodeId: step2 ? this._findTopVisibleAnchorNodeId(step2) : null,
-        };
+        const scroll = {};
+        let anchorNodeId;
+
+        if (step1Visible) {
+            const treeColumn = document.getElementById('treeColumn');
+            const previewColumn = document.getElementById('previewColumn');
+            scroll.treeColumn = treeColumn ? treeColumn.scrollTop : 0;
+            scroll.previewColumn = previewColumn ? previewColumn.scrollTop : 0;
+        }
+        if (step2Visible) {
+            scroll.step2 = step2.scrollTop;
+            anchorNodeId = this._findTopVisibleAnchorNodeId(step2);
+        }
+
+        return { scroll, anchorNodeId };
     }
 
     /**
@@ -346,6 +373,9 @@ export class App {
     /**
      * Сливает частичное обновление позиции просмотра с уже сохранённой
      * (по указанному actId явно — не полагается на window.currentActId).
+     * scroll мержится ПОПОЛЕВО (не заменяется целиком): _captureScrollAndAnchor
+     * отдаёт поля только видимого сейчас шага, поля скрытого — undefined и
+     * должны остаться прежними, а не обнулиться.
      * @private
      * @param {number|string} actId - ID акта
      * @param {Object} partial - Частичное обновление ({step} и/или {scroll, anchorNodeId})
@@ -357,9 +387,14 @@ export class App {
             scroll: { treeColumn: 0, previewColumn: 0, step2: 0 },
             anchorNodeId: null,
         };
+        const partialScroll = partial.scroll || {};
         saveViewPosition(localStorage, actId, {
             step: partial.step !== undefined ? partial.step : current.step,
-            scroll: partial.scroll !== undefined ? partial.scroll : current.scroll,
+            scroll: {
+                treeColumn: partialScroll.treeColumn !== undefined ? partialScroll.treeColumn : current.scroll.treeColumn,
+                previewColumn: partialScroll.previewColumn !== undefined ? partialScroll.previewColumn : current.scroll.previewColumn,
+                step2: partialScroll.step2 !== undefined ? partialScroll.step2 : current.scroll.step2,
+            },
             anchorNodeId: partial.anchorNodeId !== undefined ? partial.anchorNodeId : current.anchorNodeId,
         });
     }

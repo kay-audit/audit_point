@@ -433,6 +433,62 @@ export class ActsMenuManager {
     }
 
     /**
+     * Общая последовательность применения ЗАГРУЖЕННОГО акта к UI/состоянию —
+     * используется и явным переключением через меню (_switchToAct, ПОСЛЕ
+     * захвата лока), и браузерной навигацией back/forward (popstate).
+     * Не занимается локом и диалогом «несохранённые изменения» — это
+     * ответственность вызывающего (для popstate сознательно не делается,
+     * см. комментарий у обработчика popstate).
+     *
+     * Сброс UI покидаемого акта (resetForActSwitch, включая сброс маркера
+     * «уже восстанавливали позицию просмотра») → загрузка контента нового
+     * акта под guard-флагом (гасит персист шага на время await — см.
+     * App.setActSwitchInProgress) → дефолтная структура для пустых актов →
+     * обновление this.currentActId/window.currentActId → пересоздание
+     * ChangelogTracker → markAsSyncedWithDB + сброс кеша меню.
+     * @private
+     * @param {number} actId - ID акта для загрузки
+     */
+    static async _loadActIntoView(actId) {
+        // Сброс пер-актного UI-состояния покидаемого акта — до загрузки
+        // контента нового (включая сброс маркера восстановления позиции).
+        this.resetForActSwitch();
+
+        // До обновления this.currentActId/window.currentActId ниже они ещё
+        // указывают на СТАРЫЙ акт. Пока флаг взведён, App.goToStep не
+        // персистит шаг под этим ID — иначе клик по табу шага в это окно
+        // примешал бы шаг нового акта в позицию старого.
+        App.setActSwitchInProgress(true);
+        try {
+            await APIClient.loadActContent(actId);
+        } finally {
+            App.setActSwitchInProgress(false);
+        }
+
+        // Сохраняем дефолтную структуру после загрузки (для новых/пустых актов)
+        if (APIClient._pendingDefaultStructureSave) {
+            APIClient._pendingDefaultStructureSave = false;
+            const username = AuthManager?.getCurrentUser?.() || null;
+            if (username) {
+                await APIClient._saveDefaultStructure(actId, username);
+            }
+        }
+
+        this.currentActId = actId;
+        window.currentActId = actId;
+        // Сброс per-act трекеров перед init нового акта:
+        //  - ChangelogTracker.destroy: иначе pending debounce/persist старого акта
+        //    запишут отложенный entry с уже сменённым _storageKey;
+        //  - остальное пер-актное UI-состояние сброшено в resetForActSwitch() выше.
+        if (typeof ChangelogTracker !== 'undefined' && typeof ChangelogTracker.destroy === 'function') {
+            ChangelogTracker.destroy();
+        }
+        if (typeof ChangelogTracker !== 'undefined') ChangelogTracker.init(actId);
+        StorageManager.markAsSyncedWithDB();
+        this._clearCache();
+    }
+
+    /**
      * Переключается на другой акт
      * @private
      * @param {number} actId - ID акта для переключения
@@ -495,40 +551,15 @@ export class ActsMenuManager {
                 }
             }
 
-            // Сброс пер-актного UI-состояния покидаемого акта — строго после
-            // успешного захвата лока (при отказе остаёмся на старом акте
-            // с нетронутым состоянием) и до загрузки контента нового.
-            this.resetForActSwitch();
+            // resetForActSwitch — строго после успешного захвата лока (при
+            // отказе остаёмся на старом акте с нетронутым состоянием).
+            await this._loadActIntoView(actId);
 
-            // До этого момента window.currentActId ещё указывает на СТАРЫЙ акт
-            // (перезапись — только на :511-512, ниже). Пока флаг взведён,
-            // App.goToStep не персистит шаг под этим ID — иначе клик по табу
-            // шага в это окно примешал бы шаг нового акта в позицию старого.
-            App.setActSwitchInProgress(true);
-            await APIClient.loadActContent(actId);
-
-            // Сохраняем дефолтную структуру после блокировки (для новых актов)
-            if (APIClient._pendingDefaultStructureSave) {
-                APIClient._pendingDefaultStructureSave = false;
-                const username = AuthManager?.getCurrentUser?.() || null;
-                if (username) {
-                    await APIClient._saveDefaultStructure(actId, username);
-                }
-            }
-
-            this.currentActId = actId;
-            window.currentActId = actId;
-            // Сброс per-act трекеров перед init нового акта:
-            //  - ChangelogTracker.destroy: иначе pending debounce/persist старого акта
-            //    запишут отложенный entry с уже сменённым _storageKey;
-            //  - остальное пер-актное UI-состояние сброшено в resetForActSwitch() выше.
-            if (typeof ChangelogTracker !== 'undefined' && typeof ChangelogTracker.destroy === 'function') {
-                ChangelogTracker.destroy();
-            }
-            if (typeof ChangelogTracker !== 'undefined') ChangelogTracker.init(actId);
+            // pushState — только у явного переключения через меню: popstate
+            // идёт тем же _loadActIntoView, но САМ является реакцией на уже
+            // случившуюся навигацию браузера, повторный pushState тут сломал
+            // бы forward-навигацию.
             window.history.pushState({actId}, '', AppConfig.api.getUrl(`/constructor?act_id=${actId}`));
-            StorageManager.markAsSyncedWithDB();
-            this._clearCache();
             Notifications.success('Акт успешно загружен');
         } catch (error) {
             console.error('Ошибка переключения на акт:', error);
@@ -541,8 +572,6 @@ export class ActsMenuManager {
                     this._redirectToActsManager();
                 }
             } else this._redirectToActsManager();
-        } finally {
-            App.setActSwitchInProgress(false);
         }
     }
 
@@ -802,15 +831,30 @@ export class ActsMenuManager {
 
         window.addEventListener('popstate', async event => {
             const actId = event.state?.actId;
-            if (!actId) return;
-            // Тот же race, что и в _switchToAct: window.currentActId ещё
-            // указывает на предыдущий акт, пока идёт загрузка. Гасим
-            // персист шага на время await, см. App.setActSwitchInProgress.
-            App.setActSwitchInProgress(true);
+            if (!actId || actId === this.currentActId) return;
+            // Тот же путь, что у явного переключения через меню
+            // (_loadActIntoView) — иначе позиция просмотра покидаемого акта
+            // пишется под НОВЫМ actId (window.currentActId не обновляется),
+            // позиция открываемого акта не восстанавливается (маркер
+            // _viewPositionRestoredForActId не сброшен), а пер-актное
+            // UI-состояние (реестр нарушений, DOM-индекс, undo-стек) течёт
+            // между актами — resetForActSwitch() не вызывался вовсе.
+            //
+            // Сознательно НЕ делаем здесь то, что делает _switchToAct ДО
+            // resetForActSwitch: диалог «несохранённые изменения» и
+            // перезахват лока (unlockAct/LockManager.init). Навигация
+            // browser back/forward уже случилась (URL/history — свершившийся
+            // факт, откатить её нечем без доп. pushState-трюков), а лок акта
+            // не связан с тем, какой шаг/скролл акта показан — это забота
+            // LockManager, у него свой independent жизненный цикл (в т.ч.
+            // истечёт по Redis-TTL, если лок повис на покинутом через back
+            // акте). Смешивать сюда ещё и управление локом — гораздо большая
+            // by-design-смена поведения, чем то, что просил починить ревью.
             try {
-                await APIClient.loadActContent(actId);
-            } finally {
-                App.setActSwitchInProgress(false);
+                await this._loadActIntoView(actId);
+            } catch (error) {
+                console.error('Ошибка навигации к акту (popstate):', error);
+                Notifications.error('Не удалось загрузить акт');
             }
         });
 
