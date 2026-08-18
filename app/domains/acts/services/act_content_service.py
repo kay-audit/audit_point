@@ -5,6 +5,7 @@
 """
 
 import logging
+from datetime import datetime
 
 from app.core.config import Settings
 from app.db.types import DbConn
@@ -13,7 +14,11 @@ from app.domains.acts.block_types import (
     NODE_TYPE_TEXTBLOCK,
     NODE_TYPE_VIOLATION,
 )
-from app.domains.acts.exceptions import AccessDeniedError, ActValidationError
+from app.domains.acts.exceptions import (
+    AccessDeniedError,
+    ActValidationError,
+    ContentConflictError,
+)
 from app.domains.acts.repositories.act_access import ActAccessRepository
 from app.domains.acts.repositories.act_crud import ActCrudRepository
 from app.domains.acts.repositories.act_content import ActContentRepository
@@ -31,6 +36,19 @@ from app.domains.acts.settings import ActsSettings
 from app.domains.acts.utils.html_sanitizer import sanitize_act_data, sanitize_tree_nodes
 
 logger = logging.getLogger("audit_workstation.service.acts.content")
+
+
+def _normalize_updated_at(value: datetime) -> datetime:
+    """Нормализует метку для optimistic-сравнения: tz-суффикс отбрасывается.
+
+    acts.updated_at — TIMESTAMP без таймзоны: asyncpg отдаёт naive datetime,
+    pydantic сериализует его наивной ISO-строкой (с микросекундами), фронт
+    возвращает её эхом — обе стороны сравнения naive и совпадают побитово.
+    Если клиентский путь добавил tz-суффикс к той же wall-clock строке,
+    суффикс отбрасывается БЕЗ конвертации: значение из БД и есть это
+    wall-clock время, перевод в другую зону исказил бы его.
+    """
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 class ActContentService:
@@ -130,6 +148,14 @@ class ActContentService:
         validation_status = status_from_issues(validation_issues)
 
         async with self.conn.transaction():
+            # Optimistic-проверка конкурентного редактирования (две вкладки
+            # одного пользователя, перехват истёкшего лока — сценарии, которые
+            # Redis-лок не закрывает). Чтение метки — SELECT ... FOR UPDATE
+            # внутри этой же транзакции: конкурирующее сохранение ждёт нашего
+            # коммита и видит уже свежий updated_at.
+            if data.expected_updated_at is not None:
+                await self._check_content_conflict(act_id, data.expected_updated_at)
+
             # Вычисляем diff ДО сохранения
             diff = await self._audit.compute_content_diff(act_id, data)
             diff["save_type"] = data.saveType
@@ -194,6 +220,29 @@ class ActContentService:
         # каждом ручном сохранении плодил записи (INSERT без дедупликации) —
         # поэтому убран. Toast о статусе остаётся на фронте (api.js).
         return result
+
+    async def _check_content_conflict(self, act_id: int, expected: datetime) -> None:
+        """Сверяет expected_updated_at клиента с текущим acts.updated_at.
+
+        Расхождение означает, что с момента загрузки клиентского состояния
+        акт сохранил кто-то другой — бросаем ContentConflictError (409),
+        транзакция откатывается, ничего не записано. Сравнение точное, до
+        микросекунд (round-trip через pydantic их сохраняет); tz-семантика —
+        см. _normalize_updated_at.
+        """
+        stamp = await self._crud.get_edit_stamp(act_id)
+        current = stamp["updated_at"]
+        if current is not None and (
+            _normalize_updated_at(expected) == _normalize_updated_at(current)
+        ):
+            return
+        last_edited_at = stamp["last_edited_at"]
+        raise ContentConflictError(
+            "Содержимое акта изменено с момента загрузки — сохранение отклонено",
+            current_updated_at=current.isoformat() if current else None,
+            last_edited_by=stamp["last_edited_by"],
+            last_edited_at=last_edited_at.isoformat() if last_edited_at else None,
+        )
 
     def _strip_dangling_refs(self, data: ActDataSchema) -> int:
         """Удаляет листовые узлы-зомби с висячей ссылкой на отсутствующую запись.

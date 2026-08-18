@@ -43,6 +43,32 @@ class ActLockError(AppError):
         }
 
 
+class ContentConflictError(AppError):
+    """Содержимое акта изменено конкурентно (optimistic-проверка не прошла).
+
+    Клиент прислал expected_updated_at, не совпавший с текущим
+    acts.updated_at: с момента загрузки его состояния акт сохранил кто-то
+    другой (вторая вкладка, перехват истёкшего лока). Метки в extra —
+    ISO-строки (naive, как сериализует pydantic TIMESTAMP без tz).
+    """
+    status_code = 409
+    code: ClassVar[str] = "content-conflict"
+
+    def __init__(
+        self,
+        message: str,
+        current_updated_at: str | None = None,
+        last_edited_by: str | None = None,
+        last_edited_at: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.extra = {
+            "current_updated_at": current_updated_at,
+            "last_edited_by": last_edited_by,
+            "last_edited_at": last_edited_at,
+        }
+
+
 class KmConflictError(AppError):
     """Акт с таким КМ уже существует (конфликт уникальности)."""
     status_code = 409

@@ -42,7 +42,13 @@ async def get_act_content(
     responses={
         403: {"description": "Нет прав на редактирование", "model": ErrorDetail},
         404: {"description": "Акт не найден", "model": ErrorDetail},
-        409: {"description": "Блокировка не принадлежит пользователю", "model": ErrorDetail},
+        409: {
+            "description": (
+                "Блокировка не принадлежит пользователю (act-locked) или "
+                "содержимое изменено конкурентно (content-conflict)"
+            ),
+            "model": ErrorDetail,
+        },
         422: {"description": "Ошибка валидации входных данных"},
     },
 )

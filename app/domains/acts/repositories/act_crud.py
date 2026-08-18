@@ -721,6 +721,26 @@ class ActCrudRepository(BaseRepository):
         """Получает полную информацию об акте по его ID."""
         return await self._fetch_act(act_id)
 
+    async def get_edit_stamp(self, act_id: int) -> dict:
+        """Метка последнего изменения акта для optimistic-проверки сохранения.
+
+        SELECT ... FOR UPDATE: вызывается ВНУТРИ транзакции записи контента,
+        чтобы конкурирующее сохранение дождалось коммита и увидело свежий
+        updated_at — между проверкой и записью нет TOCTOU-окна.
+        """
+        row = await self.conn.fetchrow(
+            f"""
+            SELECT updated_at, last_edited_by, last_edited_at
+            FROM {self.acts}
+            WHERE id = $1
+            FOR UPDATE
+            """,
+            act_id,
+        )
+        if not row:
+            raise ActNotFoundError(f"Акт ID={act_id} не найден")
+        return dict(row)
+
     async def get_act_by_id_for_update(self, act_id: int) -> ActResponse:
         """Получает акт с блокировкой строки (SELECT ... FOR UPDATE)."""
         return await self._fetch_act(act_id, for_update=True)
