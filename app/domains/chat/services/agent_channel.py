@@ -2,20 +2,29 @@
 
 Поток (подтверждённая спека владельца шины — стороны агента):
   AW → submit() → INSERT вопрос (role='user', status='pending')
-                 + create_streaming draft (status='streaming', agent_ref=uid)
+                  + create_streaming draft (status='streaming', agent_ref=uid)
   Агент → claim вопроса (status='processing') → INSERT ответ (role='assistant',
           reply_to = id ВОПРОСА) → стримит reasoning-дельты в metadata.reasoning
           → пишет финальный content и терминальный status ('completed'/'failed')
   AW → poll_once() → ищет ответ по reply_to = id вопроса; инкрементально
-       upsert'ит частичный reasoning-блок пока ответ нетерминальный; финализирует
-       draft, когда статус ответа терминальный.
+        upsert'ит частичный reasoning-блок пока ответ нетерминальный; финализирует
+        draft, когда статус ответа терминальный.
 
 Словарь status владельца (CHECK на его таблице): pending | processing |
 completed | failed; role: user | assistant | system. Записи статуса от AW —
 best-effort: CheckViolation логируется и глотается, финализацию/таймаут это
 не ломает (защита от смены словаря владельцем).
+
+bus.media: AW пишет сюда в формате Nanobot — массив
+``{file_id, filename, mime_type, file_size}``, где ``file_id`` это
+``data:<mime>;base64,<payload>`` (inline-payload). Агент-читатель
+(map_answer_to_blocks) извлекает данные из data:URL напрямую, не ходя в
+chat_files. Блок формата chat_messages.content ({type:"file", file_id:<UUID>,
+...}) сюда НЕ подходит — лишний ``type``, и file_id это UUID, а не data:URL.
+Хелпер ``build_bus_media_from_file_blocks`` приводит формат к спеке шины.
 """
 
+import base64
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,6 +34,7 @@ import asyncpg
 from app.db.types import DbConn
 from app.domains.chat.exceptions import AgentChannelUnavailableError, ChatLimitError
 from app.domains.chat.repositories.agent_message_repository import AgentMessageRepository
+from app.domains.chat.repositories.file_repository import FileRepository
 from app.domains.chat.repositories.message_repository import MessageRepository
 from app.domains.chat.services.button_translator import translate_buttons
 from app.domains.chat.settings import ChatDomainSettings
@@ -171,6 +181,63 @@ def map_answer_to_blocks(row: dict, max_block_text_size: int = 262144) -> list[d
                     })
 
     return blocks
+
+
+async def build_bus_media_from_file_blocks(
+    file_blocks: list[dict] | None,
+    *,
+    conversation_id: str,
+    file_repo: FileRepository,
+) -> list[dict] | None:
+    """Преобразует file_blocks (UUID-формат chat_messages.content) в bus.media.
+
+    Спека шины (docs/guides/chat-files-data-requirements.md §6.3): элемент
+    ``{file_id, filename, mime_type, file_size}``, где ``file_id`` это либо
+    UUID из chat_files, либо ``data:<mime>;base64,<payload>``. Nanobot пишет
+    именно data-URL (см. пример из задачи: бинарь инлайнится в base64).
+    Формат ``chat_messages.content`` (``{type:"file", file_id:<UUID>, ...}``)
+    сюда не подходит: лишний ``type`` — поле блока контента, а не шины;
+    file_id должен быть data-URL, иначе агент-читатель потеряет payload.
+
+    Каждый файл подтягивается из chat_files по ``file_id`` UUID и его байты
+    кодируются в base64. Если file_block без ``file_id`` или запись не
+    найдена — пропускается (best-effort: потеря одного файла не должна
+    ронять вопрос целиком).
+
+    Возвращает ``None`` при пустом входе — это формальный «нет файлов»
+    для insert_question и совпадает с поведением caller'ов, которые
+    передают ``None`` при отсутствии вложений.
+    """
+    if not file_blocks:
+        return None
+    out: list[dict] = []
+    for fb in file_blocks:
+        if not isinstance(fb, dict):
+            continue
+        file_id = fb.get("file_id")
+        if not file_id:
+            continue
+        row = await file_repo.get_file_content(
+            file_id=file_id,
+            conversation_id=conversation_id,
+        )
+        if not row:
+            logger.warning(
+                "build_bus_media_from_file_blocks: файл %s не найден "
+                "в chat_files для conversation=%s — пропускаем",
+                file_id, conversation_id,
+            )
+            continue
+        mime = row["mime_type"]
+        raw = bytes(row["file_data"])
+        encoded = base64.b64encode(raw).decode("ascii")
+        out.append({
+            "file_id": f"data:{mime};base64,{encoded}",
+            "filename": row["filename"],
+            "mime_type": mime,
+            "file_size": len(raw),
+        })
+    return out or None
 
 
 def _extract_reasoning(answer: dict) -> str:

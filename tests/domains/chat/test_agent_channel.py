@@ -1,16 +1,18 @@
 """Тесты сервиса agent_channel.py.
 
-Покрывают: map_answer_to_blocks, build_timeout_error_block,
-AgentChannelService.submit, AgentChannelService.poll_once,
-AgentChannelService.get_queue_details.
+Покрывают: map_answer_to_blocks, build_bus_media_from_file_blocks,
+build_timeout_error_block, AgentChannelService.submit,
+AgentChannelService.poll_once, AgentChannelService.get_queue_details.
 """
 
+import base64
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.domains.chat.exceptions import ChatLimitError
 from app.domains.chat.services.agent_channel import (
     AgentChannelService,
+    build_bus_media_from_file_blocks,
     build_timeout_error_block,
     map_answer_to_blocks,
 )
@@ -258,6 +260,156 @@ class TestBuildTimeoutErrorBlock:
         assert block["type"] == "error"
         assert block["code"] == "agent_claim_timeout"
         assert isinstance(block["message"], str)
+
+
+# ── build_bus_media_from_file_blocks ──────────────────────────────────────────
+
+
+class TestBuildBusMediaFromFileBlocks:
+    """Спека шины: ``{file_id, filename, mime_type, file_size}``, без ``type``.
+
+    file_id — inline data-URL (``data:<mime>;base64,<payload>``), как пишет
+    Nanobot — не UUID (UUID ищется в chat_files агентом-читателем, data-URL
+    декодируется напрямую). Хелпер приводит формат ``chat_messages.content``
+    блоков к спеке ``bus.media``.
+    """
+
+    async def test_none_returns_none(self):
+        """На None — None (insert_question сериализует как '{}')."""
+        fake_repo = AsyncMock()
+        result = await build_bus_media_from_file_blocks(
+            None,
+            conversation_id="c1",
+            file_repo=fake_repo,
+        )
+        assert result is None
+        fake_repo.get_file_content.assert_not_called()
+
+    async def test_empty_list_returns_none(self):
+        """На пустой список — None."""
+        fake_repo = AsyncMock()
+        result = await build_bus_media_from_file_blocks(
+            [],
+            conversation_id="c1",
+            file_repo=fake_repo,
+        )
+        assert result is None
+        fake_repo.get_file_content.assert_not_called()
+
+    async def test_single_file_block_to_data_url(self):
+        """file_block с UUID → item с data-URL (Nanobot-формат), без 'type'."""
+        file_data = b"\x00# \xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82"
+        file_repo = AsyncMock()
+        file_repo.get_file_content = AsyncMock(return_value={
+            "filename": "hello.md",
+            "mime_type": "text/markdown",
+            "file_data": file_data,
+        })
+
+        result = await build_bus_media_from_file_blocks(
+            [{"file_id": "uuid-1", "filename": "hello.md",
+              "mime_type": "text/markdown", "file_size": len(file_data)}],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+        )
+
+        assert result is not None
+        assert len(result) == 1
+        item = result[0]
+        # Структура Nanobot: НЕТ поля type, есть file_id/filename/mime_type/file_size.
+        assert "type" not in item
+        assert set(item.keys()) == {"file_id", "filename", "mime_type", "file_size"}
+        assert item["filename"] == "hello.md"
+        assert item["mime_type"] == "text/markdown"
+        assert item["file_size"] == len(file_data)
+        assert item["file_id"].startswith("data:text/markdown;base64,")
+        b64_payload = item["file_id"].split(",", 1)[1]
+        assert base64.b64decode(b64_payload) == file_data
+
+    async def test_skip_block_without_file_id(self):
+        """file_block без file_id пропускается (best-effort: один битый не роняет)."""
+        file_repo = AsyncMock()
+        file_repo.get_file_content = AsyncMock(return_value={
+            "filename": "x.md",
+            "mime_type": "text/markdown",
+            "file_data": b"x",
+        })
+
+        result = await build_bus_media_from_file_blocks(
+            [{"filename": "y", "mime_type": "text/plain", "file_size": 1}],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+        )
+
+        assert result is None
+        file_repo.get_file_content.assert_not_called()
+
+    async def test_skip_block_when_file_not_found_in_chat_files(self):
+        """Не найден в chat_files → пропуск с warning. Если все пропущены → None."""
+        file_repo = AsyncMock()
+        file_repo.get_file_content = AsyncMock(return_value=None)
+
+        result = await build_bus_media_from_file_blocks(
+            [{"file_id": "uuid-missing", "filename": "x", "mime_type": "t", "file_size": 1}],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+        )
+
+        assert result is None
+
+    async def test_preserves_only_first_match_when_one_missing_other_ok(self):
+        """Частично битый список: один UUID пропал, второй есть — выдаём только валидный."""
+        file_repo = AsyncMock()
+
+        async def _side_effect(*, file_id, conversation_id):
+            if file_id == "uuid-good":
+                return {
+                    "filename": "ok.md",
+                    "mime_type": "text/markdown",
+                    "file_data": b"ok",
+                }
+            return None
+        file_repo.get_file_content = AsyncMock(side_effect=_side_effect)
+
+        result = await build_bus_media_from_file_blocks(
+            [
+                {"file_id": "uuid-good", "filename": "ok.md",
+                 "mime_type": "text/markdown", "file_size": 2},
+                {"file_id": "uuid-missing", "filename": "bad.md",
+                 "mime_type": "text/markdown", "file_size": 3},
+            ],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+        )
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["filename"] == "ok.md"
+
+    async def test_skip_non_dict_entries(self):
+        """Защита от мусорных элементов в списке (None/строки/числа) — пропускаются."""
+        file_repo = AsyncMock()
+        file_repo.get_file_content = AsyncMock(return_value={
+            "filename": "ok.txt",
+            "mime_type": "text/plain",
+            "file_data": b"hi",
+        })
+
+        result = await build_bus_media_from_file_blocks(
+            [
+                None,
+                "string-not-dict",
+                42,
+                {"file_id": "uuid-good", "filename": "ok.txt",
+                 "mime_type": "text/plain", "file_size": 2},
+            ],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+        )
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["filename"] == "ok.txt"
 
 
 # ── AgentChannelService.submit ────────────────────────────────────────────────

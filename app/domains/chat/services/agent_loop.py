@@ -100,13 +100,30 @@ async def _handle_forward_terminal(
     try:
         async with get_db() as conn:
             channel = AgentChannelService(conn, orch.settings)
+            # bus.media пишем в формате Nanobot (data-URL inline, без type),
+            # а не chat_messages.content-блоки. Без файлов передаём None —
+            # helper вернёт None сразу, не дёргая БД.
+            bus_media = None
+            if file_blocks:
+                from app.domains.chat.repositories.file_repository import (
+                    FileRepository,
+                )
+                from app.domains.chat.services.agent_channel import (
+                    build_bus_media_from_file_blocks,
+                )
+
+                bus_media = await build_bus_media_from_file_blocks(
+                    file_blocks,
+                    conversation_id=conversation_id,
+                    file_repo=FileRepository(conn),
+                )
             question_uid = await channel.submit(
                 conversation_id=conversation_id,
                 user_id=user_id or "",
                 assistant_message_id=message_id,
                 text=question,
                 mode="adaptive",
-                media=file_blocks or None,
+                media=bus_media,
             )
     except ChatLimitError as exc:
         logger.warning(
