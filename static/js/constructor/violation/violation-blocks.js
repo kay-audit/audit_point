@@ -6,13 +6,13 @@
  * приёма картинок, зона вставки и контекстное меню параметризованы ключом поля.
  *
  * Записи в модель — только через мутаторы (violation-mutations.js):
- * setFieldEnabled / addBlock / removeBlock. Здесь остаются гейты, которые
- * мутатору не видны: лимит числа блоков ПО ПОЛЮ (#4) и лимиты картинок
- * (тип/magic/байты).
+ * setFieldEnabled / addBlock / removeBlock / removeBlocks. Здесь остаются
+ * гейты, которые мутатору не видны: лимит числа блоков ПО ПОЛЮ (#4) и лимиты
+ * картинок (тип/magic/байты).
  *
  * Здесь же — проводка мультивыделения блоков (состояние —
- * violation-block-selection.js): document-слушатель клика, восстановление
- * подсветки после перерисовки.
+ * violation-block-selection.js): document-слушатели клика и Delete,
+ * восстановление подсветки после перерисовки, групповое удаление.
  *
  * Перенос блоков между полями — сознательный non-goal первой итерации
  * (спека §7): контейнер каждого поля работает только со своими блоками.
@@ -193,12 +193,28 @@ Object.assign(ViolationManager.prototype, {
 
                 const insertPosition = this.calculateCursorPosition(e, itemsContainer);
                 const clickedWrapper = e.target.closest('.content-item-wrapper');
+                const clickedBlockId = clickedWrapper ? clickedWrapper.dataset.blockId : null;
+
+                // ПКМ мимо выделения (по другому блоку, по зазору, по пустому
+                // месту) сбрасывает его — прецедент таблиц (table-core.js):
+                // меню обязано говорить о том, на что показывает курсор.
+                if (!clickedBlockId
+                    || !this.blockSelection.isSelected(violation.id, fieldKey, clickedBlockId)) {
+                    this.clearBlockSelection();
+                }
+
+                // Список выделенного снимаем ЗДЕСЬ и передаём меню замыканием:
+                // клик по пункту меню сначала пройдёт через document-слушатель
+                // выделения и обнулит живое состояние.
+                const selectedIds = this.blockSelection.idsInOrder(
+                    violation.id, fieldKey, fieldBlockIds(violation, fieldKey));
 
                 ContextMenuManager.show(e.clientX, e.clientY, null, 'violation', {
                     violation,
                     fieldKey,
                     contentContainer,
-                    blockId: clickedWrapper ? clickedWrapper.dataset.blockId : null,
+                    blockId: clickedBlockId,
+                    selectedIds,
                     insertPosition,
                 });
             });
@@ -454,8 +470,8 @@ Object.assign(ViolationManager.prototype, {
     // ── Мультивыделение блоков поля (violation-block-selection.js) ────────────
 
     /**
-     * Вешает document-слушатель мультивыделения: ЛКМ по шапке блока выделяет,
-     * ЛКМ где угодно ещё — снимает выделение.
+     * Вешает document-слушатели мультивыделения: ЛКМ по шапке блока выделяет,
+     * ЛКМ где угодно ещё — снимает выделение, Delete — удаляет выделенное.
      *
      * Слушатели глобальные (а не на контейнере поля) по двум причинам: снятие
      * выделения обязано ловить клики ВНЕ поля (тулбар, другое нарушение, пустое
@@ -468,6 +484,7 @@ Object.assign(ViolationManager.prototype, {
      */
     setupBlockSelectionHandlers() {
         document.addEventListener('click', (e) => this._handleBlockSelectionClick(e), true);
+        document.addEventListener('keydown', (e) => this._handleBlockSelectionKeydown(e));
     },
 
     /**
@@ -508,6 +525,25 @@ Object.assign(ViolationManager.prototype, {
             violationId, fieldKey, blockId, e, fieldBlockIds(violation, fieldKey));
         this._syncSelectionEscapeLayer();
         this._syncBlockSelectionClasses(violation, fieldKey, itemsContainer);
+    },
+
+    /**
+     * Delete по выделению — групповое удаление (диалог подтверждения при ≥2
+     * блоках живёт в removeSelectedBlocks). В редактируемом контексте клавиша
+     * принадлежит редактору: предикат общий с Ctrl+V и Escape зоны
+     * (shared/editable-target.js).
+     * @param {KeyboardEvent} e - Событие keydown
+     */
+    _handleBlockSelectionKeydown(e) {
+        if (e.key !== 'Delete') return;
+        if (this.blockSelection.isEmpty()) return;
+        if (isEditableTarget(e.target) || isEditableTarget(document.activeElement)) return;
+
+        const violation = this.activeViolations.get(this.blockSelection.violationId);
+        if (!violation) return;
+
+        e.preventDefault?.();
+        this.removeSelectedBlocks(violation, this.blockSelection.fieldKey, null);
     },
 
     /**
@@ -609,8 +645,58 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Валидирует ТИП пачки файлов
- ДО чтения (H6/#26).
+     * Групповое удаление выделенных блоков: ОДИН гейт read-only (в мутаторе),
+     * один teardown rich-поля, одна перерисовка — зеркало _insertBlocksBulk.
+     *
+     * Подтверждение обязательно при ≥2 блоках: отмены удаления в конструкторе
+     * нет, а Delete по выделению легко нажать мимо. Один блок удаляется без
+     * вопроса — это ровно прежний одиночный путь меню.
+     *
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement|null} contentContainer - Контейнер содержимого поля
+     *        (null — найти контейнер блоков в документе по адресу поля)
+     * @param {string[]|null} [blockIds] - Явный список id: контекстное меню
+     *        снимает его в момент показа, потому что клик по пункту меню
+     *        успевает сбросить живое выделение раньше обработчика пункта
+     * @returns {Promise<boolean>} true — блоки удалены
+     */
+    async removeSelectedBlocks(violation, fieldKey, contentContainer, blockIds = null) {
+        const ids = blockIds
+            || this.blockSelection.idsInOrder(
+                violation.id, fieldKey, fieldBlockIds(violation, fieldKey));
+        if (ids.length === 0) return false;
+
+        if (ids.length >= 2) {
+            const confirmed = await DialogManager.show({
+                title: 'Удаление блоков',
+                message: `Удалить ${ids.length} ${pluralizeBlocks(ids.length)}? `
+                    + 'Отменить удаление будет нельзя.',
+                icon: '🗑️',
+                type: 'warning',
+                confirmText: 'Удалить',
+            });
+            if (!confirmed) return false;
+        }
+
+        // Симметрично removeBlockFromField: контроллер снимаем ДО удаления из
+        // модели, иначе unmount закоммитил бы ввод в уже удалённый блок.
+        this._teardownActiveRichField(violation.id);
+
+        if (!this.removeBlocks(violation, fieldKey, ids)) return false;
+
+        this.clearBlockSelection();
+
+        const itemsContainer = contentContainer?.querySelector?.('.violation-blocks-items')
+            || this._findBlocksItemsContainer(violation.id, fieldKey);
+        if (itemsContainer) {
+            this.renderBlocks(violation, fieldKey, itemsContainer);
+        }
+        return true;
+    },
+
+    /**
+     * Валидирует ТИП пачки файлов ДО чтения (H6/#26).
      *
      * Общая точка для всех трёх способов приёма (выбор файлов, drag&drop,
      * Ctrl+V). Здесь — только тип (MIME), число блоков поля и абсурдный сырой
