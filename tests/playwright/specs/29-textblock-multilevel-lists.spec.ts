@@ -370,6 +370,49 @@ test.describe('Textblock multilevel lists (B3/C1/D2)', () => {
     expect(await editor.innerHTML()).toBe(nested);
   });
 
+  test('клик мышью правее конца текста пункта с подсписком ставит каретку в конец строки', async ({
+    page,
+  }) => {
+    // Регрессия: у «правильной» вложенности (<li>текст<ul>…</ul></li>) Chromium
+    // снапил каретку в НАЧАЛО текста li-хозяина при клике правее его конца —
+    // точка попадала в анонимный блок. Обход — CSS в textblock-content.css
+    // (flow-root у li + inline-block у вложенного списка); тест кликает
+    // НАСТОЯЩЕЙ мышью: caretRangeFromPoint путь бага не воспроизводит.
+    await openTextblock(page);
+    const editor = page.locator(EDITOR);
+
+    await editor.evaluate((ed: HTMLElement) => {
+      ed.innerHTML =
+        '<ul><li>Первый<ul><li>Второй пункт</li><li>Третий<ul><li>Четвертый</li></ul></li></ul></li><li>Пятый</li></ul>';
+    });
+
+    // «Первый» и «Третий» — хозяева подсписков (битые до обхода), «Четвертый» —
+    // лист, контроль что обход не сломал обычный случай.
+    for (const needle of ['Первый', 'Третий', 'Четвертый']) {
+      const point = await editor.evaluate((ed: HTMLElement, text: string) => {
+        const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+        let node: Node | null = null;
+        while ((node = walker.nextNode())) {
+          if (node.textContent === text) break;
+        }
+        const range = document.createRange();
+        range.setStart(node!, node!.textContent!.length);
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        return { x: rect.x + 40, y: rect.y + rect.height / 2 };
+      }, needle);
+      await page.mouse.click(point.x, point.y);
+      const got = await page.evaluate(() => {
+        const r = window.getSelection()!.getRangeAt(0);
+        return { text: r.startContainer.textContent, offset: r.startOffset };
+      });
+      expect(got, `клик правее конца «${needle}»`).toEqual({
+        text: needle,
+        offset: needle.length,
+      });
+    }
+  });
+
   test('Shift+Tab на верхнем уровне выводит пункт из списка абзацем (чистый split)', async ({
     page,
   }) => {

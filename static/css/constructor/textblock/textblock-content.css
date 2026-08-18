@@ -205,6 +205,29 @@
     margin-bottom: var(--spacing-xs);
 }
 
+/* Обход бага hit-testing Chromium для «правильной» вложенности списков
+   (<li>текст<ul>…</ul></li>, её строит собственный indent): клик мышью правее
+   конца текста такого li ставил каретку в НАЧАЛО текста, а не в конец — точка
+   попадает в анонимный блок, у которого PositionForPoint отдаёт позицию 0.
+   Нужны ОБА правила разом: flow-root чинит одни конфигурации, inline-block у
+   вложенного списка — другие; порознь клик в конец строки li-с-подсписком
+   снова снапится в начало (проверено живыми кликами, не caretRangeFromPoint —
+   тот врёт и на исправленной раскладке). Цена — лишний зазор до строки после
+   вложенной ветки (инлайн-блок добавляет собственный line box). */
+.textblock-editor li,
+.violation-textarea li {
+    display: flow-root list-item;
+}
+
+.textblock-editor li > ul,
+.textblock-editor li > ol,
+.violation-textarea li > ul,
+.violation-textarea li > ol {
+    display: inline-block;
+    width: 100%;
+    vertical-align: top;
+}
+
 /* Цитаты */
 .textblock-editor blockquote {
     border-left: var(--textblock-blockquote-border-width) solid var(--primary);
