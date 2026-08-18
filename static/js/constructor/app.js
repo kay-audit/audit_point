@@ -15,49 +15,11 @@ import { PreviewManager } from './preview/preview.js';
 import { RENDER_CLASSES } from './render-classes.js';
 import { AppState } from './state/state-core.js';
 import { StorageManager } from './storage-manager.js';
+import { loadViewPosition, saveViewPosition } from './state/view-position-store.js';
 import { AppConfig } from '../shared/app-config.js';
 import { Notifications } from '../shared/notifications.js';
 
 export class App {
-    // Базовые префиксы LS-ключей. Реальные ключи строятся через _getStepKey/_getScrollKey
-    // и включают act_id, чтобы шаг и скролл одного акта не подтекали в другой.
-    // Старые ключи без суффикса удаляются в _migrateLegacyKeys() при init.
-    static _stepKeyPrefix = 'constructor_current_step';
-    static _scrollKeyPrefix = 'constructor_scroll_positions';
-    static _stepStorageKey = 'constructor_current_step';   // legacy (для миграции)
-    static _scrollStorageKey = 'constructor_scroll_positions'; // legacy
-
-    /**
-     * Возвращает per-act LS-ключ для текущего шага.
-     * Если currentActId ещё не задан — fallback на legacy-ключ.
-     * @private
-     */
-    static _getStepKey() {
-        const id = window.currentActId;
-        return id ? `${this._stepKeyPrefix}:${id}` : this._stepStorageKey;
-    }
-
-    /**
-     * Возвращает per-act LS-ключ для позиций скролла.
-     * @private
-     */
-    static _getScrollKey() {
-        const id = window.currentActId;
-        return id ? `${this._scrollKeyPrefix}:${id}` : this._scrollStorageKey;
-    }
-
-    /**
-     * Одноразовая миграция: удаляет legacy-ключи без actId, которые могли
-     * остаться от предыдущих версий и шадовить per-act ключи.
-     * @private
-     */
-    static _migrateLegacyKeys() {
-        try {
-            localStorage.removeItem(this._stepStorageKey);
-            localStorage.removeItem(this._scrollStorageKey);
-        } catch { /* ignore */ }
-    }
-
     /**
      * Инициализация приложения при загрузке страницы
      */
@@ -78,12 +40,10 @@ export class App {
             this._initializeManagers();
             this._setupEventHandlers();
 
-            // Восстанавливаем шаг и позицию скролла из localStorage (per-act ключи).
-            this._restoreStep();
+            // Сохранение позиции просмотра при уходе со страницы. Восстановление
+            // шага/скролла — в APIClient._applyActContent (после отрисовки
+            // содержимого загруженного акта), не здесь.
             this._setupScrollPersistence();
-            // После _restoreStep/_restoreScroll legacy-значения уже подхвачены
-            // в per-act ключи — теперь чистим старые.
-            this._migrateLegacyKeys();
 
             // Применяем режим только чтения если активен
             if (AppConfig.readOnlyMode?.isReadOnly) {
@@ -248,36 +208,23 @@ export class App {
     /**
      * Переключение между шагами приложения
      * @param {number} stepNum - Номер шага (1 или 2)
+     * @param {Object} [options]
+     * @param {boolean} [options.persist=true] - Сохранять ли шаг в localStorage.
+     *   false — при восстановлении позиции из APIClient._applyActContent, где
+     *   window.currentActId ещё не гарантированно обновлён на загружаемый акт
+     *   (см. view-position-store.js).
      */
-    static goToStep(stepNum) {
+    static goToStep(stepNum, { persist = true } = {}) {
         // Обновляем текущий шаг
         AppState.currentStep = stepNum;
-        try {
-            localStorage.setItem(this._getStepKey(), stepNum);
-        } catch { /* quota — ignore */ }
+        if (persist && window.currentActId) {
+            this._saveViewPosition(window.currentActId, { step: stepNum });
+        }
 
         this._updateStepVisibility(stepNum);
         this._handleStepTransition(stepNum);
 
         HelpManager.updateTooltip();
-    }
-
-    /**
-     * Восстанавливает шаг из localStorage
-     * @private
-     */
-    static _restoreStep() {
-        let saved = localStorage.getItem(this._getStepKey());
-        if (!saved && window.currentActId) {
-            // Fallback на legacy-ключ — мигрируем значение в per-act, legacy потом удалится.
-            saved = localStorage.getItem(this._stepStorageKey);
-        }
-        if (saved) {
-            const step = parseInt(saved, 10);
-            if (step === 2) {
-                this.goToStep(2);
-            }
-        }
     }
 
     /**
@@ -322,68 +269,94 @@ export class App {
     }
 
     /**
-     * Настраивает сохранение позиций скролла при уходе со страницы
-     * и восстанавливает сохранённые позиции
+     * Настраивает сохранение позиции просмотра (скролл панелей + якорь) при
+     * уходе со страницы. Восстановление — в APIClient._applyActContent, не здесь:
+     * на момент App.init содержимое акта ещё не загружено.
      * @private
      */
     static _setupScrollPersistence() {
-        // Сохраняем позиции при уходе со страницы (через общий реестр beforeunload).
+        const persist = () => this.persistViewPositionForAct(window.currentActId);
+
+        // beforeunload — закрытие вкладки/обычная навигация; pagehide — доп. страховка
+        // для сценариев, где beforeunload не срабатывает (bfcache, мобильный Safari).
         if (typeof LifecycleHelper !== 'undefined') {
-            LifecycleHelper.registerBeforeUnload('app:scroll', () => this._saveScrollPositions());
+            LifecycleHelper.registerBeforeUnload('app:scroll', persist);
         } else {
-            window.addEventListener('beforeunload', () => this._saveScrollPositions());
+            window.addEventListener('beforeunload', persist);
         }
-
-        // Восстанавливаем позиции после полной отрисовки
-        requestAnimationFrame(() => this._restoreScrollPositions());
+        window.addEventListener('pagehide', persist);
     }
 
     /**
-     * Сохраняет позиции скролла всех панелей в localStorage
+     * Снимает текущий скролл панелей и якорный узел превью.
      * @private
+     * @returns {{scroll: {treeColumn: number, previewColumn: number, step2: number}, anchorNodeId: string|null}}
      */
-    static _saveScrollPositions() {
-        const positions = {};
-
-        const tree = document.querySelector('.tree-container');
-        if (tree) positions.tree = tree.scrollTop;
-
-        const preview = document.querySelector('.preview');
-        if (preview) positions.preview = preview.scrollTop;
-
+    static _captureScrollAndAnchor() {
+        const treeColumn = document.getElementById('treeColumn');
+        const previewColumn = document.getElementById('previewColumn');
         const step2 = document.getElementById('step2');
-        if (step2) positions.step2 = step2.scrollTop;
 
-        try {
-            localStorage.setItem(this._getScrollKey(), JSON.stringify(positions));
-        } catch { /* quota — ignore */ }
+        return {
+            scroll: {
+                treeColumn: treeColumn ? treeColumn.scrollTop : 0,
+                previewColumn: previewColumn ? previewColumn.scrollTop : 0,
+                step2: step2 ? step2.scrollTop : 0,
+            },
+            anchorNodeId: step2 ? this._findTopVisibleAnchorNodeId(step2) : null,
+        };
     }
 
     /**
-     * Восстанавливает позиции скролла из localStorage (per-act ключ с fallback на legacy).
+     * Находит id верхнего видимого пункта в контейнере шага 2 — якорь для
+     * восстановления скролла независимо от последующих изменений контента.
      * @private
+     * @param {HTMLElement} step2 - Контейнер шага 2
+     * @returns {string|null}
      */
-    static _restoreScrollPositions() {
-        let saved = localStorage.getItem(this._getScrollKey());
-        if (!saved && window.currentActId) {
-            saved = localStorage.getItem(this._scrollStorageKey);
+    static _findTopVisibleAnchorNodeId(step2) {
+        const items = step2.querySelectorAll('.item-block[data-node-id]');
+        const containerTop = step2.getBoundingClientRect().top;
+        for (const el of items) {
+            if (el.getBoundingClientRect().bottom > containerTop) {
+                return el.dataset.nodeId || null;
+            }
         }
-        if (!saved) return;
+        return null;
+    }
 
-        try {
-            const positions = JSON.parse(saved);
+    /**
+     * Сливает частичное обновление позиции просмотра с уже сохранённой
+     * (по указанному actId явно — не полагается на window.currentActId).
+     * @private
+     * @param {number|string} actId - ID акта
+     * @param {Object} partial - Частичное обновление ({step} и/или {scroll, anchorNodeId})
+     */
+    static _saveViewPosition(actId, partial) {
+        if (!actId) return;
+        const current = loadViewPosition(localStorage, actId) || {
+            step: 1,
+            scroll: { treeColumn: 0, previewColumn: 0, step2: 0 },
+            anchorNodeId: null,
+        };
+        saveViewPosition(localStorage, actId, {
+            step: partial.step !== undefined ? partial.step : current.step,
+            scroll: partial.scroll !== undefined ? partial.scroll : current.scroll,
+            anchorNodeId: partial.anchorNodeId !== undefined ? partial.anchorNodeId : current.anchorNodeId,
+        });
+    }
 
-            const tree = document.querySelector('.tree-container');
-            if (tree && positions.tree) tree.scrollTop = positions.tree;
-
-            const preview = document.querySelector('.preview');
-            if (preview && positions.preview) preview.scrollTop = positions.preview;
-
-            const step2 = document.getElementById('step2');
-            if (step2 && positions.step2) step2.scrollTop = positions.step2;
-        } catch (e) {
-            console.error('Ошибка восстановления позиции скролла:', e);
-        }
+    /**
+     * Сохраняет полный снимок текущей позиции просмотра (шаг + скролл + якорь)
+     * под явно переданным actId. Используется в точках, где window.currentActId
+     * не гарантированно совпадает с сохраняемым актом (переключение акта —
+     * вызывается ДО перезаписи window.currentActId на новый акт).
+     * @param {number|string} actId - ID акта, для которого сохраняется позиция
+     */
+    static persistViewPositionForAct(actId) {
+        if (!actId) return;
+        const { scroll, anchorNodeId } = this._captureScrollAndAnchor();
+        this._saveViewPosition(actId, { step: AppState.currentStep, scroll, anchorNodeId });
     }
 
     /**

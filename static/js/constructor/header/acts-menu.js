@@ -5,6 +5,7 @@
  * Интегрирован с БД через API. Отвечает за автозагрузку акта при входе в конструктор.
  */
 
+import { App } from '../app.js';
 import { ChangelogTracker } from '../changelog-tracker.js';
 import { invalidateTableWarningsCache } from './notifications-source-tables.js';
 import { ItemsRenderer } from '../items/items-renderer.js';
@@ -410,6 +411,11 @@ export class ActsMenuManager {
      * НЕ снимаются — они нужны следующему акту, это by design.
      */
     static resetForActSwitch() {
+        // Снимаем позицию просмотра ПОКИДАЕМОГО акта явно по старому actId —
+        // до перезаписи this.currentActId/window.currentActId на новый акт ниже.
+        if (this.currentActId) {
+            App.persistViewPositionForAct(this.currentActId);
+        }
         violationManager.destroy();
         tableManager.clearSelection();
         ItemsRenderer._closeTbDropdownInItems();

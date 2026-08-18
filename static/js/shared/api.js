@@ -13,6 +13,7 @@ import { Notifications } from './notifications.js';
 import { formatValidationDetail } from './api-errors.js';
 import { sanitizeActContent } from '../constructor/state/act-content-sanitizer.js';
 import { shouldOfferRestore } from '../constructor/state/draft-restore.js';
+import { loadViewPosition } from '../constructor/state/view-position-store.js';
 import { normalizePinnedOrder, reconcileTableKind } from '../constructor/table/table-kind.js';
 
 // Constructor-зона: lazy-доступ через window.
@@ -576,6 +577,11 @@ export class APIClient {
                 window.PreviewManager.update();
             }
 
+            // Восстанавливаем шаг и позицию скролла, сохранённые для этого акта
+            // (уход со страницы / переключение на другой акт). DOM обоих шагов
+            // уже отрисован, tracking ещё выключен.
+            this._restoreViewPosition(actId);
+
             // Включаем tracking обратно с задержкой.
             // Снимок в localStorage здесь НЕ пишется: снимок существует только
             // при несинхронизированных правках (см. StorageManager.saveState).
@@ -625,6 +631,49 @@ export class APIClient {
             window.StorageManager.enableTracking();
             throw err;
         }
+    }
+
+    /**
+     * Восстанавливает шаг и позицию скролла, сохранённые для акта actId
+     * (уход со страницы / переключение на другой акт, см. App.js:
+     * persistViewPositionForAct/_saveViewPosition, view-position-store.js).
+     * actId передаётся явным аргументом: на момент вызова window.currentActId
+     * ещё не гарантированно обновлён на загружаемый акт (см. App.goToStep).
+     *
+     * @private
+     * @param {number} actId - ID акта
+     */
+    static _restoreViewPosition(actId) {
+        const pos = loadViewPosition(localStorage, actId);
+        if (!pos) return;
+
+        if (window.App && window.App.goToStep) {
+            window.App.goToStep(pos.step, { persist: false });
+        }
+
+        requestAnimationFrame(() => {
+            const treeColumn = document.getElementById('treeColumn');
+            if (treeColumn) treeColumn.scrollTop = pos.scroll.treeColumn;
+
+            const previewColumn = document.getElementById('previewColumn');
+            if (previewColumn) previewColumn.scrollTop = pos.scroll.previewColumn;
+
+            const step2 = document.getElementById('step2');
+            if (!step2) return;
+
+            const itemsContainer = document.getElementById('itemsContainer') || step2;
+            const tree = window.treeManager;
+            if (pos.anchorNodeId && tree?._findPreviewElement && tree?._performScroll) {
+                const target = tree._findPreviewElement(itemsContainer, pos.anchorNodeId);
+                if (target) {
+                    // Без _animateHighlight: восстановление позиции — не переход
+                    // пользователя к узлу, подсветка здесь неуместна.
+                    tree._performScroll(target);
+                    return;
+                }
+            }
+            step2.scrollTop = pos.scroll.step2;
+        });
     }
 
     /**

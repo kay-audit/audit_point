@@ -8,7 +8,7 @@
  * атомарно unregister по имени.
  *
  * Использование:
- *   LifecycleHelper.registerBeforeUnload('scroll', () => App._saveScrollPositions());
+ *   LifecycleHelper.registerBeforeUnload('scroll', () => App.persistViewPositionForAct(actId));
  *   LifecycleHelper.unregister('scroll');
  */
 export const LifecycleHelper = {
