@@ -149,14 +149,18 @@ export class TableCellsOperations {
      * finishEditing), не трогая DOM/фокус/классы — textarea остаётся в ячейке,
      * ввод не прерывается.
      *
-     * ChangelogTracker и afterTableCellChanged здесь намеренно НЕ вызываются —
-     * это не окончание правки, а промежуточная синхронизация; реальное
-     * завершение (blur/Enter/Escape) по-прежнему проходит через finishEditing.
+     * ChangelogTracker здесь намеренно НЕ вызывается — это не окончание правки,
+     * а промежуточная синхронизация; реальное завершение (blur/Enter/Escape)
+     * по-прежнему проходит через finishEditing. Превью, наоборот, патчится: его
+     * освежал ровно тот blur, что убран выше, и без патча предпросмотр отставал
+     * бы от ячейки до конца редактирования. Патч трогает только DOM превью —
+     * ни textarea, ни фокус он не задевает.
      *
      * @returns {boolean} true если был хотя бы один pending edit
      */
     commitPendingEdit() {
         let committed = false;
+        const touchedTables = new Set();
         const editingCells = document.querySelectorAll('#itemsContainer td.editing, #itemsContainer th.editing');
         editingCells.forEach(cell => {
             const textarea = cell.querySelector('textarea');
@@ -171,9 +175,11 @@ export class TableCellsOperations {
             if (table && table.grid && table.grid[row] && table.grid[row][col]) {
                 if (!table.grid[row][col].isSpanned) {
                     table.grid[row][col].content = textarea.value.trim();
+                    touchedTables.add(tableId);
                 }
             }
         });
+        touchedTables.forEach(tableId => afterTableCellChanged(tableId));
         return committed;
     }
 
