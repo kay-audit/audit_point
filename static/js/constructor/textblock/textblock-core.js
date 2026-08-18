@@ -297,6 +297,21 @@ export class TextBlockManager {
     }
 
     /**
+     * Общий сток команд уровня списка (indent/outdent исполняются своим кодом):
+     * нормализация — страховка на чужую разметку, уже лежащую в блоке (paste,
+     * undo, старый контент), затем запись в модель. Возвращает true как
+     * результат самой команды.
+     * @returns {boolean}
+     */
+    _commitListLevelChange() {
+        if (typeof this._normalizeListNesting === 'function') {
+            this._normalizeListNesting(this.activeEditor);
+        }
+        this.saveContent(this.activeEditor.dataset.textBlockId, this.activeEditor.innerHTML);
+        return true;
+    }
+
+    /**
      * Выполняет команду форматирования
      */
     execCommand(command, value = null) {
@@ -318,37 +333,35 @@ export class TextBlockManager {
             const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
             const li = range ? this._caretListItem(range, this.activeEditor) : null;
             if (!li) return false;
+            // Двигаем ВСЕ пункты выделения, а не только тот, где начало
+            // диапазона: нативные команды двигали выделение целиком, и Tab/
+            // Shift+Tab по нескольким строкам списка обязаны работать так же.
+            const items = (typeof this._selectedListItems === 'function')
+                ? this._selectedListItems(range, this.activeEditor) : [li];
+
+            // Обе команды уровня исполняем САМИ (_indentListItem/
+            // _outdentListItem, textblock-editor.js): нативный indent порождает
+            // список-сироту, из которого валидную форму без пустого <li>-хоста
+            // не собрать (маркеры хостов выстраивались в строку), а нативный
+            // outdent роняет пункт рядом с подсписком или прямо внутрь чужого
+            // <li>. Сток общий, см. _commitListLevelChange.
             if (command === 'indent') {
-                // Углубляем ВСЕ пункты выделения, а не только тот, где начало
-                // диапазона: нативная команда двигала выделение целиком, и Tab
-                // по нескольким строкам списка обязан работать так же (outdent
-                // остался нативным и селекцию обрабатывает сам).
-                const items = (typeof this._selectedListItems === 'function')
-                    ? this._selectedListItems(range, this.activeEditor) : [li];
                 const movable = items.filter(item => typeof this._listLevel !== 'function'
                     || this._listLevel(item, this.activeEditor) < this._listLevelCeiling());
                 if (!movable.length) return false;
-
-                // Углубление делаем САМИ (_indentListItem, textblock-editor.js):
-                // нативный indent порождает список-сироту, из которого валидную
-                // форму без пустого <li>-хоста не собрать (маркеры хостов
-                // выстраивались в строку), и не сливает подсписки одного типа.
-                // Сток тот же, что у нативной ветки ниже: нормализация
-                // (страховка на чужую разметку в блоке) → saveContent.
                 if (typeof this._indentListItem === 'function') {
                     let changed = false;
                     for (const item of movable) {
                         if (this._indentListItem(item)) changed = true;
                     }
-                    if (!changed) return false;
-                    if (typeof this._normalizeListNesting === 'function') {
-                        this._normalizeListNesting(this.activeEditor);
-                    }
-                    this.saveContent(
-                        this.activeEditor.dataset.textBlockId, this.activeEditor.innerHTML,
-                    );
-                    return true;
+                    return changed ? this._commitListLevelChange() : false;
                 }
+            } else if (typeof this._outdentListItem === 'function') {
+                let changed = false;
+                for (const item of items) {
+                    if (this._outdentListItem(item)) changed = true;
+                }
+                return changed ? this._commitListLevelChange() : false;
             }
         }
 

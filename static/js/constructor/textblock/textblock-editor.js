@@ -1656,6 +1656,95 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
+     * @private Поднимает пункт списка на уровень — СВОЯ реализация вместо
+     * нативного execCommand('outdent') (пара к _indentListItem). Нативная
+     * команда роняла пункт РЯДОМ с подсписком или прямо внутрь чужого <li>
+     * (форма «li внутри li»), которую не понимают ни DOCX-сегментатор, ни
+     * MD/TXT, ни превью, — нормализатор потом чинил её задним числом.
+     *
+     * Правила (как в Word/ProseMirror):
+     *  - хвост пункта (следующие соседи по его списку) обязан остаться на
+     *    СВОЁМ уровне, а пункт уезжает выше — значит, хвост становится
+     *    подпунктами самого пункта;
+     *  - подсписок лежит в <li> (канон) → пункт встаёт СЛЕДУЮЩИМ за этим <li>;
+     *  - список верхнего уровня → пункт выходит из списка АБЗАЦЕМ
+     *    (_listItemToParagraph): чистый split, список делится на «до» и «после»;
+     *  - опустевший список удаляется (остатки не теряем — см. _dropEmptyList).
+     *
+     * Как и у indent, нативный undo-стек своей мутации не видит.
+     * @param {Element} li Пункт списка (из _caretListItem/_selectedListItems).
+     * @returns {boolean} true — уровень изменён (вызывающий обязан сохранить).
+     */
+    _outdentListItem(li) {
+        const list = li ? li.parentNode : null;
+        if (!this._isListElement(list)) return false;
+        const container = list.parentNode;
+        if (!container) return false;
+
+        const caret = this._captureCaretRange();
+        const tail = [];
+        for (let node = li.nextSibling; node; node = node.nextSibling) tail.push(node);
+        if (tail.some(node => node.nodeType === 1)) {
+            const host = this._sublistHost(li, list.tagName);
+            tail.forEach(node => host.appendChild(node));
+        }
+
+        if (container.tagName === 'LI') {
+            container.parentNode.insertBefore(li, container.nextSibling);
+        } else if (this._isListElement(container)) {
+            // Невалидная вложенность (список прямо в списке), ещё не прошедшая
+            // нормализацию в живом DOM: уровнем выше здесь — сам внешний список.
+            container.insertBefore(li, list.nextSibling);
+        } else {
+            this._listItemToParagraph(li, list, container);
+        }
+        this._dropEmptyList(list);
+        this._restoreCaretRange(caret);
+        return true;
+    },
+
+    /**
+     * @private Пункт списка ВЕРХНЕГО уровня выходит из списка абзацем: свой
+     * контент — в <div> сразу за списком, собственные подсписки — списками за
+     * абзацем (они поднимаются вместе с пунктом). Хвост списка к этому моменту
+     * уже уехал в подсписок пункта (_outdentListItem), поэтому порядок
+     * содержимого сохраняется: «до» остаётся в исходном списке, «после» встаёт
+     * списком за абзацем. Пустой абзац получает <br> — иначе Chromium рисует
+     * его нулевой высоты и в него не встать кареткой.
+     * @param {Element} li
+     * @param {Element} list Список, из которого уходит пункт.
+     * @param {Element} container Родитель списка (редактор или блок).
+     */
+    _listItemToParagraph(li, list, container) {
+        const anchor = list.nextSibling; // якорь ДО мутаций: место сразу за списком
+        const para = document.createElement('div');
+        const sublists = [];
+        while (li.firstChild) {
+            const child = li.firstChild;
+            li.removeChild(child);
+            if (this._isListElement(child)) sublists.push(child);
+            else para.appendChild(child);
+        }
+        if (!para.firstChild) para.appendChild(document.createElement('br'));
+        list.removeChild(li);
+        container.insertBefore(para, anchor);
+        for (const sub of sublists) container.insertBefore(sub, anchor);
+    },
+
+    /**
+     * @private Удаляет список, в котором не осталось пунктов. Остатки (пробелы
+     * между тегами, чужая разметка) переезжают на место списка — контент не
+     * теряется даже на кривой разметке.
+     * @param {Element} list
+     */
+    _dropEmptyList(list) {
+        if (!list || !list.parentNode) return;
+        if (Array.from(list.children || []).some(child => child.tagName === 'LI')) return;
+        while (list.firstChild) list.parentNode.insertBefore(list.firstChild, list);
+        list.parentNode.removeChild(list);
+    },
+
+    /**
      * @private Снимок каретки/выделения ПЛОСКИМИ значениями (узел + смещение).
      * Клон Range не годится: Range живой, и удаление узла из документа (а
      * перенос <li> начинается именно с удаления) по спеке переставляет границы
@@ -1703,6 +1792,10 @@ Object.assign(TextBlockManager.prototype, {
      * CSS превью.
      *
      * Правила:
+     *  - <li> прямо внутри <li> (артефакт нативного outdent, вставки внешнего
+     *    HTML и старого контента) → пункт всплывает СЛЕДУЮЩИМ за своим бывшим
+     *    хозяином: его маркер браузер рисует посреди чужой строки, а
+     *    DOCX/MD/TXT считают такой пункт частью хозяина;
      *  - есть предыдущий соседний <li> → список переезжает внутрь него;
      *  - нет (список-сирота) → РАЗВЁРТКА на уровень вверх: на месте списка
      *    остаётся его собственное содержимое. Пустой <li>-хост больше не
@@ -1720,6 +1813,23 @@ Object.assign(TextBlockManager.prototype, {
         if (!root || typeof root.querySelectorAll !== 'function') return;
         for (let pass = 0; pass < NORMALIZE_MAX_PASSES; pass++) {
             let changed = false;
+            // Пункты — ПЕРЕД списками: всплывший из чужого <li> пункт может сам
+            // оказаться хозяином подсписка, и правилам ниже он нужен уже на
+            // своём месте. Снимок в порядке документа: вложенный пункт идёт
+            // после своего хозяина, поэтому цепочка «li в li в li»
+            // распрямляется за один проход.
+            for (const owner of Array.from(root.querySelectorAll('li'))) {
+                if (!owner.parentNode) continue;
+                const strays = Array.from(owner.children || [])
+                    .filter(child => child.tagName === 'LI');
+                if (!strays.length) continue;
+                // Якорь ОДИН на всю группу: вставляя каждого «перед тем, что
+                // шло за хозяином», сохраняем их взаимный порядок (по одному
+                // «сразу за хозяином» — перевернули бы).
+                const anchor = owner.nextSibling;
+                for (const stray of strays) owner.parentNode.insertBefore(stray, anchor);
+                changed = true;
+            }
             // Снимок ДО мутаций: переносы меняют состав childNodes, но не
             // родительские связи ещё не обойдённых списков — порядок обхода
             // (сверху вниз) остаётся корректным.
