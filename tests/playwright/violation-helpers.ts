@@ -66,3 +66,43 @@ export async function seedViolationField(
     { sel: violationFieldSel(vid), fieldIndex, html },
   );
 }
+
+/** Контейнер блоков КОНКРЕТНОГО поля нарушения (адрес поля — в его dataset). */
+export function violationBlocksSel(vid: string, fieldKey = 'violated'): string {
+  return `.violation-blocks-items[data-violation-id="${vid}"][data-field-key="${fieldKey}"]`;
+}
+
+/**
+ * Наполняет поле нарушения текст-блоками и перерисовывает карточку.
+ *
+ * Сид идёт через МОДЕЛЬ, а не через UI: в блочной модели пустое поле не имеет
+ * ни одного rich-редактора (он живёт внутри блока), поэтому «дотянуться до
+ * поверхности» до появления блоков нечем. id блоков задаются детерминированно
+ * — по ним удобно проверять порядок после перетаскивания.
+ *
+ * @returns id созданных блоков в порядке поля
+ */
+export async function seedViolationBlocks(
+  page: Page,
+  vid: string,
+  fieldKey: string,
+  contents: string[],
+): Promise<string[]> {
+  return await page.evaluate(
+    ({ vid, fieldKey, contents }) => {
+      const AppState = (window as any).AppState;
+      const violation = AppState.violations[vid];
+      if (!violation) throw new Error(`нарушение ${vid} не найдено в AppState`);
+
+      const blocks = contents.map((content, i) => ({
+        id: `e2e-${fieldKey}-${i + 1}`,
+        type: 'text',
+        content,
+      }));
+      violation[fieldKey] = { enabled: true, blocks };
+      (window as any).ItemsRenderer.renderAll();
+      return blocks.map((b) => b.id);
+    },
+    { vid, fieldKey, contents },
+  );
+}
