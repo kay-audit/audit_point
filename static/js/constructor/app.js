@@ -21,6 +21,24 @@ import { Notifications } from '../shared/notifications.js';
 
 export class App {
     /**
+     * Взводится ActsMenuManager вокруг await APIClient.loadActContent при
+     * переключении на другой акт (in-page switch и popstate): между
+     * resetForActSwitch (снимок позиции СТАРОГО акта) и присвоением
+     * window.currentActId НОВОГО акта window.currentActId какое-то время
+     * ещё указывает на старый. Пока флаг взведён, goToStep не персистит
+     * шаг — иначе шаг нового акта примешался бы в сохранённую позицию
+     * старого. Визуальное переключение шага не блокируется.
+     */
+    static _actSwitchInProgress = false;
+
+    /**
+     * @param {boolean} value
+     */
+    static setActSwitchInProgress(value) {
+        this._actSwitchInProgress = value;
+    }
+
+    /**
      * Инициализация приложения при загрузке страницы
      */
     static init() {
@@ -217,7 +235,7 @@ export class App {
     static goToStep(stepNum, { persist = true } = {}) {
         // Обновляем текущий шаг
         AppState.currentStep = stepNum;
-        if (persist && window.currentActId) {
+        if (persist && !this._actSwitchInProgress && window.currentActId) {
             this._saveViewPosition(window.currentActId, { step: stepNum });
         }
 

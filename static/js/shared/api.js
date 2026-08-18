@@ -78,6 +78,18 @@ export class APIClient {
     static _saveInFlight = false;
 
     /**
+     * ID акта, для которого уже восстановили сохранённую позицию просмотра
+     * (шаг/скролл/якорь) в ЭТОЙ сессии вкладки. Восстановление уместно только
+     * при первом входе в акт (auto-load / переключение / popstate) — при
+     * повторной загрузке того же акта посреди работы (обновление метаданных,
+     * restore версии, refresh после сохранения структуры) прыжок скролла на
+     * старую позицию мешал бы пользователю. Сбрасывается в
+     * ActsMenuManager.resetForActSwitch при уходе с акта — новый вход
+     * (в т.ч. повторный, при возврате) снова восстанавливает позицию.
+     */
+    static _viewPositionRestoredForActId = null;
+
+    /**
      * #11: промис завершения текущего PUT /content. forceSaveToDb (аварийная
      * quota-эскалация) дожидается его перед своим PUT, чтобы не разъехаться с
      * периодическим сохранением (сервер — last-writer-wins без версии). null,
@@ -658,10 +670,19 @@ export class APIClient {
      * actId передаётся явным аргументом: на момент вызова window.currentActId
      * ещё не гарантированно обновлён на загружаемый акт (см. App.goToStep).
      *
+     * Восстанавливает не при каждом вызове, а один раз за «вход» в акт —
+     * повторная загрузка ТОГО ЖЕ акта посреди работы (обновление метаданных,
+     * restore версии, refresh после сохранения структуры) не должна дёргать
+     * пользователя прыжком скролла. Маркер сбрасывается в
+     * ActsMenuManager.resetForActSwitch при уходе с акта.
+     *
      * @private
      * @param {number} actId - ID акта
      */
     static _restoreViewPosition(actId) {
+        if (this._viewPositionRestoredForActId === actId) return;
+        this._viewPositionRestoredForActId = actId;
+
         const pos = loadViewPosition(localStorage, actId);
         if (!pos) return;
 

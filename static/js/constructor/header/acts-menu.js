@@ -416,6 +416,9 @@ export class ActsMenuManager {
         if (this.currentActId) {
             App.persistViewPositionForAct(this.currentActId);
         }
+        // Следующий вход в акт (в т.ч. повторный, при возврате) должен снова
+        // восстановить позицию — сброс маркера «уже восстанавливали».
+        APIClient._viewPositionRestoredForActId = null;
         violationManager.destroy();
         tableManager.clearSelection();
         ItemsRenderer._closeTbDropdownInItems();
@@ -497,6 +500,11 @@ export class ActsMenuManager {
             // с нетронутым состоянием) и до загрузки контента нового.
             this.resetForActSwitch();
 
+            // До этого момента window.currentActId ещё указывает на СТАРЫЙ акт
+            // (перезапись — только на :511-512, ниже). Пока флаг взведён,
+            // App.goToStep не персистит шаг под этим ID — иначе клик по табу
+            // шага в это окно примешал бы шаг нового акта в позицию старого.
+            App.setActSwitchInProgress(true);
             await APIClient.loadActContent(actId);
 
             // Сохраняем дефолтную структуру после блокировки (для новых актов)
@@ -533,6 +541,8 @@ export class ActsMenuManager {
                     this._redirectToActsManager();
                 }
             } else this._redirectToActsManager();
+        } finally {
+            App.setActSwitchInProgress(false);
         }
     }
 
@@ -792,7 +802,16 @@ export class ActsMenuManager {
 
         window.addEventListener('popstate', async event => {
             const actId = event.state?.actId;
-            if (actId) await APIClient.loadActContent(actId);
+            if (!actId) return;
+            // Тот же race, что и в _switchToAct: window.currentActId ещё
+            // указывает на предыдущий акт, пока идёт загрузка. Гасим
+            // персист шага на время await, см. App.setActSwitchInProgress.
+            App.setActSwitchInProgress(true);
+            try {
+                await APIClient.loadActContent(actId);
+            } finally {
+                App.setActSwitchInProgress(false);
+            }
         });
 
         const param = new URLSearchParams(window.location.search).get('act_id');
