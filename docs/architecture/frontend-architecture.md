@@ -348,10 +348,12 @@ static timings = {
 | `tables` | `{[tableId]: TableData}` | ✅ |
 | `textBlocks` | `{[blockId]: TextBlockData}` | ✅ |
 | `violations` | `{[violationId]: ViolationData}` | ✅ |
-| `currentStep` | `1` или `2` | ✅ |
-| `selectedNode` | текущий выбранный узел | ✅ |
-| `selectedCells` | выделенные ячейки таблицы | ✅ |
+| `currentStep` | `1` или `2` | ❌ (UI-состояние, не входит в `exportData()`) |
+| `selectedNode` | текущий выбранный узел | ❌ (UI-состояние, не входит в `exportData()`) |
+| `selectedCells` | выделенные ячейки таблицы | ❌ (UI-состояние, не входит в `exportData()`) |
 | `_dragInProgress` | bool | ❌ (координационный флаг, не trackable) |
+
+`currentStep`/`selectedNode`/`selectedCells` раньше были в `trackedProperties` — любой клик по дереву, переключение шага или снятие выделения ячеек (в т.ч. переприсваивание новым `[]`-литералом на document-level click) помечали акт как «не сохранено» без реального изменения контента. Убраны из трекинга: это обычные data-свойства `AppState` без getter/setter.
 
 Методы CRUD добавлены через `Object.assign`:
 

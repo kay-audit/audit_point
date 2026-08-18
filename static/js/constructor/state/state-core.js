@@ -865,14 +865,13 @@ export function _unwrap(value) {
  * @private
  */
 export function _wrapStateWithProxy() {
+    // currentStep/selectedNode/selectedCells — чисто UI-состояние (не входят
+    // в exportData()), их трекинг вызывал ложный dirty на любом клике/шаге.
     const trackedProperties = [
         'treeData',
         'tables',
         'textBlocks',
-        'violations',
-        'currentStep',
-        'selectedNode',
-        'selectedCells'
+        'violations'
     ];
 
     trackedProperties.forEach(prop => {
@@ -885,7 +884,10 @@ export function _wrapStateWithProxy() {
                 return internalValue;
             },
             set(newValue) {
-                if (internalValue === newValue) return;
+                // Защита в глубину: сравниваем и по идентичности proxy, и по
+                // сырому значению — top-level reassign тем же raw-объектом
+                // (не литералом) не должен помечать dirty.
+                if (internalValue === newValue || _unwrap(internalValue) === newValue) return;
                 internalValue = _wrapDeep(newValue);
                 _notifyDirty();
             },
