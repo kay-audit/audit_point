@@ -148,6 +148,11 @@ export class DialogBase {
         // Признак "уже в DOM" — _hideDialog не будет удалять.
         overlay._preserveInDom = !appendToBody;
 
+        // Снимаем флаг закрытия: новый show() отменяет предыдущий незавершённый
+        // hide() по этому overlay (иначе следующий hide() увидел бы _closing=true
+        // от прошлого цикла и стал бы no-op).
+        delete overlay._closing;
+
         // Принудительный reflow для анимации (void — явное выражение, чтобы линтеры/минификаторы не выкинули его как «unused expression»)
         if (animate) void overlay.offsetHeight;
         overlay.classList.add('visible');
@@ -204,6 +209,13 @@ export class DialogBase {
     static _hideDialog(overlay, delay = AppConfig.dialog.closeDelay) {
         if (!overlay || !overlay.parentNode) return;
 
+        // Идемпотентность: повторный синхронный _hideDialog того же overlay
+        // (напр. двойной клик по крестику) не должен ставить второй setTimeout —
+        // иначе первый снимает _preserveInDom, а второй уходит в remove() и
+        // физически удаляет статическую ноду (напр. #helpModal) из DOM.
+        if (overlay._closing) return;
+        overlay._closing = true;
+
         const index = this._activeDialogs.indexOf(overlay);
         if (index > -1) {
             this._activeDialogs.splice(index, 1);
@@ -222,6 +234,7 @@ export class DialogBase {
         delete overlay._previousFocus;
 
         setTimeout(() => {
+            delete overlay._closing;
             const preserveInDom = overlay._preserveInDom;
             delete overlay._preserveInDom;
             if (preserveInDom) {

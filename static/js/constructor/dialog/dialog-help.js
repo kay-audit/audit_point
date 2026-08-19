@@ -147,7 +147,3 @@ export class HelpManager extends DialogBase {
 }
 
 window.HelpManager = HelpManager;
-
-document.addEventListener('DOMContentLoaded', () => {
-    HelpManager.init();
-});
