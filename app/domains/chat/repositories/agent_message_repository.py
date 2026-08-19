@@ -192,6 +192,11 @@ class AgentMessageRepository(BaseRepository):
           answer_timeout_sec по updated_at: агент стримит reasoning, обновляя
           updated_at; если updated_at не менялся дольше answer_timeout_sec —
           агент завис, слот освобождаем.
+        - error живёт по той же отсечке, что processing: в словаре NanoBot 2.3
+          это ПОВТОРЯЕМАЯ ошибка — вопрос вернётся в пул и будет переобработан,
+          подписка AW жива, значит слот занят. `_mark_failed` на стороне агента
+          обновляет updated_at, поэтому залипшая error-строка старше
+          answer_timeout_sec слот не съедает.
 
         role='user' — только строки-вопросы от AW (ответы агента не занимают
         слот лимита параллельных запросов). Отсечки защищают от утечки слотов:
@@ -203,7 +208,7 @@ class AgentMessageRepository(BaseRepository):
             SELECT COUNT(*) FROM {self.table}
             WHERE user_id = $1 AND role = 'user' AND (
                 (status = 'pending' AND created_at > $2)
-                OR (status IN ('processing', 'in_progress') AND updated_at > $3)
+                OR (status IN ('processing', 'in_progress', 'error') AND updated_at > $3)
             )
             """,
             user_id, pending_created_after, processing_updated_after,

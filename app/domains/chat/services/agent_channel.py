@@ -345,8 +345,9 @@ class AgentChannelService:
         # могут оба пройти проверку на границе. Это защита от злоупотребления,
         # а не строгий инвариант — небольшое превышение допустимо.
         # Двухфазные отсечки: pending живёт в окне claim_timeout_sec по
-        # created_at; processing — в окне answer_timeout_sec по updated_at
-        # (агент обновляет updated_at, стримя reasoning).
+        # created_at; processing и error — в окне answer_timeout_sec по
+        # updated_at (агент обновляет updated_at, стримя reasoning и фиксируя
+        # повторяемую ошибку).
         limit = self._settings.max_parallel_streams_per_user
         now = datetime.now(timezone.utc)
         active = await self._agent_repo().count_active_for_user(

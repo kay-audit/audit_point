@@ -372,7 +372,36 @@ async def test_count_active_for_user_two_phase_cutoffs(mock_conn):
     assert n == 1
     sql = mock_conn.fetchval.call_args.args[0]
     assert "status = 'pending' AND created_at > $2" in sql
-    assert "status IN ('processing', 'in_progress') AND updated_at > $3" in sql
+    assert "status IN ('processing', 'in_progress', 'error') AND updated_at > $3" in sql
+
+
+async def test_count_active_for_user_counts_error_by_updated_at_window(mock_conn):
+    """Вопрос со status='error' занимает слот и считается по окну updated_at.
+
+    NanoBot 2.3: 'error' — ПОВТОРЯЕМАЯ ошибка, вопрос вернётся в пул и будет
+    переобработан, подписка AW жива → слот параллельных запросов занят.
+    Отсечка — та же, что у processing: `_mark_failed` обновляет updated_at,
+    поэтому error-строка в окне answer_timeout_sec учитывается, а залипшая
+    (updated_at старше окна) слот не съедает.
+
+    Стратегия файла — проверка SQL-контракта на mock_conn (реального db_conn в
+    тестах нет), поэтому ассертим ветку запроса, а не результат COUNT.
+    """
+    repo = AgentMessageRepository(mock_conn)
+    mock_conn.fetchval.return_value = 1
+    now = datetime.now(timezone.utc)
+    await repo.count_active_for_user(
+        "77123", pending_created_after=now, processing_updated_after=now,
+    )
+    sql = mock_conn.fetchval.call_args.args[0]
+
+    # 'error' — в ветке updated_at ($3), вместе с processing/in_progress.
+    assert "status IN ('processing', 'in_progress', 'error') AND updated_at > $3" in sql
+    # ...и НЕ в ветке created_at ($2) — иначе залипшая error-строка жила бы по
+    # claim-окну и занимала слот дольше положенного.
+    pending_branch = sql.split("OR (")[0]
+    assert "'error'" not in pending_branch
+    assert "status = 'pending' AND created_at > $2" in pending_branch
 
 
 async def test_count_active_for_user_returns_count(mock_conn):

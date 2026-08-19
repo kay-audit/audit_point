@@ -144,11 +144,11 @@ LIMIT 20;
 --                 дополнительно страхует отсечка по возрасту в
 --                 count_active_for_user).
 --
--- Для наблюдения «всё, что в работе»:
+-- Для наблюдения «всё, что в работе» ('error' тоже в работе — агент повторит):
 SELECT id, chat_id, content, status, created_at
 FROM chat_agent_messages_bus
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
 ORDER BY created_at DESC
 LIMIT 20;
 
@@ -481,13 +481,13 @@ FROM chat_agent_messages_bus
 GROUP BY role, status
 ORDER BY role, status;
 
--- Самые старые pending (потенциально зависшие):
-SELECT id, chat_id, user_id, content,
+-- Самые старые незавершённые вопросы (потенциально зависшие):
+SELECT id, chat_id, user_id, content, status,
        now() - created_at AS age,
        created_at
 FROM chat_agent_messages_bus
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
 ORDER BY created_at ASC
 LIMIT 20;
 
@@ -541,18 +541,21 @@ WHERE status IN ('completed', 'failed')
 -- (PG обычно справляется автовакуумом, но не помешает):
 -- VACUUM ANALYZE chat_agent_messages_bus;
 
--- Зависшие processing/pending дольше 2 часов — ручное закрытие:
+-- Зависшие pending/processing/error дольше 2 часов — ручное закрытие:
 -- (AW закрывает draft в chat_messages сам по idle-таймауту —
 -- 30 мин для pending (CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800),
 -- 30 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800) —
 -- и best-effort ставит вопросу 'failed';
--- если запись не прошла, строки остаются в pending —
--- закрываем вручную тем же 'failed' из словаря CHECK'а владельца.)
+-- если запись не прошла, строки остаются в исходном статусе —
+-- закрываем вручную 'failed' из словаря владельца.
+-- 'error' в фильтре обязателен: он НЕ терминальный (агент собирался повторить
+-- задачу), поэтому залипшие error-строки без него остались бы невидимы для
+-- ручной уборки и висели бы в шине вечно.)
 UPDATE chat_agent_messages_bus
 SET status     = 'failed',
     updated_at = now()
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
   AND created_at < now() - INTERVAL '2 hours';
 
 
