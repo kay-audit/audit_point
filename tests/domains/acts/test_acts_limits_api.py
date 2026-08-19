@@ -10,8 +10,10 @@ E2E-паттерн: минимальный FastAPI + dependency_overrides, бе�
 который подсасывает реальный .env).
 """
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api.v1.deps.auth_deps import get_username
 from app.core.config import SecuritySettings
@@ -122,6 +124,15 @@ class TestStructureSettingsDefaults:
         s = TextblocksSettings()
         assert s.font_size_min == 8
         assert s.font_size_max == 72
+        # UI-потолок глубины списков редактора (0-based: 4 — пятый уровень).
+        assert s.max_list_level == 4
+
+    def test_max_list_level_bounded_by_ooxml_limit(self):
+        """Настройка не может выйти за 9 уровней w:abstractNum (ilvl 0..8)."""
+        assert TextblocksSettings(max_list_level=8).max_list_level == 8
+        for bad in (0, 9, -1):
+            with pytest.raises(ValidationError):
+                TextblocksSettings(max_list_level=bad)
 
     def test_violations_defaults(self):
         s = ViolationsSettings()
@@ -192,8 +203,9 @@ class TestActsLimitsEndpoint:
         assert body["textblocks"] == {
             "font_size_min": FONT_SIZE_MIN,
             "font_size_max": FONT_SIZE_MAX,
-            "font_size_default": 16,
+            "font_size_default": 12,
             "per_node": 10,
+            "max_list_level": 4,
         }
         # #7: лимит нарушений на узел — из настроек ACTS__VIOLATIONS__
         assert body["violations"] == {"per_node": 10}
@@ -202,7 +214,8 @@ class TestActsLimitsEndpoint:
             "max_rows": 64, "max_cols": 16, "min_col_width_px": 80, "per_node": 10,
         }
         assert body["textblocks"] == {
-            "font_size_min": 8, "font_size_max": 72, "font_size_default": 16, "per_node": 10,
+            "font_size_min": 8, "font_size_max": 72, "font_size_default": 12, "per_node": 10,
+            "max_list_level": 4,
         }
         # B-5: секция sanitizer — единый allowlist фронт↔бэк.
         assert set(body["sanitizer"]) == {
@@ -217,7 +230,9 @@ class TestActsLimitsEndpoint:
         app.dependency_overrides[get_username] = lambda: USERNAME
         app.dependency_overrides[_get_acts_settings] = lambda: ActsSettings(
             tables=TablesSettings(max_rows=100, max_cols=20, min_col_width_px=50, per_node=7),
-            textblocks=TextblocksSettings(font_size_min=6, font_size_max=96, font_size_default=24),
+            textblocks=TextblocksSettings(
+                font_size_min=6, font_size_max=96, font_size_default=24, max_list_level=2,
+            ),
             violations=ViolationsSettings(per_node=4),
             images=ImagesSettings(max_items_per_violation=80),
         )
@@ -228,6 +243,7 @@ class TestActsLimitsEndpoint:
         }
         assert body["textblocks"] == {
             "font_size_min": 6, "font_size_max": 96, "font_size_default": 24, "per_node": 10,
+            "max_list_level": 2,
         }
         assert body["violations"] == {"per_node": 4}
         assert body["images"]["max_items_per_violation"] == 80

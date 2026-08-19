@@ -68,23 +68,25 @@ test('_wordPreClean: standalone <xml>…</xml> удаляется, обычны�
   assert.equal(m._wordPreClean('<b>жир</b> и <i>курсив</i>'), '<b>жир</b> и <i>курсив</i>');
 });
 
-// ── _wordFontSizeToPx (чистая математика pt→px + кламп) ───────────────────────
+// ── _wordFontSizeToPt (чистая математика px→pt + кламп) ───────────────────────
 
-test('_wordFontSizeToPx: pt→px round(v*4/3), px как есть, не-px → null, кламп [8,72]', () => {
+test('_wordFontSizeToPt: pt как есть, px→pt round(v*0.75), прочее → null, кламп [8,72]', () => {
   const m = mgr();
-  assert.equal(m._wordFontSizeToPx('11pt', 8, 72), 15);   // round(14.67)
-  assert.equal(m._wordFontSizeToPx('11.0pt', 8, 72), 15); // Word пишет с .0
-  assert.equal(m._wordFontSizeToPx('8pt', 8, 72), 11);    // round(10.67), ≥ min
-  assert.equal(m._wordFontSizeToPx('500pt', 8, 72), 72);  // клампится к max
-  assert.equal(m._wordFontSizeToPx('4pt', 8, 72), 8);     // round(5.33)=5 → клампится к min
-  assert.equal(m._wordFontSizeToPx('14px', 8, 72), 14);
-  assert.equal(m._wordFontSizeToPx('100px', 8, 72), 72);  // px тоже клампится
-  assert.equal(m._wordFontSizeToPx('2em', 8, 72), null);
-  assert.equal(m._wordFontSizeToPx('120%', 8, 72), null);
-  assert.equal(m._wordFontSizeToPx('1rem', 8, 72), null);
-  assert.equal(m._wordFontSizeToPx('12', 8, 72), null);   // без единицы → drop
-  assert.equal(m._wordFontSizeToPx('large', 8, 72), null);
-  assert.equal(m._wordFontSizeToPx('1cm', 8, 72), null);  // неизвестная единица → drop
+  // Word пишет размеры В ПУНКТАХ — для типичной вставки это тождество.
+  assert.equal(m._wordFontSizeToPt('11pt', 8, 72), 11);
+  assert.equal(m._wordFontSizeToPt('11.0pt', 8, 72), 11); // Word пишет с .0
+  assert.equal(m._wordFontSizeToPt('500pt', 8, 72), 72);  // клампится к max
+  assert.equal(m._wordFontSizeToPt('4pt', 8, 72), 8);     // клампится к min
+  assert.equal(m._wordFontSizeToPt('16px', 8, 72), 12);   // веб-источник: 16px = 12pt
+  assert.equal(m._wordFontSizeToPt('14px', 8, 72), 11);   // round(10.5)
+  assert.equal(m._wordFontSizeToPt('8px', 8, 72), 8);     // round(6) → клампится к min
+  assert.equal(m._wordFontSizeToPt('200px', 8, 72), 72);  // px тоже клампится
+  assert.equal(m._wordFontSizeToPt('2em', 8, 72), null);
+  assert.equal(m._wordFontSizeToPt('120%', 8, 72), null);
+  assert.equal(m._wordFontSizeToPt('1rem', 8, 72), null);
+  assert.equal(m._wordFontSizeToPt('12', 8, 72), null);   // без единицы → drop
+  assert.equal(m._wordFontSizeToPt('large', 8, 72), null);
+  assert.equal(m._wordFontSizeToPt('1cm', 8, 72), null);  // неизвестная единица → drop
 });
 
 // ── _normalizeWordFontSizes (обход поддерева + переписывание/сброс) ───────────
@@ -95,12 +97,12 @@ function fakeRoot(sizes) {
   return { querySelectorAll: () => els, _els: els };
 }
 
-test('_normalizeWordFontSizes: переписывает pt/px в px, дропает не-px, диапазон [8,72]', () => {
+test('_normalizeWordFontSizes: переписывает pt/px в pt, дропает прочее, диапазон [8,72]', () => {
   const m = mgr();
-  const root = fakeRoot(['11pt', '8pt', '500pt', '14px', '2em', '120%', '']);
+  const root = fakeRoot(['11pt', '8pt', '500pt', '16px', '2em', '120%', '']);
   m._normalizeWordFontSizes(root);
   const got = root._els.map((e) => e.style.fontSize);
-  assert.deepEqual(got, ['15px', '11px', '72px', '14px', '', '', '']);
+  assert.deepEqual(got, ['11pt', '8pt', '72pt', '12pt', '', '', '']);
 });
 
 test('_normalizeWordFontSizes: root без querySelectorAll → no-op без исключения', () => {

@@ -68,8 +68,8 @@ Object.assign(ViolationManager.prototype, {
                 const position = this.calculateCursorPosition(e, itemsContainer);
                 this.cursorInsertPosition = position;
 
-                // Показываем индикатор позиции вставки — в т.ч. для пустого
-                // контейнера (violation-6): mousemove во время drag не приходит.
+                // Индикатор — оверлей на границе ближайшей карточки; в пустом
+                // контейнере его нет, там о приёме говорит подсветка зоны.
                 this.updateInsertIndicator(itemsContainer, position);
             }
         });

@@ -12,15 +12,20 @@
  *   - blank_line_pt = 6 (add_blank_line после таблицы) ⇔ margin: 6pt у
  *     .preview-table-wrapper на листе.
  *
- * Инвариант: превью текстблока рисует РОВНО то, что уйдёт в Word, а не
- * поверхность правки (.textblock-editor остаётся на 1.75 — отдельно
- * пином, что редактор НЕ задет).
+ * Инвариант: превью текстблока рисует РОВНО то, что уйдёт в Word. С переходом
+ * редактора на документную типографику (пункты + печатный интервал) поверхность
+ * правки держит ТОТ ЖЕ ритм: единый токен --doc-line-height, а экранную
+ * читаемость даёт zoom, который раскладку не меняет.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+const typographyCss = readFileSync(
+    fileURLToPath(new URL('../../static/css/base/variables/typography.css', import.meta.url)),
+    'utf8',
+);
 const previewPageCss = readFileSync(
     fileURLToPath(new URL('../../static/css/constructor/preview/preview-page.css', import.meta.url)),
     'utf8',
@@ -39,12 +44,20 @@ const editorContentCss = readFileSync(
 const DOCX_LINE_SINGLE_CSS = '1.15'; // Word «одинарный» для TNR 12pt
 const DOCX_SPACING_AFTER_PT = 3; // Spacing.after_pt
 const DOCX_BLANK_LINE_PT = 6; // Sizes.blank_line_pt (add_blank_line после таблицы)
-const EDITOR_LINE_HEIGHT_FALLBACK = '1.75'; // --textblock-line-height, редактор-only
 
-test('preview-page.css: токен --preview-print-line-height задан как Word-одинарный (1.15)', () => {
-    const match = previewPageCss.match(/--preview-print-line-height:\s*([\d.]+)/);
-    assert.ok(match, 'токен --preview-print-line-height не найден в preview-page.css');
+
+test('typography.css: документный --doc-line-height задан как Word-одинарный (1.15)', () => {
+    const match = typographyCss.match(/--doc-line-height:\s*([\d.]+)/);
+    assert.ok(match, 'токен --doc-line-height не найден в base/variables/typography.css');
     assert.equal(match[1], DOCX_LINE_SINGLE_CSS);
+});
+
+test('preview-page.css: --preview-print-line-height — алиас документного токена', () => {
+    assert.match(
+        previewPageCss,
+        /--preview-print-line-height:\s*var\(--doc-line-height\)/,
+        'лист превью обязан читать общий --doc-line-height, а не свою копию числа',
+    );
 });
 
 test('preview-page.css: .preview-sheet использует токен --preview-print-line-height (не хардкод)', () => {
@@ -100,16 +113,62 @@ test('preview-page.css: .preview-table-wrapper на листе — 6pt (add_blan
     );
 });
 
-test('B-22 НЕ регрессирует: редактор текстблока остаётся на 1.75, токен не менялся', () => {
+test('редактор держит печатный ритм: тот же --doc-line-height, что у листа и DOCX', () => {
     const rule = editorContentCss.match(/\.textblock-editor\s*\{([^}]*)\}/s);
     assert.ok(rule, 'правило .textblock-editor не найдено');
     assert.match(
         rule[1],
-        new RegExp(`line-height:\\s*var\\(--textblock-line-height,\\s*${EDITOR_LINE_HEIGHT_FALLBACK}\\)`),
-        `.textblock-editor line-height изменился (должен остаться ${EDITOR_LINE_HEIGHT_FALLBACK}): ${rule[1]}`,
+        /line-height:\s*var\(--doc-line-height\)/,
+        `.textblock-editor обязан читать документный интервал: ${rule[1]}`,
+    );
+    assert.match(
+        rule[1],
+        /font-size:\s*var\(--doc-font-size\)/,
+        `.textblock-editor обязан читать документный кегль (в пунктах): ${rule[1]}`,
     );
 });
 
-test('печатный line-height (1.15) и редакторский фолбэк (1.75) — разные значения (превью больше не зеркалит редактор)', () => {
-    assert.notEqual(DOCX_LINE_SINGLE_CSS, EDITOR_LINE_HEIGHT_FALLBACK);
+test('поверхность правки печатный кегль не масштабирует', () => {
+    // Экранный множитель (прежний zoom 1.25) убран: на шаге заполнения рядом с
+    // текстом живёт масса элементов конструктора, и раздутый документ их
+    // вытеснял. Кегль остаётся печатным, но ровно печатным — ни зума, ни
+    // подмены значения.
+    const rule = editorContentCss.match(/\.textblock-editor\s*\{([^}]*)\}/s);
+    assert.doesNotMatch(
+        rule[1],
+        /zoom:/,
+        `.textblock-editor не должен масштабироваться зумом: ${rule[1]}`,
+    );
+    // У листа превью зума не было и раньше — иначе геометрия A4 поедет.
+    assert.doesNotMatch(previewPageCss, /\.preview-sheet\s*\{[^}]*zoom:/s);
+});
+
+test('блоки content в редакторе не добавляют собственный вертикальный отступ', () => {
+    // Enter даёт <div>, вставка из Word — <p>, внешняя вставка приносит h1-h6.
+    // У всех троих ритм обязан быть одинаковым: свои margin'ы дали бы разный шаг
+    // в зависимости от происхождения текста (замер: 34.4px против 18.4px).
+    const paraRule = editorContentCss.match(
+        /\.textblock-editor p,\s*\n\.violation-textarea p\s*\{([^}]*)\}/s,
+    );
+    assert.ok(paraRule, 'правило абзацев .textblock-editor p не найдено');
+    assert.match(paraRule[1], /margin:\s*0/, `у абзаца остался свой margin: ${paraRule[1]}`);
+
+    const headingRule = editorContentCss.match(
+        /\.textblock-editor h1,[^{]*\.violation-textarea h6\s*\{([^}]*)\}/s,
+    );
+    assert.ok(headingRule, 'правило заголовков редактора не найдено');
+    assert.match(headingRule[1], /margin:\s*0/, `у заголовка остался свой margin: ${headingRule[1]}`);
+});
+
+test('списки в редакторе не добавляют собственный вертикальный отступ', () => {
+    const listRule = editorContentCss.match(
+        /\.textblock-editor ul,\s*\n\.textblock-editor ol,[^{]*\{([^}]*)\}/s,
+    );
+    assert.ok(listRule, 'правило списков .textblock-editor ul/ol не найдено');
+    assert.match(listRule[1], /margin:\s*0/, `у списков остался свой margin: ${listRule[1]}`);
+    const itemRule = editorContentCss.match(
+        /\.textblock-editor li,\s*\n\.violation-textarea li\s*\{([^}]*)\}/s,
+    );
+    assert.ok(itemRule, 'правило пунктов .textblock-editor li не найдено');
+    assert.match(itemRule[1], /margin:\s*0/, `у пунктов остался свой margin: ${itemRule[1]}`);
 });

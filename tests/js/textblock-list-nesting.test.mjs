@@ -1,12 +1,19 @@
 /**
  * Многоуровневые списки в rich-редакторе (спека §4).
  *
- *  - нормализация вложенности: Chromium после execCommand('indent') даёт
+ *  - собственный indent (_indentListItem вместо нативного execCommand):
+ *    пункт целиком уезжает в подсписок ПРЕДЫДУЩЕГО пункта — существующий того
+ *    же типа (нумерация продолжается) либо новый; первый пункт уровня не
+ *    углубляется вовсе (пустой <li>-хост больше не выдумывается);
+ *  - нормализация вложенности (страховка paste/undo/старого контента):
  *    НЕВАЛИДНОЕ `<ul><li>a</li><ul><li>b</li></ul></ul>` (список прямо внутри
- *    списка, минуя <li>) — приводим к валидному `<ul><li>a<ul>…</ul></li></ul>`;
+ *    списка, минуя <li>) → валидное `<ul><li>a<ul>…</ul></li></ul>`; список-
+ *    сирота без предыдущего <li> разворачивается на уровень вверх; соседние
+ *    подсписки одного типа внутри <li> сливаются;
  *  - политика Tab/Shift+Tab: перехват ТОЛЬКО внутри <li>, вне списка нативный
  *    переход фокуса сохраняется (preventDefault не зовётся);
- *  - потолок глубины — уровень 8 (9 уровней w:abstractNum в OOXML).
+ *  - потолок глубины — настройка (ACTS__TEXTBLOCKS__MAX_LIST_LEVEL, дефолт 4),
+ *    прижатая жёстким пределом формата (уровень 8 = 9 уровней w:abstractNum).
  *
  * ОГРАНИЧЕНИЕ ХАРНЕССА: jsdom/linkedom в проекте нет, `_browser-stub.mjs` даёт
  * узлы без дерева и без парсинга innerHTML → дерево строим на `_mini-dom.mjs`
@@ -17,11 +24,16 @@ import './_browser-stub.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseHtml, installMiniDom } from './_mini-dom.mjs';
-import { TextBlockManager, MAX_LIST_LEVEL } from '../../static/js/constructor/textblock/textblock-core.js';
+import { TextBlockManager } from '../../static/js/constructor/textblock/textblock-core.js';
 import '../../static/js/constructor/textblock/textblock-editor.js';
 import { SAFE_HTML_PROFILES } from '../../static/js/shared/sanitize.js';
 import { PreviewManager } from '../../static/js/constructor/preview/preview.js';
 import { ChangelogTracker } from '../../static/js/constructor/changelog-tracker.js';
+import { AppConfig } from '../../static/js/shared/app-config.js';
+import {
+  getStructureLimits,
+  resetImageLimitsForTests,
+} from '../../static/js/constructor/violation/violation-image-validator.js';
 
 installMiniDom();
 // saveContent тянет побочные эффекты (патч превью + дебаунс-таймер changelog) —
@@ -30,6 +42,9 @@ PreviewManager.updateBlock = () => {};
 ChangelogTracker._recordDebounced = () => {};
 
 const mgr = () => Object.create(TextBlockManager.prototype);
+
+/** Действующий потолок глубины (фолбэк AppConfig — ответа /acts/limits в node нет). */
+const CEILING = mgr()._listLevelCeiling();
 
 /** Нормализует HTML через живое дерево (как на пути indent/outdent). */
 function normalizeDom(html) {
@@ -47,11 +62,27 @@ test('нормализация: chromium-вывод <ul><li>a</li><ul>… → с
   );
 });
 
-test('нормализация: нет предыдущего <li> → создаётся пустой', () => {
+test('нормализация: список-сирота (нет предыдущего <li>) разворачивается на уровень вверх', () => {
+  // Раньше здесь создавался ПУСТОЙ <li>-хост. Его маркер рисовался отдельным
+  // пунктом — при повторном indent такие хосты копились и выстраивались в одну
+  // строку («a) i. 1. Текст»), а MD/TXT получали фантомную строку с маркером.
   assert.equal(
     normalizeDom('<ul><ul><li>b</li></ul></ul>'),
-    '<ul><li><ul><li>b</li></ul></li></ul>',
+    '<ul><li>b</li></ul>',
   );
+});
+
+test('нормализация: сирота разворачивается, следующий список уезжает в появившийся <li>', () => {
+  assert.equal(
+    normalizeDom('<ul><ul><li>b</li></ul><ul><li>c</li></ul></ul>'),
+    '<ul><li>b<ul><li>c</li></ul></li></ul>',
+  );
+});
+
+test('нормализация: пустых <li> не остаётся ни на одном уровне', () => {
+  const out = normalizeDom('<ol><ol><li>x</li><ol><li>y</li></ol></ol></ol>');
+  assert.equal(out.indexOf('<li><'), -1, 'пустой <li>-хост не создаётся');
+  assert.equal(out, '<ol><li>x<ol><li>y</li></ol></li></ol>');
 });
 
 test('нормализация: двойная вложенность чинится за один проход', () => {
@@ -75,10 +106,64 @@ test('нормализация: валидная разметка не меня�
     '<ul><li>a<ul><li>b</li></ul></li></ul>');
 });
 
-test('нормализация: два соседних невалидных списка уходят в один и тот же <li>', () => {
+test('нормализация: два соседних невалидных списка РАЗНОГО типа уходят в один <li>, но не сливаются', () => {
+  // ul рядом с ol — два разных подсписка пункта, слияние сменило бы тип
+  // маркеров половине пунктов.
   assert.equal(
     normalizeDom('<ul><li>a</li><ul><li>b</li></ul><ol><li>1</li></ol></ul>'),
     '<ul><li>a<ul><li>b</li></ul><ol><li>1</li></ol></li></ul>',
+  );
+});
+
+test('нормализация: соседние подсписки ОДНОГО типа внутри <li> сливаются в первый', () => {
+  // Иначе второй <ol> нумеруется с начала («a) … a)») и в превью, и в DOCX.
+  assert.equal(
+    normalizeDom('<ol><li>a</li><ol><li>1</li></ol><ol><li>2</li></ol></ol>'),
+    '<ol><li>a<ol><li>1</li><li>2</li></ol></li></ol>',
+  );
+});
+
+test('нормализация: два ol-сиблинга в уже валидной разметке тоже сливаются (paste/undo)', () => {
+  assert.equal(
+    normalizeDom('<ol><li>a<ol><li>1</li></ol><ol><li>2</li></ol></li></ol>'),
+    '<ol><li>a<ol><li>1</li><li>2</li></ol></li></ol>',
+  );
+});
+
+test('нормализация: три подсписка ul-ol-ul внутри <li> сливаются только по соседству и типу', () => {
+  assert.equal(
+    normalizeDom('<ul><li>a<ul><li>b</li></ul><ol><li>1</li></ol><ul><li>c</li></ul></li></ul>'),
+    '<ul><li>a<ul><li>b</li></ul><ol><li>1</li></ol><ul><li>c</li></ul></li></ul>',
+  );
+});
+
+test('нормализация: <li> прямо внутри <li> всплывает следующим пунктом', () => {
+  // Артефакт нативного outdent и внешнего HTML: браузер рисует маркер такого
+  // пункта посреди чужой строки, а DOCX/MD/TXT считают его частью хозяина.
+  assert.equal(
+    normalizeDom('<ul><li>a<li>b</li></li></ul>'),
+    '<ul><li>a</li><li>b</li></ul>',
+  );
+});
+
+test('нормализация: несколько <li> внутри одного <li> сохраняют свой порядок', () => {
+  assert.equal(
+    normalizeDom('<ul><li>a<li>b</li><li>c</li></li></ul>'),
+    '<ul><li>a</li><li>b</li><li>c</li></ul>',
+  );
+});
+
+test('нормализация: цепочка «li в li в li» распрямляется за один проход', () => {
+  assert.equal(
+    normalizeDom('<ol><li>a<li>b<li>c</li></li></li></ol>'),
+    '<ol><li>a</li><li>b</li><li>c</li></ol>',
+  );
+});
+
+test('нормализация: всплывший пункт уносит свой подсписок', () => {
+  assert.equal(
+    normalizeDom('<ul><li>a<li>b<ul><li>b1</li></ul></li></li></ul>'),
+    '<ul><li>a</li><li>b<ul><li>b1</li></ul></li></ul>',
   );
 });
 
@@ -144,8 +229,25 @@ test('_listItemAncestor: текстовый узел внутри <li> → са�
   assert.equal(m._listItemAncestor(null, editor), null);
 });
 
-test('MAX_LIST_LEVEL = 8 (9 уровней w:abstractNum в OOXML)', () => {
-  assert.equal(MAX_LIST_LEVEL, 8);
+test('_listLevelCeiling: дефолт 4 — фолбэк AppConfig, зеркало ACTS__TEXTBLOCKS__MAX_LIST_LEVEL', () => {
+  assert.equal(AppConfig.limits.textblock.maxListLevel, 4);
+  assert.equal(getStructureLimits().maxListLevel, 4);
+  assert.equal(mgr()._listLevelCeiling(), 4);
+});
+
+test('_listLevelCeiling: настройка читается в момент проверки и прижимается пределом формата', () => {
+  const limits = getStructureLimits(); // живой объект (сюда пишет /acts/limits)
+  try {
+    limits.maxListLevel = 2;
+    assert.equal(mgr()._listLevelCeiling(), 2, 'значение настройки берётся вызовом, не с импорта');
+    // Жёсткий предел — 9 уровней w:abstractNum в OOXML (DOCX клампит на ilvl 8).
+    limits.maxListLevel = 99;
+    assert.equal(mgr()._listLevelCeiling(), 8);
+    limits.maxListLevel = 0;
+    assert.equal(mgr()._listLevelCeiling(), 8, 'мусорное значение → жёсткий предел');
+  } finally {
+    resetImageLimitsForTests();
+  }
 });
 
 // ── политика Tab / Shift+Tab ─────────────────────────────────────────────────
@@ -224,19 +326,26 @@ test('Tab ВНЕ списка: не перехватывается, preventDefau
   assert.deepEqual(cmds, []);
 });
 
-/** HTML из `depth+1` вложенных списков: самый глубокий <li> имеет уровень depth. */
+/**
+ * HTML из `depth+1` вложенных списков в ВАЛИДНОЙ форме: последний <li> («дно»)
+ * имеет уровень depth. На самом глубоком уровне два пункта — у «дна» есть
+ * предыдущий сиблинг, поэтому indent на нём упирается ровно в потолок глубины,
+ * а не в правило «первый пункт уровня не углубляется».
+ * @param {number} depth
+ * @returns {string}
+ */
 function nestedListsHtml(depth) {
-  let html = '<li>дно</li>';
-  for (let i = 0; i <= depth; i++) html = `<ul><li>u${i}${html}</li></ul>`;
-  return html;
+  let html = '<li>верх</li><li>дно</li>';
+  for (let i = depth; i >= 1; i--) html = `<li>u${i}<ul>${html}</ul></li>`;
+  return `<ul>${html}</ul>`;
 }
 
-test('Tab на потолке глубины (уровень 8): клавиша проглатывается, потолок держит гейт execCommand', () => {
-  // Раньше потолок сравнивался ЗДЕСЬ (число 8 знала только Tab-ветка), из-за
-  // чего пункт меню «уровень глубже» углублял мимо него. Теперь _handleListTab
+test('Tab на потолке глубины: клавиша проглатывается, потолок держит гейт execCommand', () => {
+  // Раньше потолок сравнивался ЗДЕСЬ (число знала только Tab-ветка), из-за чего
+  // пункт меню «уровень глубже» углублял мимо него. Теперь _handleListTab
   // отвечает только за перехват клавиши и безусловно делегирует в execCommand,
-  // где стоит единственная проверка MAX_LIST_LEVEL (тесты гейта ниже).
-  const editor = parseHtml(nestedListsHtml(MAX_LIST_LEVEL));
+  // где стоит единственное сравнение с _listLevelCeiling (тесты гейта ниже).
+  const editor = parseHtml(nestedListsHtml(CEILING));
   const deepest = editor.querySelectorAll('li').slice(-1)[0];
   const m = mgr();
   const cmds = [];
@@ -249,15 +358,15 @@ test('Tab на потолке глубины (уровень 8): клавиша 
   });
   const e = tabEvent();
   try {
-    assert.equal(m._listLevel(deepest, editor), MAX_LIST_LEVEL);
+    assert.equal(m._listLevel(deepest, editor), CEILING);
     assert.equal(m._handleListTab(e, editor), true, 'клавиша всё равно проглатывается');
   } finally { globalThis.getSelection = origSel; }
   assert.equal(e.prevented, true, 'на дне списка Tab не должен уводить фокус');
   assert.deepEqual(cmds, ['indent']);
 });
 
-test('Tab на уровне 7 (под потолком): indent ещё разрешён', () => {
-  const editor = parseHtml(nestedListsHtml(MAX_LIST_LEVEL - 1));
+test('Tab на уровень под потолком: indent ещё разрешён', () => {
+  const editor = parseHtml(nestedListsHtml(CEILING - 1));
   const deepest = editor.querySelectorAll('li').slice(-1)[0];
   const m = mgr();
   const cmds = [];
@@ -269,7 +378,7 @@ test('Tab на уровне 7 (под потолком): indent ещё разр�
     getRangeAt: () => ({ startContainer: deepest.firstChild, startOffset: 0 }),
   });
   try {
-    assert.equal(m._listLevel(deepest, editor), MAX_LIST_LEVEL - 1);
+    assert.equal(m._listLevel(deepest, editor), CEILING - 1);
     m._handleListTab(tabEvent(), editor);
   } finally { globalThis.getSelection = origSel; }
   assert.deepEqual(cmds, ['indent']);
@@ -312,26 +421,333 @@ function stubCaret(node) {
   return () => { globalThis.getSelection = origSel; };
 }
 
-test('execCommand(indent): живой DOM нормализуется ДО saveContent', () => {
-  const editor = parseHtml('<ul><li>пункт</li></ul>');
+/**
+ * Прогоняет execCommand на дереве из html с кареткой в узле, выбранном
+ * caretPick, и НЕ пускает нативную команду мимо счётчика вызовов.
+ * @param {string} html Разметка редактора.
+ * @param {(editor: object) => object} caretPick Узел каретки по дереву.
+ * @param {string} command Команда.
+ * @returns {{result: boolean, html: string, saved: string[], execCalls: string[]}}
+ */
+function runExecCommand(html, caretPick, command) {
+  const editor = parseHtml(html);
   const m = mgr();
   m.activeEditor = editor;
   editor.dataset.textBlockId = 'tb1';
   const saved = [];
-  m.saveContent = (id, html) => saved.push(html);
-  const restoreCaret = stubCaret(editor.querySelector('li').firstChild);
+  m.saveContent = (id, content) => saved.push(content);
+  const restoreCaret = stubCaret(caretPick(editor));
+  const execCalls = [];
   const origExec = globalThis.document.execCommand;
-  globalThis.document.execCommand = () => {
-    // Имитируем результат нативной команды Chromium.
-    editor.innerHTML = '<ul><li>a</li><ul><li>b</li></ul></ul>';
-    return true;
-  };
+  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
+  let result;
   try {
-    m.execCommand('indent');
+    result = m.execCommand(command);
+  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
+  return { result, html: editor.innerHTML, saved, execCalls };
+}
+
+/**
+ * Range-подобный объект: начало диапазона в startNode, задеты пункты touched.
+ * Настоящего Range в харнессе нет — нужны ровно те поля, что читают
+ * _caretListItem и _selectedListItems.
+ * @param {object} startNode Узел начала диапазона.
+ * @param {object[]} touched Пункты, которые диапазон задевает.
+ * @returns {object}
+ */
+function rangeOver(startNode, touched) {
+  return {
+    startContainer: startNode,
+    startOffset: 0,
+    intersectsNode: (node) => touched.includes(node),
+  };
+}
+
+/**
+ * Ставит выделение из готового Range-подобного объекта (стаб getSelection).
+ * @param {object} range
+ * @returns {() => void} Восстановление прежнего getSelection.
+ */
+function stubSelectionRange(range) {
+  const origSel = globalThis.getSelection;
+  globalThis.getSelection = () => ({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range });
+  return () => { globalThis.getSelection = origSel; };
+}
+
+test('_selectedListItems: выделение по нескольким пунктам отдаёт их все', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li><li>c</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems(rangeOver(items[1].firstChild, [items[1], items[2]]), editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b', 'c']);
+});
+
+test('_selectedListItems: выделение внутри подпункта не тащит родительский пункт', () => {
+  // range.intersectsNode правдив и для предка — углублять надо дно выделения,
+  // иначе поехал бы весь пункт «a» вместе с подсписком.
+  const editor = parseHtml('<ul><li>a<ul><li>b</li></ul></li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems(rangeOver(items[1].firstChild, [items[0], items[1]]), editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b']);
+});
+
+test('_selectedListItems: схлопнутая каретка — ровно её пункт', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const got = mgr()._selectedListItems({ startContainer: items[1].firstChild, startOffset: 0 }, editor);
+  assert.deepEqual(got.map((li) => li.textContent), ['b']);
+});
+
+test('execCommand(indent): выделение по двум пунктам углубляет ОБА в один подсписок', () => {
+  // Нативная команда двигала всё выделение; своя реализация обязана вести себя
+  // так же, иначе Tab по нескольким строкам сдвигал бы только первую.
+  const editor = parseHtml('<ul><li>a</li><li>b</li><li>c</li></ul>');
+  const items = editor.querySelectorAll('li');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  const saved = [];
+  m.saveContent = (id, content) => saved.push(content);
+  const restore = stubSelectionRange(rangeOver(items[1].firstChild, [items[1], items[2]]));
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = (cmd) => { throw new Error(`нативная команда ${cmd}`); };
+  let result;
+  try {
+    result = m.execCommand('indent');
+  } finally { globalThis.document.execCommand = origExec; restore(); }
+
+  assert.equal(result, true);
+  assert.equal(editor.innerHTML, '<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>');
+  assert.equal(saved.length, 1, 'модель пишется один раз на команду, а не на пункт');
+});
+
+test('execCommand(indent): пункт уезжает в подсписок предыдущего, нативная команда НЕ идёт', () => {
+  // Углубление делает _indentListItem: нативный indent порождал список-сироту,
+  // из которого валидную форму без пустого <li>-хоста уже не собрать.
+  const r = runExecCommand(
+    '<ul><li>a</li><li>b</li></ul>',
+    (ed) => ed.querySelectorAll('li')[1].firstChild,
+    'indent',
+  );
+  assert.deepEqual(r.execCalls, [], 'indent исполняется своим кодом, не браузером');
+  assert.equal(r.result, true);
+  assert.equal(r.html, '<ul><li>a<ul><li>b</li></ul></li></ul>');
+  assert.deepEqual(r.saved, ['<ul><li>a<ul><li>b</li></ul></li></ul>'], 'сток модели тот же');
+});
+
+test('БАГ-1: indent первого пункта уровня — no-op, пустой <li>-хост не создаётся', () => {
+  const r = runExecCommand(
+    '<ul><li>пункт</li></ul>',
+    (ed) => ed.querySelector('li').firstChild,
+    'indent',
+  );
+  assert.deepEqual(r.execCalls, []);
+  assert.equal(r.result, false);
+  assert.equal(r.html, '<ul><li>пункт</li></ul>', 'разметка не изменилась вовсе');
+  assert.deepEqual(r.saved, [], 'no-op не пишет в модель');
+});
+
+test('БАГ-1: повторный indent того же пункта не копит уровни и пустые пункты', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li></ul>');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  m.saveContent = () => {};
+  const caretNode = editor.querySelectorAll('li')[1].firstChild;
+  const restoreCaret = stubCaret(caretNode);
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = () => true;
+  try {
+    assert.equal(m.execCommand('indent'), true);
+    // Второй раз: пункт b — теперь единственный в своём подсписке, углублять
+    // нечего. Раньше здесь появлялся пустой хост, и маркеры хостов копились
+    // в строку «a) i. 1. Текст».
+    assert.equal(m.execCommand('indent'), false);
+    assert.equal(m.execCommand('indent'), false);
   } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
 
   assert.equal(editor.innerHTML, '<ul><li>a<ul><li>b</li></ul></li></ul>');
-  assert.deepEqual(saved, ['<ul><li>a<ul><li>b</li></ul></li></ul>']);
+  assert.equal(
+    editor.querySelectorAll('li').every((li) => li.textContent.trim() !== ''),
+    true,
+    'пунктов без собственного содержимого нет',
+  );
+});
+
+test('БАГ-2: indent соседнего пункта продолжает СУЩЕСТВУЮЩИЙ подсписок того же типа', () => {
+  // Раньше в <li> появлялся второй ol-сиблинг, и его нумерация стартовала
+  // заново («a)» вместо «b)») — и в превью, и в DOCX.
+  const r = runExecCommand(
+    '<ol><li>a<ol><li>a1</li></ol></li><li>b</li></ol>',
+    (ed) => ed.querySelectorAll('li')[2].firstChild,
+    'indent',
+  );
+  assert.equal(r.result, true);
+  assert.equal(r.html, '<ol><li>a<ol><li>a1</li><li>b</li></ol></li></ol>');
+  assert.equal(r.html.match(/<ol>/g).length, 2, 'второго подсписка не появилось');
+});
+
+test('indent: подсписок ДРУГОГО типа не переиспользуется — создаётся свой', () => {
+  const r = runExecCommand(
+    '<ol><li>a<ul><li>x</li></ul></li><li>b</li></ol>',
+    (ed) => ed.querySelectorAll('li')[2].firstChild,
+    'indent',
+  );
+  assert.equal(r.result, true);
+  assert.equal(r.html, '<ol><li>a<ul><li>x</li></ul><ol><li>b</li></ol></li></ol>');
+});
+
+test('execCommand(outdent): вложенный пункт встаёт следом за хозяином, нативная команда НЕ идёт', () => {
+  // Раньше outdent уходил браузеру, а тот ронял пункт рядом с подсписком или
+  // прямо внутрь чужого <li> — нормализатор чинил это задним числом.
+  const r = runExecCommand(
+    '<ul><li>a<ul><li>b</li></ul></li></ul>',
+    (ed) => ed.querySelectorAll('li')[1].firstChild,
+    'outdent',
+  );
+  assert.deepEqual(r.execCalls, [], 'outdent исполняется своим кодом');
+  assert.equal(r.result, true);
+  assert.equal(r.html, '<ul><li>a</li><li>b</li></ul>', 'опустевший подсписок удалён');
+  assert.deepEqual(r.saved, ['<ul><li>a</li><li>b</li></ul>']);
+});
+
+test('регрессия: indent → outdent → indent снова углубляет пункт', () => {
+  const editor = parseHtml('<ul><li>a</li><li>b</li></ul>');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  m.saveContent = () => {};
+  const restoreCaret = stubCaret(editor.querySelectorAll('li')[1].firstChild);
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = (cmd) => { throw new Error('нативная команда ' + cmd); };
+  try {
+    m.execCommand('indent');
+    assert.equal(editor.innerHTML, '<ul><li>a<ul><li>b</li></ul></li></ul>');
+    m.execCommand('outdent');
+    assert.equal(editor.innerHTML, '<ul><li>a</li><li>b</li></ul>', 'round-trip вернул исходную разметку');
+    // Суть бага: нативный outdent оставлял <li> прямым ребёнком <li>, а на
+    // такой форме _indentListItem молча отказывал — второй Tab не работал.
+    m.execCommand('indent');
+  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
+  assert.equal(editor.innerHTML, '<ul><li>a<ul><li>b</li></ul></li></ul>');
+});
+
+test('outdent: хвост пункта остаётся на своём уровне — становится его подпунктами', () => {
+  // b поднимается, c обязан остаться глубже: иначе c молча всплыл бы вместе с b.
+  const r = runExecCommand(
+    '<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>',
+    (ed) => ed.querySelectorAll('li')[1].firstChild,
+    'outdent',
+  );
+  assert.equal(r.html, '<ul><li>a</li><li>b<ul><li>c</li></ul></li></ul>');
+});
+
+test('outdent на уровне 0: пункт выходит из списка абзацем, список делится (чистый split)', () => {
+  const r = runExecCommand(
+    '<ul><li>a</li><li>b</li><li>c</li></ul>',
+    (ed) => ed.querySelectorAll('li')[1].firstChild,
+    'outdent',
+  );
+  assert.deepEqual(r.execCalls, []);
+  assert.equal(r.result, true);
+  assert.equal(r.html, '<ul><li>a</li></ul><div>b</div><ul><li>c</li></ul>');
+});
+
+test('outdent на уровне 0: единственный пункт — список исчезает целиком', () => {
+  const r = runExecCommand(
+    '<ul><li>пункт</li></ul>',
+    (ed) => ed.querySelector('li').firstChild,
+    'outdent',
+  );
+  assert.equal(r.html, '<div>пункт</div>');
+});
+
+test('outdent на уровне 0: подсписки пункта поднимаются вместе с ним, за абзац', () => {
+  const r = runExecCommand(
+    '<ul><li>a<ul><li>a1</li></ul></li></ul>',
+    (ed) => ed.querySelector('li').firstChild,
+    'outdent',
+  );
+  assert.equal(r.html, '<div>a</div><ul><li>a1</li></ul>');
+});
+
+test('outdent на уровне 0: пустой пункт даёт абзац с <br> (пустая строка видна и кликабельна)', () => {
+  const editor = parseHtml('<ul><li>a</li><li></li></ul>');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  m.saveContent = () => {};
+  const restoreCaret = stubCaret(editor.querySelectorAll('li')[1]);
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = () => true;
+  try {
+    m.execCommand('outdent');
+  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
+  assert.equal(editor.innerHTML, '<ul><li>a</li></ul><div><br></div>');
+});
+
+test('outdent на уровне 0: каретка с самого <li> переезжает в созданный абзац', () => {
+  // Регрессия ревью: у пустого пункта Chromium держит каретку НА <li>, а тот
+  // уходит из документа — снимок собирался на отсоединённом узле, addRange его
+  // молча глотал и каретка пропадала (следующий ввод мимо редактора).
+  // Стаб stubCaret не даёт removeAllRanges → путь восстановления там вообще не
+  // исполняется; здесь selection и Range стабятся целиком, чтобы увидеть, КУДА
+  // каретка встала.
+  const editor = parseHtml('<ul><li>a</li><li></li></ul>');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  m.saveContent = () => {};
+  const li = editor.querySelectorAll('li')[1];
+  const restored = [];
+  const origSel = globalThis.getSelection;
+  const origRange = globalThis.document.createRange;
+  const origExec = globalThis.document.execCommand;
+  globalThis.getSelection = () => ({
+    rangeCount: 1,
+    isCollapsed: true,
+    getRangeAt: () => ({ startContainer: li, startOffset: 0 }),
+    removeAllRanges: () => {},
+    addRange: (r) => restored.push(r),
+  });
+  globalThis.document.createRange = () => ({
+    setStart(node, offset) { this.startContainer = node; this.startOffset = offset; },
+    setEnd(node, offset) { this.endContainer = node; this.endOffset = offset; },
+  });
+  globalThis.document.execCommand = () => true;
+  try {
+    m.execCommand('outdent');
+  } finally {
+    globalThis.getSelection = origSel;
+    globalThis.document.createRange = origRange;
+    globalThis.document.execCommand = origExec;
+  }
+  assert.equal(editor.innerHTML, '<ul><li>a</li></ul><div><br></div>');
+  assert.equal(restored.length, 1);
+  const para = editor.querySelector('div');
+  assert.equal(restored[0].startContainer, para);
+  assert.equal(restored[0].endContainer, para);
+  assert.notEqual(restored[0].startContainer, li);
+});
+
+test('execCommand(outdent): выделение по двум пунктам поднимает ОБА, порядок сохраняется', () => {
+  const editor = parseHtml('<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>');
+  const items = editor.querySelectorAll('li');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  const saved = [];
+  m.saveContent = (id, content) => saved.push(content);
+  const restore = stubSelectionRange(rangeOver(items[1].firstChild, [items[1], items[2]]));
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = (cmd) => { throw new Error('нативная команда ' + cmd); };
+  let result;
+  try {
+    result = m.execCommand('outdent');
+  } finally { globalThis.document.execCommand = origExec; restore(); }
+
+  assert.equal(result, true);
+  assert.equal(editor.innerHTML, '<ul><li>a</li><li>b</li><li>c</li></ul>');
+  assert.equal(saved.length, 1, 'модель пишется один раз на команду, а не на пункт');
 });
 
 test('ГЕЙТ: execCommand(indent) вне <li> — нативная команда браузеру НЕ уходит, <blockquote> не появляется', () => {
@@ -385,22 +801,16 @@ test('ГЕЙТ: execCommand(outdent) вне <li> — тоже тихий no-op',
   assert.deepEqual(saved, []);
 });
 
-test('ГЕЙТ: внутри <li> команда уровня проходит к браузеру', () => {
-  const editor = parseHtml('<ul><li>пункт</li></ul>');
-  const m = mgr();
-  m.activeEditor = editor;
-  editor.dataset.textBlockId = 'tb1';
-  m.saveContent = () => {};
-  const restoreCaret = stubCaret(editor.querySelector('li').firstChild);
-  const execCalls = [];
-  const origExec = globalThis.document.execCommand;
-  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
-  try {
-    m.execCommand('indent');
-    m.execCommand('outdent');
-  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
-
-  assert.deepEqual(execCalls, ['indent', 'outdent']);
+test('ГЕЙТ: внутри <li> обе команды уровня исполняются своим кодом, браузеру не уходят', () => {
+  for (const command of ['indent', 'outdent']) {
+    const r = runExecCommand(
+      '<ul><li>a</li><li>b</li></ul>',
+      (ed) => ed.querySelectorAll('li')[1].firstChild,
+      command,
+    );
+    assert.deepEqual(r.execCalls, [], command + ' не должен уходить браузеру');
+    assert.equal(r.result, true, command + ' обязан отчитаться об изменении');
+  }
 });
 
 test('ГЕЙТ: списочные команды создания списка (insertUnorderedList) НЕ гейтятся', () => {
@@ -437,11 +847,47 @@ test('execCommand(bold): нормализация списков не запус
     'bold не обязан чинить чужую разметку — чинит сток saveContent');
 });
 
-test('ГЕЙТ: indent на потолке глубины (уровень 8) — нативная команда НЕ уходит браузеру', () => {
+test('ГЕЙТ: indent на потолке глубины — разметка не меняется, в модель не пишется', () => {
   // Пункт меню «уровень глубже» приходит сюда же, что и Tab, — потолок обязан
-  // держаться на общем гейте, иначе меню углубляет до уровней 9+, которые
-  // DOCX-сборщик (inline.py) молча клампит на ilvl 8.
-  const editor = parseHtml(nestedListsHtml(MAX_LIST_LEVEL));
+  // держаться на общем гейте. У «дна» есть предыдущий сиблинг, т.е. углубление
+  // было бы возможно: остановил его именно потолок.
+  const before = nestedListsHtml(CEILING);
+  const r = runExecCommand(
+    before,
+    (ed) => ed.querySelectorAll('li').slice(-1)[0].firstChild,
+    'indent',
+  );
+  assert.deepEqual(r.execCalls, []);
+  assert.equal(r.result, false);
+  assert.equal(r.html, before);
+  assert.deepEqual(r.saved, []);
+});
+
+test('ГЕЙТ: outdent на потолке разрешён — глубина уменьшается (наверх выходить можно)', () => {
+  const editor = parseHtml(nestedListsHtml(CEILING));
+  const deepest = editor.querySelectorAll('li').slice(-1)[0];
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  const saved = [];
+  m.saveContent = (id, html) => saved.push(html);
+  const restoreCaret = stubCaret(deepest.firstChild);
+  const execCalls = [];
+  const origExec = globalThis.document.execCommand;
+  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
+  let result;
+  try {
+    result = m.execCommand('outdent');
+  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
+
+  assert.deepEqual(execCalls, [], 'потолок ни при чём: outdent тоже свой');
+  assert.equal(result, true);
+  assert.equal(m._listLevel(deepest, editor), CEILING - 1);
+  assert.equal(saved.length, 1);
+});
+
+test('ГЕЙТ: indent на уровень под потолком — исполняется, глубина растёт ровно до потолка', () => {
+  const editor = parseHtml(nestedListsHtml(CEILING - 1));
   const deepest = editor.querySelectorAll('li').slice(-1)[0];
   const m = mgr();
   m.activeEditor = editor;
@@ -457,45 +903,10 @@ test('ГЕЙТ: indent на потолке глубины (уровень 8) —
     result = m.execCommand('indent');
   } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
 
-  assert.deepEqual(execCalls, []);
-  assert.equal(result, false);
-  assert.deepEqual(saved, []);
-});
-
-test('ГЕЙТ: outdent на потолке разрешён (наверх из потолка выходить можно)', () => {
-  const editor = parseHtml(nestedListsHtml(MAX_LIST_LEVEL));
-  const deepest = editor.querySelectorAll('li').slice(-1)[0];
-  const m = mgr();
-  m.activeEditor = editor;
-  editor.dataset.textBlockId = 'tb1';
-  m.saveContent = () => {};
-  const restoreCaret = stubCaret(deepest.firstChild);
-  const execCalls = [];
-  const origExec = globalThis.document.execCommand;
-  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
-  try {
-    m.execCommand('outdent');
-  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
-
-  assert.deepEqual(execCalls, ['outdent']);
-});
-
-test('ГЕЙТ: indent на уровне 7 (под потолком) — команда проходит', () => {
-  const editor = parseHtml(nestedListsHtml(MAX_LIST_LEVEL - 1));
-  const deepest = editor.querySelectorAll('li').slice(-1)[0];
-  const m = mgr();
-  m.activeEditor = editor;
-  editor.dataset.textBlockId = 'tb1';
-  m.saveContent = () => {};
-  const restoreCaret = stubCaret(deepest.firstChild);
-  const execCalls = [];
-  const origExec = globalThis.document.execCommand;
-  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
-  try {
-    m.execCommand('indent');
-  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
-
-  assert.deepEqual(execCalls, ['indent']);
+  assert.deepEqual(execCalls, [], 'нативная команда не нужна — indent свой');
+  assert.equal(result, true);
+  assert.equal(m._listLevel(deepest, editor), CEILING);
+  assert.equal(saved.length, 1);
 });
 
 // ── range, заякоренный на ЭЛЕМЕНТЕ (Ctrl+A) ──────────────────────────────────
@@ -530,21 +941,30 @@ test('_caretListItem: вне списка → null (нативный Tab обя�
   assert.equal(m._caretListItem(null, editor), null);
 });
 
-test('ГЕЙТ: indent при range на редакторе (Ctrl+A над списком) — команда проходит', () => {
-  const editor = parseHtml('<ul><li>a</li><li>b</li></ul>');
-  const m = mgr();
-  m.activeEditor = editor;
-  editor.dataset.textBlockId = 'tb1';
-  m.saveContent = () => {};
-  const restoreCaret = stubCaret(editor); // startContainer — сам редактор
-  const execCalls = [];
-  const origExec = globalThis.document.execCommand;
-  globalThis.document.execCommand = (cmd) => { execCalls.push(cmd); return true; };
-  try {
-    m.execCommand('indent');
-  } finally { globalThis.document.execCommand = origExec; restoreCaret(); }
+test('ГЕЙТ: indent при range на редакторе (Ctrl+A над списком) — гейт не режет, работает по НАЧАЛУ диапазона', () => {
+  // Гейт резолвит range, заякоренный на самом редакторе, в ПЕРВЫЙ <li> списка
+  // (_caretListItem) — и дальше действует общее правило: первый пункт уровня не
+  // углубляется, разметка остаётся прежней. Раньше сюда уходила нативная
+  // команда, и Chromium давал список-сироту на весь список.
+  const first = runExecCommand(
+    '<ul><li>a</li><li>b</li></ul>',
+    (ed) => ed, // startContainer — сам редактор
+    'indent',
+  );
+  assert.deepEqual(first.execCalls, [], 'нативная команда не уходит');
+  assert.equal(first.result, false);
+  assert.equal(first.html, '<ul><li>a</li><li>b</li></ul>');
 
-  assert.deepEqual(execCalls, ['indent'], 'выделение целиком из пунктов списка гейт не режет');
+  // Тот же range для outdent гейт тоже пропускает: первый пункт выходит из
+  // списка абзацем (уровень 0), нативная команда по-прежнему не нужна.
+  const second = runExecCommand(
+    '<ul><li>a</li><li>b</li><li>c</li></ul>',
+    (ed) => ed.querySelector('ul'), // range на самом <ul>, offset 0 → первый <li>
+    'outdent',
+  );
+  assert.deepEqual(second.execCalls, []);
+  assert.equal(second.result, true);
+  assert.equal(second.html, '<div>a</div><ul><li>b</li><li>c</li></ul>');
 });
 
 test('_handleListTab: Tab при range на редакторе (Ctrl+A над списком) перехватывается', () => {

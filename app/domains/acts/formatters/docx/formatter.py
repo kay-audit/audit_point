@@ -12,10 +12,7 @@ from docx.shared import Pt
 from app.domains.acts.block_types import NODE_TYPE_TABLE
 from app.domains.acts.formatters.docx.builders.cover import build_cover_block
 from app.domains.acts.formatters.docx.builders.header_footer import apply_header_footer
-from app.domains.acts.formatters.docx.builders.inline import (
-    _PX_TO_PT,
-    render_block_segments,
-)
+from app.domains.acts.formatters.docx.builders.inline import render_block_segments
 from app.domains.acts.formatters.docx.builders.rubricator import build_rubricator_plate
 from app.domains.acts.formatters.docx.builders.signature import build_signature
 from app.domains.acts.formatters.docx.builders.tables import build_table
@@ -30,18 +27,17 @@ from app.domains.acts.formatters.docx.styles import (
     apply_document_defaults,
     ensure_footnote_styles,
 )
-# Текстблок: размер базы — единый экранный дефолт настроек
-# (ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT, 16px) через px→pt ×0.75 = 12pt (EXP-2);
+# Текстблок: размер базы — единый дефолт настроек в пунктах
+# (ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT), он же кегль Word — конвертации нет;
 # выравнивание — per-line из style="text-align" блочных элементов content
 # (TB-1: HTML — источник истины). Начертание (жирный/курсив/подчёркивание) —
 # только из inline-тегов content (B-1).
 # Фолбэк размера, когда форматтер собран без настроек (юнит-тесты DocxFormatter()).
-_DEFAULT_TB_FONT_SIZE_PX = 16
+_DEFAULT_TB_FONT_SIZE_PT = 12
 
-# px → pt (16px → 12pt) — единый источник в builders/inline.py (_PX_TO_PT).
-# Геометрия сегментов → абзацев (ALIGNMENT_MAP/split_block_segments) — там же,
-# в render_block_segments (общий потребитель — текстблок, rich-поля нарушения,
-# подпись картинки, пункты списка).
+# Геометрия сегментов → абзацев (ALIGNMENT_MAP/split_block_segments) — в
+# builders/inline.py, в render_block_segments (общий потребитель — текстблок,
+# rich-поля нарушения, подпись картинки, пункты списка).
 
 
 class DocxFormatter:
@@ -100,9 +96,10 @@ class DocxFormatter:
         общий helper render_block_segments (V14), единый для текстблока,
         rich-полей нарушения, подписи картинки и пунктов списка.
 
-        Размер базы — единый экранный дефолт настроек ×0.75 (EXP-2: 16px → 12pt);
-        span'ы с собственным font-size конвертируются тем же ×0.75 в
-        apply_inline_html. Начертание (жирный/курсив/подчёркивание) задаётся
+        Размер базы — единый дефолт настроек в пунктах, он же кегль Word:
+        число из тулбара доезжает до документа как есть. span'ы с собственным
+        font-size тоже несут пункты (см. _extract_size_pt в
+        apply_inline_html). Начертание (жирный/курсив/подчёркивание) задаётся
         ИСКЛЮЧИТЕЛЬНО inline-тегами <b>/<i>/<u> в content (B-1): apply_inline_html
         выставляет run.bold/italic/underline per-run.
         """
@@ -112,12 +109,11 @@ class DocxFormatter:
         # абзац-строка, «висевшая» в DOCX там, где превью блок не рисует).
         if not schema.content or not schema.content.strip():
             return
-        base_px = (
+        base_size_pt = (
             self._acts_settings.textblocks.font_size_default
             if self._acts_settings is not None
-            else _DEFAULT_TB_FONT_SIZE_PX
+            else _DEFAULT_TB_FONT_SIZE_PT
         )
-        base_size_pt = base_px * _PX_TO_PT
         render_block_segments(
             doc, schema.content,
             base_size_pt=base_size_pt,

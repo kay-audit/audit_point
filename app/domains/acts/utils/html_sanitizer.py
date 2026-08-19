@@ -116,19 +116,47 @@ def _css_sanitizer_for(props: tuple[str, ...]) -> CSSSanitizer:
 # игнорирует (_extract_size_pt читается только у span) — был бы новый шов
 # превью↔экспорт. Зеркало фронта — BLOCK_STYLE_TAGS в sanitize.js.
 _BLOCK_STYLE_TAGS = frozenset({"div", "p"})
+# Пункт списка — блок с ИСКЛЮЧЕНИЕМ: сверх text-align ему разрешён собственный
+# font-size. Без него не работает размер маркера: ::marker наследует кегль от
+# САМОГО <li>, а не от вложенного span, и DOCX печатает маркер меткой абзаца
+# (render_block_segments → _set_paragraph_mark_size) из того же значения.
+# Прочие свойства (color/background) пункту не нужны и срезаются: DOCX их у <li>
+# не читает — был бы шов превью↔экспорт. Зеркало фронта — ITEM_STYLE_TAGS в
+# sanitize.js.
+_ITEM_STYLE_TAGS = frozenset({"li"})
 # Значение — строго enum: мусор (inherit/start/left-x) срезает style целиком.
 _BLOCK_TEXT_ALIGN_RE = re.compile(
     r"(?:^|;)\s*text-align\s*:\s*(left|center|right|justify)\s*(?:;|$)",
     re.IGNORECASE,
 )
+# Объявление font-size целиком — для сборки style пункта списка. Кламп единиц
+# и границ делает следующий фильтр (_FontSizeClampFilter), здесь только отбор.
+_FONT_SIZE_DECL_RE = re.compile(r"font-size\s*:\s*[^;]+", re.IGNORECASE)
+
+
+def _keep_block_style(tag: str, style: str) -> str | None:
+    """Оставляет в style блочного тега разрешённые ему свойства.
+
+    div/p — только text-align (enum), <li> — text-align плюс собственный
+    font-size. Возврат None = снять атрибут целиком.
+    """
+    kept: list[str] = []
+    align = _BLOCK_TEXT_ALIGN_RE.search(style or "")
+    if align:
+        kept.append(f"text-align: {align.group(1).lower()}")
+    if tag in _ITEM_STYLE_TAGS:
+        size = _FONT_SIZE_DECL_RE.search(style or "")
+        if size:
+            kept.append(size.group(0).strip())
+    return "; ".join(kept) if kept else None
 
 
 class _BlockStyleFilter(Filter):
-    """Пост-фильтр токенов bleach: у div/p оставляет в style только text-align.
+    """Пост-фильтр токенов bleach: режет style блочных тегов до разрешённого.
 
     CSSSanitizer per-tag не умеет (режет по общему allowlist до этого шага) —
     фильтр идёт по уже санитизированному токен-потоку перед сериализацией и
-    перезаписывает style блочных тегов; без валидного text-align атрибут
+    перезаписывает style блочных тегов; без разрешённых свойств атрибут
     снимается целиком.
     """
 
@@ -136,68 +164,81 @@ class _BlockStyleFilter(Filter):
         for token in super().__iter__():
             if (
                 token.get("type") in ("StartTag", "EmptyTag")
-                and token.get("name") in _BLOCK_STYLE_TAGS
+                and token.get("name") in (_BLOCK_STYLE_TAGS | _ITEM_STYLE_TAGS)
             ):
                 data = token.get("data") or {}
                 key = (None, "style")
                 if key in data:
-                    match = _BLOCK_TEXT_ALIGN_RE.search(data[key] or "")
-                    if match:
-                        data[key] = f"text-align: {match.group(1).lower()}"
+                    kept = _keep_block_style(token["name"], data[key] or "")
+                    if kept:
+                        data[key] = kept
                     else:
                         del data[key]
             yield token
 
 
-# TB-6: мягкий кламп font-size к [min,max] из настроек. Кламп — по px (редактор
-# эмитит именно px); значение в диапазоне остаётся дословным — паритетные
-# фикстуры (font-size: 20px) не переформатируются. Не-px размер (pt/em/%/rem)
-# редактор не создаёт — он приходит из прямого API/внешней вставки и убирается
-# целиком (_strip_nonpx_font_size), иначе обошёл бы границы (500pt проходит мимо
-# клампа) и рассогласовал превью↔DOCX (em/%/rem превью рендерит, inline._SIZE_RE
-# роняет).
-_FONT_SIZE_PX_RE = re.compile(
-    r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*px",
+# TB-6: мягкий кламп font-size к [min,max] из настроек. Единица контракта —
+# ПУНКТЫ: редактор эмитит pt, границы настроек — тоже pt, и ровно это число
+# уходит в Word. Значение в диапазоне остаётся дословным — паритетные фикстуры
+# (font-size: 20pt) не переформатируются.
+#
+# px редактор не создаёт — он приходит из прямого API/внешней вставки (Word,
+# браузер), и вырезать его молча значило бы терять заданный автором кегль.
+# Поэтому px КОНВЕРТИРУЕТСЯ в pt (×0.75) и клампится наравне с pt: превью и
+# DOCX (inline._SIZE_RE читает обе единицы) получают одно значение.
+#
+# Прочие единицы (em/%/rem/без единицы) убираются целиком
+# (_strip_unsupported_font_size): относительный размер не с чем сравнивать при
+# клампе, а превью его отрисовало бы — был бы шов превью↔DOCX.
+_PX_TO_PT = 0.75
+
+# Объявление font-size в поддержанной единице (pt — как есть, px — с
+# конвертацией). Зеркало inline._SIZE_RE DOCX-экспорта.
+_FONT_SIZE_RE = re.compile(
+    r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(pt|px)",
     re.IGNORECASE,
 )
 
-# Одно объявление font-size с единицей ≠ px (или без единицы) внутри style —
-# вместе с примыкающим ';', чтобы не осталось пустой декларации. Негативный
-# lookahead пропускает валидный <N>px (его обрабатывает кламп).
-_FONT_SIZE_NONPX_DECL_RE = re.compile(
-    r"font-size\s*:\s*(?!\s*\d+(?:\.\d+)?\s*px\b)[^;]*;?",
+# Одно объявление font-size с неподдержанной единицей (или без единицы) внутри
+# style — вместе с примыкающим ';', чтобы не осталось пустой декларации.
+# Негативный lookahead пропускает валидные <N>pt/<N>px (их обрабатывает кламп).
+_FONT_SIZE_OTHER_DECL_RE = re.compile(
+    r"font-size\s*:\s*(?!\s*\d+(?:\.\d+)?\s*(?:pt|px)\b)[^;]*;?",
     re.IGNORECASE,
 )
 
 
-def _strip_nonpx_font_size(style: str) -> str:
-    """Убирает из style объявления font-size в НЕ-px единицах (pt/em/%/rem…).
+def _strip_unsupported_font_size(style: str) -> str:
+    """Убирает из style объявления font-size в единицах кроме pt/px (em/%/rem…).
 
-    Редактор эмитит размер только в px; не-px приходит из прямого API/внешней
-    вставки. Оставленный, он либо обошёл бы границы клампа (font-size:500pt), либо
-    рассогласовал превью↔DOCX (em/%/rem превью показывает, а inline._SIZE_RE не
-    распознаёт). Удаляем объявление целиком — оба рендера падают на базовый
-    размер. px не трогаем: его зажимает _clamp_font_size_px.
+    Относительный размер невозможно зажать границами [min,max] (они в pt), а
+    превью его отрисовало бы — DOCX (inline._SIZE_RE) нет. Удаляем объявление
+    целиком: оба рендера падают на базовый размер. pt/px не трогаем — их
+    приводит к пунктам и зажимает _clamp_font_size_pt.
     """
-    return _FONT_SIZE_NONPX_DECL_RE.sub("", style)
+    return _FONT_SIZE_OTHER_DECL_RE.sub("", style)
 
 
-def _clamp_font_size_px(style: str, min_px: int, max_px: int) -> str:
-    """Зажимает каждое font-size:<N>px в style-строке к [min_px, max_px].
+def _clamp_font_size_pt(style: str, min_pt: int, max_pt: int) -> str:
+    """Приводит каждое font-size в style-строке к пунктам и зажимает к [min,max].
 
-    В диапазоне — возвращает исходное совпадение без изменений (не
-    переформатирует). Вне — переписывает границей (целое из настроек).
+    pt в диапазоне — возвращает исходное совпадение без изменений (не
+    переформатирует). px — всегда переписывает пунктами (×0.75), даже если
+    результат в диапазоне: единица контракта одна. Вне диапазона — граница
+    из настроек.
     """
 
     def _repl(match: re.Match) -> str:
         value = float(match.group(1))
-        clamped = min(float(max_px), max(float(min_px), value))
-        if clamped == value:
+        unit = match.group(2).lower()
+        size_pt = value * _PX_TO_PT if unit == "px" else value
+        clamped = min(float(max_pt), max(float(min_pt), size_pt))
+        if unit == "pt" and clamped == value:
             return match.group(0)
         num = int(clamped) if clamped == int(clamped) else clamped
-        return f"font-size: {num}px"
+        return f"font-size: {num}pt"
 
-    return _FONT_SIZE_PX_RE.sub(_repl, style)
+    return _FONT_SIZE_RE.sub(_repl, style)
 
 
 class _FontSizeClampFilter(Filter):
@@ -215,17 +256,17 @@ class _FontSizeClampFilter(Filter):
 
     def __iter__(self):
         tb = _acts_settings().textblocks
-        min_px, max_px = tb.font_size_min, tb.font_size_max
+        min_pt, max_pt = tb.font_size_min, tb.font_size_max
         for token in super().__iter__():
             if token.get("type") in ("StartTag", "EmptyTag"):
                 data = token.get("data") or {}
                 key = (None, "style")
                 style = data.get(key)
                 if style and "font-size" in style.lower():
-                    style = _strip_nonpx_font_size(style)
-                    style = _clamp_font_size_px(style, min_px, max_px)
-                    # Осталась пустая/только-разделители строка (был лишь не-px
-                    # font-size) — снимаем style целиком.
+                    style = _strip_unsupported_font_size(style)
+                    style = _clamp_font_size_pt(style, min_pt, max_pt)
+                    # Осталась пустая/только-разделители строка (был лишь
+                    # неподдержанный font-size) — снимаем style целиком.
                     if style.strip(" ;\t\r\n"):
                         data[key] = style
                     else:
@@ -259,6 +300,9 @@ def sanitize_html(html: str | None) -> str:
         # _BlockStyleFilter (CSSSanitizer до него — по общему allowlist).
         "div": ["class", "style"],
         "p": ["class", "style"],
+        # Пункт списка несёт собственный font-size (размер маркера) и
+        # text-align; состав режет _BlockStyleFilter.
+        "li": ["class", "style"],
         "*": ["class"],
     }
     # Cleaner вместо bleach.clean ради filters= (bleach.clean собирает такой
@@ -286,12 +330,20 @@ def _rich_attribute_filter(tag: str, attr: str, value: str) -> str | None:
     """
     if attr != "style":
         return value
-    if tag in _BLOCK_STYLE_TAGS:
-        match = _BLOCK_TEXT_ALIGN_RE.search(value or "")
-        return f"text-align: {match.group(1).lower()}" if match else None
+    if tag in _BLOCK_STYLE_TAGS or tag in _ITEM_STYLE_TAGS:
+        kept = _keep_block_style(tag, value or "")
+        if kept is None:
+            return None
+        # У пункта списка в остатке может быть font-size — зажимаем теми же
+        # границами, что и у span (в bleach-ветке это делает _FontSizeClampFilter).
+        tb = _acts_settings().textblocks
+        kept = _clamp_font_size_pt(
+            _strip_unsupported_font_size(kept), tb.font_size_min, tb.font_size_max
+        ).strip(" ;\t\r\n")
+        return kept or None
     tb = _acts_settings().textblocks
-    style = _clamp_font_size_px(
-        _strip_nonpx_font_size(value or ""), tb.font_size_min, tb.font_size_max
+    style = _clamp_font_size_pt(
+        _strip_unsupported_font_size(value or ""), tb.font_size_min, tb.font_size_max
     )
     style = style.strip(" ;\t\r\n")
     return style or None
@@ -336,6 +388,7 @@ def sanitize_rich_html(html: str | None) -> str:
             "span": {"class", "style", *cfg.allowed_data_attrs},
             "div": {"class", "style"},
             "p": {"class", "style"},
+            "li": {"class", "style"},
             "*": {"class"},
         },
         attribute_filter=_rich_attribute_filter,

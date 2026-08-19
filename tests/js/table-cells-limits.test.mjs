@@ -56,11 +56,12 @@ test('AppConfig.limits.table: maxRows=64, maxCols=16 (контракт с бэк
   assert.equal(AppConfig.limits.table.maxCols, 16);
 });
 
-test('AppConfig.limits.textblock: fontSize 8-72, база 16 (контракт с ACTS__TEXTBLOCKS__)', () => {
+test('AppConfig.limits.textblock: fontSize 8-72, база 12 пт (контракт с ACTS__TEXTBLOCKS__)', () => {
   assert.equal(AppConfig.limits.textblock.fontSizeMin, 8);
   assert.equal(AppConfig.limits.textblock.fontSizeMax, 72);
-  // EXP-2: базовый (экранный) размер текстблока — зеркало font_size_default.
-  assert.equal(AppConfig.limits.textblock.fontSizeDefault, 16);
+  // Базовый размер текстблока В ПУНКТАХ — зеркало font_size_default: тело акта
+  // 12pt, ровно столько же уйдёт в Word.
+  assert.equal(AppConfig.limits.textblock.fontSizeDefault, 12);
 });
 
 // ──────────────────────────────────────────────────────────────────────────

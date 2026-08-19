@@ -315,20 +315,34 @@ def test_empty_content_renders_nothing(doc):
 
 
 def test_base_font_size_applies_to_every_paragraph(doc):
-    """Базовый размер — экранный дефолт настроек ×0.75 (16px → 12pt, EXP-2) —
-    применяется каждому сегменту (форматтер без настроек → фолбэк 16px)."""
+    """Базовый размер — дефолт настроек в пунктах (12pt) — применяется каждому
+    сегменту (форматтер без настроек → фолбэк 12pt)."""
     paras = _render(doc, "<div>один</div><div>два</div>")
     for p in paras:
         assert p.runs[0].font.size == Pt(12)
 
 
 def test_base_font_size_follows_settings_default(doc):
-    """EXP-2: база = ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT ×0.75. 20px → 15pt."""
+    """База = ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT в пунктах, без множителя:
+    20 в настройках → 20pt в Word."""
     from app.domains.acts.settings import ActsSettings, TextblocksSettings
     fmt = DocxFormatter(acts_settings=ActsSettings(
         textblocks=TextblocksSettings(font_size_default=20)))
     paras = _render(doc, "<div>текст</div>", formatter=fmt)
-    assert paras[0].runs[0].font.size == Pt(15)
+    assert paras[0].runs[0].font.size == Pt(20)
+
+
+def test_base_font_size_no_multiplier(doc):
+    """Регрессия единицы: дефолтная база текстблока — ровно 12pt, а не 12×0.75
+    (=9pt). Число из тулбара — пункты, конвертации на базе нет."""
+    paras = _render(doc, "<div>текст</div>")
+    assert paras[0].runs[0].font.size == Pt(12)
+
+
+def test_span_font_size_pt_verbatim(doc):
+    """font-size:14pt у span → 14pt в Word (единица контракта редактора)."""
+    paras = _render(doc, '<div><span style="font-size: 14pt">крупно</span></div>')
+    assert paras[0].runs[0].font.size == Pt(14)
 
 
 # --- вертикальная геометрия: спейсинг разбитого блока -------------------------

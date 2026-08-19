@@ -22,8 +22,8 @@ const FLIP_DURATION_MS = 150;
  *
  * toIndex — позиция вставки В ИСХОДНОМ списке, как её считает dragover;
  * при движении вниз она уменьшается на 1, потому что удаление элемента с
- * fromIndex сдвигает всё, что правее, влево (зеркало moveBlock,
- * violation-mutations.js).
+ * fromIndex сдвигает всё, что правее, влево (тот же счёт, что у одиночного
+ * блока в planBlocksReorder, violation-mutations.js).
  *
  * @param {string[]} order - Исходный порядок ключей
  * @param {number} fromIndex - Индекс перетаскиваемой строки

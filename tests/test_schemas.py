@@ -874,12 +874,13 @@ class TestDynamicLimitsFromSettings:
         TableSchema(id="t", nodeId="n", grid=grid3[:2])
 
     def test_font_size_default_from_settings(self):
-        """EXP-2: базовый размер текстблока берётся из
-        ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT (единый источник /limits и экспорта)."""
+        """Базовый размер текстблока берётся из
+        ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT (единый источник /limits и экспорта).
+        Единица — пункты."""
         from app.domains.acts.settings import ActsSettings, TextblocksSettings
         self._register(ActsSettings(textblocks=TextblocksSettings(font_size_default=20)))
         from app.core import settings_registry
         from app.domains.acts import DOMAIN_NAME
         assert settings_registry._registry[DOMAIN_NAME].textblocks.font_size_default == 20
-        # Дефолт — 16px.
-        assert TextblocksSettings().font_size_default == 16
+        # Дефолт — 12pt.
+        assert TextblocksSettings().font_size_default == 12

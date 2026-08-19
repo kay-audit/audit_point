@@ -57,10 +57,14 @@
     color: var(--table-header-text);
 }
 
-/* Выравнивание текста в ячейках заголовка */
+/* Выравнивание текста в ячейках заголовка. Гарнитуру НЕ задаём: шапка — часть
+   документа и обязана наследовать гарнитуру поверхности (лист → Times, диалог
+   версий → документная через .preview-table-wrapper, вкладка сравнения →
+   интерфейсная, см. preview-typography.css). Пока здесь стоял
+   --font-family-base, на листе он гасился правилом .preview-sheet, а в диалоге
+   версий шапка уезжала в sans. */
 .preview-table th {
     text-align: center;
-    font-family: var(--font-family-base);
 }
 
 /* Объединённые шапки, прижатые влево (совпадение с .docx). */
@@ -77,7 +81,6 @@
     margin-bottom: var(--spacing);
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
-    font-family: var(--font-family-base);
 }
 
 /* Подпись под таблицей */

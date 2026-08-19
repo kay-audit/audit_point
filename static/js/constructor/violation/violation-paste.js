@@ -141,6 +141,26 @@ function _caretAtFieldEnd(field) {
     return range;
 }
 
+/**
+ * Позиция вставки нового блока по ФОКУСУ: каретка внутри блока — сразу за этим
+ * блоком, иначе — конец поля. Блок ищем по его id, а не по позиции обёртки в
+ * DOM: индекс в модели — единственный, по которому вставка честна.
+ *
+ * @param {HTMLElement|null} focusSource - Узел, от которого считается фокус
+ * @param {Object} violation - Объект нарушения
+ * @param {string} fieldKey - Ключ поля реестра
+ * @returns {number} Индекс вставки в blocks
+ */
+export function insertIndexFromFocus(focusSource, violation, fieldKey) {
+    const blocks = violation?.[fieldKey]?.blocks || [];
+
+    const wrapper = focusSource?.closest?.('.content-item-wrapper');
+    const blockId = wrapper?.dataset?.blockId;
+    const focusedIndex = blockId ? blocks.findIndex(block => block?.id === blockId) : -1;
+
+    return focusedIndex === -1 ? blocks.length : focusedIndex + 1;
+}
+
 // Расширение ViolationManager
 Object.assign(ViolationManager.prototype, {
     /**
@@ -177,8 +197,7 @@ Object.assign(ViolationManager.prototype, {
             if (targetIsEditable && !interceptImages) return;
 
             // Целевую зону определяем по ФОКУСУ (activeElement), а НЕ по hover (#19):
-            // hover-модель (currentActiveContainer/cursorInsertPosition) осталась
-            // только для визуального индикатора позиции при drag файлов. Контейнер
+            // положение мыши на выбор зоны не влияет вовсе. Контейнер
             // зоны focusable (tabindex=0) — клик по нему даёт фокус.
             // В §5.8-ветке фокус стоит на самом rich-поле, лежащем ВНУТРИ зоны, —
             // путь тот же closest, но считаем его от e.target, чтобы зона бралась
@@ -206,9 +225,11 @@ Object.assign(ViolationManager.prototype, {
                 return;
             }
 
-            // Под focus-моделью вставляем в КОНЕЦ поля (#19): позиция курсора
-            // мыши неактуальна — вставка инициирована с клавиатуры по фокусу.
-            const insertIndex = violation?.[fieldKey]?.blocks?.length || 0;
+            // Позицию вставки задаёт ФОКУС, а не мышь (#19): каретка внутри
+            // блока — новый блок ложится сразу за ним, фокус в зоне, но не в
+            // блоке — в конец поля. Возврата к hover-модели нет: положение
+            // курсора мыши в вставке с клавиатуры не участвует.
+            const insertIndex = insertIndexFromFocus(focusSource, violation, fieldKey);
 
             // Собираем ВСЕ картинки буфера (не только последнюю, #28) и
             // отдельно наличие текста.

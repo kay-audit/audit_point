@@ -238,7 +238,7 @@ ActsSettings (BaseModel) — префикс ACTS__
 ├── audit_log: AuditLogSettings
 ├── images: ImagesSettings (ACTS__IMAGES__* — лимиты картинок нарушений; фронт читает их через GET /api/v1/acts/limits вместе с границами таблиц/текстблоков)
 ├── tables: TablesSettings (ACTS__TABLES__* — max_rows/max_cols/min_col_width_px/per_node; источник истины лимитов таблиц для UI-гейта, /limits и Pydantic-валидаторов схемы)
-├── textblocks: TextblocksSettings (ACTS__TEXTBLOCKS__* — font_size_min/max/default, per_node; источник истины границ шрифта текстблоков)
+├── textblocks: TextblocksSettings (ACTS__TEXTBLOCKS__* — font_size_min/max/default, per_node, max_list_level; источник истины границ шрифта и глубины списков текстблоков)
 ├── violations: ViolationsSettings (ACTS__VIOLATIONS__PER_NODE — серверный гейт числа нарушений у узла)
 └── sanitizer: SanitizerSettings (ACTS__SANITIZER__* — единый allowlist для bleach и фронтового DOMPurify)
    (+ плоское поле ACTS__EDITOR_TELEMETRY_ENABLED)
@@ -677,7 +677,6 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__AUTOSAVE__PERIOD_SECONDS` | int | `3` | Дебаунс автосохранения черновика акта в localStorage (сек) |
 | `ACTS__FORMATTING__MAX_IMAGE_SIZE_MB` | float | `10.0` | Макс. размер изображения |
 | `ACTS__FORMATTING__DOCX_IMAGE_WIDTH` | float | `4.0` | Ширина изображения (дюймы) |
-| `ACTS__FORMATTING__DOCX_CAPTION_FONT_SIZE` | int | `10` | Размер шрифта подписей |
 | `ACTS__FORMATTING__DOCX_MAX_HEADING_LEVEL` | int | `9` | Макс. уровень заголовков |
 | `ACTS__FORMATTING__TEXT_HEADER_WIDTH` | int | `80` | Ширина заголовка |
 | `ACTS__FORMATTING__TEXT_INDENT_SIZE` | int | `2` | Отступ в тексте |
@@ -708,10 +707,11 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__TABLES__MAX_COLS` | int | `16` | Макс. колонок таблицы |
 | `ACTS__TABLES__MIN_COL_WIDTH_PX` | int | `80` | Мин. ширина колонки (px) |
 | `ACTS__TABLES__PER_NODE` | int | `10` | Макс. таблиц-детей одного узла (серверный гейт, включая закреплённые metrics/risk) |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `16` | Базовый экранный размер текстблока (px; 16px → 12pt в DOCX) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока, пункты (pt) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока, пункты (pt) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `12` | Базовый размер текстблока, пункты (pt) — тот же кегль уходит в DOCX без конвертации |
 | `ACTS__TEXTBLOCKS__PER_NODE` | int | `10` | Макс. текстблоков-детей одного узла (серверный гейт) |
+| `ACTS__TEXTBLOCKS__MAX_LIST_LEVEL` | int | `4` | Потолок глубины вложенности списков редактора (0-based; максимум 8 — предел нумерации OOXML) |
 | `ACTS__VIOLATIONS__PER_NODE` | int | `10` | Макс. нарушений-детей одного узла (серверный гейт) |
 | `ACTS__SANITIZER__ALLOWED_TAGS` | list | `p/br/b/…/div` (22 тега) | Allowlist HTML-тегов санитайзера контента (bleach + nh3, единый источник с фронтовым DOMPurify через `/acts/limits`) |
 | `ACTS__SANITIZER__ALLOWED_CSS_PROPERTIES` | list | `font-size/…/text-align` (8 свойств) | Allowlist CSS-свойств inline-`style` |

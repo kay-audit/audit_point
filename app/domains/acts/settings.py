@@ -40,7 +40,6 @@ class FormattingSettings(BaseModel):
     # DOCX
     max_image_size_mb: float = 10.0
     docx_image_width: float = 4.0
-    docx_caption_font_size: int = 10
     docx_max_heading_level: int = 9
     # Text
     text_header_width: int = 80
@@ -161,20 +160,29 @@ class TextblocksSettings(BaseModel):
     """
     Границы форматирования текстблоков (размер шрифта редактора).
 
-    Единый источник границ размера шрифта для GET /acts/limits и фронт-тулбара
-    (кламп размера в дропдауне). Дефолты границ совпадают с фолбэками схемы
-    (FONT_SIZE_MIN/FONT_SIZE_MAX).
+    Единый источник границ размера шрифта и глубины списков для GET /acts/limits
+    и фронт-тулбара (кламп размера в дропдауне, потолок «Уровень глубже»).
+    Дефолты границ совпадают с фолбэками схемы (FONT_SIZE_MIN/FONT_SIZE_MAX).
+
+    Размер шрифта задаётся в ПУНКТАХ (pt) — и границы, и базовое значение:
+    число, выбранное в тулбаре, попадает в Word как есть, без конвертации.
     """
     font_size_min: int = Field(default=8, gt=0)
     font_size_max: int = Field(default=72, gt=0)
-    # Базовый (экранный) размер текстблока в px — единый источник для редактора,
-    # превью (через /acts/limits) и экспорта (база px→pt ×0.75, EXP-2). 16px → 12pt.
-    font_size_default: int = Field(default=16, gt=0)
+    # Базовый размер текстблока в пунктах — единый для редактора, превью
+    # (через /acts/limits) и DOCX-экспорта.
+    font_size_default: int = Field(default=12, gt=0)
     # Максимальное число текстблоков-детей одного узла дерева (B-13). Фронт
     # ограничивает добавление блоков узлу, но прямой API эту проверку обходил —
     # серверный гейт в ActContentService._validate_tree. Отдаётся через
     # GET /acts/limits (textblocks.per_node).
     per_node: int = Field(default=10, gt=0)
+    # Потолок глубины вложенности списков в редакторе (0-based: 4 — пятый
+    # уровень). Это UI-граница — глубже не уводят ни Tab, ни пункт меню
+    # «Уровень глубже» (гейт execCommand читает значение через /acts/limits).
+    # le=8 — жёсткий предел формата: w:abstractNum в OOXML описывает 9 уровней,
+    # и DOCX-экспорт клампит на ilvl 8 независимо от этой настройки.
+    max_list_level: int = Field(default=4, gt=0, le=8)
 
 
 class SanitizerSettings(BaseModel):

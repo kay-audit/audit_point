@@ -1,12 +1,12 @@
 /**
  * Тесты перестановки блоков поля нарушения drag-and-drop'ом (находка аудита #6).
  *
- * Порядок вычисляется index-based splice'ом в мутаторе moveBlock (перенос
- * блока по id к целевому индексу с поправкой на удаление исходной позиции при
- * движении вниз); handleDragEnd без коммита восстанавливает DOM из данных
- * (renderBlocks). Блочная модель добавила гейт поля: полезная нагрузка несёт
- * {violationId, fieldKey, blockId}, и drop в контейнер ДРУГОГО поля
- * игнорируется — перенос между полями не поддержан (спека §7).
+ * Порядок вычисляется мутатором moveBlocks: пачка id переносится к целевому
+ * индексу с поправкой на переносимые элементы левее него; handleDragEnd без
+ * коммита восстанавливает DOM из данных (renderBlocks). Блочная модель добавила
+ * гейт поля: полезная нагрузка несёт {violationId, fieldKey, blockIds}, и drop
+ * в контейнер ДРУГОГО поля игнорируется — перенос между полями не поддержан
+ * (спека §7). Групповые сценарии самого мутатора — violation-block-group.test.mjs.
  *
  * Реальные модули импортируются под node:test через _browser-stub; DOM-эффекты
  * (renderBlocks / PreviewManager.updateBlock) застабены.
@@ -36,7 +36,7 @@ function makeViolation(ids, fieldKey = FIELD) {
     };
 }
 
-/** Событие drop с полезной нагрузкой перетаскивания. */
+/** Событие drop с полезной нагрузкой перетаскивания (пачка id). */
 function dropEvent(payload) {
     return {
         preventDefault() {},
@@ -65,7 +65,7 @@ test('drop переставляет блок вниз (поправка на у�
     const v = makeViolation(['A', 'B', 'C', 'D']);
     vm.lastDragOverIndex = 3; // вставка после C
 
-    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] }), v, FIELD, container);
 
     assert.deepEqual(blockIds(v), ['B', 'C', 'A', 'D']);
     assert.equal(vm._renderCount(), 1, 'один renderBlocks');
@@ -78,7 +78,7 @@ test('drop переставляет блок вверх', () => {
     const v = makeViolation(['A', 'B', 'C', 'D']);
     vm.lastDragOverIndex = 1; // перед B
 
-    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'D' }), v, FIELD, 1, container);
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['D'] }), v, FIELD, container);
 
     assert.deepEqual(blockIds(v), ['A', 'D', 'B', 'C']);
 });
@@ -87,26 +87,28 @@ test('drop на исходную позицию — массив не меняе
     const vmTop = makeVm();
     const vTop = makeViolation(['A', 'B', 'C']);
     vmTop.lastDragOverIndex = 0; // перед собой
-    vmTop.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), vTop, FIELD, 0, container);
+    vmTop.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] }), vTop, FIELD, container);
     assert.deepEqual(blockIds(vTop), ['A', 'B', 'C']);
 
     const vmBottom = makeVm();
     const vBottom = makeViolation(['A', 'B', 'C']);
     vmBottom.lastDragOverIndex = 1; // после себя
-    vmBottom.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), vBottom, FIELD, 0, container);
+    vmBottom.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] }), vBottom, FIELD, container);
     assert.deepEqual(blockIds(vBottom), ['A', 'B', 'C']);
 });
 
-test('drop без lastDragOverIndex использует targetIndex блока под курсором', () => {
+test('drop без единой позиции от dragover ничего не переставляет', () => {
     const vm = makeVm();
     const v = makeViolation(['A', 'B', 'C']);
     vm.lastDragOverIndex = null; // dragover не отработал
 
-    // Курсор на блоке с индексом 2 (C) → вставка на его позицию.
-    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
+    // dragover/drop висят на КОНТЕЙНЕРЕ, и индекса блока под курсором у drop'а
+    // больше нет: позицию считает только dragover. Браузер без preventDefault'а
+    // в dragover drop и не вызовет, поэтому досчитывать нечего — молчим.
+    vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] }), v, FIELD, container);
 
-    // A удалён (from=0), to=2, поправка from<to → to=1 → [B,A,C].
-    assert.deepEqual(blockIds(v), ['B', 'A', 'C']);
+    assert.deepEqual(blockIds(v), ['A', 'B', 'C'], 'порядок не тронут');
+    assert.equal(vm._renderCount(), 0, 'перерисовки нет');
 });
 
 test('drop блока ЧУЖОГО поля игнорируется (перенос между полями — non-goal)', () => {
@@ -117,8 +119,8 @@ test('drop блока ЧУЖОГО поля игнорируется (перен
     vm.lastDragOverIndex = 0;
 
     vm.handleDrop(
-        dropEvent({ violationId: 'v1', fieldKey: 'reasons', blockId: 'R1' }),
-        v, FIELD, 0, container,
+        dropEvent({ violationId: 'v1', fieldKey: 'reasons', blockIds: ['R1'] }),
+        v, FIELD, container,
     );
 
     assert.deepEqual(blockIds(v), ['A', 'B', 'C'], 'целевое поле не тронуто');
@@ -132,8 +134,8 @@ test('drop блока ДРУГОГО нарушения игнорируется
     const v = makeViolation(['A', 'B']);
 
     vm.handleDrop(
-        dropEvent({ violationId: 'v2', fieldKey: FIELD, blockId: 'A' }),
-        v, FIELD, 0, container,
+        dropEvent({ violationId: 'v2', fieldKey: FIELD, blockIds: ['A'] }),
+        v, FIELD, container,
     );
 
     assert.deepEqual(blockIds(v), ['A', 'B']);
@@ -149,7 +151,7 @@ test('§5.10a: в режиме просмотра drop не переставля
 
     AppConfig.readOnlyMode.isReadOnly = true;
     try {
-        vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockId: 'A' }), v, FIELD, 2, container);
+        vm.handleDrop(dropEvent({ violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] }), v, FIELD, container);
     } finally {
         AppConfig.readOnlyMode.isReadOnly = false;
     }
@@ -164,7 +166,7 @@ test('dragEnd без коммита восстанавливает порядо�
     const vm = makeVm();
     const v = makeViolation(['A', 'B']);
     vm._dropCommitted = false;
-    vm._dragPayload = { violationId: 'v1', fieldKey: FIELD, blockId: 'A' };
+    vm._dragPayload = { violationId: 'v1', fieldKey: FIELD, blockIds: ['A'] };
 
     vm.handleDragEnd(
         { target: { classList: { remove() {} } } },

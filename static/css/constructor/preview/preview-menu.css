@@ -179,7 +179,7 @@
     padding: 0;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
-    font-family: var(--font-family-serif);
+    font-family: var(--doc-font-family);
     font-size: var(--font-size-sm);
     line-height: var(--line-height-relaxed);
     color: var(--text-primary);

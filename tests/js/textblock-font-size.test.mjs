@@ -1,10 +1,16 @@
 /**
  * B-24/B-2: applyFontSize без execCommand/font[size=7].
- *  - С выделением: оборачивает в span[style=font-size] через
- *    range.extractContents()+insertNode (сохраняя вложенную разметку).
+ *  - С выделением: размер накладывается ПОУЗЛОВО (каждый текстовый узел — свой
+ *    span), содержимое диапазона НЕ вырезается. Прежняя реализация звала
+ *    range.extractContents() и заворачивала фрагмент в один span — на выделении
+ *    через несколько <li> это оставляло в списке пустые пункты-огрызки, а сами
+ *    пункты уезжали внутрь span (разметка, которую не понимают ни превью, ни
+ *    DOCX). Живая проверка результата — playwright-спека 31.
  *  - На каретке (collapsed): материализует размер в content span'ом с ZWSP-якорем,
  *    а НЕ в editor.style (флагман data-loss B-2 — стиль контейнера в innerHTML
  *    не попадает и терялся при reload/preview/export).
+ *  - Единица размера — ПУНКТЫ: выбранное пользователем число уходит в Word как
+ *    есть (экранную читаемость даёт zoom поверхности, а не подмена кегля).
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -42,6 +48,7 @@ function installDom(createdSpans) {
     createRange: () => ({
       selectNodeContents() {},
       setStart() {},
+      setEnd() {},
       collapse() {},
     }),
     createTextNode: (t) => ({ nodeType: 3, textContent: t }),
@@ -72,18 +79,35 @@ function makeManager(editor) {
   return mgr;
 }
 
-test('B-24: выделение оборачивается в span[style=font-size] без execCommand', () => {
+/** Текстовый узел с рабочим splitText — без авто-правки живых диапазонов. */
+function makeText(t) {
+  return {
+    nodeType: 3,
+    textContent: t,
+    parentElement: null,
+    splitText(offset) {
+      const tail = makeText(this.textContent.slice(offset));
+      this.textContent = this.textContent.slice(0, offset);
+      return tail;
+    },
+  };
+}
+
+test('B-24: выделение НЕ вырезается — размер накладывается поузлово', () => {
   const editor = makeEditor();
   const mgr = makeManager(editor);
   const createdSpans = [];
   installDom(createdSpans);
 
   let extracted = false;
-  let inserted = null;
-  const fragment = { _kind: 'fragment' };
+  const boundary = makeText('текст');
   const range = {
-    extractContents() { extracted = true; return fragment; },
-    insertNode(node) { inserted = node; },
+    startContainer: boundary,
+    endContainer: boundary,
+    startOffset: 0,
+    endOffset: 5,
+    extractContents() { extracted = true; return { _kind: 'fragment' }; },
+    insertNode() {},
   };
   globalThis.getSelection = () => ({
     isCollapsed: false,
@@ -93,13 +117,56 @@ test('B-24: выделение оборачивается в span[style=font-siz
     addRange() {},
   });
 
+  let appliedPt = null;
+  mgr._applySizeToRange = (_range, pt) => { appliedPt = pt; return { first: null, last: null }; };
+
   mgr.applyFontSize(20);
 
-  assert.equal(extracted, true, 'range.extractContents должен быть вызван (B-24, без font7)');
-  assert.ok(inserted, 'обёрнутый span должен быть вставлен через insertNode');
-  assert.equal(inserted.style.fontSize, '20px');
+  assert.equal(extracted, false, 'extractContents звать нельзя — он и плодил пустые <li>');
+  assert.equal(appliedPt, 20, 'размер уходит в поузловое применение');
   assert.equal(editor.style.fontSize, undefined, 'editor.style НЕ трогаем при выделении');
   assert.equal(mgr.saved.length, 1);
+});
+
+test('_splitRangeEdges: частично выделенный узел режется по обоим краям', () => {
+  const mgr = makeManager(makeEditor());
+  installDom([]);
+
+  const node = makeText('abcdef');
+  const calls = { start: null, end: null };
+  const range = {
+    startContainer: node, startOffset: 2,
+    endContainer: node, endOffset: 4,
+    setStart(n, o) { this.startContainer = n; this.startOffset = o; calls.start = [n, o]; },
+    setEnd(n, o) { this.endContainer = n; this.endOffset = o; calls.end = [n, o]; },
+  };
+
+  mgr._splitRangeEdges(range);
+
+  assert.equal(node.textContent, 'ab', 'голова до выделения осталась в исходном узле');
+  assert.equal(range.startContainer.textContent, 'cd', 'выделение выделено в свой узел');
+  assert.equal(range.startOffset, 0);
+  assert.equal(range.endContainer, range.startContainer, 'оба края — на одном узле');
+  assert.equal(range.endOffset, 2, 'конец — на длине выделенного куска');
+});
+
+test('_splitRangeEdges: узел, выделенный целиком, не режется', () => {
+  const mgr = makeManager(makeEditor());
+  installDom([]);
+
+  const node = makeText('abc');
+  let touched = false;
+  const range = {
+    startContainer: node, startOffset: 0,
+    endContainer: node, endOffset: 3,
+    setStart() { touched = true; },
+    setEnd() { touched = true; },
+  };
+
+  mgr._splitRangeEdges(range);
+
+  assert.equal(node.textContent, 'abc');
+  assert.equal(touched, false, 'резать нечего — границы совпадают с краями узла');
 });
 
 test('B-2: размер на каретке материализуется span+ZWSP в content, НЕ в editor.style', () => {
@@ -121,7 +188,7 @@ test('B-2: размер на каретке материализуется span+
   mgr.applyFontSize(28);
 
   assert.ok(inserted, 'span с размером должен быть вставлен в каретку');
-  assert.equal(inserted.style.fontSize, '28px');
+  assert.equal(inserted.style.fontSize, '28pt');
   // Флагман B-2: editor.style.fontSize НЕ выставляется.
   assert.equal(editor.style.fontSize, undefined);
   // ZWSP-якорь добавлен внутрь span (будущий ввод унаследует размер).

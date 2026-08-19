@@ -50,13 +50,14 @@ export class PreviewTextBlockRenderer {
 
     /**
      * Применяет базовый размер шрифта текстблока из /acts/limits (единый
-     * источник с редактором и экспортом, EXP-2: дефолт 16px). Выравнивание и
-     * начертание живут в inline-HTML content (per-line text-align — TB-1, теги
-     * <b>/<i>/<u> — B-1); дефолт «по ширине» — CSS на .preview-textblock-content.
+     * источник с редактором и экспортом; дефолт — 12pt тела акта, в ПУНКТАХ:
+     * лист превью и так живёт в pt). Выравнивание и начертание живут в
+     * inline-HTML content (per-line text-align — TB-1, теги <b>/<i>/<u> — B-1);
+     * дефолт «по ширине» — CSS на .preview-textblock-content.
      * @private
      */
     static _applyBaseFontSize(element) {
-        element.style.fontSize = `${getStructureLimits().fontSizeDefault}px`;
+        element.style.fontSize = `${getStructureLimits().fontSizeDefault}pt`;
     }
 }
 

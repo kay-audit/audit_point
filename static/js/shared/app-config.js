@@ -629,12 +629,20 @@ export class AppConfig {
         },
 
         textblock: {
-            // Границы размера шрифта span'ов (бэк: ACTS__TEXTBLOCKS__FONT_SIZE_*)
+            // Границы размера шрифта span'ов В ПУНКТАХ (бэк: ACTS__TEXTBLOCKS__FONT_SIZE_*)
             fontSizeMin: 8,
             fontSizeMax: 72,
-            // Базовый (экранный) размер текстблока в px — база редактора/превью,
-            // экспорт конвертирует ×0.75 (16px → 12pt, EXP-2).
-            fontSizeDefault: 16
+            // Базовый размер текстблока в ПУНКТАХ — единая величина для
+            // редактора, превью и экспорта: выбранный кегль уходит в Word как
+            // есть. Экранную читаемость даёт zoom поверхности правки (CSS), а не
+            // подмена размера.
+            fontSizeDefault: 12,
+
+            // Потолок глубины вложенности списков, 0-based (бэк:
+            // ACTS__TEXTBLOCKS__MAX_LIST_LEVEL). 4 — пятый уровень; жёсткий
+            // предел формата (9 уровней w:abstractNum в OOXML) держит сам
+            // редактор, см. HARD_MAX_LIST_LEVEL в textblock-core.js.
+            maxListLevel: 4
         }
     };
 

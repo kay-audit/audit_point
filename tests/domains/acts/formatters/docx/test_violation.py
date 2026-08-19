@@ -290,6 +290,21 @@ def test_field_with_table_first_renders_label_alone(doc):
     assert len(doc.tables) == 1
 
 
+def test_field_starting_with_list_renders_label_alone(doc):
+    """Первая строка поля — список: метка отдельным абзацем, пункты следом.
+
+    Сквозная проверка через build_violation (в test_rich_lists тот же случай
+    проверяется на уровне _labeled_paragraph, с нумерацией абзацев).
+    """
+    v = _v(reasons={"enabled": True, "blocks": [
+        _text_block("<ul><li>раз</li><li>два</li></ul><div>хвост</div>"),
+    ]})
+    build_violation(doc, v)
+    texts = [p.text for p in doc.paragraphs]
+    idx = next(i for i, t in enumerate(texts) if t.strip() == "Причины:")
+    assert texts[idx + 1:idx + 4] == ["раз", "два", "хвост"]
+
+
 def test_empty_table_block_renders_nothing(doc):
     """Пустая сетка не создаёт docx-таблицы (build_table no-op)."""
     v = _v(codeMining={"enabled": True, "blocks": [

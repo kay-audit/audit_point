@@ -40,7 +40,7 @@ test.describe('Textblock removeFormat (B-23/28/30)', () => {
       ed.innerHTML =
         '<b>жирный</b> <i>курсив</i> <u>подчёркнутый</u> <strike>зачёркнутый</strike> ' +
         '<span style="color: rgb(255, 0, 0);">красный</span> ' +
-        '<span style="font-size: 24px;">крупный</span> конец';
+        '<span style="font-size: 24pt;">крупный</span> конец';
     });
 
     await editor.click();

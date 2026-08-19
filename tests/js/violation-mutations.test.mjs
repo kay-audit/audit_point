@@ -164,29 +164,30 @@ test('setBlockField на несуществующем блоке → false бе�
 // пишет в grid напрямую по адресу resolveTable, а read-only отсекают гейты
 // startEditingCell / ContextMenuManager.show — как у узловых таблиц.
 
-// --- moveBlock (DnD внутри поля) ---
+// --- moveBlocks (DnD внутри поля; пачка из одного блока — тот же путь) ---
 
-test('moveBlock переставляет блок вниз с поправкой toIndex', () => {
+test('moveBlocks переставляет одиночный блок вниз с поправкой toIndex', () => {
     reset();
     const v = makeViolation();
     const [a, b, c] = [createTextBlock('A'), createTextBlock('B'), createTextBlock('C')];
     v.reasons.blocks.push(a, b, c);
     // Тащим A (index 0) на позицию 2 (перед C в исходном массиве).
-    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 2), true);
+    assert.equal(mutations.moveBlocks.call({}, v, 'reasons', [a.id], 2), true);
     assert.deepEqual(v.reasons.blocks.map(x => x.content), ['B', 'A', 'C']);
 });
 
-test('moveBlock: fromIndex вне границ → false', () => {
+test('moveBlocks: неизвестные id → false', () => {
     reset();
     const v = makeViolation();
-    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 1), false);
+    assert.equal(mutations.moveBlocks.call({}, v, 'reasons', ['нет-такого'], 1), false);
 });
 
-test('moveBlock блокируется в read-only', () => {
+test('moveBlocks блокируется в read-only', () => {
     reset(true);
     const v = makeViolation();
-    v.reasons.blocks.push(createTextBlock('A'), createTextBlock('B'));
-    assert.equal(mutations.moveBlock.call({}, v, 'reasons', 0, 2), false);
+    const [a, b] = [createTextBlock('A'), createTextBlock('B')];
+    v.reasons.blocks.push(a, b);
+    assert.equal(mutations.moveBlocks.call({}, v, 'reasons', [a.id], 2), false);
     assert.deepEqual(v.reasons.blocks.map(x => x.content), ['A', 'B']);
 });
 

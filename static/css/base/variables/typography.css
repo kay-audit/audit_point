@@ -5,7 +5,6 @@
 :root {
     --font-family-base: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
     --font-family-mono: "SF Mono", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
-    --font-family-serif: 'Times New Roman', Georgia, serif;
 
     --font-size-xs: 0.75rem;
     --font-size-sm: 0.875rem;
@@ -24,11 +23,43 @@
     --line-height-tight: 1.25;
     --line-height-normal: 1.5;
     --line-height-relaxed: 1.75;
-    /* line-height тела текстового блока в РЕДАКТОРЕ (было общим с превью —
-       B-22; Task C, 2026-07: превью печатного листа больше не использует
-       этот токен, мирит одинарный Word-интервал DOCX — см.
-       preview-typography.css / --preview-print-line-height). */
-    --textblock-line-height: 1.75;
+
+    /* ——— Документная типографика ———
+       Поверхность правки и превью рисуют ДОКУМЕНТ: значения ниже — те же, что
+       уходят в DOCX (app/domains/acts/formatters/docx/styles.py), и меряются в
+       ПУНКТАХ, а не в px. Экранного множителя у них НЕТ: поверхность правки
+       показывает ровно печатный кегль. Прежний зум 1.25 убран по решению
+       владельца — на шаге заполнения вокруг текста живёт масса элементов
+       конструктора, и раздутый документ их вытеснял; полная идентичность нужна
+       превью и DOCX, а не форме заполнения. */
+    /* Гарнитура документа — ровно та, что печатается: Fonts.main эталонного
+       DOCX (app/domains/acts/formatters/docx/styles.py). Одним токеном, потому
+       что нужна двум разным мирам — поверхностям правки и предпросмотрам, — и
+       раньше между ними расходилась: лист A4 рисовал Times, а редактор
+       текстблока, поля нарушения, таблицы конструктора и диалог версий —
+       интерфейсный sans. Это не косметика: Times New Roman заметно уже
+       системного sans, поэтому строка на экране обрывалась не там, где
+       оборвётся в Word. Прежний UI-токен --font-family-serif (единственный
+       потребитель — холст модалки предпросмотра) поглощён этим. */
+    --doc-font-family: "Times New Roman", serif;
+    /* Базовый кегль тела акта — 12pt (Times New Roman эталонного DOCX). */
+    --doc-font-size: 12pt;
+    /* «Мелкий» кегль документа — 9pt. В DOCX его несут сразу три сущности с
+       одним значением: поля нарушения (Sizes.violation_pt), содержимое и шапка
+       таблиц (Sizes.table_data_pt / table_header_pt) и расшифровка сноски
+       (Sizes.footnote_pt). */
+    --doc-font-size-small: 9pt;
+    /* Печатный межстрочный — Word «одинарный» (Spacing.line_single,
+       w:line=240/lineRule=auto). Лист превью читает его же через
+       --preview-print-line-height (preview-page.css). */
+    --doc-line-height: 1.15;
+    /* Втяжка списка на уровень вложенности — геометрия Word: w:ind left=720
+       твипов на уровень (_LIST_INDENT_STEP,
+       app/domains/acts/formatters/docx/numbering.py). 720/20 = 36pt. В пунктах,
+       а не в rem: rem зависит от плотности интерфейса (корневой font-size 12px
+       в конструкторе против 13px на портале, layout/density.css), и одна и та
+       же разметка получала бы разную втяжку на разных страницах. */
+    --doc-list-indent: 36pt;
 
     --letter-spacing-tight: -0.025em;
     --letter-spacing-normal: 0;

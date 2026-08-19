@@ -64,22 +64,36 @@ Object.assign(ViolationManager.prototype, {
             // id блока в dataset — адрес для удаления через меню и для DnD.
             blockElement.dataset.blockId = block.id;
             blockElement.dataset.blockIndex = index;
-            blockElement.draggable = !isReadOnly;
+            // draggable выключен по умолчанию: перетаскивание разрешает только
+            // mousedown по шапке блока (armBlockDrag), иначе выделение текста и
+            // работа в теле блока начинали бы drag.
+            blockElement.draggable = false;
 
             if (!isReadOnly) {
+                blockElement.addEventListener('mousedown', (e) => this.armBlockDrag(e, blockElement));
+                blockElement.addEventListener('mouseup', () => this.disarmBlockDrag(blockElement));
                 blockElement.addEventListener('dragstart', (e) => this.handleDragStart(e, violation, fieldKey, index, block));
-                blockElement.addEventListener('dragover', (e) => this.handleDragOver(e, violation, fieldKey, container));
                 blockElement.addEventListener('dragenter', (e) => this.handleDragEnter(e));
                 blockElement.addEventListener('dragleave', (e) => this.handleDragLeave(e));
-                blockElement.addEventListener('drop', (e) => this.handleDrop(e, violation, fieldKey, index, container));
+                // dragover/drop — на КОНТЕЙНЕРЕ поля (setupBlockDragAndDrop):
+                // над зазором между карточками обёртки нет, а drop туда должен
+                // работать. dragend остаётся здесь — он приходит источнику drag.
                 blockElement.addEventListener('dragend', (e) => this.handleDragEnd(e, violation, fieldKey, container));
             }
 
             container.appendChild(blockElement);
         });
 
-        // Сбрасываем последний индекс
+        // Сбрасываем последний индекс и блок, по которому он посчитан:
+        // прежние обёртки уже выброшены, гистерезису не за что держаться.
         this.lastDragOverIndex = null;
+        this._lastDragOverElement = null;
+
+        // Мультивыделение адресуется id блоков, а не DOM-ссылками: обёртки
+        // выше созданы заново, подсветку восстанавливаем по id (и вычищаем id
+        // блоков, которых в поле больше нет). `?.` — на случай вызова
+        // renderBlocks в изоляции, до домешивания violation-blocks.js.
+        this._syncBlockSelectionClasses?.(violation, fieldKey, container);
     },
 
     /**

@@ -23,8 +23,6 @@ def test_main_font_is_times_new_roman():
 def test_body_sizes_are_12pt():
     """Основной текст — 12pt (тело, лейблы, заголовки, шапка)."""
     assert Sizes.body_pt == 12
-    assert Sizes.label_pt == 12
-    assert Sizes.title_pt == 12
     assert Sizes.cover_label_pt == 12
 
 

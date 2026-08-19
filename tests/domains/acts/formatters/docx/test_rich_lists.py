@@ -394,8 +394,10 @@ def test_list_in_act_textblock(doc):
 def test_list_in_violation_rich_field(doc):
     """Точка входа 2 — rich-поле нарушения (_labeled_paragraph rich=True).
 
-    Метка поля живёт в первом абзаце, который и становится первым пунктом:
-    нумерацию получают ВСЕ пункты списка, включая абзац с меткой.
+    Поле, НАЧИНАЮЩЕЕСЯ со списка: метка остаётся самостоятельным абзацем без
+    нумерации, пункты идут следом. Прежде абзац с меткой сам становился первым
+    пунктом, и в Word выходило «• Причины: раз» — служебное слово читалось как
+    часть маркированного пункта, а его собственный текст терял строку.
     """
     before = len(doc.paragraphs)
     _labeled_paragraph(
@@ -403,14 +405,23 @@ def test_list_in_violation_rich_field(doc):
         italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
     paragraphs = doc.paragraphs[before:]
-    assert _texts(paragraphs) == ["Причины: раз", "два"]
-    num_ids = _num_ids(paragraphs)
-    assert None not in num_ids
-    assert len(set(num_ids)) == 1
+    # Хвостовой пробел — от run'а метки (label + " "), как и в ветке
+    # «первый блок — картинка/таблица».
+    assert _texts(paragraphs) == ["Причины: ", "раз", "два"]
+    label_num, first, second = _num_ids(paragraphs)
+    assert label_num is None, "метка не должна быть пунктом списка"
+    assert first == second is not None, "оба пункта — одна нумерация"
     assert paragraphs[0].runs[0].underline is True  # метка осталась меткой
+    # Между меткой и первым пунктом не должно повиснуть отбивки.
+    assert paragraphs[0].paragraph_format.space_after == Pt(0)
 
 
 def test_numbered_list_in_violation_rich_field(doc):
+    """Обратная сторона правила: обычная первая строка — прежний инлайн.
+
+    Список ниже по тексту метку никуда не двигает; ветка label_only включается
+    ТОЛЬКО когда пунктом списка оказывается САМЫЙ ПЕРВЫЙ сегмент.
+    """
     before = len(doc.paragraphs)
     _labeled_paragraph(
         doc, "Причины:", "<div>вступление</div><ol><li>раз</li></ol>",
@@ -421,3 +432,77 @@ def test_numbered_list_in_violation_rich_field(doc):
     intro, item = _num_ids(paragraphs)
     assert intro is None
     assert item is not None
+
+
+# --- кегль пункта и его маркера ----------------------------------------------
+#
+# Word печатает маркер/номер не текстовым run'ом, а МЕТКОЙ абзаца
+# (w:pPr/w:rPr/w:sz). Без неё номер оставался кеглем стиля Normal, даже когда
+# текст пункта крупнее — маркер «отставал» от размера, выбранного в тулбаре.
+
+def _mark_size_half_points(paragraph) -> int | None:
+    """Кегль метки абзаца в half-points (w:pPr/w:rPr/w:sz), None — не задан."""
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    if p_pr is None:
+        return None
+    r_pr = p_pr.find(qn("w:rPr"))
+    if r_pr is None:
+        return None
+    sz = r_pr.find(qn("w:sz"))
+    return None if sz is None else int(sz.get(qn("w:val")))
+
+
+def test_item_own_font_size_applies_to_text_and_marker(doc):
+    """<li style="font-size:18pt"> → и текст пункта, и МЕТКА абзаца 18pt."""
+    paragraphs = _render(doc, '<ul><li style="font-size: 18pt">крупный</li></ul>')
+    assert paragraphs[0].runs[0].font.size == Pt(18)
+    assert _mark_size_half_points(paragraphs[0]) == 36  # 18pt × 2
+
+
+def test_item_own_font_size_in_px_converted(doc):
+    """Внешняя вставка в px: <li style="font-size:24px"> → 18pt текста и метки."""
+    paragraphs = _render(doc, '<ol><li style="font-size: 24px">пункт</li></ol>')
+    assert paragraphs[0].runs[0].font.size == Pt(18)
+    assert _mark_size_half_points(paragraphs[0]) == 36
+
+
+def test_item_without_own_size_marker_follows_host_base(doc):
+    """Пункт без своего font-size: метка — по базе хоста, а не по стилю Normal."""
+    paragraphs = _render(doc, "<ul><li>пункт</li></ul>", base_size_pt=9.0)
+    assert _mark_size_half_points(paragraphs[0]) == 18  # 9pt × 2
+
+
+def test_item_size_does_not_leak_to_neighbours(doc):
+    """Свой кегль пункта не протекает в соседний пункт и в абзац после списка."""
+    paragraphs = _render(
+        doc,
+        '<ul><li style="font-size: 20pt">крупный</li><li>обычный</li></ul>'
+        "<div>хвост</div>",
+    )
+    big, normal, tail = paragraphs
+    assert big.runs[0].font.size == Pt(20)
+    assert normal.runs[0].font.size == Pt(12)
+    assert tail.runs[0].font.size == Pt(12)
+    assert _mark_size_half_points(big) == 40
+    assert _mark_size_half_points(normal) == 24
+    assert _mark_size_half_points(tail) is None  # не пункт — метку не трогаем
+
+
+def test_span_inside_sized_item_wins(doc):
+    """Inline-span внутри крупного пункта перекрывает кегль самого пункта."""
+    paragraphs = _render(
+        doc,
+        '<ul><li style="font-size: 18pt">пункт '
+        '<span style="font-size: 10pt">мелко</span></li></ul>',
+    )
+    runs = paragraphs[0].runs
+    assert runs[0].font.size == Pt(18)
+    assert runs[1].font.size == Pt(10)
+
+
+def test_split_pins_item_size_on_segment():
+    """split_block_segments кладёт собственный кегль пункта в BlockSegment."""
+    segments = split_block_segments(
+        '<ul><li style="font-size: 14pt">раз</li><li>два</li></ul>'
+    )
+    assert [s.size_pt for s in segments] == [14.0, None]

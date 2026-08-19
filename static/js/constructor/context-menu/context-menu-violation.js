@@ -4,6 +4,7 @@
 import { ContextMenuManager } from './context-menu-core.js';
 import { BLOCK_TYPES, BLOCK_TYPE_META } from '../violation/violation-block-types.js';
 import { getImageLimits } from '../violation/violation-image-validator.js';
+import { pluralizeBlocks } from '../violation/violation-block-selection.js';
 
 export class ViolationContextMenu {
     constructor() {
@@ -16,6 +17,7 @@ export class ViolationContextMenu {
             fieldKey,
             contentContainer,
             blockId = null,
+            selectedIds = [],
             insertPosition = 0
         } = params;
 
@@ -27,7 +29,8 @@ export class ViolationContextMenu {
 
         this.removeExistingMenu();
 
-        this.currentMenu = this.createMenu(violation, fieldKey, contentContainer, blockId, insertPosition);
+        this.currentMenu = this.createMenu(
+            violation, fieldKey, contentContainer, blockId, insertPosition, selectedIds);
         this.currentMenu.style.left = `${x}px`;
         this.currentMenu.style.top = `${y}px`;
 
@@ -35,7 +38,7 @@ export class ViolationContextMenu {
         ContextMenuManager.positionMenu(this.currentMenu, x, y);
     }
 
-    createMenu(violation, fieldKey, contentContainer, blockId, insertPosition) {
+    createMenu(violation, fieldKey, contentContainer, blockId, insertPosition, selectedIds = []) {
         const menu = document.createElement('div');
         menu.className = 'violation-context-menu';
         menu.style.cssText = `
@@ -66,7 +69,19 @@ export class ViolationContextMenu {
             }, false, limitReached));
         });
 
-        if (blockId !== null) {
+        // Групповое удаление: ПКМ пришёл по шапке ВЫДЕЛЕННОГО блока и в
+        // выделении их несколько. Выделение из одного блока — это ровно
+        // одиночный путь ниже, отдельного пункта «Удалить 1 блок» не заводим.
+        if (selectedIds.length >= 2) {
+            menu.appendChild(this.createSeparator());
+            menu.appendChild(this.createMenuItem(
+                `🗑️ Удалить ${selectedIds.length} ${pluralizeBlocks(selectedIds.length)}`,
+                () => {
+                    this.handleDeleteSelected(violation, fieldKey, contentContainer, selectedIds);
+                    this.removeExistingMenu();
+                    ContextMenuManager.hide();
+                }, true));
+        } else if (blockId !== null) {
             menu.appendChild(this.createSeparator());
             menu.appendChild(this.createMenuItem('🗑️ Удалить', () => {
                 this.handleDelete(violation, fieldKey, blockId, contentContainer);
@@ -158,6 +173,23 @@ export class ViolationContextMenu {
         // Гейт read-only (#11) — внутри мутатора removeBlock, тем же
         // guard'ом, что и остальные мутации нарушения.
         violationManager?.removeBlockFromField?.(violation, fieldKey, blockId, contentContainer);
+    }
+
+    /**
+     * Групповое удаление выделенных блоков. Список id снят в момент показа
+     * меню: к клику по пункту живое выделение уже сброшено обработчиком клика.
+     * Подтверждение (≥2 блока) и гейт read-only — внутри removeSelectedBlocks.
+     *
+     * @param {Object} violation - Объект нарушения
+     * @param {string} fieldKey - Ключ поля реестра
+     * @param {HTMLElement} contentContainer - Контейнер содержимого поля
+     * @param {string[]} blockIds - id удаляемых блоков в порядке поля
+     */
+    handleDeleteSelected(violation, fieldKey, contentContainer, blockIds) {
+        if (!violation || !fieldKey || !contentContainer || !blockIds?.length) return;
+
+        violationManager?.removeSelectedBlocks?.(
+            violation, fieldKey, contentContainer, blockIds);
     }
 
     removeExistingMenu() {

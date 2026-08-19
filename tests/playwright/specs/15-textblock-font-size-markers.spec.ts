@@ -43,7 +43,7 @@ test.describe('Текстблок: размер шрифта (кастомный
 
     await applySize(28);
     await expect(trigger.locator('.toolbar-fontsize-value')).toHaveText('28');
-    expect(await editor.evaluate((el) => el.querySelector('[style*="font-size: 28px"]') !== null)).toBe(true);
+    expect(await editor.evaluate((el) => el.querySelector('[style*="font-size: 28pt"]') !== null)).toBe(true);
 
     // ВТОРАЯ смена — здесь раньше «застывало»
     await applySize(12);
@@ -272,9 +272,9 @@ test.describe('Текстблок: рендер из сохранённого к
       const sizeAfter = (ed.querySelector('.text-link') as HTMLElement).style.fontSize;
       return { sizeLive, sizeAfter };
     });
-    expect(res.sizeLive).toBe('36px');
-    // BUG-1: раньше inheritFormattingToElement откатывал маркер на внешний 20px
-    expect(res.sizeAfter).toBe('36px');
+    expect(res.sizeLive).toBe('36pt');
+    // BUG-1: раньше inheritFormattingToElement откатывал маркер на внешний 20pt
+    expect(res.sizeAfter).toBe('36pt');
   });
 });
 

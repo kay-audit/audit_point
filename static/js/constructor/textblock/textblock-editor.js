@@ -16,6 +16,13 @@ const BLOCK_FORMAT_PROPS = ['text-align', 'margin-left', 'padding-left', 'text-i
 /** Быстрый признак «в HTML-строке вообще есть список» (дешёвый гейт). */
 const LIST_TAG_RE = /<(ul|ol)[\s>]/i;
 
+/**
+ * Потолок проходов нормализации вложенности (_normalizeListNesting): каждый
+ * проход строго уменьшает число нарушений, поэтому дело сходится за один-два —
+ * лимит здесь только чтобы неучтённая форма разметки не дала бесконечный цикл.
+ */
+const NORMALIZE_MAX_PASSES = 4;
+
 Object.assign(TextBlockManager.prototype, {
     /**
      * Создаёт DOM-элемент текстового блока с редактором.
@@ -1107,11 +1114,12 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * @private Приводит inline font-size у всех элементов поддерева к целым px в
-     * диапазоне [fontSizeMin,fontSizeMax]: pt→px = round(v*4/3), px оставляем,
-     * em/rem/%/прочее — declaration отбрасываем (не-px единиц не оставляем).
-     * Переписываем даже px-в-диапазоне, чтобы после нормализации не осталось ни
-     * одной не-px величины.
+     * @private Приводит inline font-size у всех элементов поддерева к целым pt в
+     * диапазоне [fontSizeMin,fontSizeMax]: pt оставляем, px→pt = round(v*0.75),
+     * em/rem/%/прочее — declaration отбрасываем (не-pt единиц не оставляем).
+     * Переписываем даже pt-в-диапазоне, чтобы после нормализации не осталось ни
+     * одной не-pt величины. Word и так пишет размеры в пунктах, так что для
+     * типичной вставки это тождество; px приходит из веб-источников.
      * @param {HTMLElement} root
      */
     _normalizeWordFontSizes(root) {
@@ -1121,29 +1129,29 @@ Object.assign(TextBlockManager.prototype, {
             if (!el || !el.style) return;
             const raw = el.style.fontSize;
             if (!raw) return;
-            const px = this._wordFontSizeToPx(raw, fontSizeMin, fontSizeMax);
-            // null → единица не-px: убираем только font-size, прочие allowed-свойства
-            // (font-weight/…) не трогаем.
-            el.style.fontSize = px == null ? '' : `${px}px`;
+            const pt = this._wordFontSizeToPt(raw, fontSizeMin, fontSizeMax);
+            // null → единица не-pt/не-px: убираем только font-size, прочие
+            // allowed-свойства (font-weight/…) не трогаем.
+            el.style.fontSize = pt == null ? '' : `${pt}pt`;
         });
     },
 
     /**
-     * @private Чистая конвертация значения font-size из Word в целые px внутри
-     * [min,max]. pt→round(v*4/3), px→round(v), em/rem/%/без единицы/прочее → null
-     * (отбросить). Возвращает число px или null.
+     * @private Чистая конвертация значения font-size из Word в целые pt внутри
+     * [min,max]. pt→round(v), px→round(v*0.75), em/rem/%/без единицы/прочее →
+     * null (отбросить). Возвращает число pt или null.
      */
-    _wordFontSizeToPx(raw, min, max) {
+    _wordFontSizeToPt(raw, min, max) {
         const m = String(raw).trim().match(/^([0-9]*\.?[0-9]+)\s*(pt|px|em|rem|%)?$/i);
         if (!m) return null;
         const val = parseFloat(m[1]);
         if (!Number.isFinite(val)) return null;
         const unit = m[2] ? m[2].toLowerCase() : '';
-        let px;
-        if (unit === 'pt') px = Math.round(val * 4 / 3);
-        else if (unit === 'px') px = Math.round(val);
+        let pt;
+        if (unit === 'pt') pt = Math.round(val);
+        else if (unit === 'px') pt = Math.round(val * 3 / 4);
         else return null;
-        return Math.max(min, Math.min(max, px));
+        return Math.max(min, Math.min(max, pt));
     },
 
     /**
@@ -1464,8 +1472,8 @@ Object.assign(TextBlockManager.prototype, {
      * нативный переход фокуса между поверхностями обязан сохраниться.
      * Углубление на потолке глубины клавишу всё равно проглатывает (иначе Tab на
      * дне списка увёл бы фокус из редактора): preventDefault зовётся по факту
-     * «каретка в <li>», а сам потолок (MAX_LIST_LEVEL) держит гейт execCommand —
-     * единственное место, где число сравнивается.
+     * «каретка в <li>», а сам потолок держит гейт execCommand
+     * (_listLevelCeiling — единственное место, где глубина сравнивается).
      * @param {KeyboardEvent} e
      * @param {HTMLElement} editor
      * @returns {boolean}
@@ -1505,6 +1513,51 @@ Object.assign(TextBlockManager.prototype, {
             node = probe || node;
         }
         return this._listItemAncestor(node, editor);
+    },
+
+    /**
+     * @private Пункты списка, которые задевает диапазон, в порядке документа.
+     * Схлопнутая каретка (и стабовый Range без intersectsNode) — ровно один
+     * пункт, тот же, что у _caretListItem.
+     *
+     * При вложенности берётся пункт, ВНУТРИ которого других задетых пунктов
+     * нет (углублять надо именно его), либо пункт, накрытый диапазоном
+     * ЦЕЛИКОМ — такой едет со всем своим поддеревом, и его потомки из набора
+     * выбывают. Иначе выделение внутри подпункта двигало бы весь родительский
+     * пункт, а выделение целого пункта — только его дно.
+     * @param {Range} range
+     * @param {HTMLElement} editor
+     * @returns {Element[]}
+     */
+    _selectedListItems(range, editor) {
+        const caretItem = this._caretListItem(range, editor);
+        if (!caretItem || typeof range.intersectsNode !== 'function'
+                || typeof editor.querySelectorAll !== 'function') {
+            return caretItem ? [caretItem] : [];
+        }
+        const touched = Array.from(editor.querySelectorAll('li'))
+            .filter(li => range.intersectsNode(li));
+        const kept = touched.filter(li => this._rangeCoversNode(range, li)
+            || !touched.some(other => other !== li && li.contains(other)));
+        const tops = kept.filter(li => !kept.some(other => other !== li && other.contains(li)));
+        return tops.length ? tops : [caretItem];
+    },
+
+    /**
+     * @private Диапазон накрывает узел целиком? Константы how — литералами
+     * (0 = START_TO_START, 2 = END_TO_END) по тем же соображениям, что и
+     * литерал 3 вместо Node.TEXT_NODE: без зависимости от глобала Range.
+     * @param {Range} range
+     * @param {Node} node
+     * @returns {boolean}
+     */
+    _rangeCoversNode(range, node) {
+        if (typeof document.createRange !== 'function'
+                || typeof range.compareBoundaryPoints !== 'function') return false;
+        const nodeRange = document.createRange();
+        nodeRange.selectNode(node);
+        return range.compareBoundaryPoints(0, nodeRange) <= 0
+            && range.compareBoundaryPoints(2, nodeRange) >= 0;
     },
 
     /**
@@ -1549,12 +1602,223 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * @private Приводит вложенность списков к ВАЛИДНОЙ. Chromium после
-     * execCommand('indent') порождает список прямо внутри списка, минуя <li>
-     * (`<ul><li>a</li><ul><li>b</li></ul></ul>`) — такую разметку не понимают ни
-     * сегментатор DOCX, ни MD/TXT-конвертер, ни CSS превью. Правило: каждый
-     * ul|ol, чей родитель — ul|ol, переезжает внутрь предыдущего соседнего <li>
-     * (нет такого — создаём пустой).
+     * @private Углубляет пункт списка на уровень — СВОЯ реализация вместо
+     * нативного execCommand('indent'). Нативная команда на одиночном пункте
+     * порождает список-сироту рядом с ним (без предыдущего <li>), из которого
+     * каноническую форму `<li>текст<ol>…</ol></li>` без пустого <li>-хоста не
+     * собрать: маркеры таких хостов выстраивались в одну строку («a) i. 1.
+     * Текст»), а indent соседнего пункта клал в <li> ВТОРОЙ список-сиблинг, и
+     * его нумерация стартовала с начала.
+     *
+     * Правила (как в Word/ProseMirror):
+     *  - предыдущего соседнего <li> нет → no-op: первый пункт уровня не
+     *    углубляется (иначе понадобился бы тот самый пустой хост);
+     *  - иначе пункт ЦЕЛИКОМ (со своими вложенными списками) переезжает в
+     *    подсписок предыдущего пункта — существующий того же типа (нумерация
+     *    продолжается) либо новый.
+     *
+     * Нативный undo-стек Chromium своей мутации не видит (Ctrl+Z шаг indent не
+     * откатит) — осознанная плата: нормализатор и раньше мутировал DOM после
+     * execCommand, т.е. стек и так был неточен.
+     * @param {Element} li Пункт списка (из _caretListItem).
+     * @returns {boolean} true — уровень изменён (вызывающий обязан сохранить).
+     */
+    _indentListItem(li) {
+        const list = li ? li.parentNode : null;
+        if (!this._isListElement(list)) return false;
+        const host = li.previousElementSibling;
+        if (!host || host.tagName !== 'LI') return false;
+
+        // Каретка стоит в узлах САМОГО пункта: они переезжают вместе с ним и
+        // остаются валидными — снимок по ним и пересобирается (живой Range
+        // переезда не переживает, см. _captureCaretRange).
+        const caret = this._captureCaretRange();
+        this._sublistHost(host, list.tagName).appendChild(li);
+        this._restoreCaretRange(caret);
+        return true;
+    },
+
+    /**
+     * @private Список-приёмник подпунктов внутри <li>: последний дочерний список
+     * ТОГО ЖЕ типа (нумерация продолжается, а не стартует заново) либо новый
+     * такой же в конце пункта.
+     * @param {Element} li
+     * @param {string} tagName 'UL'|'OL' — тип списка, из которого едет пункт.
+     * @returns {Element}
+     */
+    _sublistHost(li, tagName) {
+        const kids = Array.from(li.children || []);
+        for (let i = kids.length - 1; i >= 0; i--) {
+            if (kids[i].tagName === tagName) return kids[i];
+        }
+        const list = document.createElement(tagName.toLowerCase());
+        li.appendChild(list);
+        return list;
+    },
+
+    /**
+     * @private Поднимает пункт списка на уровень — СВОЯ реализация вместо
+     * нативного execCommand('outdent') (пара к _indentListItem). Нативная
+     * команда роняла пункт РЯДОМ с подсписком или прямо внутрь чужого <li>
+     * (форма «li внутри li»), которую не понимают ни DOCX-сегментатор, ни
+     * MD/TXT, ни превью, — нормализатор потом чинил её задним числом.
+     *
+     * Правила (как в Word/ProseMirror):
+     *  - хвост пункта (следующие соседи по его списку) обязан остаться на
+     *    СВОЁМ уровне, а пункт уезжает выше — значит, хвост становится
+     *    подпунктами самого пункта;
+     *  - подсписок лежит в <li> (канон) → пункт встаёт СЛЕДУЮЩИМ за этим <li>;
+     *  - список верхнего уровня → пункт выходит из списка АБЗАЦЕМ
+     *    (_listItemToParagraph): чистый split, список делится на «до» и «после»;
+     *  - опустевший список удаляется (остатки не теряем — см. _dropEmptyList).
+     *
+     * Как и у indent, нативный undo-стек своей мутации не видит.
+     * @param {Element} li Пункт списка (из _caretListItem/_selectedListItems).
+     * @returns {boolean} true — уровень изменён (вызывающий обязан сохранить).
+     */
+    _outdentListItem(li) {
+        const list = li ? li.parentNode : null;
+        if (!this._isListElement(list)) return false;
+        const container = list.parentNode;
+        if (!container) return false;
+
+        const caret = this._captureCaretRange();
+        const tail = [];
+        for (let node = li.nextSibling; node; node = node.nextSibling) tail.push(node);
+        if (tail.some(node => node.nodeType === 1)) {
+            const host = this._sublistHost(li, list.tagName);
+            tail.forEach(node => host.appendChild(node));
+        }
+
+        if (container.tagName === 'LI') {
+            container.parentNode.insertBefore(li, container.nextSibling);
+        } else if (this._isListElement(container)) {
+            // Невалидная вложенность (список прямо в списке), ещё не прошедшая
+            // нормализацию в живом DOM: уровнем выше здесь — сам внешний список.
+            container.insertBefore(li, list.nextSibling);
+        } else {
+            const para = this._listItemToParagraph(li, list, container);
+            // Каретка могла стоять на САМОМ <li> (штатное состояние Chromium
+            // для пустого пункта `<li><br></li>`), а он уходит из документа —
+            // снимок надо перецелить на созданный абзац. Иначе диапазон
+            // собирается на отсоединённом узле, addRange его молча глотает, и
+            // каретка пропадает: следующий ввод уходит мимо редактора.
+            if (caret && caret.sc === li) { caret.sc = para; caret.so = 0; }
+            if (caret && caret.ec === li) { caret.ec = para; caret.eo = 0; }
+        }
+        this._dropEmptyList(list);
+        this._restoreCaretRange(caret);
+        return true;
+    },
+
+    /**
+     * @private Пункт списка ВЕРХНЕГО уровня выходит из списка абзацем: свой
+     * контент — в <div> сразу за списком, собственные подсписки — списками за
+     * абзацем (они поднимаются вместе с пунктом). Хвост списка к этому моменту
+     * уже уехал в подсписок пункта (_outdentListItem), поэтому порядок
+     * содержимого сохраняется: «до» остаётся в исходном списке, «после» встаёт
+     * списком за абзацем. Пустой абзац получает <br> — иначе Chromium рисует
+     * его нулевой высоты и в него не встать кареткой.
+     * @param {Element} li
+     * @param {Element} list Список, из которого уходит пункт.
+     * @param {Element} container Родитель списка (редактор или блок).
+     * @returns {Element} Созданный абзац (в него перецеливается каретка, если
+     *   она стояла на самом <li> — узел уезжает из документа).
+     */
+    _listItemToParagraph(li, list, container) {
+        const anchor = list.nextSibling; // якорь ДО мутаций: место сразу за списком
+        const para = document.createElement('div');
+        const sublists = [];
+        while (li.firstChild) {
+            const child = li.firstChild;
+            li.removeChild(child);
+            if (this._isListElement(child)) sublists.push(child);
+            else para.appendChild(child);
+        }
+        if (!para.firstChild) para.appendChild(document.createElement('br'));
+        list.removeChild(li);
+        container.insertBefore(para, anchor);
+        for (const sub of sublists) container.insertBefore(sub, anchor);
+        return para;
+    },
+
+    /**
+     * @private Удаляет список, в котором не осталось пунктов. Остатки (пробелы
+     * между тегами, чужая разметка) переезжают на место списка — контент не
+     * теряется даже на кривой разметке.
+     * @param {Element} list
+     */
+    _dropEmptyList(list) {
+        if (!list || !list.parentNode) return;
+        if (Array.from(list.children || []).some(child => child.tagName === 'LI')) return;
+        while (list.firstChild) list.parentNode.insertBefore(list.firstChild, list);
+        list.parentNode.removeChild(list);
+    },
+
+    /**
+     * @private Снимок каретки/выделения ПЛОСКИМИ значениями (узел + смещение).
+     * Клон Range не годится: Range живой, и удаление узла из документа (а
+     * перенос <li> начинается именно с удаления) по спеке переставляет границы
+     * ВСЕХ живых диапазонов, включая клон, на место удалённого узла в СТАРОМ
+     * родителе — каретка уезжала бы из пункта в промежуток внешнего списка.
+     * Сами узлы переезжают вместе с пунктом и остаются валидными, по ним
+     * диапазон и пересобирается.
+     * @returns {{sc: Node, so: number, ec: Node, eo: number}|null}
+     */
+    _captureCaretRange() {
+        const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
+        if (!sel || sel.rangeCount === 0) return null;
+        const range = sel.getRangeAt(0);
+        if (!range || !range.startContainer) return null;
+        return {
+            sc: range.startContainer,
+            so: range.startOffset || 0,
+            ec: range.endContainer || range.startContainer,
+            eo: (range.endContainer ? range.endOffset : range.startOffset) || 0,
+        };
+    },
+
+    /**
+     * @private Возвращает каретку/выделение по снимку _captureCaretRange.
+     * Стабы node-тестов Range не собирают — тогда восстановление пропускается.
+     * @param {{sc: Node, so: number, ec: Node, eo: number}|null} snapshot
+     */
+    _restoreCaretRange(snapshot) {
+        if (!snapshot || !snapshot.sc) return;
+        // Отсоединённый узел (удалённый мутацией) в диапазон не годится:
+        // selection ушла бы за пределы документа и каретка исчезла бы совсем —
+        // лучше оставить её там, куда браузер поставил сам.
+        if (snapshot.sc.isConnected === false) return;
+        const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
+        if (!sel || typeof sel.removeAllRanges !== 'function') return;
+        if (typeof document.createRange !== 'function') return;
+        const range = document.createRange();
+        range.setStart(snapshot.sc, snapshot.so);
+        range.setEnd(snapshot.ec, snapshot.eo);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    },
+
+    /**
+     * @private Приводит вложенность списков к ВАЛИДНОЙ — страховка для правок,
+     * пришедших мимо собственного indent (paste, undo, внешний HTML, контент,
+     * сохранённый прежней версией). Невалидная форма — ul|ol прямо внутри ul|ol,
+     * минуя <li>: её не понимают ни сегментатор DOCX, ни MD/TXT-конвертер, ни
+     * CSS превью.
+     *
+     * Правила:
+     *  - <li> прямо внутри <li> (артефакт нативного outdent, вставки внешнего
+     *    HTML и старого контента) → пункт всплывает СЛЕДУЮЩИМ за своим бывшим
+     *    хозяином: его маркер браузер рисует посреди чужой строки, а
+     *    DOCX/MD/TXT считают такой пункт частью хозяина;
+     *  - есть предыдущий соседний <li> → список переезжает внутрь него;
+     *  - нет (список-сирота) → РАЗВЁРТКА на уровень вверх: на месте списка
+     *    остаётся его собственное содержимое. Пустой <li>-хост больше не
+     *    выдумывается — его маркер рисовался отдельным пунктом (та самая строка
+     *    «a) i. 1. Текст») и давал фантомную строку в MD/TXT;
+     *  - внутри <li> соседние подсписки ОДНОГО типа сливаются в первый: два
+     *    ol-сиблинга нумеровались бы каждый с начала (и в превью, и в DOCX).
+     *    Разные типы (ul рядом с ol) не сливаются — это разные подсписки пункта.
      *
      * Работает и на живом DOM редактора (каретка переезжает вместе с поддеревом),
      * и на DocumentFragment из <template> (строковый путь ниже). Идемпотентно.
@@ -1562,20 +1826,70 @@ Object.assign(TextBlockManager.prototype, {
      */
     _normalizeListNesting(root) {
         if (!root || typeof root.querySelectorAll !== 'function') return;
-        // Снимок ДО мутаций: переносы меняют состав childNodes, но не
-        // родительские связи ещё не обойдённых списков — порядок обхода
-        // (сверху вниз) остаётся корректным.
-        const lists = Array.from(root.querySelectorAll('ul, ol'));
-        for (const list of lists) {
-            const parent = list.parentNode;
-            if (!this._isListElement(parent)) continue;
-            let host = list.previousElementSibling;
-            if (!host || host.tagName !== 'LI') {
-                host = document.createElement('li');
-                parent.insertBefore(host, list);
+        for (let pass = 0; pass < NORMALIZE_MAX_PASSES; pass++) {
+            let changed = false;
+            // Пункты — ПЕРЕД списками: всплывший из чужого <li> пункт может сам
+            // оказаться хозяином подсписка, и правилам ниже он нужен уже на
+            // своём месте. Снимок в порядке документа: вложенный пункт идёт
+            // после своего хозяина, поэтому цепочка «li в li в li»
+            // распрямляется за один проход.
+            for (const owner of Array.from(root.querySelectorAll('li'))) {
+                if (!owner.parentNode) continue;
+                const strays = Array.from(owner.children || [])
+                    .filter(child => child.tagName === 'LI');
+                if (!strays.length) continue;
+                // Якорь ОДИН на всю группу: вставляя каждого «перед тем, что
+                // шло за хозяином», сохраняем их взаимный порядок (по одному
+                // «сразу за хозяином» — перевернули бы).
+                const anchor = owner.nextSibling;
+                for (const stray of strays) owner.parentNode.insertBefore(stray, anchor);
+                changed = true;
             }
-            host.appendChild(list);
+            // Снимок ДО мутаций: переносы меняют состав childNodes, но не
+            // родительские связи ещё не обойдённых списков — порядок обхода
+            // (сверху вниз) остаётся корректным.
+            for (const list of Array.from(root.querySelectorAll('ul, ol'))) {
+                const parent = list.parentNode;
+                if (!this._isListElement(parent)) continue;
+                const host = list.previousElementSibling;
+                if (host && host.tagName === 'LI') {
+                    host.appendChild(list);
+                } else {
+                    while (list.firstChild) parent.insertBefore(list.firstChild, list);
+                    parent.removeChild(list);
+                }
+                changed = true;
+            }
+            for (const li of Array.from(root.querySelectorAll('li'))) {
+                if (this._mergeSublists(li)) changed = true;
+            }
+            if (!changed) return;
         }
+    },
+
+    /**
+     * @private Сливает соседние подсписки ОДНОГО типа внутри пункта: дети
+     * второго переезжают в конец первого, второй удаляется.
+     * @param {Element} li
+     * @returns {boolean} true — что-то слито.
+     */
+    _mergeSublists(li) {
+        let merged = false;
+        let kids = Array.from(li.children || []);
+        let i = 0;
+        while (i < kids.length - 1) {
+            const first = kids[i];
+            const next = kids[i + 1];
+            if (this._isListElement(first) && first.tagName === next.tagName) {
+                while (next.firstChild) first.appendChild(next.firstChild);
+                li.removeChild(next);
+                kids = Array.from(li.children || []);
+                merged = true;
+                continue; // тот же i: за слитым списком мог стоять третий
+            }
+            i++;
+        }
+        return merged;
     },
 
     /**

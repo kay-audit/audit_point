@@ -17,6 +17,7 @@ import {
 import { createTextBlock } from './violation-block-types.js';
 import { openFieldOrderDialog } from './violation-field-order-dialog.js';
 import { loadImageLimits } from './violation-image-validator.js';
+import { BlockSelection } from './violation-block-selection.js';
 
 /**
  * Ключи ответа формализатора, которые применимы к карточке: пересечение ключей
@@ -79,11 +80,20 @@ export class ViolationManager {
         this._documentDropController = null;
         // Текущий активный контейнер для paste (только когда мышь внутри)
         this.currentActiveContainer = null;
-        // Позиция курсора для вставки (null означает конец списка)
+        // Позиция вставки перетаскиваемых файлов, снятая последним dragover
+        // (null означает конец списка). За мышью вне drag больше не следим.
         this.cursorInsertPosition = null;
         // Unsubscribe ESC-хэндлера активной зоны в EscapeStack
         // (push в _setActiveZone, снятие в _resetActiveZone/destroy).
         this._escapeZoneUnsub = null;
+        // Мультивыделение блоков поля (violation-block-selection.js): держим
+        // ЗДЕСЬ, а не в AppState — его Proxy пометил бы акт несохранённым от
+        // простого клика по шапке блока.
+        this.blockSelection = new BlockSelection();
+        // Unsubscribe ESC-хэндлера выделения: слой кладётся в стек только
+        // ПОКА выделение непусто (иначе он навсегда встал бы НИЖЕ слоя зоны,
+        // и ESC до него не доходил бы).
+        this._escapeSelectionUnsub = null;
     }
 
     /**
@@ -93,6 +103,9 @@ export class ViolationManager {
     initialize() {
         // Настраиваем глобальный обработчик вставки
         this.setupPasteHandler();
+        // Клик по шапке блока / Delete по выделению — document-слушатели
+        // мультивыделения (violation-blocks.js).
+        this.setupBlockSelectionHandlers();
     }
 
     /**
@@ -195,6 +208,12 @@ export class ViolationManager {
             }
         }
 
+        // Выделение блоков принадлежало удаляемому нарушению — оно вместе с
+        // блоками и исчезло (снимать классы не с чего, DOM уже разрушен).
+        if (this.blockSelection.violationId === violationId) {
+            this.clearBlockSelection();
+        }
+
         // #23: активная зона вставки принадлежала удаляемому нарушению — сбрасываем
         // её (иначе paste/ESC работали бы с зоной уже несуществующего нарушения).
         const owner = this.currentActiveContainer?.querySelector?.('.violation-blocks-items')
@@ -212,6 +231,7 @@ export class ViolationManager {
         this.activeViolations.clear();
         this._teardownFileDropZones();
         this._resetActiveZone();
+        this.clearBlockSelection();
         this.selectedViolation = null;
         this.lastDragOverIndex = null;
     }

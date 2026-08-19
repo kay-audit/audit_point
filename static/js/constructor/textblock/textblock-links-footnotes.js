@@ -361,8 +361,10 @@ Object.assign(TextBlockManager.prototype, {
         const prevNode = element.previousSibling;
         const nextNode = element.nextSibling;
 
-        const computedStyle = window.getComputedStyle(element);
-        const fontSize = computedStyle.fontSize;
+        // Размер берём ИНЛАЙНОВЫЙ (он в пунктах — единица редактора), а не
+        // вычисленный: getComputedStyle отдаёт px и занёс бы в разметку чужую
+        // единицу. Нет своего размера — замена и так унаследует его от окружения.
+        const fontSize = element.style?.fontSize || '';
 
         const hasPrevText = prevNode && prevNode.nodeType === 3 && prevNode.textContent.trim();
         const hasNextText = nextNode && nextNode.nodeType === 3 && nextNode.textContent.trim();

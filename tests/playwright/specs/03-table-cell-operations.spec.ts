@@ -59,4 +59,44 @@ test.describe('Table cell operations @smoke', () => {
     await expect(cell00).toHaveAttribute('colspan', '2');
     await expect(cell01).toHaveCount(0);
   });
+
+  test('печать в ячейке переживает автосейв (не сбрасывается через ~3с)', async ({ page }) => {
+    // Регрессия: воронка автосейва (StorageManager._flushPendingEdits, дебаунс
+    // 3с) дёргала textarea.blur() у редактируемой ячейки → finishEditing удалял
+    // textarea из DOM и ронял фокус посреди набора текста. Фикс — недеструктивный
+    // commitPendingEdit, textarea должна пережить паузу дольше 3с.
+    await openAct(page, SEED_ACTS.withContent);
+    await page.locator('.step[data-step="2"]').click();
+
+    const tableSection = page.locator('.table-section[data-table-id="tbl-seed-1"]');
+    await expect(tableSection).toBeVisible({ timeout: 5000 });
+
+    const cell = page.locator(
+      'td[data-table-id="tbl-seed-1"][data-row="1"][data-col="0"]'
+    );
+    await expect(cell).toBeVisible();
+
+    // Вход в редактирование — двойной клик (table-core.js).
+    await cell.dblclick();
+    const textarea = cell.locator('textarea');
+    await expect(textarea).toBeVisible();
+    await expect(textarea).toBeFocused();
+
+    // Сид-значение ячейки затираем выделением: набор идёт с чистого листа.
+    await textarea.press('Control+a');
+    await textarea.pressSequentially('первая часть');
+
+    // Пауза дольше дебаунса автосейва (3с) — textarea не должна быть удалена
+    // из DOM, фокус не должен сброситься.
+    await page.waitForTimeout(4500);
+
+    await expect(cell.locator('textarea')).toBeVisible();
+    await expect(cell).toHaveClass(/\bediting\b/);
+    await expect(textarea).toBeFocused();
+
+    await textarea.pressSequentially(' и вторая часть');
+    await textarea.blur();
+
+    await expect(cell).toHaveText('первая часть и вторая часть');
+  });
 });

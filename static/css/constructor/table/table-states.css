@@ -33,8 +33,9 @@
     border: none;
     padding: var(--spacing-sm) var(--spacing);
     padding-bottom: var(--spacing-lg);
-    font-family: var(--font-family-base);
-    font-size: var(--font-size-sm);
+    /* Та же гарнитура и тот же кегль, что у ячейки в покое (table-base.css). */
+    font-family: var(--doc-font-family);
+    font-size: var(--doc-font-size-small);
     line-height: var(--line-height-normal);
     box-sizing: border-box;
     outline: none;

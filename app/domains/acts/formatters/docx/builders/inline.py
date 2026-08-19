@@ -25,8 +25,9 @@ text-decoration(-line): line-through поддержана для вставле�
         → гиперссылка (как <a href>).
 
 Размеры font-size:
-    px → pt: умножение на 0.75 (16px → 12pt)
-    pt    : без изменений
+    pt    : без изменений — единица контракта редактора (число из тулбара
+            доезжает до Word как есть)
+    px → pt: умножение на 0.75 (16px → 12pt) — страховка для внешней вставки
 """
 import re
 from html.parser import HTMLParser
@@ -526,11 +527,14 @@ class BlockSegment:
     alignment — значение text-align блочного элемента (None = не задано,
     рендер подставит дефолт justify); html — внутренняя разметка сегмента
     (пустая строка = пустой абзац-строка); list_ref — ссылка на список для
-    сегмента-пункта (ближайший открытый <ul>/<ol>), None у обычного сегмента.
+    сегмента-пункта (ближайший открытый <ul>/<ol>), None у обычного сегмента;
+    size_pt — собственный font-size блочного элемента (сейчас снимается с
+    <li>), None = размер хоста.
     """
     alignment: str | None
     html: str
     list_ref: ListRef | None = None
+    size_pt: float | None = None
 
 
 # text-align сегмента → выравнивание Word. Потребитель — render_block_segments
@@ -595,7 +599,7 @@ class _TopLevelSplitter(HTMLParser):
         self._segments: list[BlockSegment] = []
         self._buf: list[str] = []
         # Стек открытых блоков-КОНТЕЙНЕРОВ (границ сегмента): элемент —
-        # [align, emitted_child, list_ref]. Пусто = верхний уровень
+        # [align, emitted_child, list_ref, size_pt]. Пусто = верхний уровень
         # (анонимный сегмент).
         self._ctx_stack: list[list] = []
         # Стек открытых <ul>/<ol>: элемент — (kind, instance, глубина
@@ -628,7 +632,8 @@ class _TopLevelSplitter(HTMLParser):
                 # наследуется align объемлющего контейнера (открытого div/p с
                 # align — только такие контейнеры и попадают в _ctx_stack, см.
                 # ветку "div"/"p" ниже), как в браузере (text-align наследуется).
-                own_align = _extract_text_align(dict(attrs))
+                attrs_map = dict(attrs)
+                own_align = _extract_text_align(attrs_map)
                 inherited_align = own_align if own_align is not None else (
                     self._ctx_stack[-1][0] if self._ctx_stack else None
                 )
@@ -637,6 +642,10 @@ class _TopLevelSplitter(HTMLParser):
                 self._open_container(
                     inherited_align,
                     list_ref=ListRef(instance, kind, level),
+                    # Собственный кегль пункта: им печатается и текст без
+                    # inline-span'ов, и МЕТКА абзаца — маркер/номер (иначе
+                    # Word рисует его кеглем стиля Normal).
+                    size_pt=_extract_size_pt(attrs_map),
                 )
                 return
             if tag in ("div", "p"):
@@ -685,19 +694,24 @@ class _TopLevelSplitter(HTMLParser):
         self._flush_anonymous()
         return self._segments
 
-    def _open_container(self, align: str | None, list_ref: ListRef | None = None) -> None:
+    def _open_container(
+        self,
+        align: str | None,
+        list_ref: ListRef | None = None,
+        size_pt: float | None = None,
+    ) -> None:
         self._flush_before_block()
-        self._ctx_stack.append([align, False, list_ref])
+        self._ctx_stack.append([align, False, list_ref, size_pt])
 
     def _close_container(self) -> None:
         inner = _normalize_segment_html("".join(self._buf))
         self._buf.clear()
-        align, emitted_child, list_ref = self._ctx_stack.pop()
+        align, emitted_child, list_ref, size_pt = self._ctx_stack.pop()
         if inner:
-            self._segments.append(BlockSegment(align, inner, list_ref))
+            self._segments.append(BlockSegment(align, inner, list_ref, size_pt))
         elif not emitted_child:
             # Пустой блок-лист = пустая строка-абзац (как <div><br></div>).
-            self._segments.append(BlockSegment(align, "", list_ref))
+            self._segments.append(BlockSegment(align, "", list_ref, size_pt))
         # else: пустой хвост после дочерних сегментов — не плодим пустой абзац.
 
     def _open_list(self, kind: str) -> None:
@@ -733,9 +747,9 @@ class _TopLevelSplitter(HTMLParser):
         self._buf.clear()
         if not text.strip(" \t\r\n"):
             return
-        align, _, list_ref = self._ctx_stack[-1]
+        align, _, list_ref, size_pt = self._ctx_stack[-1]
         self._segments.append(
-            BlockSegment(align, _normalize_segment_html(text), list_ref)
+            BlockSegment(align, _normalize_segment_html(text), list_ref, size_pt)
         )
 
     def _flush_anonymous(self) -> None:
@@ -784,17 +798,27 @@ def render_block_segments(
     последний — без прямого форматирования (наследует Normal), как у
     прежней одноабзацной модели.
 
-    Список из самого HTML (<ul>/<ol>) — сегмент-пункт получает СВОЙ w:numPr
-    на любой позиции, включая first_paragraph (метка поля «Причины:» тогда
-    стоит внутри первого пункта — нумерация у всех пунктов списка общая).
+    Список из самого HTML (<ul>/<ol>) — сегмент-пункт получает СВОЙ w:numPr.
+    Исключение ровно одно: ПЕРВЫЙ сегмент, когда хост передал свой
+    first_paragraph. Чужой абзац уже несёт метку поля («Причины:»), и вместе с
+    нумерацией метка уехала бы ВНУТРЬ маркера — «• Причины: текст пункта».
+    Тогда first_paragraph остаётся самостоятельным абзацем-меткой, а список
+    начинается со следующего абзаца (ветка label_only ниже).
     Нумерации заводятся по ходу: локальный кеш instance → num_id живёт ровно
     на этот вызов, поэтому разные текстблоки и разные поля нарушения получают
     независимые списки автоматически.
 
+    Собственный font-size пункта списка (<li style="font-size:18pt">) — база
+    ЭТОГО абзаца: им печатается текст пункта без inline-span'ов и, через
+    _set_paragraph_mark_size, сам маркер/номер. Размер метки выставляется
+    каждому сегменту-пункту (в т.ч. без своего font-size — тогда по base_size_pt
+    хоста), иначе Word печатает маркер кеглем стиля Normal независимо от текста.
+
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
     повторно для первого сегмента вместо нового doc.add_paragraph(): метка
-    остаётся на первом абзаце, продолжения — обычные абзацы без неё.
+    остаётся на первом абзаце, продолжения — обычные абзацы без неё. Не
+    переиспользуется, если первый сегмент — пункт списка (см. выше).
     """
     segments = split_block_segments(html)
     if not segments:
@@ -806,6 +830,16 @@ def render_block_segments(
         apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
         return [para]
 
+    # Метка не может стоять внутри пункта списка: первой строкой поля бывает
+    # список, и тогда абзац хоста (уже с меткой) нельзя отдавать под пункт —
+    # w:numPr сделал бы из «Причины:» часть первого маркера. Метка остаётся
+    # своим абзацем, список идёт следом. Обычный первый сегмент (текст) по-
+    # прежнему инлайнится с меткой — привычный вид «Метка: текст».
+    label_only: Paragraph | None = None
+    if first_paragraph is not None and segments[0].list_ref is not None:
+        label_only = first_paragraph
+        first_paragraph = None
+
     paragraphs: list[Paragraph] = []
     num_ids: dict[int, int] = {}  # ListRef.instance → numId в numbering.xml
     for i, segment in enumerate(segments):
@@ -814,14 +848,49 @@ def render_block_segments(
         else:
             para = doc.add_paragraph()
         para.alignment = ALIGNMENT_MAP.get(segment.alignment, default_alignment)
+        # Собственный кегль сегмента (font-size пункта) перекрывает базу хоста.
+        size_pt = segment.size_pt if segment.size_pt is not None else base_size_pt
         if segment.list_ref is not None:
             ref = segment.list_ref
             if ref.instance not in num_ids:
                 num_ids[ref.instance] = create_list_num(doc, ref.kind)
             apply_numbering(para, num_ids[ref.instance], ilvl=ref.level)
-        apply_inline_html(para, segment.html, base_size_pt=base_size_pt, base_italic=base_italic)
+            _set_paragraph_mark_size(para, size_pt)
+        apply_inline_html(para, segment.html, base_size_pt=size_pt, base_italic=base_italic)
         paragraphs.append(para)
+
+    if label_only is not None:
+        # Абзац-метка идёт первым и участвует в общем правиле «всем, кроме
+        # последнего, space_after=0» — иначе между «Причины:» и списком повис
+        # бы отбивочный интервал.
+        paragraphs.insert(0, label_only)
 
     for para in paragraphs[:-1]:
         para.paragraph_format.space_after = Pt(0)
     return paragraphs
+
+
+def _set_paragraph_mark_size(paragraph: Paragraph, size_pt: float) -> None:
+    """Задаёт кегль МЕТКИ абзаца (w:pPr/w:rPr/w:sz, half-points).
+
+    Маркер/номер списка Word печатает не текстовым run'ом, а меткой абзаца:
+    без этого он остаётся кеглем стиля Normal, даже когда текст пункта крупнее
+    или мельче. Идемпотентно: существующие w:sz/w:szCs перезаписываются.
+
+    Аналогичные хелперы есть в builders/rubricator.py и builders/tables.py —
+    свой здесь сознательно, чтобы не тянуть зависимость между билдерами.
+    """
+    p_pr = paragraph._p.get_or_add_pPr()
+    r_pr = p_pr.find(qn("w:rPr"))
+    if r_pr is None:
+        # w:rPr — предпоследний элемент в схеме CT_PPr, поэтому append (после
+        # уже вписанных w:numPr/w:jc), а не вставка в начало.
+        r_pr = OxmlElement("w:rPr")
+        p_pr.append(r_pr)
+    half_points = str(int(round(size_pt * 2)))
+    for tag in ("w:sz", "w:szCs"):
+        el = r_pr.find(qn(tag))
+        if el is None:
+            el = OxmlElement(tag)
+            r_pr.append(el)
+        el.set(qn("w:val"), half_points)

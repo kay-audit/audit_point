@@ -3,7 +3,9 @@
  *
  * Паритет ПОЛНОТЫ данных с DOCX (build_violation): поля в порядке fieldOrder
  * нарушения (или стандартном), у видимого поля метка + блоки по порядку.
- * Первый text-блок инлайнится с меткой («Метка: текст», как в DOCX);
+ * Первый text-блок инлайнится с меткой («Метка: текст», как в DOCX) — кроме
+ * блока, начинающегося со СПИСКА: там метка идёт своей строкой (иначе она
+ * встала бы в одну строку с первым пунктом и читалась как часть маркера);
  * mandatory-поля (Нарушено/Установлено) выводят метку даже при пустом
  * контейнере (Q1/#14); поля с labeled=false (CodeMining/ProcessMining/
  * Дополнительный контент) метку не выводят вовсе — контент идёт подряд, как
@@ -68,8 +70,12 @@ export function collectViolationLines(violation) {
         if (field.labeled) {
             const label = VIOLATION_LABELS[key];
             // Первый text-блок инлайнится с меткой (паритет с DOCX); иначе метка
-            // отдельной строкой, блоки следом.
-            if (blocks.length && blocks[0].type === BLOCK_TYPES.TEXT) {
+            // отдельной строкой, блоки следом. Блок, начинающийся со списка, —
+            // тоже «иначе»: служебное слово и первый пункт в одной строке
+            // читаются как один маркированный пункт, а в DOCX метка вдобавок
+            // физически попадала внутрь нумерации (см. render_block_segments).
+            if (blocks.length && blocks[0].type === BLOCK_TYPES.TEXT
+                && !startsWithList(blocks[0].content)) {
                 const first = blocks.shift();
                 lines.push({ type: 'line', label, text: first.content || '', small: field.small });
             } else {
@@ -165,6 +171,29 @@ export function splitTopLevelBlocks(html) {
     const tail = html.slice(segStart);
     if (tail.trim()) segments.push({ html: tail, align: null });
     return segments;
+}
+
+/**
+ * Начинается ли содержимое поля со списка — первый верхнеуровневый сегмент
+ * открыт тегом <ul>/<ol>.
+ *
+ * Зеркало питоновской проверки `split_block_segments(html)[0].list_ref is not
+ * None` (app/domains/acts/formatters/docx/builders/inline.py): там сегмент
+ * несёт ссылку на список явно, здесь модель проще — сегменты режутся только по
+ * <div>/<p>, поэтому список опознаётся по открывающему тегу. Обёрнутая
+ * разметка `<div><ul>…</ul></div>` тоже считается: splitTopLevelBlocks
+ * отбрасывает обёртку и отдаёт внутренний html. Текст ПЕРЕД списком
+ * (`текст<ul>…`) не считается — там первая строка обычная, и метка инлайнится
+ * как раньше (в DOCX такой кусок тоже уходит в отдельный анонимный сегмент
+ * без list_ref).
+ *
+ * @param {string} html - Содержимое text-блока поля
+ * @returns {boolean}
+ */
+export function startsWithList(html) {
+    if (!html) return false;
+    const [first] = splitTopLevelBlocks(html);
+    return /^\s*<(ul|ol)[\s>]/i.test(first ? first.html : html);
 }
 
 /**

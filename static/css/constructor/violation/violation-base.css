@@ -52,8 +52,11 @@
     padding: var(--spacing-sm) var(--spacing);
     border: var(--border-width-thin) solid var(--input-border);
     border-radius: var(--radius);
-    font-family: var(--font-family-base);
-    font-size: var(--font-size-sm);
+    /* Гарнитура документа — как у поверхности правки текстблока. */
+    font-family: var(--doc-font-family);
+    /* Документный кегль в ПУНКТАХ — поле правки показывает то, что уйдёт в
+       DOCX. «Малые» поля («Нарушено»/«Установлено») — модификатор ниже. */
+    font-size: var(--doc-font-size);
     resize: vertical;
     min-height: var(--violation-textarea-min-height);
     max-height: var(--violation-textarea-max-height);
@@ -63,7 +66,16 @@
     background-color: var(--input-bg);
     transition: all var(--transition-base);
     color: var(--input-text);
-    line-height: var(--line-height-normal);
+    /* Печатный интервал — общий с текстблоком, листом превью и DOCX. */
+    line-height: var(--doc-line-height);
+}
+
+/* «Малые» поля — «Нарушено»/«Установлено» (small: true в реестре
+   violation_fields.py / violation-fields.js): в DOCX они печатаются
+   Sizes.violation_pt = 9pt, поверхность правки держит тот же кегль.
+   Класс вешает _createRichFieldEditor (violation-field-surface.js) по реестру. */
+.violation-textarea--small {
+    font-size: var(--doc-font-size-small);
 }
 
 /* Компактный вариант: однострочное поле, а не полноразмерная textarea

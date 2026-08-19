@@ -147,6 +147,49 @@ class TestLists:
         expected = "1. a\n    1. x\n    2. y\n2. b"
         assert HTMLUtils.clean_html(src) == expected
 
+    def test_clean_html_empty_li_host_gives_no_phantom_line(self):
+        """Пустой <li>-хост подсписка не эмитит строку с маркером.
+
+        Такие хосты остались от прежней нормализации вложенности во фронте (и
+        приходят из внешнего HTML): своего текста у пункта нет, а маркер «- »
+        рисовался отдельной строкой перед подсписком.
+        """
+        src = "<ul><li>a</li><li><ul><li>b</li></ul></li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n    - b"
+
+    def test_clean_html_empty_li_host_does_not_consume_number(self):
+        """Пропущенный хост не забирает номер: нумерация уровня не рвётся."""
+        src = "<ol><li>a</li><li><ol><li>x</li></ol></li><li>b</li></ol>"
+        assert HTMLUtils.clean_html(src) == "1. a\n    1. x\n2. b"
+
+    def test_clean_html_empty_li_without_sublist_gives_no_line(self):
+        src = "<ul><li>a</li><li></li><li>b</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n- b"
+
+    def test_clean_html_whitespace_only_li_does_not_indent_next_item(self):
+        """Регрессия ревью: пробелы внутри пропущенного пустого <li> вместе с
+        его </li> утекали в вывод и вставали ОТСТУПОМ перед следующим пунктом —
+        в TXT/MD он читался вложенным."""
+        src = "<ul><li>a</li><li>     </li><li>c</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n- c"
+        assert HTMLUtils.html_to_markdown(src) == "- a  \n- c"
+
+    def test_clean_html_pretty_printed_empty_host_keeps_next_item_level(self):
+        """Тот же утёк на форматированном HTML: отступы разметки вокруг
+        подсписка пустого хоста не сдвигают следующий пункт."""
+        src = "<ul><li>a</li><li>  <ul><li>b</li></ul>  </li><li>c</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n    - b\n- c"
+
+    def test_clean_html_li_with_only_br_keeps_marker(self):
+        """Пункт из одного <br> — пустая строка, созданная пользователем: маркер
+        ему положен (проверка «пустого хоста» сознательно консервативна)."""
+        # Хвостовой пробел после маркера снимает rstrip самого clean_html.
+        assert HTMLUtils.clean_html("<ul><li>a</li><li><br></li></ul>") == "- a\n-"
+
+    def test_markdown_empty_li_host_gives_no_phantom_line(self):
+        src = "<ul><li>a</li><li><ol><li>x</li></ol></li></ul>"
+        assert HTMLUtils.html_to_markdown(src) == "- a  \n    1. x"
+
     def test_clean_html_inline_formatting_inside_item_stripped(self):
         src = "<ul><li><b>жирно</b> текст</li></ul>"
         assert HTMLUtils.clean_html(src) == "- жирно текст"
