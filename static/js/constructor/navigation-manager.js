@@ -171,7 +171,10 @@ export class NavigationManager {
             // обработчик StorageManager. Generic-тост «Произошла ошибка» здесь
             // лгал бы недосказанностью (правки живы, в локальном черновике).
             console.warn('[NavigationManager] ContentConflictError на save → честное уведомление, авто-PUT остановлены');
-            StorageManager.handleContentConflict(error);
+            // explicit: сюда приходит только пользовательский сейв (Ctrl+S,
+            // кнопка «Сохранить»/«Сохранить и экспортировать») — молчать в
+            // ответ на явное действие нельзя даже при повторном конфликте.
+            StorageManager.handleContentConflict(error, { explicit: true });
             return;
         }
         if (typeof LockLostError !== 'undefined' && error instanceof LockLostError) {

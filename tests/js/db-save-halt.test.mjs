@@ -13,11 +13,17 @@
  *    «экспортируйте акт» при ЛЮБОЙ причине отказа: сюда попадают именно
  *    потому, что снимок в localStorage записать не удалось — «правки
  *    защищены черновиком» здесь неверно.
+ * 4) Дедуп уведомления о конфликте распространяется только на ФОНОВЫЕ отказы.
+ *    Явный сейв (Ctrl+S, кнопка «Сохранить») после первого конфликта не
+ *    получал вообще ничего: тост saveActContent для ContentConflictError
+ *    подавлен, а единый обработчик молчал по флагу halt — кнопка выглядела
+ *    работающей и не делала ничего до перезагрузки.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { APIClient, ContentConflictError, LockLostError } from '../../static/js/shared/api.js';
+import { NavigationManager } from '../../static/js/constructor/navigation-manager.js';
 import { StorageManager } from '../../static/js/constructor/storage-manager.js';
 import { AppState } from '../../static/js/constructor/state/state-core.js';
 import { AuthManager } from '../../static/js/shared/auth.js';
@@ -174,4 +180,47 @@ test('эскалация при сетевом сбое: только совет
         warnings.some((m) => m.includes('сохранены локально')), false,
         'локально сохранить как раз и не удалось — обещать это нельзя'
     );
+});
+
+// --- 4) Явный сейв после конфликта не остаётся без ответа -------------------
+
+/** Свежий 409 от сервера — как его отдаёт APIClient._parseConflictError. */
+function conflict() {
+    return new ContentConflictError('изменён', { last_edited_by: 'ivanov' });
+}
+
+test('повторный конфликт на ФОНОВОМ отказе уведомление не дублирует', () => {
+    StorageManager.handleContentConflict(conflict());
+    warnings.length = 0;
+
+    StorageManager.handleContentConflict(conflict());
+
+    assert.deepEqual(warnings, [],
+        'иначе каждый периодический тик спамил бы одинаковыми тостами');
+});
+
+test('повторный конфликт на ЯВНОМ сейве отвечает пользователю', () => {
+    StorageManager.handleContentConflict(conflict());
+    warnings.length = 0;
+
+    StorageManager.handleContentConflict(conflict(), { explicit: true });
+
+    assert.ok(warnings.some((m) => m.includes('ivanov')),
+        'пользователь сам нажал «Сохранить» и ждёт ответа');
+});
+
+test('Ctrl+S/«Сохранить» после конфликта: кнопка не делает вид, что работает', () => {
+    // Сквозной путь ручного сейва: собственный тост saveActContent для
+    // ContentConflictError подавлен (его показывает единый обработчик), а
+    // _handleSaveExportError сразу выходит — при уже взведённом halt
+    // пользователь не получал НИ ОДНОГО сообщения: ни ошибки, ни успеха,
+    // ни экспорта.
+    StorageManager.handleContentConflict(conflict());
+    warnings.length = 0;
+    errors.length = 0;
+
+    NavigationManager._handleSaveExportError(conflict());
+
+    assert.ok(warnings.some((m) => m.includes('Обновите страницу')),
+        'явное действие пользователя не может остаться совсем без ответа');
 });

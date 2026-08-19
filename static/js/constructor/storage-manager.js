@@ -426,13 +426,21 @@ export class StorageManager {
      * quota-эскалация): ретрай с той же базой обречён, поэтому останавливаем
      * автоматические PUT до перезагрузки/входа в акт и показываем ОДНО честное
      * уведомление (кто изменил акт; правки — в локальном черновике). Повторные
-     * вызовы при уже взведённом halt уведомление не дублируют — иначе mash
-     * Ctrl+S спамил бы одинаковыми тостами.
+     * ФОНОВЫЕ вызовы при уже взведённом halt уведомление не дублируют — иначе
+     * каждый периодический тик спамил бы одинаковыми тостами.
+     *
+     * Явный сейв (Ctrl+S, кнопка «Сохранить», «Сохранить и переключить»,
+     * «Сохранить и продолжить») дедупу НЕ подлежит: пользователь сам его
+     * инициировал и ждёт ответа, а промолчать — значит показать кнопку,
+     * которая после первого конфликта не делает вообще ничего (тост
+     * saveActContent для ContentConflictError тоже подавлен).
      *
      * @param {ContentConflictError} err ошибка конфликта из APIClient
+     * @param {{explicit?: boolean}} [opts={}] explicit=true — сейв инициирован
+     *   пользователем, уведомление показывается всегда
      */
-    static handleContentConflict(err) {
-        if (!this._dbAutoSaveHalted) {
+    static handleContentConflict(err, { explicit = false } = {}) {
+        if (!this._dbAutoSaveHalted || explicit) {
             const editedBy = err?.lastEditedBy
                 ? `пользователем ${err.lastEditedBy}`
                 : 'другим пользователем';
@@ -605,7 +613,7 @@ export class StorageManager {
                             // Конфликт версий: честное уведомление + остановка
                             // авто-PUT (единая обработка); generic-тост — ложь
                             // («не удалось» без причины и без судьбы правок).
-                            this.handleContentConflict(err);
+                            this.handleContentConflict(err, { explicit: true });
                         } else {
                             Notifications.error('Не удалось сохранить изменения');
                         }
