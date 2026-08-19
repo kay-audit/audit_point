@@ -1,4 +1,5 @@
 import { test, expect, openAct, SEED_ACTS } from '../fixtures';
+import { createViolation, seedViolationBlocks, violationBlocksSel } from '../violation-helpers';
 
 /**
  * Паритет «конструктор ↔ превью ↔ Word» для двух вещей, которые до сих пор
@@ -17,8 +18,15 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
  *    (padding: 0), и маркеры при list-style-position: outside уезжали за левый
  *    край контента.
  *
- * Юнит-тестами это не ловится: обе вещи существуют только в каскаде живого
- * движка (вычисленный font-size, ::marker, геометрия блока).
+ * 3. ГАРНИТУРА. Документ печатается Times New Roman (Fonts.main,
+ *    app/domains/acts/formatters/docx/styles.py), а лист A4 был единственной
+ *    поверхностью, которая это показывала. Поверхности правки (текстблок, поля
+ *    нарушения, ячейки таблиц) и диалог истории версий рисовали интерфейсным
+ *    sans — он заметно шире, поэтому строка на экране обрывалась не там, где
+ *    оборвётся в Word.
+ *
+ * Юнит-тестами это не ловится: все три вещи существуют только в каскаде живого
+ * движка (вычисленный font-size/font-family, ::marker, геометрия блока).
  */
 
 const EDITOR = '.textblock-editor[data-text-block-id="txt-seed-1"]';
@@ -26,6 +34,15 @@ const LIST = '<ul><li>Первый<ul><li>Вложенный</li></ul></li><li>�
 
 /** Втяжка списка = 36pt (w:ind left 720 твипов в DOCX) = 48px при любой плотности. */
 const LIST_INDENT_PX = 48;
+
+/** Гарнитура документа (Fonts.main в DOCX-стилях, --doc-font-family в CSS). */
+const DOC_FONT = 'Times New Roman';
+
+/** Первое семейство из вычисленного font-family, без кавычек. */
+const FAMILY = (sel: string) => {
+  const el = document.querySelector(sel) as HTMLElement | null;
+  return el ? getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '').trim() : null;
+};
 
 async function openStep2(page) {
   await openAct(page, SEED_ACTS.withContent);
@@ -93,10 +110,13 @@ test.describe('Кегль таблиц — документный, а не ин�
     expect(m.cell / m.bodyOnScreen).toBeCloseTo(9 / 12, 2);
   });
 
-  test('вход в правку ячейки не меняет кегль', async ({ page }) => {
+  test('вход в правку ячейки не меняет ни кегль, ни гарнитуру', async ({ page }) => {
     await openStep2(page);
     const cell = page.locator('.editable-table td').first();
-    const resting = await cell.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    const resting = await cell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { size: parseFloat(cs.fontSize), family: cs.fontFamily };
+    });
 
     await cell.dblclick();
     await page.waitForTimeout(150);
@@ -104,11 +124,16 @@ test.describe('Кегль таблиц — документный, а не ин�
       const el = document.querySelector(
         '.editable-table td.editing textarea, .editable-table td.editing input'
       );
-      return el ? parseFloat(getComputedStyle(el as HTMLElement).fontSize) : null;
+      if (!el) return null;
+      const cs = getComputedStyle(el as HTMLElement);
+      return { size: parseFloat(cs.fontSize), family: cs.fontFamily };
     });
 
     expect(editing).not.toBeNull();
-    expect(editing!).toBeCloseTo(resting, 1);
+    expect(editing!.size).toBeCloseTo(resting.size, 1);
+    // Редактор ячейки задаёт кегль и гарнитуру сам (table-editor.css,
+    // table-states.css) — оба обязаны совпасть с ячейкой в покое.
+    expect(editing!.family).toBe(resting.family);
   });
 });
 
@@ -230,5 +255,97 @@ test.describe('Втяжка списков — во всех поверхнос�
     expect(m.pad).toBe(LIST_INDENT_PX);
     expect(m.nestedPad).toBe(LIST_INDENT_PX);
     expect(m.itemOffset).toBeGreaterThan(0);
+  });
+});
+
+test.describe('Гарнитура — документная, а не интерфейсная', () => {
+  test('поверхности правки рисуют тем же шрифтом, что печатается', async ({ page }) => {
+    await openStep2(page);
+
+    // Поле нарушения появляется только рантайм-созданием: сид актов нарушений
+    // не содержит (см. violation-helpers).
+    const vid = await createViolation(page);
+    await seedViolationBlocks(page, vid, 'violated', ['проба гарнитуры']);
+    await page.locator(violationBlocksSel(vid, 'violated') + ' .violation-textarea')
+      .first().waitFor({ state: 'visible', timeout: 5000 });
+
+    const editing = await page.evaluate(
+      ([probe, sels]) => Object.fromEntries(
+        (sels as string[]).map((s) => [s, new Function('sel', 'return (' + probe + ')(sel)')(s)])
+      ),
+      [FAMILY.toString(), [
+        '.textblock-editor',
+        '.editable-table td',
+        '.editable-table th',
+        '.violation-textarea',
+      ]] as const
+    );
+
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-sheet').waitFor({ state: 'visible', timeout: 5000 });
+    const sheet = await page.evaluate(
+      ([probe, sel]) => new Function('sel', 'return (' + probe + ')(sel)')(sel),
+      [FAMILY.toString(), '#preview .preview-sheet'] as const
+    );
+
+    // Лист A4 — эталон: он и до этой правки печатал документную гарнитуру.
+    expect(sheet).toBe(DOC_FONT);
+    for (const [sel, family] of Object.entries(editing)) {
+      expect(family, sel + ' обязан рисовать документной гарнитурой').toBe(DOC_FONT);
+    }
+  });
+
+  test('диалог версий: контент рендеров документный, обвязка диалога — интерфейсная', async ({ page }) => {
+    await page.goto('/acts');
+    await page.locator('#versionPreviewTemplate').waitFor({ state: 'attached', timeout: 10000 });
+
+    await page.evaluate((actId) => {
+      const snapshot = {
+        version_number: 1,
+        created_at: new Date().toISOString(),
+        save_type: 'manual',
+        username: 'test',
+        id: 'ver-font-1',
+        tree_data: {
+          children: [
+            { type: 'textblock', textBlockId: 'vp-gone-1', number: '1', label: 'Блок', children: [] },
+          ],
+        },
+        textblocks_data: { 'vp-gone-1': { content: '<p>Проба гарнитуры</p>' } },
+      };
+      // @ts-expect-error VersionPreviewOverlay — глобал из version-preview.js
+      window.VersionPreviewOverlay.show(snapshot, 'Тестовый акт', actId);
+    }, SEED_ACTS.withContent);
+
+    await page.locator('.version-preview-ui .preview-textblock-content').first()
+      .waitFor({ state: 'visible', timeout: 5000 });
+
+    const m = await page.evaluate(
+      ([probe, sels]) => Object.fromEntries(
+        (sels as string[]).map((s) => [s, new Function('sel', 'return (' + probe + ')(sel)')(s)])
+      ),
+      [FAMILY.toString(), [
+        '.version-preview-ui .preview-textblock-content',
+        '.version-preview-ui .version-preview-label',
+        '.version-preview-ui',
+      ]] as const
+    );
+
+    // Ключевая регрессия: диалог листа не строит, и весь контент шёл sans.
+    expect(m['.version-preview-ui .preview-textblock-content']).toBe(DOC_FONT);
+    // Граница: обвязку рисует сам диалог (version-preview.js), она интерфейсная.
+    expect(m['.version-preview-ui .version-preview-label']).not.toBe(DOC_FONT);
+    expect(m['.version-preview-ui']).not.toBe(DOC_FONT);
+
+    // Вкладка сравнения исключена сознательно: инструмент сверки со своим
+    // интерфейсным кеглем, а не отрисовка листа.
+    await page.locator('.version-preview-toggle .toggle-btn[data-view="diff"]').click();
+    await page.locator('.diff-content .diff-textblock').first()
+      .waitFor({ state: 'visible', timeout: 10000 });
+    const diff = await page.evaluate(
+      ([probe, sel]) => new Function('sel', 'return (' + probe + ')(sel)')(sel),
+      [FAMILY.toString(), '.diff-content .diff-textblock'] as const
+    );
+    expect(diff).not.toBe(DOC_FONT);
   });
 });
