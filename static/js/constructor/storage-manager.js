@@ -188,14 +188,6 @@ export class StorageManager {
     static _navClickHandler = null;
 
     /**
-     * Сохранённый обработчик window 'popstate' (перехват back/forward).
-     * Храним, чтобы снять его в _teardownEventHandlers (pfe-10/12). null = не подписан.
-     * @private
-     * @type {Function|null}
-     */
-    static _navPopstateHandler = null;
-
-    /**
      * Lock «идёт сохранение снимка» (pfe-3). Взводится на время saveState и
      * сбрасывается в finally. Не даёт периодическому и явному save пересечься
      * на одном снимке (re-entrant вызов пропускается).
@@ -543,7 +535,9 @@ export class StorageManager {
      * Настраивает перехват попыток навигации.
      * Покрывает:
      *  - клик по `<a href>` (внутренние ссылки) — кастомный диалог;
-     *  - back/forward (popstate) — кастомный диалог с восстановлением истории;
+     *  - back/forward (popstate) — диалог показывает confirmHistoryNavigation,
+     *    её зовёт единственный владелец события (ActsMenuManager); своего
+     *    слушателя popstate здесь нет намеренно, см. док-комментарий метода;
      *  - закрытие вкладки/прямой URL-ввод — браузерный beforeunload (см. _setupEventHandlers).
      * Программное `window.location.href = ...` всё равно отлавливается beforeunload —
      * перехватить set'тер location напрямую браузер не даёт.
@@ -553,40 +547,14 @@ export class StorageManager {
         // Флаг разрешения навигации (для программных переходов)
         window._allowNavigation = false;
 
-        // popstate-страж: при back/forward с unsynced правками показываем
-        // кастомный confirm. Если юзер подтверждает уход — пускаем; иначе
-        // pushState восстанавливает URL.
-        // Хендлеры храним в полях (стрелки сохраняют this=класс), чтобы снять
-        // их в _teardownEventHandlers (pfe-10/12).
         // Слияние с текущим history.state, а не замена целиком: ActsMenuManager
         // пишет в ту же запись истории свой actId (порядок init'ов двух модулей
         // не гарантирован), и замена состояния целиком стирала бы его.
         history.replaceState({...(history.state || {}), _lockNavGuard: true}, '', window.location.href);
-        this._navPopstateHandler = async (event) => {
-            if (window._allowNavigation) return;
-            if (!this.hasUnsyncedChanges()) return;
 
-            // Возвращаем URL обратно, чтобы юзер физически не ушёл со страницы,
-            // пока думает над диалогом. Мержим с history.state (см. комментарий
-            // выше) — иначе actId текущей записи терялся бы при каждом отменённом
-            // back/forward.
-            history.pushState({...(history.state || {}), _lockNavGuard: true}, '', window.location.href);
-
-            const confirmed = await DialogManager.show({
-                title: 'Несохраненные изменения',
-                message: 'У вас есть несохранённые изменения. Вернуться к предыдущей странице без сохранения?',
-                icon: '⚠️',
-                confirmText: 'Уйти без сохранения',
-                cancelText: 'Остаться'
-            });
-            if (confirmed) {
-                window._allowNavigation = true;
-                history.back();
-            }
-        };
-        window.addEventListener('popstate', this._navPopstateHandler);
-
-        // Перехватываем клики по ссылкам
+        // Перехватываем клики по ссылкам. Хендлер храним в поле (стрелка
+        // сохраняет this=класс), чтобы снять его в _teardownEventHandlers
+        // (pfe-10/12).
         this._navClickHandler = async (e) => {
             // Игнорируем если навигация разрешена
             if (window._allowNavigation) return;
@@ -665,6 +633,60 @@ export class StorageManager {
     }
 
     /**
+     * Решение о продолжении браузерной навигации back/forward при наличии
+     * несинхронизированных с БД правок.
+     *
+     * Собственного слушателя `popstate` у StorageManager НЕТ намеренно.
+     * Раньше их было два — этот страж и переключатель акта в ActsMenuManager;
+     * они висели на одном событии независимо, в непредсказуемом порядке
+     * (порядок init'ов двух модулей не гарантирован) и гонялись между собой:
+     * проверка «есть ли правки» синхронна, а диалог — нет, поэтому пока
+     * пользователь читал вопрос, переключение уже снимало лок со старого акта,
+     * брало лок на новый и подменяло AppState его контентом. Кнопка «Остаться»
+     * к этому моменту не имела смысла — оставаться было негде. Теперь владелец
+     * события один (обработчик popstate в ActsMenuManager), и он спрашивает
+     * эту функцию ДО того, как начнёт переключение.
+     *
+     * При отказе восстанавливаем адресную строку: popstate приходит уже после
+     * того, как браузер сменил URL, поэтому «остаться» — это дописать поверх
+     * целевой записи запись ПОКАЗАННОГО акта. Прежний страж пушил
+     * `window.location.href`, то есть URL цели, и созданная им запись не
+     * соответствовала показанному акту.
+     *
+     * При согласии — ничего: мы уже стоим на целевой записи истории. Прежний
+     * страж делал `history.back()`, и тот порождал второй popstate (второе
+     * переключение акта) и затирал forward-запись; он же навсегда взводил
+     * `window._allowNavigation`, глуша страж кликов по ссылкам до конца сессии.
+     *
+     * @param {number} shownActId - ID акта, который показан сейчас
+     * @param {string} shownUrl - URL этого акта (на него возвращаемся при отказе)
+     * @returns {Promise<boolean>} true — навигацию продолжаем
+     */
+    static async confirmHistoryNavigation(shownActId, shownUrl) {
+        if (window._allowNavigation) return true;
+        if (!this.hasUnsyncedChanges()) return true;
+
+        const confirmed = await DialogManager.show({
+            title: 'Несохраненные изменения',
+            message: 'У вас есть несохранённые изменения. Вернуться к предыдущей странице без сохранения?',
+            icon: '⚠️',
+            confirmText: 'Уйти без сохранения',
+            cancelText: 'Остаться'
+        });
+        if (!confirmed) {
+            // Мержим с history.state целевой записи (чтобы не терять чужих
+            // полей), но actId выставляем свой: запись описывает показанный
+            // акт, а не тот, куда вёл back/forward.
+            history.pushState(
+                {...(history.state || {}), actId: shownActId, _lockNavGuard: true},
+                '',
+                shownUrl
+            );
+        }
+        return confirmed;
+    }
+
+    /**
      * Снимает все слушатели и гасит таймеры StorageManager (pfe-10/12).
      *
      * Идемпотентно: безопасно вызывать повторно (поля занулены, unregister/
@@ -683,10 +705,6 @@ export class StorageManager {
         }
         if (typeof LifecycleHelper !== 'undefined') {
             LifecycleHelper.unregister('storage:unsaved-warning');
-        }
-        if (this._navPopstateHandler) {
-            window.removeEventListener('popstate', this._navPopstateHandler);
-            this._navPopstateHandler = null;
         }
         if (this._navClickHandler) {
             document.removeEventListener('click', this._navClickHandler);
@@ -1490,8 +1508,8 @@ export class StorageManager {
 
     /**
      * Очищает все таймеры и снимает слушатели при уничтожении.
-     * pfe-10: помимо таймеров снимает beforeunload/click/popstate, иначе
-     * после destroy старые обработчики продолжали висеть на window/document.
+     * pfe-10: помимо таймеров снимает beforeunload/click, иначе после destroy
+     * старые обработчики продолжали висеть на window/document.
      */
     static destroy() {
         if (this._saveTimeout) {
@@ -1499,7 +1517,7 @@ export class StorageManager {
             this._saveTimeout = null;
         }
 
-        // Гасит периодические интервалы + снимает beforeunload/click/popstate.
+        // Гасит периодические интервалы + снимает beforeunload/click.
         this._teardownEventHandlers();
 
         this._resetDbSaveFailureState();

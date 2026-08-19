@@ -505,8 +505,8 @@ export class ActsMenuManager {
      *  - нет pushState (URL/history — свершившийся факт, повторный push сломал
      *    бы forward-навигацию);
      *  - нет диалога «несохранённые изменения» — на popstate его показывает
-     *    собственный страж StorageManager (_navPopstateHandler), второй диалог
-     *    поверх дублировал бы вопрос.
+     *    вызывающий обработчик (StorageManager.confirmHistoryNavigation) ДО
+     *    вызова этого метода, второй диалог поверх дублировал бы вопрос.
      * Лок же переносится ровно так же, как при переключении через меню: без
      * этого LockManager._actId оставался на покинутом акте, и владение локом
      * расходилось с тем, чей контент лежит в AppState (выходной save уводил
@@ -563,7 +563,16 @@ export class ActsMenuManager {
     }
 
     /**
-     * Переключается на другой акт
+     * Переключается на другой акт (явно, через меню шапки).
+     *
+     * Отличия от _handleHistoryNavigation — ровно два, и оба вынуждены тем,
+     * что это ИНИЦИАТОР перехода, а не реакция на уже случившийся: здесь
+     * (и только здесь) показывается диалог «несохранённые изменения», и
+     * здесь (и только здесь) делается pushState — после успешной загрузки.
+     * В остальном порядок фаз тот же: сеть → права → лок → применение.
+     * Права нового акта нужны ДО захвата лока (LockManager.init пропускает
+     * захват для read-only), а контент забираем до снятия старого лока:
+     * сетевой сбой тогда оставляет и лок, и UI покидаемого акта нетронутыми.
      * @private
      * @param {number} actId - ID акта для переключения
      */
@@ -606,6 +615,16 @@ export class ActsMenuManager {
 
         try {
             console.log('Переключаемся на акт:', actId);
+
+            // 1) Сеть: контент нового акта. Побочных эффектов нет — падение
+            //    здесь ничего не разрушает (лок старого акта ещё цел).
+            const content = await APIClient._fetchActContent(actId);
+
+            // 2) Права нового акта — до захвата лока: LockManager.init
+            //    пропускает захват для read-only.
+            APIClient._applyUserPermission(content);
+
+            // 3) Перенос лока: снимаем со старого акта, берём на новый.
             if (window.currentActId && typeof LockManager !== 'undefined') {
                 try {
                     await APIClient.unlockAct(window.currentActId);
@@ -632,9 +651,10 @@ export class ActsMenuManager {
                 }
             }
 
-            // resetForActSwitch — строго после успешного захвата лока (при
-            // отказе остаёмся на старом акте с нетронутым состоянием).
-            await this._loadActIntoView(actId);
+            // 4) Применение уже загруженного контента к UI/состоянию.
+            //    resetForActSwitch — строго после успешного захвата лока (при
+            //    отказе остаёмся на старом акте с нетронутым состоянием).
+            await this._loadActIntoView(actId, content);
 
             // pushState — только у явного переключения через меню: popstate
             // идёт тем же _loadActIntoView, но САМ является реакцией на уже
@@ -918,9 +938,28 @@ export class ActsMenuManager {
         const menu = document.getElementById('actsMenuDropdown');
         menu?.addEventListener('click', e => e.stopPropagation());
 
+        // Единственный владелец события popstate в конструкторе. Диалог
+        // «несохранённые изменения» спрашиваем ОТСЮДА и ДО переключения:
+        // прежде страж StorageManager висел на том же событии своим
+        // независимым слушателем, и его диалог всплывал уже после того, как
+        // переключение сняло лок со старого акта и подменило AppState —
+        // «Остаться» было некуда (подробности — StorageManager.confirmHistoryNavigation).
         window.addEventListener('popstate', async event => {
             const actId = event.state?.actId;
             if (!actId || actId === this.currentActId) return;
+
+            // Показанный акт: на него возвращаемся, если пользователь решит
+            // остаться. Пока акт не загружен, оставаться не на чем — вопрос
+            // не имеет смысла.
+            const shownActId = this.currentActId;
+            if (shownActId) {
+                const allowed = await StorageManager.confirmHistoryNavigation(
+                    shownActId,
+                    AppConfig.api.getUrl(`/constructor?act_id=${shownActId}`)
+                );
+                if (!allowed) return;
+            }
+
             // Весь переход — в _handleHistoryNavigation: тот же перенос лока и
             // тот же _loadActIntoView, что у явного переключения через меню.
             // Прежде здесь звался голый _loadActIntoView, и лок сознательно не
@@ -929,8 +968,8 @@ export class ActsMenuManager {
             // поэтому после back выходной save собирал содержимое показанного
             // акта и уводил его PUT'ом в акт, на котором повис лок (порча
             // данных), а сам показанный акт сохранить было нельзя (409 без
-            // лока). Диалог «несохранённые изменения» и pushState здесь
-            // по-прежнему не делаются — см. док-комментарий метода.
+            // лока). pushState здесь по-прежнему не делается — см.
+            // док-комментарий метода.
             try {
                 await this._handleHistoryNavigation(actId);
             } catch (error) {

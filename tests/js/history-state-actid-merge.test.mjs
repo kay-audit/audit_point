@@ -188,19 +188,28 @@ test('акт 5 → переключение на 7 → «Назад» восст
         '(без фикса эта запись была бы {_lockNavGuard: true} без actId)');
 });
 
-// ─── _navPopstateHandler: guard-pushState тоже мержит ────────────────────────
+// ─── confirmHistoryNavigation: guard-pushState тоже мержит ───────────────────
 
-test('_navPopstateHandler.pushState мержит текущий history.state (не стирает поля)', async () => {
+test('confirmHistoryNavigation при отказе мержит текущий history.state (не стирает чужих полей)', async () => {
     StorageManager._setupNavigationInterception();
     window.currentActId = 5;
     StorageManager._setState('unsaved'); // hasUnsyncedChanges() === true
+    DialogManager.show = async () => false; // «Остаться»
 
     // В момент popstate history.state уже указывает на state целевой записи
     // (браузер меняет его ДО вызова обработчика).
-    globalThis.history = makeHistoryStub({ actId: 7 });
+    globalThis.history = makeHistoryStub({ actId: 7, чужоеПоле: 'цело' });
 
-    await StorageManager._navPopstateHandler({ state: { actId: 7 } });
+    const allowed = await StorageManager.confirmHistoryNavigation(5, 'http://test/constructor?act_id=5');
 
+    assert.equal(allowed, false, 'навигация оспорена');
     assert.equal(history.state._lockNavGuard, true, 'guard-флаг записан');
-    assert.equal(history.state.actId, 7, 'actId из state не стёрт мержем');
+    assert.equal(history.state.чужоеПоле, 'цело', 'посторонние поля state пережили мерж');
+    // Прежний ассерт ждал здесь actId ЦЕЛИ (7) — он был неверен: запись,
+    // которой возвращают пользователя, обязана описывать ПОКАЗАННЫЙ акт.
+    // Страж пушил `window.location.href` (URL цели) вместе с actId цели, и
+    // созданная запись не соответствовала тому, что осталось на экране.
+    assert.equal(history.state.actId, 5, 'запись описывает показанный акт, а не цель back/forward');
+    assert.equal(globalThis.location.href, 'http://test/constructor?act_id=5',
+        'адресная строка вернулась к показанному акту');
 });

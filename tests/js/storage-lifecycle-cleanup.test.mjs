@@ -2,8 +2,9 @@
  * Тесты жизненного цикла слушателей и таймеров StorageManager (pfe-10/12/3).
  *
  * Гарантии:
- *  - pfe-10: destroy() снимает beforeunload (через LifecycleHelper), click и
- *    popstate, а не только гасит таймеры;
+ *  - pfe-10: destroy() снимает beforeunload (через LifecycleHelper) и click,
+ *    а не только гасит таймеры; своего слушателя popstate у StorageManager
+ *    нет — событием владеет ActsMenuManager (tests/js/popstate-single-owner.test.mjs);
  *  - pfe-12: повторный init/_setupEventHandlers идемпотентен — старые интервалы
  *    и навигационные слушатели не дублируются (нет утечки двойных таймеров и
  *    PUT-каналов);
@@ -82,26 +83,31 @@ test('pfe-10: destroy снимает beforeunload через LifecycleHelper', (
   );
 });
 
-test('pfe-10: destroy снимает click и popstate', () => {
+test('pfe-10: destroy снимает click', () => {
   StorageManager._setupEventHandlers();
 
   StorageManager.destroy();
 
-  const clickRemoved = removed.some((l) => l.type === 'click');
-  const popstateRemoved = removed.some((l) => l.type === 'popstate');
-  assert.ok(clickRemoved, 'click снят');
-  assert.ok(popstateRemoved, 'popstate снят');
+  assert.ok(removed.some((l) => l.type === 'click'), 'click снят');
 });
 
-test('pfe-10: снятые click/popstate — те же функции, что добавлялись', () => {
+test('pfe-10: снятый click — та же функция, что добавлялась', () => {
   StorageManager._setupEventHandlers();
   const addedClick = added.find((l) => l.type === 'click');
-  const addedPopstate = added.find((l) => l.type === 'popstate');
 
   StorageManager.destroy();
 
   assert.ok(removed.some((l) => l.type === 'click' && l.handler === addedClick.handler));
-  assert.ok(removed.some((l) => l.type === 'popstate' && l.handler === addedPopstate.handler));
+});
+
+test('StorageManager не подписывается на popstate — событием владеет ActsMenuManager', () => {
+  StorageManager._setupEventHandlers();
+
+  // Прежде страж вешал сюда собственный слушатель и гонялся с переключателем
+  // акта: его диалог всплывал уже после того, как переключение сняло лок и
+  // подменило AppState. Теперь решение отдаётся владельцу события через
+  // confirmHistoryNavigation.
+  assert.equal(added.filter((l) => l.type === 'popstate').length, 0);
 });
 
 // ─── pfe-12: повторный init идемпотентен ────────────────────────────────────
@@ -119,10 +125,9 @@ test('pfe-12: повторный _setupEventHandlers не плодит инте�
   assert.notEqual(StorageManager._periodicDbSaveInterval, firstDbInterval);
 });
 
-test('pfe-12: повторный _setupEventHandlers снимает прежние click/popstate', () => {
+test('pfe-12: повторный _setupEventHandlers снимает прежний click', () => {
   StorageManager._setupEventHandlers();
   const firstClick = added.find((l) => l.type === 'click').handler;
-  const firstPopstate = added.find((l) => l.type === 'popstate').handler;
 
   StorageManager._setupEventHandlers();
 
@@ -130,13 +135,9 @@ test('pfe-12: повторный _setupEventHandlers снимает прежни
     removed.some((l) => l.type === 'click' && l.handler === firstClick),
     'прежний click снят перед повторной регистрацией'
   );
-  assert.ok(
-    removed.some((l) => l.type === 'popstate' && l.handler === firstPopstate),
-    'прежний popstate снят перед повторной регистрацией'
-  );
 });
 
-test('pfe-12: после двойного init активна ровно одна пара навигационных слушателей', () => {
+test('pfe-12: после двойного init активен ровно один навигационный слушатель', () => {
   StorageManager._setupEventHandlers();
   StorageManager._setupEventHandlers();
 
@@ -144,7 +145,7 @@ test('pfe-12: после двойного init активна ровно одн�
   const liveCount = (type) =>
     added.filter((l) => l.type === type).length - removed.filter((l) => l.type === type).length;
   assert.equal(liveCount('click'), 1);
-  assert.equal(liveCount('popstate'), 1);
+  assert.equal(liveCount('popstate'), 0, 'StorageManager на popstate не подписан');
 });
 
 // ─── pfe-3: lock «идёт сохранение» ──────────────────────────────────────────
