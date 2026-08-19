@@ -113,10 +113,10 @@ per-block. Конвертации px→pt в базе экспорта боль�
 т.п.), не для собственного тулбара редактора. Печатную базу задают
 документные токены `--doc-font-size` (12pt) / `--doc-line-height` (1.15) в
 `static/css/constructor/textblock/textblock-content.css`, от rem-плотности
-UI не зависящие; экранную читаемость даёт CSS `zoom:
-var(--doc-readability-zoom)` (1.25, §13.5
-[`frontend-architecture.md`](frontend-architecture.md)) — раскладку он
-растягивает, но на экспорт и на геометрию листа превью не влияет.
+UI не зависящие; экранного множителя над ними нет — прежний CSS `zoom:
+var(--doc-readability-zoom)` (1.25) убран, и поверхность правки показывает
+ровно печатный кегль (§13.5
+[`frontend-architecture.md`](frontend-architecture.md)).
 
 **Вертикальный ритм задаёт ТОЛЬКО `line-height`** — своих `margin`'ов нет
 ни у абзацев (`p`), ни у заголовков (`h1`-`h6`), ни у списков (`ul`/`ol`/
