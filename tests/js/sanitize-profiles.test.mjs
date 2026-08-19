@@ -75,7 +75,7 @@ test('acts: CSS-allowlist зеркалит бэк ALLOWED_CSS_PROPERTIES (#10/#1
     assert.ok(ACTS_CSS_PROPERTIES.includes('text-align'));
 });
 
-test('per-tag политика style: div/p — только text-align (enum), span — полный allowlist', () => {
+test('per-tag политика style: div/p — text-align, li — ещё и font-size, span — полный allowlist', () => {
     const css = [...ACTS_CSS_PROPERTIES];
     // div: чужие свойства режутся, остаётся один text-align.
     assert.deepEqual(
@@ -99,6 +99,17 @@ test('per-tag политика style: div/p — только text-align (enum), 
         filterCssDeclarations('span', [['font-size', '20px'], ['position', 'fixed']], css),
         ['font-size:20px;'],
     );
+    // li — блок с исключением: text-align И собственный font-size (от него
+    // наследует ::marker), но не цвет. Зеркало _ITEM_STYLE_TAGS бэка.
+    assert.deepEqual(
+        filterCssDeclarations(
+            'li',
+            [['font-size', '18pt'], ['text-align', 'center'], ['color', 'red']],
+            css,
+        ).sort(),
+        ['font-size:18pt;', 'text-align:center;'],   // порядок деклараций не значим
+    );
+    assert.deepEqual(filterCssDeclarations('li', [['color', 'red']], css), []);
 });
 
 test('fallback без DOMPurify: sanitize экранирует HTML (и для профиля acts)', () => {

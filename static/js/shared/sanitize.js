@@ -134,13 +134,20 @@ let _cssHookRegistered = false;
 // новый шов превью↔экспорт. Зеркало бэка — _BLOCK_STYLE_TAGS в
 // html_sanitizer.py.
 const BLOCK_STYLE_TAGS = ['div', 'p'];
+// Пункт списка — блок с исключением: сверх text-align ему разрешён собственный
+// font-size, потому что ::marker наследует кегль от САМОГО <li> (а не от
+// вложенного span), и DOCX печатает маркер меткой абзаца из того же значения.
+// Прочие свойства пункту не нужны: DOCX их у <li> не читает. Зеркало бэка —
+// _ITEM_STYLE_TAGS в html_sanitizer.py.
+const ITEM_STYLE_TAGS = ['li'];
 const TEXT_ALIGN_VALUES = ['left', 'center', 'right', 'justify'];
 
 /**
  * Пер-элементная фильтрация inline-style профиля с CSS-allowlist: блочным
- * тегам (div/p) остаётся только text-align с enum-значением, остальным —
- * свойства из allowlist. Чистая функция (страж-тест гоняет её в node без
- * DOM); хук ниже скармливает ей пары из node.style.
+ * тегам (div/p) остаётся только text-align с enum-значением, пункту списка —
+ * text-align плюс собственный font-size (размер маркера), остальным — свойства
+ * из allowlist. Чистая функция (страж-тест гоняет её в node без DOM); хук ниже
+ * скармливает ей пары из node.style.
  * @param {string} tagName - имя тега (регистр любой)
  * @param {Array<[string,string]>} declarations - пары [свойство, значение]
  * @param {string[]} cssAllowlist - allowlist свойств для не-блочных тегов
@@ -149,13 +156,17 @@ const TEXT_ALIGN_VALUES = ['left', 'center', 'right', 'justify'];
 export function filterCssDeclarations(tagName, declarations, cssAllowlist) {
     const tag = String(tagName || '').toLowerCase();
     const isBlock = BLOCK_STYLE_TAGS.includes(tag);
+    const isItem = ITEM_STYLE_TAGS.includes(tag);
     const kept = [];
     for (const [prop, value] of declarations) {
-        if (isBlock) {
-            if (prop !== 'text-align') continue;
-            const v = String(value || '').trim().toLowerCase();
-            if (!TEXT_ALIGN_VALUES.includes(v)) continue;
-            kept.push(`text-align:${v};`);
+        if (isBlock || isItem) {
+            if (prop === 'text-align') {
+                const v = String(value || '').trim().toLowerCase();
+                if (!TEXT_ALIGN_VALUES.includes(v)) continue;
+                kept.push(`text-align:${v};`);
+            } else if (isItem && prop === 'font-size' && cssAllowlist.includes(prop)) {
+                kept.push(`font-size:${value};`);
+            }
         } else if (cssAllowlist.includes(prop)) {
             kept.push(`${prop}:${value};`);
         }

@@ -105,3 +105,55 @@ def test_multiple_spans_each_clamped():
     assert "font-size: 8pt" in out
     assert "font-size: 200pt" not in out
     assert "font-size: 2pt" not in out
+
+
+# ── Пункт списка несёт собственный font-size (размер маркера) ────────────────
+#
+# ::marker наследует кегль от САМОГО <li>, а не от вложенного span, поэтому
+# размер целиком покрытого пункта редактор ставит на <li>. Раньше style у <li>
+# не был разрешён вовсе — размер жил только в живом DOM и пропадал на
+# сохранении, а маркер после перезагрузки возвращался к базовому кеглю.
+# В DOCX это же значение печатает метку абзаца (render_block_segments).
+
+def test_list_item_keeps_own_font_size():
+    out = sanitize_html('<ul><li style="font-size: 18pt">пункт</li></ul>')
+    assert 'font-size: 18pt' in out
+
+
+def test_list_item_font_size_clamped_and_converted():
+    assert "72pt" in sanitize_html('<ul><li style="font-size: 500pt">п</li></ul>')
+    # px из внешней вставки приводится к пунктам той же конвертацией, что у span.
+    assert "15pt" in sanitize_html('<ul><li style="font-size: 20px">п</li></ul>')
+
+
+def test_list_item_keeps_text_align_alongside_size():
+    out = sanitize_html(
+        '<ul><li style="text-align: center; font-size: 14pt">п</li></ul>'
+    )
+    assert "text-align: center" in out
+    assert "font-size: 14pt" in out
+
+
+def test_list_item_drops_other_properties():
+    """color/background у <li> DOCX не читает — оставлять их значит развести
+    превью и выгрузку."""
+    out = sanitize_html('<ul><li style="color: red">п</li></ul>')
+    assert "color" not in out
+    assert "style" not in out
+
+
+def test_block_tags_still_drop_font_size():
+    """Послабление адресное: div/p по-прежнему несут ТОЛЬКО text-align."""
+    out = sanitize_html('<p style="font-size: 30pt; text-align: center">абзац</p>')
+    assert "font-size" not in out
+    assert "text-align: center" in out
+
+
+def test_rich_sanitizer_mirrors_list_item_policy():
+    """nh3-ветка (rich-поля нарушения) обязана вести себя как bleach-ветка."""
+    from app.domains.acts.utils.html_sanitizer import sanitize_rich_html
+
+    out = sanitize_rich_html('<ul><li style="color: red; font-size: 500pt">п</li></ul>')
+    assert "72pt" in out
+    assert "color" not in out
+    assert "font-size" not in sanitize_rich_html('<p style="font-size: 30pt">а</p>')

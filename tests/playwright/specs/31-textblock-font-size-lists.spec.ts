@@ -156,6 +156,35 @@ test.describe('Размер шрифта в списках', () => {
     await expect(page.locator('#fontSizeTrigger .toolbar-fontsize-value')).toHaveText('14');
   });
 
+  test('размер пункта переживает сохранение и перезагрузку', async ({ page }) => {
+    // Регрессия: размер на <li> жил только в живом DOM — санитайзер не разрешал
+    // style у пункта вовсе и срезал его на save, после reload маркер возвращался
+    // к базовому кеглю. Живой DOM этого не показывает, ловится только round-trip.
+    await openTextblock(page);
+    await seedList(page, '<ul><li>Первый пункт</li><li>Второй пункт</li></ul>');
+    await selectAcrossItems(page, 0, 0);
+    await applySize(page, 28);
+
+    await page.keyboard.press('Control+s');
+    await page.waitForTimeout(1200);
+    await page.reload();
+    await page.locator('.step[data-step="2"]').click();
+    await page.locator(EDITOR).waitFor({ state: 'visible', timeout: 5000 });
+    await page.waitForTimeout(1000);
+
+    const after = await page.locator(EDITOR).evaluate((ed: HTMLElement) => {
+      const li = ed.querySelector('li') as HTMLElement;
+      return {
+        inline: li.style.fontSize,
+        marker: parseFloat(getComputedStyle(li, '::marker').fontSize),
+        text: parseFloat(getComputedStyle(li).fontSize),
+      };
+    });
+
+    expect(after.inline).toBe('28pt');
+    expect(after.marker).toBeCloseTo(after.text, 1);
+  });
+
   test('вложенные пункты вместе с родителем — размер у каждого <li> свой', async ({ page }) => {
     await openTextblock(page);
     await seedList(page, '<ul><li>Родитель<ul><li>Ребёнок</li></ul></li><li>Сосед</li></ul>');

@@ -116,19 +116,47 @@ def _css_sanitizer_for(props: tuple[str, ...]) -> CSSSanitizer:
 # игнорирует (_extract_size_pt читается только у span) — был бы новый шов
 # превью↔экспорт. Зеркало фронта — BLOCK_STYLE_TAGS в sanitize.js.
 _BLOCK_STYLE_TAGS = frozenset({"div", "p"})
+# Пункт списка — блок с ИСКЛЮЧЕНИЕМ: сверх text-align ему разрешён собственный
+# font-size. Без него не работает размер маркера: ::marker наследует кегль от
+# САМОГО <li>, а не от вложенного span, и DOCX печатает маркер меткой абзаца
+# (render_block_segments → _set_paragraph_mark_size) из того же значения.
+# Прочие свойства (color/background) пункту не нужны и срезаются: DOCX их у <li>
+# не читает — был бы шов превью↔экспорт. Зеркало фронта — ITEM_STYLE_TAGS в
+# sanitize.js.
+_ITEM_STYLE_TAGS = frozenset({"li"})
 # Значение — строго enum: мусор (inherit/start/left-x) срезает style целиком.
 _BLOCK_TEXT_ALIGN_RE = re.compile(
     r"(?:^|;)\s*text-align\s*:\s*(left|center|right|justify)\s*(?:;|$)",
     re.IGNORECASE,
 )
+# Объявление font-size целиком — для сборки style пункта списка. Кламп единиц
+# и границ делает следующий фильтр (_FontSizeClampFilter), здесь только отбор.
+_FONT_SIZE_DECL_RE = re.compile(r"font-size\s*:\s*[^;]+", re.IGNORECASE)
+
+
+def _keep_block_style(tag: str, style: str) -> str | None:
+    """Оставляет в style блочного тега разрешённые ему свойства.
+
+    div/p — только text-align (enum), <li> — text-align плюс собственный
+    font-size. Возврат None = снять атрибут целиком.
+    """
+    kept: list[str] = []
+    align = _BLOCK_TEXT_ALIGN_RE.search(style or "")
+    if align:
+        kept.append(f"text-align: {align.group(1).lower()}")
+    if tag in _ITEM_STYLE_TAGS:
+        size = _FONT_SIZE_DECL_RE.search(style or "")
+        if size:
+            kept.append(size.group(0).strip())
+    return "; ".join(kept) if kept else None
 
 
 class _BlockStyleFilter(Filter):
-    """Пост-фильтр токенов bleach: у div/p оставляет в style только text-align.
+    """Пост-фильтр токенов bleach: режет style блочных тегов до разрешённого.
 
     CSSSanitizer per-tag не умеет (режет по общему allowlist до этого шага) —
     фильтр идёт по уже санитизированному токен-потоку перед сериализацией и
-    перезаписывает style блочных тегов; без валидного text-align атрибут
+    перезаписывает style блочных тегов; без разрешённых свойств атрибут
     снимается целиком.
     """
 
@@ -136,14 +164,14 @@ class _BlockStyleFilter(Filter):
         for token in super().__iter__():
             if (
                 token.get("type") in ("StartTag", "EmptyTag")
-                and token.get("name") in _BLOCK_STYLE_TAGS
+                and token.get("name") in (_BLOCK_STYLE_TAGS | _ITEM_STYLE_TAGS)
             ):
                 data = token.get("data") or {}
                 key = (None, "style")
                 if key in data:
-                    match = _BLOCK_TEXT_ALIGN_RE.search(data[key] or "")
-                    if match:
-                        data[key] = f"text-align: {match.group(1).lower()}"
+                    kept = _keep_block_style(token["name"], data[key] or "")
+                    if kept:
+                        data[key] = kept
                     else:
                         del data[key]
             yield token
@@ -272,6 +300,9 @@ def sanitize_html(html: str | None) -> str:
         # _BlockStyleFilter (CSSSanitizer до него — по общему allowlist).
         "div": ["class", "style"],
         "p": ["class", "style"],
+        # Пункт списка несёт собственный font-size (размер маркера) и
+        # text-align; состав режет _BlockStyleFilter.
+        "li": ["class", "style"],
         "*": ["class"],
     }
     # Cleaner вместо bleach.clean ради filters= (bleach.clean собирает такой
@@ -299,9 +330,17 @@ def _rich_attribute_filter(tag: str, attr: str, value: str) -> str | None:
     """
     if attr != "style":
         return value
-    if tag in _BLOCK_STYLE_TAGS:
-        match = _BLOCK_TEXT_ALIGN_RE.search(value or "")
-        return f"text-align: {match.group(1).lower()}" if match else None
+    if tag in _BLOCK_STYLE_TAGS or tag in _ITEM_STYLE_TAGS:
+        kept = _keep_block_style(tag, value or "")
+        if kept is None:
+            return None
+        # У пункта списка в остатке может быть font-size — зажимаем теми же
+        # границами, что и у span (в bleach-ветке это делает _FontSizeClampFilter).
+        tb = _acts_settings().textblocks
+        kept = _clamp_font_size_pt(
+            _strip_unsupported_font_size(kept), tb.font_size_min, tb.font_size_max
+        ).strip(" ;\t\r\n")
+        return kept or None
     tb = _acts_settings().textblocks
     style = _clamp_font_size_pt(
         _strip_unsupported_font_size(value or ""), tb.font_size_min, tb.font_size_max
@@ -349,6 +388,7 @@ def sanitize_rich_html(html: str | None) -> str:
             "span": {"class", "style", *cfg.allowed_data_attrs},
             "div": {"class", "style"},
             "p": {"class", "style"},
+            "li": {"class", "style"},
             "*": {"class"},
         },
         attribute_filter=_rich_attribute_filter,
