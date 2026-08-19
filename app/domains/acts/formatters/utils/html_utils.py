@@ -169,7 +169,13 @@ def _convert_lists(content: str, *, blank_line_around: bool = False) -> str:
     def _flush_pending() -> None:
         text = "".join(pending)
         pending.clear()
-        if text.strip():
+        # Содержимым считается ТЕКСТ, а не разметка: вне <li> сюда попадают
+        # только отступы исходного HTML и «осиротевшие» теги — в частности
+        # </li> пропущенного пустого <li>-хоста (см. _li_has_own_content). По
+        # голому text.strip() такой </li> проходил за контент и тащил за собой
+        # накопленные пробелы, а те вставали отступом ПЕРЕД следующим пунктом —
+        # в TXT/MD он читался вложенным.
+        if _TAG_RE.sub("", text).strip():
             out.append(text)
 
     i, n = 0, len(content)

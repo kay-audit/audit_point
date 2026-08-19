@@ -166,6 +166,20 @@ class TestLists:
         src = "<ul><li>a</li><li></li><li>b</li></ul>"
         assert HTMLUtils.clean_html(src) == "- a\n- b"
 
+    def test_clean_html_whitespace_only_li_does_not_indent_next_item(self):
+        """Регрессия ревью: пробелы внутри пропущенного пустого <li> вместе с
+        его </li> утекали в вывод и вставали ОТСТУПОМ перед следующим пунктом —
+        в TXT/MD он читался вложенным."""
+        src = "<ul><li>a</li><li>     </li><li>c</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n- c"
+        assert HTMLUtils.html_to_markdown(src) == "- a  \n- c"
+
+    def test_clean_html_pretty_printed_empty_host_keeps_next_item_level(self):
+        """Тот же утёк на форматированном HTML: отступы разметки вокруг
+        подсписка пустого хоста не сдвигают следующий пункт."""
+        src = "<ul><li>a</li><li>  <ul><li>b</li></ul>  </li><li>c</li></ul>"
+        assert HTMLUtils.clean_html(src) == "- a\n    - b\n- c"
+
     def test_clean_html_li_with_only_br_keeps_marker(self):
         """Пункт из одного <br> — пустая строка, созданная пользователем: маркер
         ему положен (проверка «пустого хоста» сознательно консервативна)."""
