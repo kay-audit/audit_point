@@ -5,7 +5,6 @@
 :root {
     --font-family-base: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
     --font-family-mono: "SF Mono", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
-    --font-family-serif: 'Times New Roman', Georgia, serif;
 
     --font-size-xs: 0.75rem;
     --font-size-sm: 0.875rem;
@@ -30,6 +29,16 @@
        уходят в DOCX (app/domains/acts/formatters/docx/styles.py), и меряются в
        ПУНКТАХ, а не в px. Комфорт глазу даёт не раздутый кегль, а экранный
        зум (--doc-readability-zoom). */
+    /* Гарнитура документа — ровно та, что печатается: Fonts.main эталонного
+       DOCX (app/domains/acts/formatters/docx/styles.py). Одним токеном, потому
+       что нужна двум разным мирам — поверхностям правки и предпросмотрам, — и
+       раньше между ними расходилась: лист A4 рисовал Times, а редактор
+       текстблока, поля нарушения, таблицы конструктора и диалог версий —
+       интерфейсный sans. Это не косметика: Times New Roman заметно уже
+       системного sans, поэтому строка на экране обрывалась не там, где
+       оборвётся в Word. Прежний UI-токен --font-family-serif (единственный
+       потребитель — холст модалки предпросмотра) поглощён этим. */
+    --doc-font-family: "Times New Roman", serif;
     /* Базовый кегль тела акта — 12pt (Times New Roman эталонного DOCX). */
     --doc-font-size: 12pt;
     /* «Мелкий» кегль документа — 9pt. В DOCX его несут сразу три сущности с

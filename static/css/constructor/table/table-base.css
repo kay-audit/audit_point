@@ -65,6 +65,9 @@
        текстблока показывается на 25% КРУПНЕЕ печатного. Токен ниже снимает это
        расхождение: 9pt с тем же множителем читаемости. */
     font-size: var(--doc-font-size-table-screen);
+    /* Гарнитура — документная: ячейка печатается Times (лист превью и DOCX),
+       наследовать интерфейсный sans от body ей незачем. */
+    font-family: var(--doc-font-family);
     line-height: var(--line-height-normal);
     transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }

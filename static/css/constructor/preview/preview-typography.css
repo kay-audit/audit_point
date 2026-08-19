@@ -132,8 +132,28 @@
     margin-bottom: 0;
 }
 
+/* ——— Гарнитура документа ———
+   То, что выдают ОБЩИЕ рендеры (PreviewTextBlockRenderer / PreviewViolationRenderer /
+   PreviewTableRenderer), — это документ, и рисоваться оно обязано документной
+   гарнитурой на любой поверхности. Лист A4 задаёт её себе сам (.preview-sheet,
+   preview-page.css), но диалог истории версий листа не строит: весь его контент
+   шёл интерфейсным sans, хотя печатается Times.
+   Целимся в КОРНИ РЕНДЕРОВ, а не в корень поверхности: собственная обвязка
+   диалога (.version-preview-heading, .version-preview-label — их рисует
+   version-preview.js, а не общий рендер) остаётся интерфейсной. Граница ровно
+   такая: что выдал общий рендер — документ; что поверхность дорисовала вокруг —
+   интерфейс.
+   Вкладка «Сравнение» (.diff-content) сюда не попадает намеренно — она эмитит
+   собственные .diff-* классы и живёт по интерфейсному кеглю 14px/1.6
+   (version-preview.css): это инструмент сверки, а не отрисовка листа. */
+.preview-textblock,
+.preview-violation,
+.preview-table-wrapper {
+    font-family: var(--doc-font-family);
+}
+
 /* ——— Списки предпросмотра ———
-   Область действия — ТРИ поверхности, а не одна. Класс .preview висит только на
+   Область действия — ЧЕТЫРЕ поверхности, а не одна. Класс .preview висит только на
    inline-панели (#preview, preview_panel.html); модальное меню предпросмотра
    (#previewMenuBody, header_preview_button.html) и диалог истории версий
    (.version-preview-ui, portal/acts-manager/version-preview.js) собираются теми

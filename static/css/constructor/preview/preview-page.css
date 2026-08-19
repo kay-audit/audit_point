@@ -73,7 +73,7 @@
        outline (НЕ border) не входит в box-sizing/padding листа. */
     outline: 1px dashed rgba(0, 0, 0, 0.30);
     outline-offset: -1px;
-    font-family: "Times New Roman", serif;
+    font-family: var(--doc-font-family);
     font-size: 12pt;
     /* Task C: одинарный Word-интервал (DOCX app/domains/acts/formatters/docx/
        styles.py::Spacing, line_single = w:line 240/lineRule auto). Токен
@@ -131,7 +131,7 @@
     white-space: pre-wrap;
     word-wrap: break-word;
     overflow-wrap: break-word;
-    font-family: "Times New Roman", serif;
+    font-family: var(--doc-font-family);
     font-size: 9pt;
     color: #000;
 }

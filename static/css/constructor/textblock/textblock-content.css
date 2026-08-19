@@ -19,7 +19,9 @@
     border-radius: var(--radius);
     background: var(--input-bg);
     min-height: var(--input-min-height);
-    font-family: var(--font-family-base);
+    /* Гарнитура документа, а не интерфейса: правка показывает ту же ширину
+       строки и те же переносы, что уйдут в DOCX (--doc-font-family). */
+    font-family: var(--doc-font-family);
     /* EXP-2: базовый кегль листа в ПУНКТАХ — фолбэк до inline-стиля из
        /acts/limits (applyBaseFontSize). Правка показывает документную правду:
        то же значение, что уйдёт в DOCX. */

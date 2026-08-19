@@ -52,7 +52,8 @@
     padding: var(--spacing-sm) var(--spacing);
     border: var(--border-width-thin) solid var(--input-border);
     border-radius: var(--radius);
-    font-family: var(--font-family-base);
+    /* Гарнитура документа — как у поверхности правки текстблока. */
+    font-family: var(--doc-font-family);
     /* Документный кегль в ПУНКТАХ — поле правки показывает то, что уйдёт в
        DOCX. «Малые» поля («Нарушено»/«Установлено») — модификатор ниже. */
     font-size: var(--doc-font-size);
