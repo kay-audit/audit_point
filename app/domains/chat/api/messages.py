@@ -177,17 +177,22 @@ async def send_message(
         # bus.media пишем в формате Nanobot (data-URL inline, без type) — не
         # chat_messages.content-блоки. Подтягиваем байты из chat_files через
         # репо на том же исполнителе, что и file_service (тот же пул).
-        from app.db.executor import get_executor
-        from app.domains.chat.repositories.file_repository import FileRepository
-        from app.domains.chat.services.agent_channel import (
-            build_bus_media_from_file_blocks,
-        )
+        # Без файлов репозиторий не строим вовсе: его конструктор дёргает
+        # get_adapter(), а конвертировать всё равно нечего (тот же порядок,
+        # что в agent_loop._handle_forward_terminal).
+        bus_media = None
+        if file_blocks:
+            from app.db.executor import get_executor
+            from app.domains.chat.repositories.file_repository import FileRepository
+            from app.domains.chat.services.agent_channel import (
+                build_bus_media_from_file_blocks,
+            )
 
-        bus_media = await build_bus_media_from_file_blocks(
-            file_blocks,
-            conversation_id=conversation_id,
-            file_repo=FileRepository(get_executor()),
-        )
+            bus_media = await build_bus_media_from_file_blocks(
+                file_blocks,
+                conversation_id=conversation_id,
+                file_repo=FileRepository(get_executor()),
+            )
         question_uid = await channel_service.submit(
             conversation_id=conversation_id,
             user_id=username,
