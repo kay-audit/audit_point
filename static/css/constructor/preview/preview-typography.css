@@ -66,7 +66,12 @@
 .preview p {
     margin-top: 0;
     margin-bottom: var(--spacing);
-    line-height: var(--line-height-relaxed);
+    /* Печатный интервал, а не «экранный»: класс .preview висит на inline-панели
+       (#preview), внутри которой лежит тот же лист A4, что и в модальном меню, —
+       собственный line-height здесь перебивал бы наследуемый от .preview-sheet
+       и рисовал абзацы шире, чем они уйдут в Word (в меню класса .preview нет,
+       и абзацы там уже печатные — расхождение двух предпросмотров). */
+    line-height: var(--doc-line-height);
     text-align: justify;
     color: var(--text-primary);
     hyphens: auto;
@@ -76,21 +81,22 @@
    превью текстблоков в диалоге истории версий (PreviewTextBlockRenderer.create →
    .version-preview-ui, БЕЗ .preview-sheet) не получает print-precise правило ниже.
    Без этого правила оно теряло бы «по ширине» и межстрочный (регресс B-22 →
-   print-precise). Держим здесь дефолт как до print-precise: justify + редакторный
-   интервал; внутри .preview-sheet его перекрывает print-precise правило (выше
-   специфичность). */
+   print-precise). Держим здесь тот же печатный интервал, что на листе и в
+   поверхности правки: превью версии — это тоже документ. Внутри .preview-sheet
+   правило перекрывает print-precise (выше специфичность), значение то же. */
 .preview-textblock-content {
-    line-height: var(--textblock-line-height, 1.75);
+    line-height: var(--doc-line-height);
     text-align: justify;
 }
 
 /* Print-precise (Task C) — СУПЕРСЕДИТ B-22. Было: line-height текстблока в
-   превью = тот же токен, что у редактора (--textblock-line-height), ради
+   превью = тот же токен, что у редактора (--textblock-line-height, удалён), ради
    визуального паритета с поверхностью правки. Стало: превью — это лист,
    который печатается, поэтому интервал мирит DOCX (Word «одинарный»,
    app/domains/acts/formatters/docx/styles.py::Spacing.line_single), а не
-   редактор. Редактор (.textblock-editor, textblock-content.css) НЕ тронут —
-   там по-прежнему --textblock-line-height (1.75).
+   редактор. Редактор (.textblock-editor, textblock-content.css) с тех пор
+   пришёл к тому же печатному интервалу: --preview-print-line-height и
+   --doc-line-height несут одно значение, разъехаться им больше нечем.
    margin-bottom: 3pt — Normal-спейсинг DOCX (Spacing.after_pt=3) после
    текстблока целиком; в _render_textblock он сохраняется только на
    ПОСЛЕДНЕМ сегменте (см. правило ниже про обнуление между сегментами). */
@@ -126,22 +132,18 @@
     margin-bottom: 0;
 }
 
-/* Нумерованные и маркированные списки */
+/* Нумерованные и маркированные списки. Вертикальных отступов нет — шаг задаёт
+   только line-height, как в Word и как в поверхности правки (textblock-content.css).
+   Прежний margin-bottom доставался лишь спискам ВЕРХНЕГО уровня внутри текстблока
+   (правило .preview-sheet .preview-textblock-content > * гасит margin у прямых
+   детей), а вложенные списки и пункты его сохраняли — отсюда «плавающий» шаг,
+   росший с глубиной. margin-left — втяжка под маркер, остаётся. */
 .preview ol,
 .preview ul {
     margin-top: 0;
-    margin-bottom: var(--spacing);
+    margin-bottom: 0;
     margin-left: var(--spacing-2xl);
     padding-left: 0;
-}
-
-/* Вложенные списки */
-.preview ol ol,
-.preview ol ul,
-.preview ul ol,
-.preview ul ul {
-    margin-top: var(--spacing-xs);
-    margin-bottom: var(--spacing-xs);
 }
 
 /* Нумерация по уровням вложенности — схема C1 («как в Word»): 1. → a) → i.,
@@ -185,16 +187,12 @@
     list-style-type: decimal;
 }
 
-/* Элементы списков */
+/* Элементы списков — тот же печатный интервал и тот же нулевой отступ, что у
+   абзацев: строка списка и строка тела идут одним шагом. */
 .preview li {
-    margin-bottom: var(--spacing-xs);
-    line-height: var(--line-height-relaxed);
+    margin: 0;
+    line-height: var(--doc-line-height);
     color: var(--text-primary);
-}
-
-/* Последний элемент списка */
-.preview li:last-child {
-    margin-bottom: 0;
 }
 
 /* Цитаты */

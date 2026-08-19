@@ -78,8 +78,10 @@
     /* Task C: одинарный Word-интервал (DOCX app/domains/acts/formatters/docx/
        styles.py::Spacing, line_single = w:line 240/lineRule auto). Токен
        переиспользуется текстблоком в preview-typography.css (супersedes
-       B-22), чтобы значение листа и текстблока не разъезжались. */
-    --preview-print-line-height: 1.15;
+       B-22), чтобы значение листа и текстблока не разъезжались; сам он —
+       алиас общего документного --doc-line-height, чтобы лист, поверхность
+       правки и DOCX держали ОДНО значение (base/variables/typography.css). */
+    --preview-print-line-height: var(--doc-line-height);
     line-height: var(--preview-print-line-height);
     color: #000;
 }

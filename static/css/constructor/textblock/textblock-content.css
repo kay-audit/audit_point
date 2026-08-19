@@ -20,12 +20,17 @@
     background: var(--input-bg);
     min-height: var(--input-min-height);
     font-family: var(--font-family-base);
-    /* EXP-2: базовый размер 16px — фолбэк до inline-стиля из /acts/limits
-       (applyBaseFontSize), синхронно с экранным дефолтом font_size_default. */
-    font-size: var(--font-size-base);
-    /* B-22: единый line-height редактор↔превью через общий токен (fallback 1.75),
-       чтобы будущие правки переменных не развели редактор и предпросмотр. */
-    line-height: var(--textblock-line-height, 1.75);
+    /* EXP-2: базовый кегль листа в ПУНКТАХ — фолбэк до inline-стиля из
+       /acts/limits (applyBaseFontSize). Правка показывает документную правду:
+       то же значение, что уйдёт в DOCX. */
+    font-size: var(--doc-font-size);
+    /* Печатный межстрочный (Word «одинарный»), общий с листом превью и DOCX:
+       у поверхности правки нет собственного, «экранного» ритма. */
+    line-height: var(--doc-line-height);
+    /* Читаемость — экранным зумом, а не кеглем: раскладка остаётся документной
+       (12pt + одинарный), zoom лишь растягивает её на мониторе и на экспорт не
+       влияет. См. --doc-readability-zoom (base/variables/typography.css). */
+    zoom: var(--doc-readability-zoom);
     /* TB-1: дефолт выравнивания блока без явного text-align — «по ширине»
        (как тело акта); per-line выравнивание в content его переопределяет. */
     text-align: justify;
@@ -192,17 +197,25 @@
     list-style-type: decimal;
 }
 
+/* Ритм списка = ритм абзаца: единственный вертикальный шаг задаёт line-height,
+   собственных отступов у списков и пунктов нет (как в Word — списки идут тем же
+   интервалом, что и тело). Прежние margin-bottom у ul/ol и li складывались с
+   интервалом строки И друг с другом (схлопывание запрещает flow-root у li,
+   правило ниже), поэтому шаг «пункт→пункт» и «подпункт→следующий пункт»
+   расходились с шагом «абзац→абзац» тем сильнее, чем глубже вложенность.
+   padding-left оставлен: в нём рисуется маркер (глобальный reset обнуляет
+   padding, без втяжки маркеры уезжают за левый край — см. комментарий выше). */
 .textblock-editor ul,
 .textblock-editor ol,
 .violation-textarea ul,
 .violation-textarea ol {
     padding-left: var(--spacing-xl);
-    margin-bottom: var(--spacing-sm);
+    margin: 0;
 }
 
 .textblock-editor li,
 .violation-textarea li {
-    margin-bottom: var(--spacing-xs);
+    margin: 0;
 }
 
 /* Обход бага hit-testing Chromium для «правильной» вложенности списков
@@ -212,8 +225,9 @@
    Нужны ОБА правила разом: flow-root чинит одни конфигурации, inline-block у
    вложенного списка — другие; порознь клик в конец строки li-с-подсписком
    снова снапится в начало (проверено живыми кликами, не caretRangeFromPoint —
-   тот врёт и на исправленной раскладке). Цена — лишний зазор до строки после
-   вложенной ветки (инлайн-блок добавляет собственный line box). */
+   тот врёт и на исправленной раскладке). Ритму не вредит: при нулевых margin'ах
+   у списков (правило выше) собственный line box инлайн-блока не добавляет к
+   шагу ничего — «подпункт→следующий пункт» равен «абзац→абзац». */
 .textblock-editor li,
 .violation-textarea li {
     display: flow-root list-item;
@@ -226,6 +240,25 @@
     display: inline-block;
     width: 100%;
     vertical-align: top;
+}
+
+/* Плата за обход выше: подсписок-инлайн-блок лежит в ОДНОМ строчном контексте
+   с собственным текстом пункта, поэтому строка текста перестаёт быть последней
+   в блоке — и justify растаскивал её слова на всю ширину колонки («Второй
+   пункт            с            подсписком»). Гасим выравнивание по ширине
+   ровно у пунктов-родителей; вложенным спискам возвращаем — иначе left
+   унаследовался бы вглубь. Свой text-align из content (TB-1) сильнее: он
+   приходит inline-стилем. */
+.textblock-editor li:has(> ul, > ol),
+.violation-textarea li:has(> ul, > ol) {
+    text-align: left;
+}
+
+.textblock-editor li:has(> ul, > ol) > ul,
+.textblock-editor li:has(> ul, > ol) > ol,
+.violation-textarea li:has(> ul, > ol) > ul,
+.violation-textarea li:has(> ul, > ol) > ol {
+    text-align: justify;
 }
 
 /* Цитаты */

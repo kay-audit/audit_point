@@ -24,11 +24,26 @@
     --line-height-tight: 1.25;
     --line-height-normal: 1.5;
     --line-height-relaxed: 1.75;
-    /* line-height тела текстового блока в РЕДАКТОРЕ (было общим с превью —
-       B-22; Task C, 2026-07: превью печатного листа больше не использует
-       этот токен, мирит одинарный Word-интервал DOCX — см.
-       preview-typography.css / --preview-print-line-height). */
-    --textblock-line-height: 1.75;
+
+    /* ——— Документная типографика ———
+       Поверхность правки и превью рисуют ДОКУМЕНТ: значения ниже — те же, что
+       уходят в DOCX (app/domains/acts/formatters/docx/styles.py), и меряются в
+       ПУНКТАХ, а не в px. Комфорт глазу даёт не раздутый кегль, а экранный
+       зум (--doc-readability-zoom). */
+    /* Базовый кегль тела акта — 12pt (Times New Roman эталонного DOCX). */
+    --doc-font-size: 12pt;
+    /* «Мелкий» кегль — поля нарушения «Нарушено»/«Установлено», Sizes.violation_pt. */
+    --doc-font-size-small: 9pt;
+    /* Печатный межстрочный — Word «одинарный» (Spacing.line_single,
+       w:line=240/lineRule=auto). Лист превью читает его же через
+       --preview-print-line-height (preview-page.css). */
+    --doc-line-height: 1.15;
+    /* ЭКРАННЫЙ множитель читаемости поверхностей правки (CSS zoom): на бумаге
+       12pt комфортны, на мониторе мелковаты. Зум растягивает уже готовую
+       раскладку целиком, поэтому документная правда (пункты + печатный ритм)
+       остаётся нетронутой — на экспорт в DOCX/MD/TXT и на геометрию листа
+       превью он НЕ влияет. */
+    --doc-readability-zoom: 1.25;
 
     --letter-spacing-tight: -0.025em;
     --letter-spacing-normal: 0;

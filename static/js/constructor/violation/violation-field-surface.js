@@ -28,6 +28,7 @@ import { EditorController } from '../textblock/editor-controller.js';
 import { EditorRegistry } from '../textblock/editor-registry.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
 import { isFieldEmpty } from './violation-field-empty.js';
+import { FIELD_BY_KEY } from './violation-fields.js';
 
 /**
  * Guard-strip (U+FEFF) + validateAndRepairCapsules-репорт — зеркало пред-записи
@@ -179,6 +180,13 @@ function _createRichFieldEditor(surface, { placeholder = '', isReadOnly = false 
     // ЛИСТОВОЙ маркер целей поиска — не вешать на контейнеры с вложенными
     // таблицами!); violation-textarea — существующий визуальный стиль.
     field.className = `${RENDER_CLASSES.VIOLATION_FIELD} ${RENDER_CLASSES.VIOLATION_TEXTAREA}`;
+    // «Малые» поля реестра (small: true — «Нарушено»/«Установлено») печатаются
+    // 9pt (Sizes.violation_pt), поверхность правки держит тот же кегль через
+    // модификатор (violation-base.css). Признак берём из реестра, а не списком
+    // ключей: новое малое поле подхватится само.
+    if (FIELD_BY_KEY[surface._fieldKey]?.small) {
+        field.classList.add('violation-textarea--small');
+    }
     if (placeholder) field.dataset.placeholder = placeholder;
     // Хост становится element поверхности ДО наполнения — commit/setContent
     // читают/пишут именно его.
