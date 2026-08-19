@@ -10,6 +10,7 @@ import { loadActConfig } from './act-config.js';
 import { ItemsRenderer } from './items/items-renderer.js';
 import { LifecycleHelper } from './lifecycle-helper.js';
 import { AppState } from './state/state-core.js';
+import { VIEW_POSITION_KEY_PREFIX } from './state/view-position-store.js';
 // ActsManagerPage не импортируется: constructor → portal — неправильное направление
 // зон. Используем lazy через window.ActsManagerPage (см. invalidateCache-вызов ниже).
 import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
@@ -149,6 +150,18 @@ export class StorageManager {
      * @type {boolean}
      */
     static _dbAutoSaveHalted = false;
+
+    /**
+     * Причина остановки авто-PUT: 'conflict' (409 content-conflict) или
+     * 'lock' (лок акта потерян). Нужна внешним save-путям, чтобы отказ «на
+     * входе» (forceSaveToDb не шлёт заведомо обречённый запрос) отдавал
+     * ошибку ТОГО ЖЕ типа, что и живой отказ сервера: иначе потеря лока
+     * маскировалась бы под конфликт версий — и плашка выхода, и ветвление
+     * в _escalateQuotaToDb врали бы о причине.
+     * @private
+     * @type {'conflict'|'lock'|null}
+     */
+    static _dbAutoSaveHaltCause = null;
 
     /**
      * Обработчик window 'online' для немедленного повторного сохранения
@@ -401,7 +414,10 @@ export class StorageManager {
             return;
         }
         if (err instanceof LockLostError) {
+            const alreadyHalted = this._dbAutoSaveHalted;
             this._dbAutoSaveHalted = true;
+            this._dbAutoSaveHaltCause = 'lock';
+            if (alreadyHalted) return; // повторный тик не дублирует предупреждение
             Notifications.warning(
                 'Блокировка акта потеряна — автосохранение в базу остановлено. '
                 + 'Ваши правки сохранены локально как черновик. Обновите страницу, '
@@ -434,6 +450,7 @@ export class StorageManager {
             );
         }
         this._dbAutoSaveHalted = true;
+        this._dbAutoSaveHaltCause = 'conflict';
     }
 
     /**
@@ -445,6 +462,16 @@ export class StorageManager {
      */
     static isDbAutoSaveHalted() {
         return this._dbAutoSaveHalted;
+    }
+
+    /**
+     * Причина остановки авто-PUT — чтобы отказ «на входе» отдавал ошибку
+     * того же типа, что живой отказ сервера (см. _dbAutoSaveHaltCause).
+     *
+     * @returns {'conflict'|'lock'|null}
+     */
+    static getDbAutoSaveHaltCause() {
+        return this._dbAutoSaveHaltCause;
     }
 
     /**
@@ -488,6 +515,12 @@ export class StorageManager {
             await APIClient.saveActContent(window.currentActId, { saveType: 'periodic' });
         } catch (err) {
             console.error('Повторное сохранение после восстановления сети не удалось:', err);
+            // Тот же разбор причины, что у периодического тика: 409-конфликт
+            // или потеря лока на этом пути так же обречены на ретрай, и молчать
+            // о них нельзя — иначе halt не взводится, честного уведомления нет,
+            // подписка на 'online' живёт вечно и каждый новый online шлёт
+            // очередной заведомо провальный PUT.
+            this._handleDbSaveFailure(err);
         } finally {
             this._dbSaveInProgress = false;
         }
@@ -724,6 +757,7 @@ export class StorageManager {
         this._setState('saved');
         this._resetDbSaveFailureState();
         this._dbAutoSaveHalted = false;
+        this._dbAutoSaveHaltCause = null;
     }
 
     /**
@@ -1019,12 +1053,20 @@ export class StorageManager {
             })
             .catch((err) => {
                 console.error('B-3: аварийное сохранение в БД не удалось:', err);
+                // Причина отказа (конфликт версий / потеря лока) объясняется
+                // отдельным честным уведомлением и взводит halt. Generic-сбои
+                // сюда НЕ отдаём: _notifyDbSaveFailure обещал бы «правки
+                // сохранены локально; повторная попытка — автоматически», а
+                // локально их как раз сохранить и не удалось.
                 if (err instanceof ContentConflictError) {
-                    // Конфликт версий: совет «экспортируйте акт» неуместен —
-                    // правки уже защищены снимком, дальше единая обработка.
                     this.handleContentConflict(err);
-                    return;
+                } else if (err instanceof LockLostError) {
+                    this._handleDbSaveFailure(err);
                 }
+                // Совет экспортировать обязателен при ЛЮБОЙ причине отказа:
+                // сюда мы попали из-за неудачной записи снимка в localStorage,
+                // так что «правки защищены черновиком» здесь неверно — PUT не
+                // прошёл, снимок не записался, правки живут только в памяти.
                 Notifications.error(
                     'Локальное хранилище переполнено, а сохранить в базу данных не удалось. '
                     + 'Экспортируйте акт в файл, чтобы не потерять изменения.'
@@ -1170,6 +1212,7 @@ export class StorageManager {
     static _purgeForeignSnapshots(currentActId) {
         const prefix = `${AppConfig.localStorage.stateKeyPrefix}:`;
         const conflictPrefix = `${this.CONFLICT_BACKUP_KEY_PREFIX}:`;
+        const viewPosPrefix = VIEW_POSITION_KEY_PREFIX;
         const currentKey = this._snapshotKey(currentActId);
         const now = Date.now();
         const toRemove = [];
@@ -1181,7 +1224,12 @@ export class StorageManager {
             // за 7 дней явно заброшен — высвобождаем место.
             const isSnapshotKey = key.startsWith(prefix) && key !== currentKey;
             const isConflictKey = key.startsWith(conflictPrefix);
-            if (!isSnapshotKey && !isConflictKey) {
+            // Позиции просмотра (шаг/скролл) — по одной на каждый когда-либо
+            // открытый акт. Правок они не хранят, но растут монотонно, а
+            // сметать их некому: этот TTL-проход — единственная точка уборки
+            // per-act ключей. Свежую (в т.ч. текущего акта) сохраняем.
+            const isViewPosKey = key.startsWith(viewPosPrefix);
+            if (!isSnapshotKey && !isConflictKey && !isViewPosKey) {
                 continue;
             }
             if (this._isForeignSnapshotStale(key, now)) {
@@ -1453,6 +1501,7 @@ export class StorageManager {
         // Остановка авто-PUT (409-конфликт/потеря лока) действует «до
         // перезагрузки» — teardown сессии конструктора её и завершает.
         this._dbAutoSaveHalted = false;
+        this._dbAutoSaveHaltCause = null;
 
         // Сбрасываем счётчик трекинга: teardown не должен оставить отслеживание
         // выключенным, если асинхронная операция (save/generate/load) отключила

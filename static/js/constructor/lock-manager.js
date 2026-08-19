@@ -642,7 +642,13 @@ export class LockManager {
                                     /* чужой PUT упал — выходной save всё равно нужен */
                                 }
                             }
-                            await APIClient.saveActContent(effectiveActId, { saveType: 'manual' });
+                            const saved = await APIClient.saveActContent(effectiveActId, { saveType: 'manual' });
+                            // Гард in-flight отдаёт null вместо исключения:
+                            // молча считать это успехом нельзя — плашка соврала
+                            // бы «вышли с сохранением» при неуехавшем контенте.
+                            if (!saved) {
+                                throw new Error('Сохранение пропущено: другой PUT ещё в полёте');
+                            }
                             console.log('[LockManager] Контент акта сохранён');
                         } catch (saveErr) {
                             // Контент НЕ в БД: плашка на списке актов обязана быть

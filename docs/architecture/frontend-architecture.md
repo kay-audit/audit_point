@@ -506,6 +506,14 @@ Persistence: `localStorage['act_changelog_{actId}']` (`:29`), MAX 500 entries (`
 
 API: `registerBeforeUnload(name, handler)`, `unregister(name)`, `list()`. Использует `lock-manager.js` (имя `'lock:manual-unlock'`) и `storage-manager.js` (имя `'storage:warn-unsaved'`).
 
+### 5.6 Позиция просмотра (шаг + скролл)
+
+`constructor/state/view-position-store.js` — чистые функции над `Storage`, ключ per-act `audit_workstation_viewpos:{actId}`, форма `{step, scroll: {treeColumn, previewColumn, step2}, anchorNodeId, savedAt}`. Позиция — **UI-удобство, а не данные акта**: пишется в обход dirty-трекинга и статус сохранения не меняет (`currentStep` намеренно исключён из отслеживаемых свойств `AppState`, см. §4.1).
+
+- **Снятие** — `App.persistViewPositionForAct(actId)` (явный actId: при переключении акта `window.currentActId` ещё указывает на старый) на `beforeunload`/`pagehide` и при смене шага. Снимается **только видимый** шаг: у скрытого (`.hidden` = `display:none`) `scrollTop` равен 0, и запись затёрла бы честную позицию другого шага. Поля скрытого шага — `undefined`, `App._saveViewPosition` мержит `scroll` **пополево**.
+- **Восстановление** — `APIClient._restoreViewPosition(actId)` при загрузке акта, один раз за «вход» в акт (маркер `_viewPositionRestoredForActId`, сбрасывается в `ActsMenuManager.resetForActSwitch`): повторная загрузка того же акта посреди работы не должна дёргать пользователя прыжком скролла. Симметрично снятию, применяется **только видимый** шаг; позиция второго ждёт в очереди `App._pendingViewRestore` до первого перехода на него (`goToStep` → `_flushPendingViewRestore`). Шаг 2 восстанавливается по **якорному узлу** (`anchorNodeId` — верхний видимый `.item-block`), с откатом на сырой `scrollTop`, если узла больше нет.
+- **Уборка** — ключи per-act копились бы по одному на каждый когда-либо открытый акт, поэтому `savedAt` в записи и общий 7-дневный TTL-проход `StorageManager._purgeForeignSnapshots` (тот же, что чистит чужие снимки-черновики и бэкапы конфликтов).
+
 ---
 
 ## 6. `LockManager` и inactivity
@@ -597,13 +605,22 @@ static async _initiateExit(action) {
 - **Fallback на `window.currentActId`**: страхует, если `_actId` уже сброшен после `destroy()`.
 - **Save идёт с `ChangelogTracker.flush()`** — одной транзакцией на сервере (`:627-628`).
 - **Редирект жёсткий, без `confirmNavigation`** — сессия закрывается принудительно (пояснение в коде — `:691-695`). Если save упал (409 при чужом локе), `confirmNavigation` показал бы «Несохранённые изменения. Уйти?» и заблокировал бы выход. `allowUnload()` снимает страж явно (`:603-604`).
-- **`messageFlag`**: `'sessionAutoExited'` или `'sessionExitedWithSave'` пишется в sessionStorage; `acts-manager-page.js` показывает toast на следующей загрузке. Отдельный флаг `'sessionLockLost'` (см. §6.8) — для случая, когда лок снят и save вернул 409: плашка честно сообщает, что изменения НЕ в БД (только в локальном черновике), приоритет выбора `pickSessionExitNotice` — lockLost > autoExited > exitedWithSave.
+- **`messageFlag`**: `'sessionAutoExited'` или `'sessionExitedWithSave'` пишется в sessionStorage; `acts-manager-page.js` показывает toast на следующей загрузке. Флаги успеха ставятся, только если выходной save действительно прошёл; иначе — честный флаг причины: `'sessionExitContentConflict'` (409 `content-conflict` — акт изменил другой пользователь), `'sessionLockLost'` (409 по локу, см. §6.8), `'sessionExitSaveFailed'` (сеть/5xx/422). Плашка сообщает, что изменения НЕ в БД (правки остались локальным черновиком). Приоритет выбора `pickSessionExitNotice` — contentConflict > lockLost > exitSaveFailed > autoExited > exitedWithSave.
 
 ### 6.8 NavigationManager и LockLostError
 
 `constructor/navigation-manager.js` — навигация по шагам (клик по индикатору шага) + `saveAndExport` (сохранить в БД + сгенерировать и скачать выбранные в настройках форматы; вызывается кликом по кнопке-индикатору в шапке и Ctrl+Shift+S). `saveAndExport` и быстрый `saveToDatabase` (Ctrl+S) через `_handleSaveExportError` ловят `LockLostError` из `APIClient.saveActContent` (409 → custom Error subclass из `shared/api.js`) → ставят **`sessionStorage['sessionLockLost']`** (НЕ `sessionAutoExited`: save вернул 409, изменения в БД не записаны — плашка autoExit'а врала бы «сохранено») и делает жёсткий редирект на `/acts`. Локальный черновик при этом НЕ чистится (`allowUnload()` лишь снимает beforeunload-страж). Honest-плашку выбирает чистый `pickSessionExitNotice` (`portal/acts-manager/session-exit-notice.js`).
 
-**Восстановление черновика на повторном входе:** загрузка акта — `APIClient.loadActContent` = `_fetchActContent` (сеть) + `_applyActContent` (применение); при автозагрузке в конструкторе (`acts-menu.js::_autoLoadAct`) между ними захватывается лок, чтобы условный prompt восстановления показывался уже после захвата (§3.4 — когда известно, занят ли акт). Prompt восстановления локального черновика (`_maybeRestoreDraft`) показывается **только** если акт с момента снимка никто не менял (серверный `updated_at` совпадает с базой снимка); иначе устаревший снимок молча удаляется, контент из БД перезаписывает черновик через `saveState(true)`. В сценарии потери лока (см. выше) honest-редирект уходит на `/acts` без перезагрузки акта — правки физически остаются в `localStorage`, но в этот момент не применяются; honest-плашка сообщает именно это.
+**Восстановление черновика на повторном входе:** загрузка акта — `APIClient.loadActContent` = `_fetchActContent` (сеть) + `_applyActContent` (применение); при автозагрузке в конструкторе (`acts-menu.js::_autoLoadAct`) между ними захватывается лок, чтобы условный prompt восстановления показывался уже после захвата (§3.4 — когда известно, занят ли акт). Судьбу локального черновика решает чистый предикат `shouldOfferRestore` (`constructor/state/draft-restore.js`) по счётчику `acts.content_version` — **не** по `updated_at` (его двигают и правки метаданных, и сохранение соседней части КМ, что давало ложные конфликты):
+
+| Вердикт | Условие | Что происходит |
+|---|---|---|
+| `restore` | `baseContentVersion` снимка == серверный `content_version` | Обычный prompt восстановления |
+| `conflict` | версии разошлись (контент менялся после снимка) | Диалог конфликта: сказано, кто и когда менял; восстановление явно предупреждает, что ПЕРЕЗАПИШЕТ чужие правки. Снимок молча **не** удаляется |
+| `discard` | снимок структурно бит (нет данных/дерева или версий) | Молча удаляется |
+| `none` | снимка нет | Ничего |
+
+Escape/клик мимо на диалоге конфликта (`escapeResult: 'dismissed'` у `DialogManager.show`) не равен кнопке «Оставить версию из БД»: снимок **перемещается** в бэкап-ключ `audit_workstation_conflict:{actId}` (`stashConflictSnapshot`) — на прежнем месте его перезаписал бы первый же `markAsUnsaved` DB-контентом. Бэкап предлагается при следующем открытии, если обычного снимка нет; протухает тем же 7-дневным TTL, что чужие снимки. Серверная сторона той же защиты — OCC: клиент эхом шлёт `expected_content_version`, сервер отвечает 409 `content-conflict` (см. §14). В сценарии потери лока (см. выше) honest-редирект уходит на `/acts` без перезагрузки акта — правки физически остаются в `localStorage`, но в этот момент не применяются; honest-плашка сообщает именно это.
 
 `beforeunload` и `confirmNavigation` — у `StorageManager`, не у NavigationManager.
 

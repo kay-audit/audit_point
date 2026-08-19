@@ -227,6 +227,23 @@ test('PERSIST-3/TTL: протухший бэкап конфликта чисти
     'заброшенный бэкап (старше 7 дней) удалён');
 });
 
+test('PERSIST-3/TTL: позиции просмотра чистятся тем же TTL — иначе копились бы по одной на акт', () => {
+  const now = Date.now();
+  // Позиция просмотра пишется на КАЖДЫЙ когда-либо открытый акт, и этот
+  // проход — единственная точка уборки per-act ключей.
+  localStorage.setItem('audit_workstation_viewpos:5',
+    JSON.stringify({ step: 1, savedAt: new Date(now - 60 * 1000).toISOString() }));
+  localStorage.setItem('audit_workstation_viewpos:6',
+    JSON.stringify({ step: 2, savedAt: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString() }));
+
+  StorageManager.saveState(true);
+
+  assert.ok(localStorage.getItem('audit_workstation_viewpos:5'),
+    'свежая позиция (акт в работе) сохраняется');
+  assert.equal(localStorage.getItem('audit_workstation_viewpos:6'), null,
+    'позиция давно заброшенного акта удалена');
+});
+
 test('getLastSaveTimestamp читает savedAt снимка текущего акта', () => {
   assert.equal(StorageManager.getLastSaveTimestamp(), null);
   StorageManager.saveState(true);

@@ -296,3 +296,37 @@ test('во время exit-PUT промис in-flight ОПУБЛИКОВАН —
   assert.ok(inFlightPromiseDuringPut instanceof Promise,
     'единый save-путь публикует _saveInFlightPromise на время exit-PUT');
 });
+
+test('forceSaveToDb тоже публикует промис — иначе exit проскакивает ожидание и молча не сохраняет', async () => {
+  // Аварийная эскалация квоты держала _saveInFlight БЕЗ промиса. Wait-петля
+  // выхода требует ОБА, поэтому не ждала ничего, а её saveActContent
+  // no-op'ился по гарду (return null, без исключения) — контент не уезжал
+  // в БД, а пользователь получал плашку «вышли с сохранением».
+  StorageManager.exportActData = () => ({ tree: {} });
+  let promiseDuringForce = null;
+  APIClient._fetchWithTimeout = async () => {
+    promiseDuringForce = APIClient._saveInFlightPromise;
+    return { ok: true, status: 200, json: async () => ({ updated_at: '2026-08-18T12:00:00', content_version: 6 }) };
+  };
+
+  await APIClient.forceSaveToDb(7);
+
+  assert.ok(promiseDuringForce instanceof Promise,
+    'гард форс-сохранения опубликован симметрично saveActContent');
+  assert.equal(APIClient._saveInFlightPromise, null, 'после завершения промис снят');
+});
+
+test('save при выходе пропущен чужим гардом → честный флаг сбоя, а не «вышли с сохранением»', async () => {
+  // Гард удерживает кто-то, кто промис не опубликовал: saveActContent тогда
+  // возвращает null вместо исключения. Считать это успехом нельзя.
+  stubContentPut({ ok: true, status: 200, json: async () => ({ content_version: 6 }) });
+  APIClient._saveInFlight = true;
+  APIClient._saveInFlightPromise = null;
+
+  await LockManager._initiateExit('manualExit');
+
+  assert.equal(putBodies.length, 0, 'PUT действительно не ушёл');
+  assert.equal(exitFlags.sessionExitSaveFailed, 'true', 'плашка честна — контент не сохранён');
+  assert.equal('sessionExitedWithSave' in exitFlags, false);
+  assert.equal(removeCalls.length, 0, 'снимок-черновик остался носителем правок');
+});

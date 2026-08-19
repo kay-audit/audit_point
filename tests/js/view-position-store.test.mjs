@@ -96,3 +96,28 @@ test('без actId load отдаёт null, save — no-op', () => {
     saveViewPosition(storage, null, { step: 1, scroll: { treeColumn: 0, previewColumn: 0, step2: 0 }, anchorNodeId: null });
     assert.equal(storage._data.size, 0);
 });
+
+test('запись помечается savedAt — по ней общий TTL-проход чистит заброшенные позиции', () => {
+    const storage = makeStorage();
+    saveViewPosition(storage, 7, {
+        step: 1,
+        scroll: { treeColumn: 0, previewColumn: 0, step2: 0 },
+        anchorNodeId: null,
+    });
+
+    const raw = JSON.parse(storage.getItem(viewPositionKey(7)));
+    assert.ok(Number.isFinite(Date.parse(raw.savedAt)),
+        'метка времени в том же формате, что у снимков-черновиков');
+});
+
+test('savedAt не протекает в загруженную позицию (форма для потребителей неизменна)', () => {
+    const storage = makeStorage();
+    const pos = {
+        step: 2,
+        scroll: { treeColumn: 1, previewColumn: 2, step2: 3 },
+        anchorNodeId: 'n1',
+    };
+    saveViewPosition(storage, 7, pos);
+
+    assert.deepEqual(loadViewPosition(storage, 7), pos);
+});

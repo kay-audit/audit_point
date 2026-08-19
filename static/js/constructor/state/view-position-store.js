@@ -7,7 +7,9 @@
  * черновика/collapsed-набора: `audit_workstation_viewpos:{actId}`.
  */
 
-const KEY_PREFIX = 'audit_workstation_viewpos:';
+export const VIEW_POSITION_KEY_PREFIX = 'audit_workstation_viewpos:';
+
+const KEY_PREFIX = VIEW_POSITION_KEY_PREFIX;
 
 /**
  * Ключ localStorage для позиции просмотра акта.
@@ -55,6 +57,12 @@ export function loadViewPosition(storage, actId) {
 
 /**
  * Сохраняет позицию просмотра акта. Отсутствие actId — no-op.
+ *
+ * Запись помечается savedAt (ISO): ключи per-act, и без метки времени они
+ * копились бы по одному на каждый когда-либо открытый акт без шанса на
+ * освобождение места. Метка в том же формате, что у снимков-черновиков, —
+ * их общий TTL-сметатель (StorageManager._purgeForeignSnapshots) читает
+ * именно это поле.
  * @param {Storage} storage - localStorage-совместимое хранилище
  * @param {number|string|null|undefined} actId - ID акта
  * @param {{step: 1|2, scroll: {treeColumn: number, previewColumn: number, step2: number}, anchorNodeId: string|null}} pos - Позиция просмотра
@@ -62,7 +70,10 @@ export function loadViewPosition(storage, actId) {
 export function saveViewPosition(storage, actId, pos) {
     if (actId === null || actId === undefined || !storage) return;
     try {
-        storage.setItem(viewPositionKey(actId), JSON.stringify(pos));
+        storage.setItem(
+            viewPositionKey(actId),
+            JSON.stringify({ ...pos, savedAt: new Date().toISOString() })
+        );
     } catch {
         // Квота/приватный режим — позиция просмотра не критична.
     }

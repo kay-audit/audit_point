@@ -687,7 +687,19 @@ export class APIClient {
         this._viewPositionRestoredForActId = actId;
 
         const pos = loadViewPosition(localStorage, actId);
-        if (!pos) return;
+        if (!pos) {
+            // У нового акта своей позиции нет — снимаем отложенную от
+            // предыдущего, иначе первое же переключение шага применило бы
+            // чужой скролл.
+            window.App?.clearPendingViewRestore?.();
+            return;
+        }
+
+        // Ставим скролл в очередь ДО переключения шага: goToStep сам применит
+        // то, что относится к ставшему видимым шагу (App._flushPendingViewRestore),
+        // а позиция второго шага дождётся первого перехода на него — на
+        // скрытом шаге (display:none) присваивание scrollTop молча no-op.
+        window.App?.queueViewScrollRestore?.(pos);
 
         // Чуть раньше в _applyActContent (renderAll/PreviewManager.update)
         // контент акта уже отрисован для ТЕКУЩЕГО шага — goToStep здесь нужен
@@ -701,32 +713,15 @@ export class APIClient {
         // применяются и для НОВОГО контента акта, даже если предыдущий акт
         // уже был на этом же шаге.
         if (window.App && window.App.goToStep) {
-            window.App.goToStep(pos.step, { persist: false, skipRender: true });
-        }
-
-        requestAnimationFrame(() => {
-            const treeColumn = document.getElementById('treeColumn');
-            if (treeColumn) treeColumn.scrollTop = pos.scroll.treeColumn;
-
-            const previewColumn = document.getElementById('previewColumn');
-            if (previewColumn) previewColumn.scrollTop = pos.scroll.previewColumn;
-
-            const step2 = document.getElementById('step2');
-            if (!step2) return;
-
-            const itemsContainer = document.getElementById('itemsContainer') || step2;
-            const tree = window.treeManager;
-            if (pos.anchorNodeId && tree?._findPreviewElement && tree?._performScroll) {
-                const target = tree._findPreviewElement(itemsContainer, pos.anchorNodeId);
-                if (target) {
-                    // Без _animateHighlight: восстановление позиции — не переход
-                    // пользователя к узлу, подсветка здесь неуместна.
-                    tree._performScroll(target);
-                    return;
-                }
+            try {
+                window.App.goToStep(pos.step, { persist: false, skipRender: true });
+            } catch (err) {
+                // Позиция просмотра — удобство, а не данные: сбой инициализации
+                // тулбара/подсказок внутри goToStep не должен ронять загрузку
+                // акта (маркер уже взведён — повтора не будет).
+                console.error('Не удалось переключить шаг при восстановлении позиции:', err);
             }
-            step2.scrollTop = pos.scroll.step2;
-        });
+        }
     }
 
     /**
@@ -760,8 +755,16 @@ export class APIClient {
         const verdict = shouldOfferRestore(snapshot, serverContentVersion);
 
         if (verdict === 'restore' || verdict === 'conflict') {
+            // Обычный снимок свежее бэкапа (он и записан позже), поэтому в
+            // любом исходе кроме dismiss'а бэкап устарел и должен уйти —
+            // иначе всплывёт при следующем открытии как черновик «из ниоткуда»,
+            // датированный давней сессией. Dismiss бэкап не теряет:
+            // stashConflictSnapshot перезапишет его текущим снимком.
             return this._offerDraft(actId, content, snapshot, verdict, {
-                onKeepDb: () => window.StorageManager.removeSnapshot(actId),
+                onKeepDb: () => {
+                    window.StorageManager.removeSnapshot(actId);
+                    window.StorageManager.removeConflictBackup(actId);
+                },
                 // Dismiss конфликта: снимок ПЕРЕМЕЩАЕТСЯ в бэкап-ключ — на
                 // прежнем месте его перезаписал бы первый же markAsUnsaved
                 // (даже фоновая нормализация при загрузке) DB-контентом со
@@ -769,7 +772,7 @@ export class APIClient {
                 onDismissConflict: () => window.StorageManager.stashConflictSnapshot(actId),
                 // Снимок остаётся носителем правок до успешного PUT
                 // (finalizeDbSave снимет его штатно).
-                onRestore: () => {},
+                onRestore: () => window.StorageManager.removeConflictBackup(actId),
             });
         }
         if (verdict === 'discard') {
@@ -1121,6 +1124,10 @@ export class APIClient {
             }
 
             Notifications.success('Акт сохранен в базу данных');
+            // Отличаем состоявшийся PUT от no-op'а по in-flight-гарду выше
+            // (тот отдаёт null): выходной save в LockManager обязан знать,
+            // уехал ли контент в БД, — иначе покажет ложную плашку успеха.
+            return result;
 
         } catch (err) {
             console.error('Ошибка сохранения акта в БД:', err);
@@ -1174,7 +1181,16 @@ export class APIClient {
         // Автосохранение остановлено (409-конфликт/потеря лока): PUT с той же
         // базой заведомо обречён — не шлём его, а сразу отдаём типизированную
         // ошибку (вызывающие стороны обработают её тем же путём, что живой 409).
+        // Тип ошибки обязан совпасть с причиной остановки: при потере лока
+        // ContentConflictError увёл бы вызывающую сторону не в ту ветку
+        // (плашка выхода «конфликт версий» вместо «лок потерян», а в
+        // _escalateQuotaToDb — не то объяснение пользователю).
         if (window.StorageManager?.isDbAutoSaveHalted?.()) {
+            if (window.StorageManager.getDbAutoSaveHaltCause?.() === 'lock') {
+                throw new LockLostError(
+                    'Сохранение остановлено: блокировка акта потеряна'
+                );
+            }
             throw new ContentConflictError(
                 'Сохранение остановлено: акт изменён другим пользователем'
             );
@@ -1191,6 +1207,14 @@ export class APIClient {
             }
         }
         APIClient._saveInFlight = true;
+        // #11: гард держим СИММЕТРИЧНО saveActContent — вместе с публикацией
+        // промиса завершения. Без него ожидающая сторона (выходной save в
+        // LockManager._initiateExit) видит `_saveInFlight && !_saveInFlightPromise`,
+        // не ждёт ничего, и её saveActContent молча no-op'ится по гарду —
+        // правки не уезжают в БД, а пользователь получает плашку «вышли с
+        // сохранением».
+        let _resolveForce;
+        APIClient._saveInFlightPromise = new Promise((r) => { _resolveForce = r; });
         try {
             // PERSIST-4: та же эпоха грязности, что в saveActContent. Запоминаем
             // ДО сериализации; трекинг выключаем только вокруг синхронного
@@ -1259,6 +1283,8 @@ export class APIClient {
             throw err;
         } finally {
             APIClient._saveInFlight = false;
+            APIClient._saveInFlightPromise = null;
+            if (_resolveForce) _resolveForce();
         }
     }
 

@@ -219,7 +219,10 @@ test('discard обычного снимка не мешает предложит
   assert.deepEqual(content.tree, BACKUP_TREE);
 });
 
-test('при валидном обычном снимке бэкап в этой сессии не трогается', async () => {
+test('при валидном обычном снимке бэкап не читается, но как устаревший удаляется (restore)', async () => {
+  // Бэкап записан РАНЬШЕ обычного снимка, значит устарел. Раньше он оставался
+  // нетронутым и всплывал позже — когда обычный снимок уйдёт после успешного
+  // сохранения — как черновик «из ниоткуда», датированный давней сессией.
   StorageManager.readSnapshot = () => makeSnapshot(SERVER_VERSION);
   let backupRead = false;
   StorageManager.readConflictBackup = () => { backupRead = true; return null; };
@@ -229,4 +232,25 @@ test('при валидном обычном снимке бэкап в этой
 
   assert.equal(restored, true);
   assert.equal(backupRead, false, 'основной снимок главнее — бэкап не читается');
+  assert.equal(removeBackupCalls, 1, 'устаревший бэкап убран');
+});
+
+test('при валидном обычном снимке «Оставить версию из БД» убирает и снимок, и устаревший бэкап', async () => {
+  StorageManager.readSnapshot = () => makeSnapshot(5); // вердикт 'conflict'
+  DialogManager.show = async () => false;
+
+  await APIClient._maybeRestoreDraft(7, makeContent(), SERVER_VERSION);
+
+  assert.equal(removeCalls, 1, 'снимок удалён по явному выбору версии БД');
+  assert.equal(removeBackupCalls, 1, 'бэкап удалён вместе с ним');
+});
+
+test('dismiss конфликта бэкап не теряет: stash перезаписывает его текущим снимком', async () => {
+  StorageManager.readSnapshot = () => makeSnapshot(5);
+  DialogManager.show = async () => 'dismissed';
+
+  await APIClient._maybeRestoreDraft(7, makeContent(), SERVER_VERSION);
+
+  assert.equal(stashCalls, 1, 'снимок отложен в бэкап-ключ');
+  assert.equal(removeBackupCalls, 0, 'удалять бэкап на dismiss нельзя — stash его и есть');
 });

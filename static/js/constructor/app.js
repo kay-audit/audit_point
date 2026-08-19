@@ -32,6 +32,21 @@ export class App {
     static _actSwitchInProgress = false;
 
     /**
+     * Отложенное восстановление позиции просмотра: поля скрытого шага ждут
+     * здесь до первого переключения на него (см. queueViewScrollRestore).
+     * @private
+     * @type {{treeColumn?: number, previewColumn?: number, step2?: number, anchorNodeId?: string|null}|null}
+     */
+    static _pendingViewRestore = null;
+
+    /**
+     * pagehide-обработчик персиста позиции (снимается при повторной настройке).
+     * @private
+     * @type {Function|null}
+     */
+    static _pagehidePersistHandler = null;
+
+    /**
      * @param {boolean} value
      */
     static setActSwitchInProgress(value) {
@@ -248,6 +263,10 @@ export class App {
         this._updateStepVisibility(stepNum);
         this._handleStepTransition(stepNum, skipRender);
 
+        // Шаг стал видимым — самое время применить отложенную для него
+        // позицию скролла (на скрытом шаге присваивание scrollTop no-op).
+        this._flushPendingViewRestore();
+
         HelpManager.updateTooltip();
     }
 
@@ -314,7 +333,103 @@ export class App {
         } else {
             window.addEventListener('beforeunload', persist);
         }
+        // Хендлер держим в поле и снимаем предыдущий: LifecycleHelper умеет
+        // только beforeunload, а анонимный pagehide-листенер снять нечем —
+        // повторный App.init стопкой копил бы их без шанса на отписку.
+        if (this._pagehidePersistHandler) {
+            window.removeEventListener('pagehide', this._pagehidePersistHandler);
+        }
+        this._pagehidePersistHandler = persist;
         window.addEventListener('pagehide', persist);
+    }
+
+    /**
+     * Ставит в очередь восстановление скролла (и якоря шага 2) сохранённой
+     * позиции просмотра.
+     *
+     * Применить всё сразу нельзя: скрытый шаг — `display: none !important`,
+     * у его контейнеров нет бокса, и присваивание scrollTop молча ничего не
+     * делает (значение остаётся 0). Поэтому поля видимого сейчас шага
+     * применяются немедленно, а поля второго ждут в очереди до первого
+     * переключения на него (см. goToStep) — симметрично тому, как
+     * _captureScrollAndAnchor снимает позицию только видимого шага.
+     *
+     * @param {{scroll: {treeColumn: number, previewColumn: number, step2: number}, anchorNodeId: string|null}} pos
+     */
+    static queueViewScrollRestore(pos) {
+        this._pendingViewRestore = {
+            treeColumn: pos.scroll.treeColumn,
+            previewColumn: pos.scroll.previewColumn,
+            step2: pos.scroll.step2,
+            anchorNodeId: pos.anchorNodeId,
+        };
+        this._flushPendingViewRestore();
+    }
+
+    /**
+     * Отменяет отложенное восстановление позиции (переключение на акт, у
+     * которого сохранённой позиции нет — иначе применилась бы позиция
+     * предыдущего акта).
+     */
+    static clearPendingViewRestore() {
+        this._pendingViewRestore = null;
+    }
+
+    /**
+     * Применяет отложенную позицию к тем шагам, которые видны сейчас;
+     * применённые поля из очереди убирает.
+     * @private
+     */
+    static _flushPendingViewRestore() {
+        if (!this._pendingViewRestore) return;
+        requestAnimationFrame(() => {
+            const pending = this._pendingViewRestore;
+            if (!pending) return;
+
+            const step1 = document.getElementById('step1');
+            const step2 = document.getElementById('step2');
+
+            if (step1 && !step1.classList.contains('hidden') && pending.treeColumn !== undefined) {
+                const treeColumn = document.getElementById('treeColumn');
+                if (treeColumn) treeColumn.scrollTop = pending.treeColumn;
+                const previewColumn = document.getElementById('previewColumn');
+                if (previewColumn) previewColumn.scrollTop = pending.previewColumn;
+                delete pending.treeColumn;
+                delete pending.previewColumn;
+            }
+            if (step2 && !step2.classList.contains('hidden') && pending.step2 !== undefined) {
+                this._restoreStep2Scroll(step2, pending.step2, pending.anchorNodeId);
+                delete pending.step2;
+                delete pending.anchorNodeId;
+            }
+
+            if (pending.treeColumn === undefined && pending.step2 === undefined) {
+                this._pendingViewRestore = null;
+            }
+        });
+    }
+
+    /**
+     * Восстанавливает позицию шага 2: по якорному узлу (устойчив к изменению
+     * контента), с откатом на сырой scrollTop, если узла больше нет.
+     * @private
+     * @param {HTMLElement} step2 - Контейнер шага 2
+     * @param {number} scrollTop - Сохранённый scrollTop
+     * @param {string|null} anchorNodeId - Сохранённый якорный узел
+     */
+    static _restoreStep2Scroll(step2, scrollTop, anchorNodeId) {
+        const itemsContainer = document.getElementById('itemsContainer') || step2;
+        const tree = window.treeManager;
+        if (anchorNodeId && tree?._findPreviewElement && tree?._performScroll) {
+            const target = tree._findPreviewElement(itemsContainer, anchorNodeId);
+            if (target) {
+                // Без _animateHighlight: восстановление позиции — не переход
+                // пользователя к узлу, подсветка здесь неуместна.
+                tree._performScroll(target);
+                return;
+            }
+        }
+        step2.scrollTop = scrollTop;
     }
 
     /**
