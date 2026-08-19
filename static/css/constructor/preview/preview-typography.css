@@ -132,18 +132,36 @@
     margin-bottom: 0;
 }
 
-/* Нумерованные и маркированные списки. Вертикальных отступов нет — шаг задаёт
-   только line-height, как в Word и как в поверхности правки (textblock-content.css).
-   Прежний margin-bottom доставался лишь спискам ВЕРХНЕГО уровня внутри текстблока
-   (правило .preview-sheet .preview-textblock-content > * гасит margin у прямых
-   детей), а вложенные списки и пункты его сохраняли — отсюда «плавающий» шаг,
-   росший с глубиной. margin-left — втяжка под маркер, остаётся. */
-.preview ol,
-.preview ul {
+/* ——— Списки предпросмотра ———
+   Область действия — ТРИ поверхности, а не одна. Класс .preview висит только на
+   inline-панели (#preview, preview_panel.html); модальное меню предпросмотра
+   (#previewMenuBody, header_preview_button.html) и диалог истории версий
+   (.version-preview-ui, portal/acts-manager/version-preview.js) собираются теми
+   же рендерами, но этого класса не имеют. Пока правила ниже были привязаны к
+   .preview, в двух последних списки оставались с глобальным сбросом
+   (base/reset.css обнуляет padding и margin ВСЕМУ) — нулевая втяжка, и маркеры
+   при list-style-position: outside уезжали за левый край контента (замер:
+   li.left == content.left, маркер физически вне блока). Ровно та же дыра
+   когда-то обнаружилась у line-height — см. базовое правило
+   .preview-textblock-content выше.
+
+   Вертикальных отступов нет — шаг задаёт только line-height, как в Word и как в
+   поверхности правки (textblock-content.css). Прежний margin-bottom доставался
+   лишь спискам ВЕРХНЕГО уровня внутри текстблока (правило
+   .preview-sheet .preview-textblock-content > * гасит margin у прямых детей), а
+   вложенные списки и пункты его сохраняли — отсюда «плавающий» шаг, росший с
+   глубиной.
+
+   Втяжка — общий с редактором токен в ПУНКТАХ (--doc-list-indent = 36pt =
+   w:ind left 720 твипов на уровень в DOCX). Прежние 2rem жили в rem и потому
+   зависели от плотности интерфейса страницы. padding, а не margin: маркер
+   рисуется в нём. */
+:is(.preview, .preview-sheet, .version-preview-ui) ol,
+:is(.preview, .preview-sheet, .version-preview-ui) ul {
     margin-top: 0;
     margin-bottom: 0;
-    margin-left: var(--spacing-2xl);
-    padding-left: 0;
+    margin-left: 0;
+    padding-left: var(--doc-list-indent);
 }
 
 /* Нумерация по уровням вложенности — схема C1 («как в Word»): 1. → a) → i.,
@@ -162,34 +180,34 @@
     suffix: ") ";
 }
 
-.preview :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) ul {
     list-style-type: circle;
 }
 
-.preview :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) ol {
     list-style-type: acts-ordered-alpha;
 }
 
-.preview :is(ol, ul) :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) ul {
     list-style-type: square;
 }
 
-.preview :is(ol, ul) :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) ol {
     list-style-type: lower-roman;
 }
 
 /* Глубина 4 — цикл начинается заново (как на верхнем уровне) */
-.preview :is(ol, ul) :is(ol, ul) :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) :is(ol, ul) ul {
     list-style-type: disc;
 }
 
-.preview :is(ol, ul) :is(ol, ul) :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) :is(ol, ul) ol {
     list-style-type: decimal;
 }
 
 /* Элементы списков — тот же печатный интервал и тот же нулевой отступ, что у
    абзацев: строка списка и строка тела идут одним шагом. */
-.preview li {
+:is(.preview, .preview-sheet, .version-preview-ui) li {
     margin: 0;
     line-height: var(--doc-line-height);
     color: var(--text-primary);

@@ -56,6 +56,13 @@
        жест мышью на 100px двигал границу колонки на 125px — граница убегает
        от курсора. Кегль на координаты не влияет, поэтому здесь calc. */
     --doc-font-size-table-screen: calc(var(--doc-font-size-small) * var(--doc-readability-zoom));
+    /* Втяжка списка на уровень вложенности — геометрия Word: w:ind left=720
+       твипов на уровень (_LIST_INDENT_STEP,
+       app/domains/acts/formatters/docx/numbering.py). 720/20 = 36pt. В пунктах,
+       а не в rem: rem зависит от плотности интерфейса (корневой font-size 12px
+       в конструкторе против 13px на портале, layout/density.css), и одна и та
+       же разметка получала бы разную втяжку на разных страницах. */
+    --doc-list-indent: 36pt;
 
     --letter-spacing-tight: -0.025em;
     --letter-spacing-normal: 0;

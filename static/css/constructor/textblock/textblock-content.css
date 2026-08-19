@@ -230,7 +230,7 @@
 .textblock-editor ol,
 .violation-textarea ul,
 .violation-textarea ol {
-    padding-left: var(--spacing-xl);
+    padding-left: var(--doc-list-indent);
     margin: 0;
 }
 
