@@ -143,7 +143,10 @@
    при list-style-position: outside уезжали за левый край контента (замер:
    li.left == content.left, маркер физически вне блока). Ровно та же дыра
    когда-то обнаружилась у line-height — см. базовое правило
-   .preview-textblock-content выше.
+   .preview-textblock-content выше. Четвёртая поверхность — вкладка
+   «Сравнение» того же диалога версий (.diff-content): контент текстблока
+   уходит туда через тот же renderActContent (diff-renderer.js), только
+   собственный кегль у неё интерфейсный, а не документный.
 
    Вертикальных отступов нет — шаг задаёт только line-height, как в Word и как в
    поверхности правки (textblock-content.css). Прежний margin-bottom доставался
@@ -156,8 +159,8 @@
    w:ind left 720 твипов на уровень в DOCX). Прежние 2rem жили в rem и потому
    зависели от плотности интерфейса страницы. padding, а не margin: маркер
    рисуется в нём. */
-:is(.preview, .preview-sheet, .version-preview-ui) ol,
-:is(.preview, .preview-sheet, .version-preview-ui) ul {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) ol,
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) ul {
     margin-top: 0;
     margin-bottom: 0;
     margin-left: 0;
@@ -180,34 +183,34 @@
     suffix: ") ";
 }
 
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) ul {
     list-style-type: circle;
 }
 
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) ol {
     list-style-type: acts-ordered-alpha;
 }
 
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) :is(ol, ul) ul {
     list-style-type: square;
 }
 
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) :is(ol, ul) ol {
     list-style-type: lower-roman;
 }
 
 /* Глубина 4 — цикл начинается заново (как на верхнем уровне) */
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) :is(ol, ul) ul {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) :is(ol, ul) :is(ol, ul) ul {
     list-style-type: disc;
 }
 
-:is(.preview, .preview-sheet, .version-preview-ui) :is(ol, ul) :is(ol, ul) :is(ol, ul) ol {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) :is(ol, ul) :is(ol, ul) :is(ol, ul) ol {
     list-style-type: decimal;
 }
 
 /* Элементы списков — тот же печатный интервал и тот же нулевой отступ, что у
    абзацев: строка списка и строка тела идут одним шагом. */
-:is(.preview, .preview-sheet, .version-preview-ui) li {
+:is(.preview, .preview-sheet, .version-preview-ui, .diff-content) li {
     margin: 0;
     line-height: var(--doc-line-height);
     color: var(--text-primary);

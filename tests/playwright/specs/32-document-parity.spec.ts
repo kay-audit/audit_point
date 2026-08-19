@@ -11,10 +11,11 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
  *    выходила вдвое мельче тела вместо вордовских 9:12.
  *
  * 2. ВТЯЖКА СПИСКОВ. Правила списков превью были привязаны к классу .preview,
- *    который висит ТОЛЬКО на inline-панели. Модальное меню предпросмотра и
- *    диалог истории версий собираются теми же рендерами, но без этого класса —
- *    у списков оставался глобальный сброс (padding: 0), и маркеры при
- *    list-style-position: outside уезжали за левый край контента.
+ *    который висит ТОЛЬКО на inline-панели. Модальное меню предпросмотра,
+ *    диалог истории версий и его же вкладка «Сравнение» собираются теми же
+ *    рендерами, но без этого класса — у списков оставался глобальный сброс
+ *    (padding: 0), и маркеры при list-style-position: outside уезжали за левый
+ *    край контента.
  *
  * Юнит-тестами это не ловится: обе вещи существуют только в каскаде живого
  * движка (вычисленный font-size, ::marker, геометрия блока).
@@ -184,6 +185,48 @@ test.describe('Втяжка списков — во всех поверхнос�
 
     // Плотность портала отличается от конструкторской — значит втяжка не в rem.
     expect(rootFontSize).not.toBe(12);
+    expect(m.pad).toBe(LIST_INDENT_PX);
+    expect(m.nestedPad).toBe(LIST_INDENT_PX);
+    expect(m.itemOffset).toBeGreaterThan(0);
+  });
+
+  test('вкладка «Сравнение» того же диалога: списки тоже с втяжкой', async ({ page }) => {
+    // Четвёртая поверхность с тем же контентом: diff-renderer.js гонит HTML
+    // текстблока через тот же renderActContent, но в .diff-content, который под
+    // прежние селекторы не попадал. Текстблок берём с id, которого в текущем
+    // акте НЕТ, — тогда движок диффа считает его удалённым и рендерит РАЗМЕТКУ
+    // старой стороны (у статуса modified путь другой: там plain-text с
+    // <ins>/<del>, списков в нём не бывает).
+    await page.goto('/acts');
+    await page.locator('#versionPreviewTemplate').waitFor({ state: 'attached', timeout: 10000 });
+
+    await page.evaluate(([markup, actId]) => {
+      const snapshot = {
+        version_number: 1,
+        created_at: new Date().toISOString(),
+        save_type: 'manual',
+        username: 'test',
+        id: 'ver-diff-1',
+        tree_data: {
+          children: [
+            { type: 'textblock', textBlockId: 'vp-gone-1', number: '1', label: 'Блок', children: [] },
+          ],
+        },
+        textblocks_data: { 'vp-gone-1': { content: markup } },
+      };
+      // @ts-expect-error VersionPreviewOverlay — глобал из version-preview.js
+      window.VersionPreviewOverlay.show(snapshot, 'Тестовый акт', actId);
+    }, [LIST, SEED_ACTS.withContent] as const);
+
+    await page.locator('.version-preview-toggle .toggle-btn[data-view="diff"]').click();
+    const ul = page.locator('.diff-content .diff-textblock ul').first();
+    await expect(ul).toBeVisible({ timeout: 10000 });
+
+    const m = await page.evaluate(
+      ([probe, sel]) => new Function('sel', `return (${probe})(sel)`)(sel),
+      [LIST_PROBE.toString(), '.diff-content .diff-textblock ul']
+    );
+
     expect(m.pad).toBe(LIST_INDENT_PX);
     expect(m.nestedPad).toBe(LIST_INDENT_PX);
     expect(m.itemOffset).toBeGreaterThan(0);
