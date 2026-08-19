@@ -29,6 +29,41 @@ test('lockLost приоритетнее autoExited (важнее: потеря �
   assert.equal(n.flag, 'sessionLockLost');
 });
 
+test('contentConflict: честное «конфликт версий», черновик локально', () => {
+  const n = pickSessionExitNotice({ contentConflict: true });
+  assert.equal(n.flag, 'sessionExitContentConflict');
+  assert.equal(n.type, 'warning');
+  assert.ok(!/Изменения сохранены\.$/.test(n.message), n.message);
+  assert.ok(n.message.includes('другой пользователь'), n.message);
+  assert.ok(n.message.includes('локальном черновике'), n.message);
+  // Не лжём о причине: про снятие блокировки по бездействию — ни слова.
+  assert.ok(!n.message.includes('бездействия'), n.message);
+});
+
+test('contentConflict приоритетнее остальных флагов', () => {
+  const n = pickSessionExitNotice({
+    contentConflict: true, lockLost: true, saveFailed: true, autoExited: true, exitedWithSave: true,
+  });
+  assert.equal(n.flag, 'sessionExitContentConflict');
+});
+
+test('saveFailed: честное «сохранить не удалось», черновик локально', () => {
+  const n = pickSessionExitNotice({ saveFailed: true });
+  assert.equal(n.flag, 'sessionExitSaveFailed');
+  assert.equal(n.type, 'warning');
+  assert.ok(!/Изменения сохранены\.$/.test(n.message), n.message);
+  assert.ok(n.message.includes('не удалось'), n.message);
+  assert.ok(n.message.includes('локальном черновике'), n.message);
+});
+
+test('lockLost приоритетнее saveFailed, saveFailed приоритетнее плашек успеха', () => {
+  assert.equal(pickSessionExitNotice({ lockLost: true, saveFailed: true }).flag, 'sessionLockLost');
+  assert.equal(
+    pickSessionExitNotice({ saveFailed: true, autoExited: true, exitedWithSave: true }).flag,
+    'sessionExitSaveFailed'
+  );
+});
+
 test('autoExited: плашка автовыхода (сохранено)', () => {
   const n = pickSessionExitNotice({ autoExited: true });
   assert.equal(n.flag, 'sessionAutoExited');

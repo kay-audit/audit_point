@@ -1,20 +1,25 @@
 /**
  * Тесты чистого предиката восстановления черновика (H3).
  *
- * shouldOfferRestore решает судьбу снимка localStorage при загрузке акта:
- * 'restore' — предложить восстановление (акт не менялся с момента снимка),
- * 'discard' — молча удалить (устарел/повреждён), 'none' — снимка нет.
+ * shouldOfferRestore решает судьбу снимка localStorage при загрузке акта
+ * сверкой int-счётчиков контента (baseContentVersion снимка ↔ серверный
+ * acts.content_version):
+ * 'restore' — контент не менялся с момента снимка,
+ * 'conflict' — контент менялся, выбор версии за пользователем
+ * (диалог конфликта; молча снимок НЕ удаляется),
+ * 'discard' — молча удалить (структурно повреждён), 'none' — снимка нет.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shouldOfferRestore } from '../../static/js/constructor/state/draft-restore.js';
 
-/** Валидный снимок с данными и базовой меткой. */
+/** Валидный снимок с данными и базовой версией контента. */
 function makeSnapshot(overrides = {}) {
   return {
     actId: 7,
     savedAt: '2026-06-11T12:00:00.000Z',
-    baseUpdatedAt: '2026-06-11T10:00:00.123456',
+    baseUpdatedAt: '2026-06-11T10:00:00.123456', // справочное, в решении не участвует
+    baseContentVersion: 5,
     version: 2,
     data: { tree: { id: 'root', children: [] }, tables: {}, textBlocks: {}, violations: {} },
     ...overrides,
@@ -22,55 +27,61 @@ function makeSnapshot(overrides = {}) {
 }
 
 test('нет снимка → none', () => {
-  assert.equal(shouldOfferRestore(null, '2026-06-11T10:00:00.123456'), 'none');
-  assert.equal(shouldOfferRestore(undefined, '2026-06-11T10:00:00.123456'), 'none');
+  assert.equal(shouldOfferRestore(null, 5), 'none');
+  assert.equal(shouldOfferRestore(undefined, 5), 'none');
 });
 
-test('метки совпадают посимвольно → restore', () => {
-  const snap = makeSnapshot();
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'restore');
+test('версии контента совпадают → restore', () => {
+  assert.equal(shouldOfferRestore(makeSnapshot(), 5), 'restore');
 });
 
-test('метки не совпадают (акт менялся) → discard', () => {
-  const snap = makeSnapshot();
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T11:30:00.000000'), 'discard');
+test('OCC-выигрыш content_version: смена updated_at (метаданные/соседние части КМ) черновик НЕ инвалидирует', () => {
+  // Раньше сверка шла по updated_at, который бампится и НЕ-контентными
+  // записями — черновик ложно конфликтовал. Теперь updated_at в решении
+  // не участвует вовсе: при равных content_version — restore.
+  const snap = makeSnapshot({ baseUpdatedAt: '2026-06-11T10:00:00.123456' });
+  // Сервер: updated_at сменился (кто-то правил метаданные), контент — нет.
+  assert.equal(shouldOfferRestore(snap, 5), 'restore');
 });
 
-test('один момент времени в разной записи → restore (эпоха-фоллбэк)', () => {
-  const snap = makeSnapshot({ baseUpdatedAt: '2026-06-11T10:00:00' });
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.000'), 'restore');
+test('версия 0 — валидная база: 0 === 0 → restore (не falsy-discard)', () => {
+  const snap = makeSnapshot({ baseContentVersion: 0 });
+  assert.equal(shouldOfferRestore(snap, 0), 'restore');
 });
 
-test('снимок без baseUpdatedAt → discard (нельзя проверить, менялся ли акт)', () => {
-  const snap = makeSnapshot({ baseUpdatedAt: null });
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'discard');
+test('версии не совпадают (контент менялся) → conflict, а не молчаливый discard', () => {
+  assert.equal(shouldOfferRestore(makeSnapshot(), 6), 'conflict');
+  assert.equal(shouldOfferRestore(makeSnapshot({ baseContentVersion: 0 }), 1), 'conflict');
 });
 
-test('нет серверного updated_at → discard', () => {
-  const snap = makeSnapshot();
-  assert.equal(shouldOfferRestore(snap, null), 'discard');
-  assert.equal(shouldOfferRestore(snap, undefined), 'discard');
+test('снимок без baseContentVersion → discard (нельзя проверить, менялся ли контент)', () => {
+  assert.equal(shouldOfferRestore(makeSnapshot({ baseContentVersion: null }), 5), 'discard');
+  assert.equal(shouldOfferRestore(makeSnapshot({ baseContentVersion: undefined }), 5), 'discard');
+});
+
+test('нет серверного content_version → discard', () => {
+  assert.equal(shouldOfferRestore(makeSnapshot(), null), 'discard');
+  assert.equal(shouldOfferRestore(makeSnapshot(), undefined), 'discard');
+});
+
+test('нечисловые версии → discard, а не ложный restore/conflict', () => {
+  assert.equal(shouldOfferRestore(makeSnapshot({ baseContentVersion: '5' }), 5), 'discard');
+  assert.equal(shouldOfferRestore(makeSnapshot(), '5'), 'discard');
 });
 
 test('повреждённый снимок (нет data) → discard', () => {
-  assert.equal(
-    shouldOfferRestore(makeSnapshot({ data: null }), '2026-06-11T10:00:00.123456'),
-    'discard'
-  );
-  assert.equal(
-    shouldOfferRestore(makeSnapshot({ data: 'мусор' }), '2026-06-11T10:00:00.123456'),
-    'discard'
-  );
+  assert.equal(shouldOfferRestore(makeSnapshot({ data: null }), 5), 'discard');
+  assert.equal(shouldOfferRestore(makeSnapshot({ data: 'мусор' }), 5), 'discard');
 });
 
 test('повреждённый снимок (data без дерева) → discard', () => {
-  const snap = makeSnapshot({ data: { tables: {} } });
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'discard');
+  assert.equal(shouldOfferRestore(makeSnapshot({ data: { tables: {} } }), 5), 'discard');
 });
 
-test('нечитаемые метки времени → discard, а не ложный restore', () => {
-  const snap = makeSnapshot({ baseUpdatedAt: 'не-дата' });
-  assert.equal(shouldOfferRestore(snap, 'тоже-не-дата'), 'discard');
+test('структурно битый снимок при расходящихся версиях → всё равно discard, не conflict', () => {
+  // 'conflict' — только для восстановимых снимков: диалог конфликта не должен
+  // предлагать восстановить черновик, из которого нечего восстановить.
+  assert.equal(shouldOfferRestore(makeSnapshot({ data: { tables: {} } }), 9), 'discard');
 });
 
 test('#10 (Variant Б): несогласованный, но свежий снимок → restore (не discard)', () => {
@@ -85,5 +96,5 @@ test('#10 (Variant Б): несогласованный, но свежий сни
       violations: {},
     },
   });
-  assert.equal(shouldOfferRestore(snap, '2026-06-11T10:00:00.123456'), 'restore');
+  assert.equal(shouldOfferRestore(snap, 5), 'restore');
 });

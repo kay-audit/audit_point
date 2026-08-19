@@ -350,6 +350,10 @@ class ActResponse(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+    # Счётчик версий содержимого (optimistic-проверка PUT /content): фронт
+    # берёт его из metadata и эхом возвращает в expected_content_version.
+    # Инкрементируется только сохранением контента, метаданные не влияют.
+    content_version: int = 0
     created_by: str
     last_edited_by: Optional[str]
     last_edited_at: Optional[datetime]

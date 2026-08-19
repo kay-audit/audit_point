@@ -48,6 +48,12 @@ class SaveContentResponse(BaseModel):
     запоминает её как базу метаданных снимка-черновика localStorage
     (baseUpdatedAt) для решения о восстановлении черновика (H3).
 
+    content_version — свежий счётчик версий СОДЕРЖИМОГО после этого
+    сохранения; фронт эхом возвращает его в expected_content_version
+    следующего PUT (optimistic-проверка). В отличие от updated_at, счётчик
+    не бампится НЕ-контентными записями (метаданные, total_parts) и потому
+    не даёт ложных 409.
+
     warning — мягкое предупреждение пользователю, когда при сохранении
     автоматически вычищено рассогласование дерево ↔ словари (висячие ссылки
     узлов и/или записи словарей без узла-владельца). null — ничего не чистилось.
@@ -66,6 +72,7 @@ class SaveContentResponse(BaseModel):
     status: str
     message: str
     updated_at: datetime | None = None
+    content_version: int | None = None
     warning: str | None = None
     validation_status: str = "ok"
     validation_issues: list[dict] = []

@@ -680,6 +680,16 @@ class ActDataSchema(BaseModel):
         pattern=r"^(manual|periodic|auto)$",
         description="Тип сохранения: manual (Ctrl+S), periodic (2мин), auto (debounced)"
     )
+    expected_content_version: int | None = Field(
+        default=None,
+        description=(
+            "Optimistic-проверка конкурентного редактирования: "
+            "acts.content_version, от которого порождено состояние клиента "
+            "(metadata.content_version из GET /content или content_version из "
+            "ответа PUT). Расхождение с текущим значением в БД → "
+            "409 content-conflict. None — проверка пропускается."
+        ),
+    )
 
     @field_validator("tree")
     @classmethod

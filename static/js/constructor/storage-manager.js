@@ -10,9 +10,10 @@ import { loadActConfig } from './act-config.js';
 import { ItemsRenderer } from './items/items-renderer.js';
 import { LifecycleHelper } from './lifecycle-helper.js';
 import { AppState } from './state/state-core.js';
+import { VIEW_POSITION_KEY_PREFIX } from './state/view-position-store.js';
 // ActsManagerPage не импортируется: constructor → portal — неправильное направление
 // зон. Используем lazy через window.ActsManagerPage (см. invalidateCache-вызов ниже).
-import { APIClient } from '../shared/api.js';
+import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
 import { AppConfig } from '../shared/app-config.js';
 import { DialogManager } from '../shared/dialog/dialog-confirm.js';
 import { Notifications } from '../shared/notifications.js';
@@ -107,13 +108,27 @@ export class StorageManager {
     /**
      * Серверный updated_at акта на момент последней успешной синхронизации
      * с БД (из ответа GET-контента или PUT-сохранения). Пишется в метаданные
-     * снимка localStorage (baseUpdatedAt) и используется решением о
-     * восстановлении черновика (H3): восстановление предлагается только
-     * если акт с момента снимка никто не менял.
+     * снимка localStorage (baseUpdatedAt) как справочное поле для диагностики;
+     * в решении о восстановлении черновика больше НЕ участвует — updated_at
+     * бампится и НЕ-контентными записями (метаданные, соседние части КМ),
+     * из-за чего давал ложные конфликты. Источник истины OCC — content_version.
      * @private
      * @type {string|null}
      */
     static _baseUpdatedAt = null;
+
+    /**
+     * Серверный acts.content_version на момент последней успешной
+     * синхронизации с БД (metadata из GET-контента или ответ PUT). База
+     * optimistic-конкуренции: уходит эхом в expected_content_version каждого
+     * PUT /content и пишется в снимок черновика (baseContentVersion) для
+     * решения о восстановлении (H3). Инкрементируется бэкендом ТОЛЬКО при
+     * записи контента — правки метаданных/соседних частей КМ его не трогают.
+     * 0 — валидное значение (акт ещё ни разу не сохранял контент).
+     * @private
+     * @type {number|null}
+     */
+    static _baseContentVersion = null;
 
     /**
      * Флаг «о сбое сохранения в БД уже предупреждали» (§9 offline).
@@ -123,6 +138,30 @@ export class StorageManager {
      * @type {boolean}
      */
     static _dbSaveFailureNotified = false;
+
+    /**
+     * Флаг «автоматические PUT в БД остановлены до перезагрузки страницы».
+     * Взводится при 409 content-conflict (акт сохранил кто-то другой) и при
+     * потере лока: ретрай в обеих ситуациях обречён, а тик каждые 2 минуты
+     * спамил бы сервер заведомо провальными запросами. Снимок-черновик при
+     * этом остаётся последним носителем правок; выбор версии пользователь
+     * делает после перезагрузки (диалог конфликта в _maybeRestoreDraft).
+     * @private
+     * @type {boolean}
+     */
+    static _dbAutoSaveHalted = false;
+
+    /**
+     * Причина остановки авто-PUT: 'conflict' (409 content-conflict) или
+     * 'lock' (лок акта потерян). Нужна внешним save-путям, чтобы отказ «на
+     * входе» (forceSaveToDb не шлёт заведомо обречённый запрос) отдавал
+     * ошибку ТОГО ЖЕ типа, что и живой отказ сервера: иначе потеря лока
+     * маскировалась бы под конфликт версий — и плашка выхода, и ветвление
+     * в _escalateQuotaToDb врали бы о причине.
+     * @private
+     * @type {'conflict'|'lock'|null}
+     */
+    static _dbAutoSaveHaltCause = null;
 
     /**
      * Обработчик window 'online' для немедленного повторного сохранения
@@ -147,14 +186,6 @@ export class StorageManager {
      * @type {Function|null}
      */
     static _navClickHandler = null;
-
-    /**
-     * Сохранённый обработчик window 'popstate' (перехват back/forward).
-     * Храним, чтобы снять его в _teardownEventHandlers (pfe-10/12). null = не подписан.
-     * @private
-     * @type {Function|null}
-     */
-    static _navPopstateHandler = null;
 
     /**
      * Lock «идёт сохранение снимка» (pfe-3). Взводится на время saveState и
@@ -205,6 +236,14 @@ export class StorageManager {
      * @type {number}
      */
     static FOREIGN_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+    /**
+     * Префикс ключей бэкапов конфликтных черновиков (см. stashConflictSnapshot).
+     * Конвенция — как у stateKeyPrefix (`audit_workstation_state`), отдельное
+     * пространство ключей, которое штатная перезапись снимка не трогает.
+     * @type {string}
+     */
+    static CONFLICT_BACKUP_KEY_PREFIX = 'audit_workstation_conflict';
 
     /**
      * Инициализация менеджера хранилища
@@ -331,6 +370,7 @@ export class StorageManager {
             // и не грязный, но это защита в глубину на случай случайной пометки.
             if (AppConfig.readOnlyMode?.isReadOnly) return;
             if (this._dbSaveInProgress) return; // B-15: другое сохранение уже пишет
+            if (this._dbAutoSaveHalted) return; // 409-конфликт/потеря лока: ретрай обречён
             if (this.hasUnsyncedChanges() && window.currentActId) {
                 this._dbSaveInProgress = true;
                 try {
@@ -339,12 +379,99 @@ export class StorageManager {
                     // §9 offline: ошибку не глотаем — предупреждаем (один раз
                     // до успеха) и подписываемся на восстановление соединения.
                     console.error('Периодическое сохранение в БД не удалось:', err);
-                    this._notifyDbSaveFailure();
+                    this._handleDbSaveFailure(err);
                 } finally {
                     this._dbSaveInProgress = false;
                 }
             }
         }, AppConfig.localStorage.periodicSaveInterval);
+    }
+
+    /**
+     * Различает причину сбоя фонового сохранения в БД и выбирает честную
+     * реакцию (образец ручного пути — NavigationManager._handleSaveExportError):
+     *  - 409 content-conflict: акт сохранил кто-то другой — ретрай обречён
+     *    (expected_content_version устарел). Останавливаем авто-PUT до перезагрузки,
+     *    снимок-черновик НЕ трогаем, говорим честно кто изменил акт;
+     *  - потеря лока: ретрай так же обречён (лока больше нет) — останавливаем
+     *    авто-PUT, снимок остаётся, без ложного «повторная попытка автоматически»;
+     *  - прочие сбои (сеть/5xx): прежняя offline-машинерия — дедуп-предупреждение
+     *    и ретрай по 'online'.
+     * @private
+     * @param {Error} err ошибка из APIClient.saveActContent
+     */
+    static _handleDbSaveFailure(err) {
+        if (err instanceof ContentConflictError) {
+            this.handleContentConflict(err);
+            return;
+        }
+        if (err instanceof LockLostError) {
+            const alreadyHalted = this._dbAutoSaveHalted;
+            this._dbAutoSaveHalted = true;
+            this._dbAutoSaveHaltCause = 'lock';
+            if (alreadyHalted) return; // повторный тик не дублирует предупреждение
+            Notifications.warning(
+                'Блокировка акта потеряна — автосохранение в базу остановлено. '
+                + 'Ваши правки сохранены локально как черновик. Обновите страницу, '
+                + 'чтобы продолжить работу.'
+            );
+            return;
+        }
+        this._notifyDbSaveFailure();
+    }
+
+    /**
+     * Единая реакция на ContentConflictError из ЛЮБОГО пути сохранения
+     * (периодический тик, Ctrl+S/кнопка, переключение акта, клик по ссылке,
+     * quota-эскалация): ретрай с той же базой обречён, поэтому останавливаем
+     * автоматические PUT до перезагрузки/входа в акт и показываем ОДНО честное
+     * уведомление (кто изменил акт; правки — в локальном черновике). Повторные
+     * ФОНОВЫЕ вызовы при уже взведённом halt уведомление не дублируют — иначе
+     * каждый периодический тик спамил бы одинаковыми тостами.
+     *
+     * Явный сейв (Ctrl+S, кнопка «Сохранить», «Сохранить и переключить»,
+     * «Сохранить и продолжить») дедупу НЕ подлежит: пользователь сам его
+     * инициировал и ждёт ответа, а промолчать — значит показать кнопку,
+     * которая после первого конфликта не делает вообще ничего (тост
+     * saveActContent для ContentConflictError тоже подавлен).
+     *
+     * @param {ContentConflictError} err ошибка конфликта из APIClient
+     * @param {{explicit?: boolean}} [opts={}] explicit=true — сейв инициирован
+     *   пользователем, уведомление показывается всегда
+     */
+    static handleContentConflict(err, { explicit = false } = {}) {
+        if (!this._dbAutoSaveHalted || explicit) {
+            const editedBy = err?.lastEditedBy
+                ? `пользователем ${err.lastEditedBy}`
+                : 'другим пользователем';
+            Notifications.warning(
+                `Акт изменён ${editedBy}. Ваши правки сохранены локально как черновик. `
+                + 'Обновите страницу, чтобы выбрать версию.'
+            );
+        }
+        this._dbAutoSaveHalted = true;
+        this._dbAutoSaveHaltCause = 'conflict';
+    }
+
+    /**
+     * Остановлены ли автоматические PUT в БД (409-конфликт/потеря лока).
+     * Публичный предикат для внешних save-путей (forceSaveToDb не должен
+     * слать заведомо обречённый запрос).
+     *
+     * @returns {boolean}
+     */
+    static isDbAutoSaveHalted() {
+        return this._dbAutoSaveHalted;
+    }
+
+    /**
+     * Причина остановки авто-PUT — чтобы отказ «на входе» отдавал ошибку
+     * того же типа, что живой отказ сервера (см. _dbAutoSaveHaltCause).
+     *
+     * @returns {'conflict'|'lock'|null}
+     */
+    static getDbAutoSaveHaltCause() {
+        return this._dbAutoSaveHaltCause;
     }
 
     /**
@@ -381,12 +508,19 @@ export class StorageManager {
     static async _retryDbSave() {
         if (AppState._dragInProgress) return;
         if (this._dbSaveInProgress) return; // B-15
+        if (this._dbAutoSaveHalted) return; // 409-конфликт/потеря лока: ретрай обречён
         if (!this.hasUnsyncedChanges() || !window.currentActId) return;
         this._dbSaveInProgress = true;
         try {
             await APIClient.saveActContent(window.currentActId, { saveType: 'periodic' });
         } catch (err) {
             console.error('Повторное сохранение после восстановления сети не удалось:', err);
+            // Тот же разбор причины, что у периодического тика: 409-конфликт
+            // или потеря лока на этом пути так же обречены на ретрай, и молчать
+            // о них нельзя — иначе halt не взводится, честного уведомления нет,
+            // подписка на 'online' живёт вечно и каждый новый online шлёт
+            // очередной заведомо провальный PUT.
+            this._handleDbSaveFailure(err);
         } finally {
             this._dbSaveInProgress = false;
         }
@@ -409,7 +543,9 @@ export class StorageManager {
      * Настраивает перехват попыток навигации.
      * Покрывает:
      *  - клик по `<a href>` (внутренние ссылки) — кастомный диалог;
-     *  - back/forward (popstate) — кастомный диалог с восстановлением истории;
+     *  - back/forward (popstate) — диалог показывает confirmHistoryNavigation,
+     *    её зовёт единственный владелец события (ActsMenuManager); своего
+     *    слушателя popstate здесь нет намеренно, см. док-комментарий метода;
      *  - закрытие вкладки/прямой URL-ввод — браузерный beforeunload (см. _setupEventHandlers).
      * Программное `window.location.href = ...` всё равно отлавливается beforeunload —
      * перехватить set'тер location напрямую браузер не даёт.
@@ -419,35 +555,14 @@ export class StorageManager {
         // Флаг разрешения навигации (для программных переходов)
         window._allowNavigation = false;
 
-        // popstate-страж: при back/forward с unsynced правками показываем
-        // кастомный confirm. Если юзер подтверждает уход — пускаем; иначе
-        // pushState восстанавливает URL.
-        // Хендлеры храним в полях (стрелки сохраняют this=класс), чтобы снять
-        // их в _teardownEventHandlers (pfe-10/12).
-        history.replaceState({_lockNavGuard: true}, '', window.location.href);
-        this._navPopstateHandler = async (event) => {
-            if (window._allowNavigation) return;
-            if (!this.hasUnsyncedChanges()) return;
+        // Слияние с текущим history.state, а не замена целиком: ActsMenuManager
+        // пишет в ту же запись истории свой actId (порядок init'ов двух модулей
+        // не гарантирован), и замена состояния целиком стирала бы его.
+        history.replaceState({...(history.state || {}), _lockNavGuard: true}, '', window.location.href);
 
-            // Возвращаем URL обратно, чтобы юзер физически не ушёл со страницы,
-            // пока думает над диалогом.
-            history.pushState({_lockNavGuard: true}, '', window.location.href);
-
-            const confirmed = await DialogManager.show({
-                title: 'Несохраненные изменения',
-                message: 'У вас есть несохранённые изменения. Вернуться к предыдущей странице без сохранения?',
-                icon: '⚠️',
-                confirmText: 'Уйти без сохранения',
-                cancelText: 'Остаться'
-            });
-            if (confirmed) {
-                window._allowNavigation = true;
-                history.back();
-            }
-        };
-        window.addEventListener('popstate', this._navPopstateHandler);
-
-        // Перехватываем клики по ссылкам
+        // Перехватываем клики по ссылкам. Хендлер храним в поле (стрелка
+        // сохраняет this=класс), чтобы снять его в _teardownEventHandlers
+        // (pfe-10/12).
         this._navClickHandler = async (e) => {
             // Игнорируем если навигация разрешена
             if (window._allowNavigation) return;
@@ -494,7 +609,14 @@ export class StorageManager {
                         Notifications.success('Изменения сохранены');
                     } catch (err) {
                         console.error('Ошибка сохранения:', err);
-                        Notifications.error('Не удалось сохранить изменения');
+                        if (err instanceof ContentConflictError) {
+                            // Конфликт версий: честное уведомление + остановка
+                            // авто-PUT (единая обработка); generic-тост — ложь
+                            // («не удалось» без причины и без судьбы правок).
+                            this.handleContentConflict(err, { explicit: true });
+                        } else {
+                            Notifications.error('Не удалось сохранить изменения');
+                        }
 
                         const continueAnyway = await DialogManager.show({
                             title: 'Ошибка сохранения',
@@ -519,6 +641,60 @@ export class StorageManager {
     }
 
     /**
+     * Решение о продолжении браузерной навигации back/forward при наличии
+     * несинхронизированных с БД правок.
+     *
+     * Собственного слушателя `popstate` у StorageManager НЕТ намеренно.
+     * Раньше их было два — этот страж и переключатель акта в ActsMenuManager;
+     * они висели на одном событии независимо, в непредсказуемом порядке
+     * (порядок init'ов двух модулей не гарантирован) и гонялись между собой:
+     * проверка «есть ли правки» синхронна, а диалог — нет, поэтому пока
+     * пользователь читал вопрос, переключение уже снимало лок со старого акта,
+     * брало лок на новый и подменяло AppState его контентом. Кнопка «Остаться»
+     * к этому моменту не имела смысла — оставаться было негде. Теперь владелец
+     * события один (обработчик popstate в ActsMenuManager), и он спрашивает
+     * эту функцию ДО того, как начнёт переключение.
+     *
+     * При отказе восстанавливаем адресную строку: popstate приходит уже после
+     * того, как браузер сменил URL, поэтому «остаться» — это дописать поверх
+     * целевой записи запись ПОКАЗАННОГО акта. Прежний страж пушил
+     * `window.location.href`, то есть URL цели, и созданная им запись не
+     * соответствовала показанному акту.
+     *
+     * При согласии — ничего: мы уже стоим на целевой записи истории. Прежний
+     * страж делал `history.back()`, и тот порождал второй popstate (второе
+     * переключение акта) и затирал forward-запись; он же навсегда взводил
+     * `window._allowNavigation`, глуша страж кликов по ссылкам до конца сессии.
+     *
+     * @param {number} shownActId - ID акта, который показан сейчас
+     * @param {string} shownUrl - URL этого акта (на него возвращаемся при отказе)
+     * @returns {Promise<boolean>} true — навигацию продолжаем
+     */
+    static async confirmHistoryNavigation(shownActId, shownUrl) {
+        if (window._allowNavigation) return true;
+        if (!this.hasUnsyncedChanges()) return true;
+
+        const confirmed = await DialogManager.show({
+            title: 'Несохраненные изменения',
+            message: 'У вас есть несохранённые изменения. Вернуться к предыдущей странице без сохранения?',
+            icon: '⚠️',
+            confirmText: 'Уйти без сохранения',
+            cancelText: 'Остаться'
+        });
+        if (!confirmed) {
+            // Мержим с history.state целевой записи (чтобы не терять чужих
+            // полей), но actId выставляем свой: запись описывает показанный
+            // акт, а не тот, куда вёл back/forward.
+            history.pushState(
+                {...(history.state || {}), actId: shownActId, _lockNavGuard: true},
+                '',
+                shownUrl
+            );
+        }
+        return confirmed;
+    }
+
+    /**
      * Снимает все слушатели и гасит таймеры StorageManager (pfe-10/12).
      *
      * Идемпотентно: безопасно вызывать повторно (поля занулены, unregister/
@@ -537,10 +713,6 @@ export class StorageManager {
         }
         if (typeof LifecycleHelper !== 'undefined') {
             LifecycleHelper.unregister('storage:unsaved-warning');
-        }
-        if (this._navPopstateHandler) {
-            window.removeEventListener('popstate', this._navPopstateHandler);
-            this._navPopstateHandler = null;
         }
         if (this._navClickHandler) {
             document.removeEventListener('click', this._navClickHandler);
@@ -606,11 +778,17 @@ export class StorageManager {
     /**
      * Помечает состояние как синхронизированное с БД.
      * Заодно сбрасывает offline-машинерию (предупреждение о сбое сохранения
-     * можно показывать снова, подписка на 'online' больше не нужна).
+     * можно показывать снова, подписка на 'online' больше не нужна) и
+     * остановку авто-PUT: «мы в синхроне с БД» опровергает «ретрай обречён».
+     * Это же снимает halt при in-page переключении акта — bootstrap нового
+     * акта (_loadActIntoView) зовёт markAsSyncedWithDB, и конфликт акта A
+     * не глушит автосейв акта B (destroy при смене акта не вызывается).
      */
     static markAsSyncedWithDB() {
         this._setState('saved');
         this._resetDbSaveFailureState();
+        this._dbAutoSaveHalted = false;
+        this._dbAutoSaveHaltCause = null;
     }
 
     /**
@@ -656,6 +834,40 @@ export class StorageManager {
      */
     static setBaseUpdatedAt(updatedAt) {
         this._baseUpdatedAt = updatedAt || null;
+    }
+
+    /**
+     * Серверный updated_at последней синхронизации (или null, если база не
+     * установлена). Справочное значение (метаданные снимка черновика);
+     * в OCC-проверке не участвует — см. getBaseContentVersion.
+     *
+     * @returns {string|null}
+     */
+    static getBaseUpdatedAt() {
+        return this._baseUpdatedAt;
+    }
+
+    /**
+     * Запоминает серверный acts.content_version (база OCC). Вызывается после
+     * успешного GET-контента (metadata.content_version) и успешного PUT
+     * (content_version из ответа). 0 — валидное значение; всё, что не целое
+     * число, сбрасывает базу в null (optimistic-проверка выключается).
+     *
+     * @param {number|null} version Счётчик версий контента с сервера
+     */
+    static setBaseContentVersion(version) {
+        this._baseContentVersion = Number.isInteger(version) ? version : null;
+    }
+
+    /**
+     * Текущая база OCC — acts.content_version последней синхронизации
+     * (или null, если база не установлена). Уходит эхом (тем же int) в
+     * expected_content_version каждого PUT /content.
+     *
+     * @returns {number|null}
+     */
+    static getBaseContentVersion() {
+        return this._baseContentVersion;
     }
 
     /**
@@ -724,7 +936,10 @@ export class StorageManager {
             const snapshot = {
                 actId,
                 savedAt: new Date().toISOString(),
+                // Справочное поле (диагностика: по какой серверной метке снят
+                // черновик). Решение о восстановлении принимает baseContentVersion.
                 baseUpdatedAt: this._baseUpdatedAt,
+                baseContentVersion: this._baseContentVersion,
                 version: 2,
                 // B-16: flush зависших правок + сериализация одной воронкой —
                 // снимок не уедет без последних символов активного редактора.
@@ -872,6 +1087,20 @@ export class StorageManager {
             })
             .catch((err) => {
                 console.error('B-3: аварийное сохранение в БД не удалось:', err);
+                // Причина отказа (конфликт версий / потеря лока) объясняется
+                // отдельным честным уведомлением и взводит halt. Generic-сбои
+                // сюда НЕ отдаём: _notifyDbSaveFailure обещал бы «правки
+                // сохранены локально; повторная попытка — автоматически», а
+                // локально их как раз сохранить и не удалось.
+                if (err instanceof ContentConflictError) {
+                    this.handleContentConflict(err);
+                } else if (err instanceof LockLostError) {
+                    this._handleDbSaveFailure(err);
+                }
+                // Совет экспортировать обязателен при ЛЮБОЙ причине отказа:
+                // сюда мы попали из-за неудачной записи снимка в localStorage,
+                // так что «правки защищены черновиком» здесь неверно — PUT не
+                // прошёл, снимок не записался, правки живут только в памяти.
                 Notifications.error(
                     'Локальное хранилище переполнено, а сохранить в базу данных не удалось. '
                     + 'Экспортируйте акт в файл, чтобы не потерять изменения.'
@@ -930,6 +1159,79 @@ export class StorageManager {
     }
 
     /**
+     * Ключ localStorage бэкапа конфликтного черновика (конвенция префиксов —
+     * как у audit_workstation_state).
+     * @private
+     * @param {number|string} actId ID акта
+     * @returns {string}
+     */
+    static _conflictBackupKey(actId) {
+        return `${this.CONFLICT_BACKUP_KEY_PREFIX}:${actId}`;
+    }
+
+    /**
+     * Перемещает текущий снимок-черновик акта в бэкап-ключ конфликта.
+     *
+     * Вызывается при dismiss (Escape/клик мимо) диалога конфликта: обычный
+     * снимок нельзя оставлять на месте — первая же пометка dirty после
+     * загрузки (даже фоновая нормализация) перезаписала бы его DB-контентом
+     * со свежей базой, и конфликтный черновик молча погиб бы. В бэкап-ключе
+     * его штатная перезапись не достаёт; диалог конфликта вернётся при
+     * следующем открытии акта (_maybeRestoreDraft проверяет бэкап).
+     *
+     * @param {number|string} actId ID акта
+     */
+    static stashConflictSnapshot(actId) {
+        const snapshot = this.readSnapshot(actId);
+        if (!snapshot) return;
+        try {
+            localStorage.setItem(this._conflictBackupKey(actId), JSON.stringify(snapshot));
+            this.removeSnapshot(actId);
+        } catch (error) {
+            // Бэкап не записался (quota) — оставляем обычный снимок на месте:
+            // хоть какой-то носитель правок лучше, чем никакого.
+            console.error('Не удалось отложить конфликтный черновик в бэкап:', error);
+        }
+    }
+
+    /**
+     * Читает бэкап конфликтного черновика акта.
+     * Повреждённый (не-JSON) бэкап удаляется, возвращается null.
+     *
+     * @param {number|string} actId ID акта
+     * @returns {Object|null} Снимок той же формы, что readSnapshot, или null
+     */
+    static readConflictBackup(actId) {
+        const key = this._conflictBackupKey(actId);
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (error) {
+            console.error('Повреждённый бэкап конфликтного черновика — удаляем:', error);
+            try {
+                localStorage.removeItem(key);
+            } catch { /* ignore */ }
+            return null;
+        }
+    }
+
+    /**
+     * Удаляет бэкап конфликтного черновика акта.
+     * Вызывается при явном выборе судьбы бэкапа в диалоге конфликта
+     * (восстановили либо оставили версию из БД) и для протухших бэкапов.
+     *
+     * @param {number|string} actId ID акта
+     */
+    static removeConflictBackup(actId) {
+        try {
+            localStorage.removeItem(this._conflictBackupKey(actId));
+        } catch (error) {
+            console.error('Ошибка удаления бэкапа конфликтного черновика:', error);
+        }
+    }
+
+    /**
      * Удаляет ПРОТУХШИЕ снимки других актов и legacy-ключи старого формата.
      *
      * PERSIST-3: снимки соседних актов больше НЕ стираются огулом — иначе
@@ -943,12 +1245,25 @@ export class StorageManager {
      */
     static _purgeForeignSnapshots(currentActId) {
         const prefix = `${AppConfig.localStorage.stateKeyPrefix}:`;
+        const conflictPrefix = `${this.CONFLICT_BACKUP_KEY_PREFIX}:`;
+        const viewPosPrefix = VIEW_POSITION_KEY_PREFIX;
         const currentKey = this._snapshotKey(currentActId);
         const now = Date.now();
         const toRemove = [];
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
-            if (!key || !key.startsWith(prefix) || key === currentKey) {
+            if (!key) continue;
+            // Бэкапы конфликтных черновиков (в т.ч. текущего акта) протухают
+            // тем же TTL: свежий бэкап — носитель правок (не трогаем), стухший
+            // за 7 дней явно заброшен — высвобождаем место.
+            const isSnapshotKey = key.startsWith(prefix) && key !== currentKey;
+            const isConflictKey = key.startsWith(conflictPrefix);
+            // Позиции просмотра (шаг/скролл) — по одной на каждый когда-либо
+            // открытый акт. Правок они не хранят, но растут монотонно, а
+            // сметать их некому: этот TTL-проход — единственная точка уборки
+            // per-act ключей. Свежую (в т.ч. текущего акта) сохраняем.
+            const isViewPosKey = key.startsWith(viewPosPrefix);
+            if (!isSnapshotKey && !isConflictKey && !isViewPosKey) {
                 continue;
             }
             if (this._isForeignSnapshotStale(key, now)) {
@@ -1204,8 +1519,8 @@ export class StorageManager {
 
     /**
      * Очищает все таймеры и снимает слушатели при уничтожении.
-     * pfe-10: помимо таймеров снимает beforeunload/click/popstate, иначе
-     * после destroy старые обработчики продолжали висеть на window/document.
+     * pfe-10: помимо таймеров снимает beforeunload/click, иначе после destroy
+     * старые обработчики продолжали висеть на window/document.
      */
     static destroy() {
         if (this._saveTimeout) {
@@ -1213,10 +1528,14 @@ export class StorageManager {
             this._saveTimeout = null;
         }
 
-        // Гасит периодические интервалы + снимает beforeunload/click/popstate.
+        // Гасит периодические интервалы + снимает beforeunload/click.
         this._teardownEventHandlers();
 
         this._resetDbSaveFailureState();
+        // Остановка авто-PUT (409-конфликт/потеря лока) действует «до
+        // перезагрузки» — teardown сессии конструктора её и завершает.
+        this._dbAutoSaveHalted = false;
+        this._dbAutoSaveHaltCause = null;
 
         // Сбрасываем счётчик трекинга: teardown не должен оставить отслеживание
         // выключенным, если асинхронная операция (save/generate/load) отключила

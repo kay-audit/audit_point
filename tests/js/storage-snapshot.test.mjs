@@ -3,14 +3,18 @@
  *
  * Гарантии:
  *  - снимок пишется под per-act ключом `audit_workstation_state:{actId}`;
- *  - форма снимка: {actId, savedAt, baseUpdatedAt, version, data},
+ *  - форма снимка: {actId, savedAt, baseUpdatedAt (справочное),
+ *    baseContentVersion (база OCC), version, data},
  *    data = результат ЕДИНОГО AppState.exportData() (тот же сериализатор,
  *    что и body PUT /content);
  *  - при записи удаляются снимки других актов и legacy-ключи старого формата;
  *  - в состоянии 'saved' (всё синхронизировано) снимок не пишется;
  *  - повреждённый снимок при чтении удаляется;
  *  - applyRestoredDraftState помечает восстановленный черновик
- *    несинхронизированным и переписывает снимок.
+ *    несинхронизированным и переписывает снимок;
+ *  - бэкап конфликтного черновика (`audit_workstation_conflict:{actId}`):
+ *    stashConflictSnapshot перемещает снимок в бэкап-ключ, протухшие бэкапы
+ *    чистятся тем же TTL, что чужие снимки.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
@@ -41,6 +45,7 @@ beforeEach(() => {
   AppState.textBlocks = {};
   AppState.violations = {};
   StorageManager.setBaseUpdatedAt('2026-06-11T10:00:00.123456');
+  StorageManager.setBaseContentVersion(5);
   StorageManager._setState('unsaved');
 });
 
@@ -48,6 +53,7 @@ afterEach(() => {
   StorageManager.destroy();
   StorageManager._setState('saved');
   StorageManager.setBaseUpdatedAt(null);
+  StorageManager.setBaseContentVersion(null);
   globalThis.currentActId = null;
 });
 
@@ -62,6 +68,7 @@ test('saveState пишет снимок под per-act ключом с полн�
   assert.equal(snapshot.actId, 7);
   assert.equal(snapshot.version, 2);
   assert.equal(snapshot.baseUpdatedAt, '2026-06-11T10:00:00.123456');
+  assert.equal(snapshot.baseContentVersion, 5, 'база OCC — в конверте снимка');
   assert.ok(Number.isFinite(Date.parse(snapshot.savedAt)), 'savedAt — валидная ISO-метка');
 
   // data — результат exportData(): тот же сериализатор, что и body PUT
@@ -169,6 +176,72 @@ test('applyRestoredDraftState помечает черновик несинхро
   const snap = StorageManager.readSnapshot(7);
   assert.ok(snap, 'снимок переписан свежими метаданными');
   assert.equal(snap.baseUpdatedAt, '2026-06-11T10:00:00.123456');
+  assert.equal(snap.baseContentVersion, 5, 'свежая база OCC в переписанном снимке');
+});
+
+// ─── Бэкап конфликтного черновика ────────────────────────────────────────────
+
+test('stashConflictSnapshot перемещает снимок в бэкап-ключ (оригинал удаляется)', () => {
+  StorageManager.saveState(true);
+  const original = StorageManager.readSnapshot(7);
+
+  StorageManager.stashConflictSnapshot(7);
+
+  assert.equal(localStorage.getItem('audit_workstation_state:7'), null,
+    'обычный снимок удалён — штатная перезапись его больше не достанет');
+  const backup = StorageManager.readConflictBackup(7);
+  assert.deepEqual(backup, original, 'бэкап — точная копия снимка');
+});
+
+test('stashConflictSnapshot без снимка — no-op', () => {
+  StorageManager.stashConflictSnapshot(7);
+  assert.equal(StorageManager.readConflictBackup(7), null);
+});
+
+test('removeConflictBackup удаляет бэкап; повреждённый бэкап при чтении удаляется', () => {
+  StorageManager.saveState(true);
+  StorageManager.stashConflictSnapshot(7);
+  StorageManager.removeConflictBackup(7);
+  assert.equal(localStorage.getItem('audit_workstation_conflict:7'), null);
+
+  localStorage.setItem('audit_workstation_conflict:7', '{битый json');
+  assert.equal(StorageManager.readConflictBackup(7), null);
+  assert.equal(localStorage.getItem('audit_workstation_conflict:7'), null, 'битый бэкап удалён');
+});
+
+test('PERSIST-3/TTL: протухший бэкап конфликта чистится при записи снимка, свежий — выживает', () => {
+  const now = Date.now();
+  const freshSavedAt = new Date(now - 60 * 1000).toISOString();
+  const staleSavedAt = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+  // Свежий бэкап ТЕКУЩЕГО акта (dismiss прошлой сессии) и протухший чужой.
+  localStorage.setItem('audit_workstation_conflict:7',
+    JSON.stringify({ actId: 7, savedAt: freshSavedAt }));
+  localStorage.setItem('audit_workstation_conflict:5',
+    JSON.stringify({ actId: 5, savedAt: staleSavedAt }));
+
+  StorageManager.saveState(true);
+
+  assert.ok(localStorage.getItem('audit_workstation_conflict:7'),
+    'свежий бэкап — носитель правок, не трогаем (даже текущего акта)');
+  assert.equal(localStorage.getItem('audit_workstation_conflict:5'), null,
+    'заброшенный бэкап (старше 7 дней) удалён');
+});
+
+test('PERSIST-3/TTL: позиции просмотра чистятся тем же TTL — иначе копились бы по одной на акт', () => {
+  const now = Date.now();
+  // Позиция просмотра пишется на КАЖДЫЙ когда-либо открытый акт, и этот
+  // проход — единственная точка уборки per-act ключей.
+  localStorage.setItem('audit_workstation_viewpos:5',
+    JSON.stringify({ step: 1, savedAt: new Date(now - 60 * 1000).toISOString() }));
+  localStorage.setItem('audit_workstation_viewpos:6',
+    JSON.stringify({ step: 2, savedAt: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString() }));
+
+  StorageManager.saveState(true);
+
+  assert.ok(localStorage.getItem('audit_workstation_viewpos:5'),
+    'свежая позиция (акт в работе) сохраняется');
+  assert.equal(localStorage.getItem('audit_workstation_viewpos:6'), null,
+    'позиция давно заброшенного акта удалена');
 });
 
 test('getLastSaveTimestamp читает savedAt снимка текущего акта', () => {

@@ -6,11 +6,11 @@
  * Гарантирует одиночный unlock: предотвращает дублирующее снятие блокировки через sendBeacon.
  */
 import { loadActConfig } from './act-config.js';
-import { ChangelogTracker } from './changelog-tracker.js';
 import { InactivityWatchdog } from './inactivity-watchdog.js';
 import { LifecycleHelper } from './lifecycle-helper.js';
 import { AppState } from './state/state-core.js';
 import { StorageManager } from './storage-manager.js';
+import { APIClient, ContentConflictError, LockLostError } from '../shared/api.js';
 import { AppConfig } from '../shared/app-config.js';
 import { AuthManager } from '../shared/auth.js';
 import { DialogManager } from '../shared/dialog/dialog-confirm.js';
@@ -604,13 +604,38 @@ export class LockManager {
                 StorageManager.allowUnload();
             }
 
-            const effectiveActId = this._actId || (typeof window !== 'undefined' ? window.currentActId : null);
+            // Роли РАЗВЯЗАНЫ. Контент выходного save собирается из AppState,
+            // значит адресуется актом, который в AppState и лежит
+            // (window.currentActId); лок снимается с того акта, который реально
+            // залочен (this._actId). Прежний общий effectiveActId
+            // (this._actId || window.currentActId) склеивал обе роли: при
+            // рассинхроне владения содержимое показанного акта уезжало PUT'ом
+            // в ЧУЖОЙ, залоченный акт. Рассинхрон штатно не возникает
+            // (переключение и back/forward переносят лок), но цена ошибки —
+            // порча данных, поэтому адресация save'а не полагается на лок.
+            // Побочно закрыт случай страницы списка актов: там AppState пуст,
+            // но модуль загружен (LockManager импортирует его статически), а
+            // window.currentActId не задан — save пропускается, вместо того
+            // чтобы увести пустое состояние в редактируемый по метаданным акт.
+            const contentActId = (typeof window !== 'undefined' ? window.currentActId : null);
+            const lockedActId = this._actId;
+            if (lockedActId && contentActId && lockedActId !== contentActId) {
+                console.warn(
+                    `[LockManager] Владение локом разошлось с показанным актом:`
+                    + ` залочен ${lockedActId}, в AppState ${contentActId}.`
+                    + ' Сохраняем показанный, разблокируем залоченный.'
+                );
+            }
             const username = AuthManager?.getCurrentUser?.() || null;
-            const messageFlag = action === 'autoExit'
+            // Флаг для плашки на списке актов (session-exit-notice.js). Дефолт —
+            // «вышли с сохранением»; при упавшем save ниже переопределяется на
+            // честный: 409 → sessionLockLost, прочее → sessionExitSaveFailed.
+            // Плашки об успехе НЕ должны показываться, когда контент не в БД.
+            let messageFlag = action === 'autoExit'
                 ? 'sessionAutoExited'
                 : 'sessionExitedWithSave';
 
-            console.log(`LockManager: выход (${action}) начат… effectiveActId=${effectiveActId}`);
+            console.log(`LockManager: выход (${action}) начат… сохраняем ${contentActId}, разблокируем ${lockedActId}`);
 
             if (typeof Notifications !== 'undefined' && Notifications.warning) {
                 Notifications.warning('Сессия истекла. Сохраняем акт…');
@@ -619,50 +644,60 @@ export class LockManager {
             try {
                 // --- 1️⃣ Сохраняем акт ТОЛЬКО если есть AppState (значит открыт в конструкторе) ---
                 if (typeof AppState !== 'undefined' && AppState?.exportData) {
-                    if (Number.isInteger(effectiveActId) && effectiveActId > 0) {
+                    if (Number.isInteger(contentActId) && contentActId > 0) {
                         try {
-                            const data = AppState.exportData();
-                            // Прикрепляем changelog в тот же PUT — серверная аудит-запись синхронна
-                            // с фактическим сохранением контента, без отдельного запроса.
-                            if (typeof ChangelogTracker !== 'undefined' && typeof ChangelogTracker.flush === 'function') {
-                                const changelog = ChangelogTracker.flush();
-                                if (changelog && changelog.length > 0) {
-                                    data.changelog = changelog;
+                            // Выходной save идёт ЕДИНЫМ путём APIClient.saveActContent —
+                            // тем же, что Ctrl+S и периодика: общий in-flight гард
+                            // (+опубликованный _saveInFlightPromise, который чтит
+                            // forceSaveToDb), таймаут, flush+эпоха-гейт finalizeDbSave,
+                            // разбор 409 (_parseConflictError), обновление баз OCC.
+                            // Прежний сырой fetch дублировал ~90 строк и ставил гард
+                            // без промиса — forceSaveToDb проскакивал wait и слал
+                            // конкурентный PUT. Дожидаемся чужого PUT (иначе
+                            // saveActContent no-op'нется по гарду); между выходом из
+                            // цикла и вызовом нет await — гард захватывается синхронно.
+                            while (APIClient._saveInFlight && APIClient._saveInFlightPromise) {
+                                try {
+                                    await APIClient._saveInFlightPromise;
+                                } catch {
+                                    /* чужой PUT упал — выходной save всё равно нужен */
                                 }
                             }
-                            const saveResp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${effectiveActId}/content`), {
-                                method: 'PUT',
-                                headers: {
-                                    'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify(data)
-                            });
-
-                            if (!saveResp.ok) {
-                                console.error(`[LockManager] Ошибка сохранения контента (код ${saveResp.status})`);
-                            } else {
-                                console.log('[LockManager] Контент акта сохранён');
-                                // #5: PUT подтверждён — коммитим отложенный снимок аудита нарушений.
-                                window.ViolationAudit?.confirmSave?.();
-                                // Синхронизируем флаг StorageManager после успешного сохранения
-                                if (typeof StorageManager !== 'undefined' && typeof StorageManager.markAsSyncedWithDB === 'function') {
-                                    StorageManager.markAsSyncedWithDB();
-                                }
+                            const saved = await APIClient.saveActContent(contentActId, { saveType: 'manual' });
+                            // Гард in-flight отдаёт null вместо исключения:
+                            // молча считать это успехом нельзя — плашка соврала
+                            // бы «вышли с сохранением» при неуехавшем контенте.
+                            if (!saved) {
+                                throw new Error('Сохранение пропущено: другой PUT ещё в полёте');
                             }
+                            console.log('[LockManager] Контент акта сохранён');
                         } catch (saveErr) {
+                            // Контент НЕ в БД: плашка на списке актов обязана быть
+                            // честной, а не «вышли с сохранением». Снимок-черновик
+                            // остаётся в localStorage носителем правок (диалог
+                            // конфликта/восстановления предложит выбор при открытии).
+                            if (saveErr instanceof ContentConflictError) {
+                                // Конфликт версий — свой флаг: плашка «лок снят по
+                                // бездействию» лгала бы о причине.
+                                messageFlag = 'sessionExitContentConflict';
+                            } else if (saveErr instanceof LockLostError) {
+                                messageFlag = 'sessionLockLost';
+                            } else {
+                                messageFlag = 'sessionExitSaveFailed';
+                            }
                             console.error('LockManager: ошибка при сохранении контента конструктора:', saveErr);
                         }
                     } else {
-                        console.warn('[LockManager] _initiateExit: actId невалиден, save пропущен');
+                        console.warn('[LockManager] _initiateExit: акт в AppState не определён, save пропущен');
                     }
                 } else {
                     console.log('[LockManager] AppState отсутствует — пропускаем сохранение (страница метаданных)');
                 }
 
                 // --- 2️⃣ Снимаем блокировку ---
-                if (Number.isInteger(effectiveActId) && effectiveActId > 0 && username) {
+                if (Number.isInteger(lockedActId) && lockedActId > 0 && username) {
                     try {
-                        const resp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${effectiveActId}/unlock`), {
+                        const resp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${lockedActId}/unlock`), {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -672,7 +707,7 @@ export class LockManager {
                         if (!resp.ok) {
                             console.warn(`[LockManager] Ошибка unlock (код ${resp.status})`);
                         } else {
-                            console.log(`[LockManager] Акт ${effectiveActId} успешно разблокирован (exit)`);
+                            console.log(`[LockManager] Акт ${lockedActId} успешно разблокирован (exit)`);
                         }
                     } catch (unlockErr) {
                         console.error('[LockManager] Ошибка сети при unlock:', unlockErr);

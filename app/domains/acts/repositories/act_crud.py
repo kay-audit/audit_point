@@ -635,7 +635,7 @@ class ActCrudRepository(BaseRepository):
                 needs_created_date, needs_directive_number,
                 needs_invoice_check, needs_service_note,
                 validation_status, validation_issues,
-                created_at, updated_at, created_by,
+                created_at, updated_at, content_version, created_by,
                 last_edited_by, last_edited_at
             FROM {self.acts}
             WHERE id = $1
@@ -712,6 +712,7 @@ class ActCrudRepository(BaseRepository):
             validation_issues=_parse_validation_issues(act_row["validation_issues"]),
             created_at=act_row["created_at"],
             updated_at=act_row["updated_at"],
+            content_version=act_row["content_version"],
             created_by=act_row["created_by"],
             last_edited_by=act_row["last_edited_by"],
             last_edited_at=act_row["last_edited_at"],
@@ -720,6 +721,28 @@ class ActCrudRepository(BaseRepository):
     async def get_act_by_id(self, act_id: int) -> ActResponse:
         """Получает полную информацию об акте по его ID."""
         return await self._fetch_act(act_id)
+
+    async def get_edit_stamp(self, act_id: int) -> dict:
+        """Метка последнего изменения СОДЕРЖИМОГО для optimistic-проверки.
+
+        content_version — счётчик версий контента (инкрементируется только
+        _update_edit_timestamp при сохранении контента, НЕ-контентные записи
+        его не трогают). SELECT ... FOR UPDATE: вызывается ВНУТРИ транзакции
+        записи контента, чтобы конкурирующее сохранение дождалось коммита и
+        увидело свежий счётчик — между проверкой и записью нет TOCTOU-окна.
+        """
+        row = await self.conn.fetchrow(
+            f"""
+            SELECT content_version, last_edited_by, last_edited_at
+            FROM {self.acts}
+            WHERE id = $1
+            FOR UPDATE
+            """,
+            act_id,
+        )
+        if not row:
+            raise ActNotFoundError(f"Акт ID={act_id} не найден")
+        return dict(row)
 
     async def get_act_by_id_for_update(self, act_id: int) -> ActResponse:
         """Получает акт с блокировкой строки (SELECT ... FOR UPDATE)."""

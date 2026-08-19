@@ -21,11 +21,18 @@ export class DialogManager extends DialogBase {
      * @param {boolean} [options.hideConfirm=false] - Скрыть кнопку подтверждения
      * @param {boolean} [options.allowEscape=true] - Разрешить закрытие по Escape
      * @param {boolean} [options.allowOverlayClose=true] - Разрешить закрытие кликом вне диалога
+     * @param {*} [options.escapeResult] - Результат резолва при закрытии Escape/кликом вне
+     *                                     диалога ВМЕСТО дефолтного (false, при hideCancel —
+     *                                     true). Позволяет вызывающей стороне отличить
+     *                                     случайное закрытие от явной кнопки отмены
+     *                                     (например, диалог конфликта черновика не должен
+     *                                     удалять снимок по Escape).
      * @param {Function} [options.onMount] - Колбэк, синхронно вызываемый сразу после добавления overlay в DOM.
      *                                       Получает overlay-элемент и close-handle: `({ overlay, close })`.
      *                                       `close(result)` программно закрывает диалог и резолвит промис.
      *                                       Используйте вместо `querySelector('.custom-dialog-overlay:last-child')` — без race.
-     * @returns {Promise<boolean>} Promise, который резолвится true при подтверждении, false при отмене
+     * @returns {Promise<boolean|*>} Promise: true при подтверждении, false при отмене кнопкой,
+     *                               escapeResult (если задан) при Escape/клике вне диалога
      */
     static show(options = {}) {
         const {
@@ -39,6 +46,7 @@ export class DialogManager extends DialogBase {
             hideConfirm = false,
             allowEscape = true,
             allowOverlayClose = true,
+            escapeResult = undefined,
             onMount = null
         } = options;
 
@@ -84,9 +92,13 @@ export class DialogManager extends DialogBase {
             }
 
             // Определяем результат при закрытии Esc/overlay
+            // escapeResult задан -> он и возвращается (вызывающая сторона
+            //   отличает случайное закрытие от явной кнопки отмены)
             // hideCancel=true -> закрытие возвращает true (как подтверждение)
             // hideCancel=false -> закрытие возвращает false (отмена)
-            const closeResult = hideCancel ? true : false;
+            const closeResult = escapeResult !== undefined
+                ? escapeResult
+                : (hideCancel ? true : false);
 
             // Настраиваем закрытие по клику вне диалога (если разрешено)
             if (allowOverlayClose) {

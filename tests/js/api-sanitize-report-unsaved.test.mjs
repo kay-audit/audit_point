@@ -42,6 +42,7 @@ beforeEach(() => {
   };
   window.StorageManager = {
     setBaseUpdatedAt() {},
+    setBaseContentVersion() {},
     disableTracking() {},
     enableTracking() {},
     markAsUnsaved() { markAsUnsavedCalls++; },

@@ -13,7 +13,11 @@ from app.domains.acts.block_types import (
     NODE_TYPE_TEXTBLOCK,
     NODE_TYPE_VIOLATION,
 )
-from app.domains.acts.exceptions import AccessDeniedError, ActValidationError
+from app.domains.acts.exceptions import (
+    AccessDeniedError,
+    ActValidationError,
+    ContentConflictError,
+)
 from app.domains.acts.repositories.act_access import ActAccessRepository
 from app.domains.acts.repositories.act_crud import ActCrudRepository
 from app.domains.acts.repositories.act_content import ActContentRepository
@@ -130,6 +134,14 @@ class ActContentService:
         validation_status = status_from_issues(validation_issues)
 
         async with self.conn.transaction():
+            # Optimistic-проверка конкурентного редактирования (две вкладки
+            # одного пользователя, перехват истёкшего лока — сценарии, которые
+            # Redis-лок не закрывает). Чтение счётчика — SELECT ... FOR UPDATE
+            # внутри этой же транзакции: конкурирующее сохранение ждёт нашего
+            # коммита и видит уже свежий content_version.
+            if data.expected_content_version is not None:
+                await self._check_content_conflict(act_id, data.expected_content_version)
+
             # Вычисляем diff ДО сохранения
             diff = await self._audit.compute_content_diff(act_id, data)
             diff["save_type"] = data.saveType
@@ -194,6 +206,28 @@ class ActContentService:
         # каждом ручном сохранении плодил записи (INSERT без дедупликации) —
         # поэтому убран. Toast о статусе остаётся на фронте (api.js).
         return result
+
+    async def _check_content_conflict(self, act_id: int, expected: int) -> None:
+        """Сверяет expected_content_version клиента с текущим acts.content_version.
+
+        Счётчик инкрементируется только сохранением контента, поэтому
+        расхождение означает, что с момента загрузки клиентского состояния
+        контент акта сохранил кто-то другой (НЕ-контентные записи — правка
+        метаданных, пересчёт total_parts — счётчик не трогают и ложного 409
+        не дают). При конфликте — ContentConflictError (409), транзакция
+        откатывается, ничего не записано.
+        """
+        stamp = await self._crud.get_edit_stamp(act_id)
+        current = stamp["content_version"]
+        if expected == current:
+            return
+        last_edited_at = stamp["last_edited_at"]
+        raise ContentConflictError(
+            "Содержимое акта изменено с момента загрузки — сохранение отклонено",
+            current_content_version=current,
+            last_edited_by=stamp["last_edited_by"],
+            last_edited_at=last_edited_at.isoformat() if last_edited_at else None,
+        )
 
     def _strip_dangling_refs(self, data: ActDataSchema) -> int:
         """Удаляет листовые узлы-зомби с висячей ссылкой на отсутствующую запись.

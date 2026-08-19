@@ -115,3 +115,65 @@ test('реальное изменение после self-assign по-прежн
     node.label = 'Новое имя';
     assert.ok(dirtyCalls > 0, 'настоящая мутация обязана пометить dirty');
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// UI-состояние (currentStep/selectedNode/selectedCells) вне dirty-трекинга:
+// эти поля не входят в exportData() и не являются контентом акта, поэтому
+// клики/навигация по ним не должны переключать статус «не сохранено».
+// ──────────────────────────────────────────────────────────────────────────
+
+test('AppState.selectedCells = [] (новый литерал) не помечает dirty', () => {
+    AppState.selectedCells = [];
+    dirtyCalls = 0;
+
+    AppState.selectedCells = [];
+
+    assert.equal(dirtyCalls, 0, 'выделение ячеек — UI-состояние, не контент акта');
+});
+
+test('AppState.currentStep = 2 не помечает dirty', () => {
+    AppState.currentStep = 2;
+
+    assert.equal(dirtyCalls, 0, 'переключение шага — UI-состояние');
+});
+
+test('AppState.selectedNode = "n51" не помечает dirty', () => {
+    AppState.selectedNode = 'n51';
+
+    assert.equal(dirtyCalls, 0, 'выбор узла в дереве — UI-состояние');
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Value-guard в top-level сеттере: переприсваивание того же raw-объекта
+// tracked-свойства (без self-assign через геттер) — защита в глубину.
+// ──────────────────────────────────────────────────────────────────────────
+
+test('top-level переприсваивание того же raw-объекта tracked-свойства не помечает dirty', () => {
+    const rawTables = _unwrap(AppState.tables);
+
+    AppState.tables = rawTables;
+
+    assert.equal(dirtyCalls, 0, 'тот же raw-объект, просто без proxy-обёртки — не изменение');
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Регрессия: реальные мутации контента по-прежнему помечают dirty
+// ──────────────────────────────────────────────────────────────────────────
+
+test('правка content текстового блока помечает dirty', () => {
+    AppState.textBlocks = { tb1: { id: 'tb1', nodeId: 'n51', content: 'старый' } };
+    dirtyCalls = 0;
+
+    AppState.textBlocks.tb1.content = 'новый';
+
+    assert.ok(dirtyCalls > 0, 'мутация текстового блока обязана пометить dirty');
+});
+
+test('правка вложенного поля нарушения помечает dirty', () => {
+    AppState.violations = { v1: { id: 'v1', nodeId: 'n51', description: { enabled: true, blocks: [] } } };
+    dirtyCalls = 0;
+
+    AppState.violations.v1.description.enabled = false;
+
+    assert.ok(dirtyCalls > 0, 'мутация поля нарушения обязана пометить dirty');
+});

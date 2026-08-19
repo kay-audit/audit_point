@@ -15,47 +15,42 @@ import { PreviewManager } from './preview/preview.js';
 import { RENDER_CLASSES } from './render-classes.js';
 import { AppState } from './state/state-core.js';
 import { StorageManager } from './storage-manager.js';
+import { loadViewPosition, saveViewPosition } from './state/view-position-store.js';
 import { AppConfig } from '../shared/app-config.js';
 import { Notifications } from '../shared/notifications.js';
 
 export class App {
-    // Базовые префиксы LS-ключей. Реальные ключи строятся через _getStepKey/_getScrollKey
-    // и включают act_id, чтобы шаг и скролл одного акта не подтекали в другой.
-    // Старые ключи без суффикса удаляются в _migrateLegacyKeys() при init.
-    static _stepKeyPrefix = 'constructor_current_step';
-    static _scrollKeyPrefix = 'constructor_scroll_positions';
-    static _stepStorageKey = 'constructor_current_step';   // legacy (для миграции)
-    static _scrollStorageKey = 'constructor_scroll_positions'; // legacy
+    /**
+     * Взводится ActsMenuManager вокруг await APIClient.loadActContent при
+     * переключении на другой акт (in-page switch и popstate): между
+     * resetForActSwitch (снимок позиции СТАРОГО акта) и присвоением
+     * window.currentActId НОВОГО акта window.currentActId какое-то время
+     * ещё указывает на старый. Пока флаг взведён, goToStep не персистит
+     * шаг — иначе шаг нового акта примешался бы в сохранённую позицию
+     * старого. Визуальное переключение шага не блокируется.
+     */
+    static _actSwitchInProgress = false;
 
     /**
-     * Возвращает per-act LS-ключ для текущего шага.
-     * Если currentActId ещё не задан — fallback на legacy-ключ.
+     * Отложенное восстановление позиции просмотра: поля скрытого шага ждут
+     * здесь до первого переключения на него (см. queueViewScrollRestore).
      * @private
+     * @type {{treeColumn?: number, previewColumn?: number, step2?: number, anchorNodeId?: string|null}|null}
      */
-    static _getStepKey() {
-        const id = window.currentActId;
-        return id ? `${this._stepKeyPrefix}:${id}` : this._stepStorageKey;
-    }
+    static _pendingViewRestore = null;
 
     /**
-     * Возвращает per-act LS-ключ для позиций скролла.
+     * pagehide-обработчик персиста позиции (снимается при повторной настройке).
      * @private
+     * @type {Function|null}
      */
-    static _getScrollKey() {
-        const id = window.currentActId;
-        return id ? `${this._scrollKeyPrefix}:${id}` : this._scrollStorageKey;
-    }
+    static _pagehidePersistHandler = null;
 
     /**
-     * Одноразовая миграция: удаляет legacy-ключи без actId, которые могли
-     * остаться от предыдущих версий и шадовить per-act ключи.
-     * @private
+     * @param {boolean} value
      */
-    static _migrateLegacyKeys() {
-        try {
-            localStorage.removeItem(this._stepStorageKey);
-            localStorage.removeItem(this._scrollStorageKey);
-        } catch { /* ignore */ }
+    static setActSwitchInProgress(value) {
+        this._actSwitchInProgress = value;
     }
 
     /**
@@ -78,12 +73,10 @@ export class App {
             this._initializeManagers();
             this._setupEventHandlers();
 
-            // Восстанавливаем шаг и позицию скролла из localStorage (per-act ключи).
-            this._restoreStep();
+            // Сохранение позиции просмотра при уходе со страницы. Восстановление
+            // шага/скролла — в APIClient._applyActContent (после отрисовки
+            // содержимого загруженного акта), не здесь.
             this._setupScrollPersistence();
-            // После _restoreStep/_restoreScroll legacy-значения уже подхвачены
-            // в per-act ключи — теперь чистим старые.
-            this._migrateLegacyKeys();
 
             // Применяем режим только чтения если активен
             if (AppConfig.readOnlyMode?.isReadOnly) {
@@ -248,36 +241,33 @@ export class App {
     /**
      * Переключение между шагами приложения
      * @param {number} stepNum - Номер шага (1 или 2)
+     * @param {Object} [options]
+     * @param {boolean} [options.persist=true] - Сохранять ли шаг в localStorage.
+     *   false — при восстановлении позиции из APIClient._applyActContent, где
+     *   window.currentActId ещё не гарантированно обновлён на загружаемый акт
+     *   (см. view-position-store.js).
+     * @param {boolean} [options.skipRender=false] - Не перерендеривать контент
+     *   шага (ItemsRenderer.renderAll / PreviewManager.update). true — при
+     *   восстановлении позиции: _applyActContent уже отрендерил содержимое
+     *   акта один раз, повторный рендер только дублирует работу. Тулбар шага 2
+     *   (initGlobalToolbar) и read-only-ограничения на контент всё равно
+     *   применяются — это не рендер, а разовая инициализация/политика.
      */
-    static goToStep(stepNum) {
+    static goToStep(stepNum, { persist = true, skipRender = false } = {}) {
         // Обновляем текущий шаг
         AppState.currentStep = stepNum;
-        try {
-            localStorage.setItem(this._getStepKey(), stepNum);
-        } catch { /* quota — ignore */ }
+        if (persist && !this._actSwitchInProgress && window.currentActId) {
+            this._saveViewPosition(window.currentActId, { step: stepNum });
+        }
 
         this._updateStepVisibility(stepNum);
-        this._handleStepTransition(stepNum);
+        this._handleStepTransition(stepNum, skipRender);
+
+        // Шаг стал видимым — самое время применить отложенную для него
+        // позицию скролла (на скрытом шаге присваивание scrollTop no-op).
+        this._flushPendingViewRestore();
 
         HelpManager.updateTooltip();
-    }
-
-    /**
-     * Восстанавливает шаг из localStorage
-     * @private
-     */
-    static _restoreStep() {
-        let saved = localStorage.getItem(this._getStepKey());
-        if (!saved && window.currentActId) {
-            // Fallback на legacy-ключ — мигрируем значение в per-act, legacy потом удалится.
-            saved = localStorage.getItem(this._stepStorageKey);
-        }
-        if (saved) {
-            const step = parseInt(saved, 10);
-            if (step === 2) {
-                this.goToStep(2);
-            }
-        }
     }
 
     /**
@@ -305,11 +295,15 @@ export class App {
      * Обработка специфичной логики при переходе на шаг
      * @private
      * @param {number} stepNum - Номер шага
+     * @param {boolean} [skipRender=false] - Пропустить повторный рендер контента
+     *   (см. goToStep). Тулбар/read-only-ограничения применяются в любом случае.
      */
-    static _handleStepTransition(stepNum) {
+    static _handleStepTransition(stepNum, skipRender = false) {
         if (stepNum === 2) {
             textBlockManager.initGlobalToolbar();
-            ItemsRenderer.renderAll();
+            if (!skipRender) {
+                ItemsRenderer.renderAll();
+            }
 
             // Применяем режим только чтения к новым элементам
             if (AppConfig.readOnlyMode?.isReadOnly) {
@@ -317,73 +311,220 @@ export class App {
             }
         } else {
             textBlockManager.hideToolbar();
-            requestAnimationFrame(() => PreviewManager.update());
+            if (!skipRender) {
+                requestAnimationFrame(() => PreviewManager.update());
+            }
         }
     }
 
     /**
-     * Настраивает сохранение позиций скролла при уходе со страницы
-     * и восстанавливает сохранённые позиции
+     * Настраивает сохранение позиции просмотра (скролл панелей + якорь) при
+     * уходе со страницы. Восстановление — в APIClient._applyActContent, не здесь:
+     * на момент App.init содержимое акта ещё не загружено.
      * @private
      */
     static _setupScrollPersistence() {
-        // Сохраняем позиции при уходе со страницы (через общий реестр beforeunload).
+        const persist = () => this.persistViewPositionForAct(window.currentActId);
+
+        // beforeunload — закрытие вкладки/обычная навигация; pagehide — доп. страховка
+        // для сценариев, где beforeunload не срабатывает (bfcache, мобильный Safari).
         if (typeof LifecycleHelper !== 'undefined') {
-            LifecycleHelper.registerBeforeUnload('app:scroll', () => this._saveScrollPositions());
+            LifecycleHelper.registerBeforeUnload('app:scroll', persist);
         } else {
-            window.addEventListener('beforeunload', () => this._saveScrollPositions());
+            window.addEventListener('beforeunload', persist);
         }
-
-        // Восстанавливаем позиции после полной отрисовки
-        requestAnimationFrame(() => this._restoreScrollPositions());
+        // Хендлер держим в поле и снимаем предыдущий: LifecycleHelper умеет
+        // только beforeunload, а анонимный pagehide-листенер снять нечем —
+        // повторный App.init стопкой копил бы их без шанса на отписку.
+        if (this._pagehidePersistHandler) {
+            window.removeEventListener('pagehide', this._pagehidePersistHandler);
+        }
+        this._pagehidePersistHandler = persist;
+        window.addEventListener('pagehide', persist);
     }
 
     /**
-     * Сохраняет позиции скролла всех панелей в localStorage
-     * @private
+     * Ставит в очередь восстановление скролла (и якоря шага 2) сохранённой
+     * позиции просмотра.
+     *
+     * Применить всё сразу нельзя: скрытый шаг — `display: none !important`,
+     * у его контейнеров нет бокса, и присваивание scrollTop молча ничего не
+     * делает (значение остаётся 0). Поэтому поля видимого сейчас шага
+     * применяются немедленно, а поля второго ждут в очереди до первого
+     * переключения на него (см. goToStep) — симметрично тому, как
+     * _captureScrollAndAnchor снимает позицию только видимого шага.
+     *
+     * @param {{scroll: {treeColumn: number, previewColumn: number, step2: number}, anchorNodeId: string|null}} pos
      */
-    static _saveScrollPositions() {
-        const positions = {};
-
-        const tree = document.querySelector('.tree-container');
-        if (tree) positions.tree = tree.scrollTop;
-
-        const preview = document.querySelector('.preview');
-        if (preview) positions.preview = preview.scrollTop;
-
-        const step2 = document.getElementById('step2');
-        if (step2) positions.step2 = step2.scrollTop;
-
-        try {
-            localStorage.setItem(this._getScrollKey(), JSON.stringify(positions));
-        } catch { /* quota — ignore */ }
+    static queueViewScrollRestore(pos) {
+        this._pendingViewRestore = {
+            treeColumn: pos.scroll.treeColumn,
+            previewColumn: pos.scroll.previewColumn,
+            step2: pos.scroll.step2,
+            anchorNodeId: pos.anchorNodeId,
+        };
+        this._flushPendingViewRestore();
     }
 
     /**
-     * Восстанавливает позиции скролла из localStorage (per-act ключ с fallback на legacy).
+     * Отменяет отложенное восстановление позиции (переключение на акт, у
+     * которого сохранённой позиции нет — иначе применилась бы позиция
+     * предыдущего акта).
+     */
+    static clearPendingViewRestore() {
+        this._pendingViewRestore = null;
+    }
+
+    /**
+     * Применяет отложенную позицию к тем шагам, которые видны сейчас;
+     * применённые поля из очереди убирает.
      * @private
      */
-    static _restoreScrollPositions() {
-        let saved = localStorage.getItem(this._getScrollKey());
-        if (!saved && window.currentActId) {
-            saved = localStorage.getItem(this._scrollStorageKey);
-        }
-        if (!saved) return;
+    static _flushPendingViewRestore() {
+        if (!this._pendingViewRestore) return;
+        requestAnimationFrame(() => {
+            const pending = this._pendingViewRestore;
+            if (!pending) return;
 
-        try {
-            const positions = JSON.parse(saved);
-
-            const tree = document.querySelector('.tree-container');
-            if (tree && positions.tree) tree.scrollTop = positions.tree;
-
-            const preview = document.querySelector('.preview');
-            if (preview && positions.preview) preview.scrollTop = positions.preview;
-
+            const step1 = document.getElementById('step1');
             const step2 = document.getElementById('step2');
-            if (step2 && positions.step2) step2.scrollTop = positions.step2;
-        } catch (e) {
-            console.error('Ошибка восстановления позиции скролла:', e);
+
+            if (step1 && !step1.classList.contains('hidden') && pending.treeColumn !== undefined) {
+                const treeColumn = document.getElementById('treeColumn');
+                if (treeColumn) treeColumn.scrollTop = pending.treeColumn;
+                const previewColumn = document.getElementById('previewColumn');
+                if (previewColumn) previewColumn.scrollTop = pending.previewColumn;
+                delete pending.treeColumn;
+                delete pending.previewColumn;
+            }
+            if (step2 && !step2.classList.contains('hidden') && pending.step2 !== undefined) {
+                this._restoreStep2Scroll(step2, pending.step2, pending.anchorNodeId);
+                delete pending.step2;
+                delete pending.anchorNodeId;
+            }
+
+            if (pending.treeColumn === undefined && pending.step2 === undefined) {
+                this._pendingViewRestore = null;
+            }
+        });
+    }
+
+    /**
+     * Восстанавливает позицию шага 2: по якорному узлу (устойчив к изменению
+     * контента), с откатом на сырой scrollTop, если узла больше нет.
+     * @private
+     * @param {HTMLElement} step2 - Контейнер шага 2
+     * @param {number} scrollTop - Сохранённый scrollTop
+     * @param {string|null} anchorNodeId - Сохранённый якорный узел
+     */
+    static _restoreStep2Scroll(step2, scrollTop, anchorNodeId) {
+        const itemsContainer = document.getElementById('itemsContainer') || step2;
+        const tree = window.treeManager;
+        if (anchorNodeId && tree?._findPreviewElement && tree?._performScroll) {
+            const target = tree._findPreviewElement(itemsContainer, anchorNodeId);
+            if (target) {
+                // Без _animateHighlight: восстановление позиции — не переход
+                // пользователя к узлу, подсветка здесь неуместна.
+                tree._performScroll(target);
+                return;
+            }
         }
+        step2.scrollTop = scrollTop;
+    }
+
+    /**
+     * Снимает скролл панелей и якорный узел превью — ТОЛЬКО для шага,
+     * который сейчас реально виден (.step-content без класса hidden).
+     * Скрытый шаг (display:none) даёт scrollTop=0 и нулевые rect'ы для всех
+     * элементов — если бы мы всё равно писали эти нули в scroll, merge в
+     * _saveViewPosition затёр бы честно сохранённую позицию видимого на тот
+     * момент шага. Поэтому поля скрытого шага просто отсутствуют в
+     * возвращаемом scroll (undefined) — _saveViewPosition оставляет для них
+     * прежнее значение.
+     * @private
+     * @returns {{scroll: {treeColumn?: number, previewColumn?: number, step2?: number}, anchorNodeId: string|null|undefined}}
+     */
+    static _captureScrollAndAnchor() {
+        const step1 = document.getElementById('step1');
+        const step2 = document.getElementById('step2');
+        const step1Visible = !!step1 && !step1.classList.contains('hidden');
+        const step2Visible = !!step2 && !step2.classList.contains('hidden');
+
+        const scroll = {};
+        let anchorNodeId;
+
+        if (step1Visible) {
+            const treeColumn = document.getElementById('treeColumn');
+            const previewColumn = document.getElementById('previewColumn');
+            scroll.treeColumn = treeColumn ? treeColumn.scrollTop : 0;
+            scroll.previewColumn = previewColumn ? previewColumn.scrollTop : 0;
+        }
+        if (step2Visible) {
+            scroll.step2 = step2.scrollTop;
+            anchorNodeId = this._findTopVisibleAnchorNodeId(step2);
+        }
+
+        return { scroll, anchorNodeId };
+    }
+
+    /**
+     * Находит id верхнего видимого пункта в контейнере шага 2 — якорь для
+     * восстановления скролла независимо от последующих изменений контента.
+     * @private
+     * @param {HTMLElement} step2 - Контейнер шага 2
+     * @returns {string|null}
+     */
+    static _findTopVisibleAnchorNodeId(step2) {
+        const items = step2.querySelectorAll('.item-block[data-node-id]');
+        const containerTop = step2.getBoundingClientRect().top;
+        for (const el of items) {
+            if (el.getBoundingClientRect().bottom > containerTop) {
+                return el.dataset.nodeId || null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Сливает частичное обновление позиции просмотра с уже сохранённой
+     * (по указанному actId явно — не полагается на window.currentActId).
+     * scroll мержится ПОПОЛЕВО (не заменяется целиком): _captureScrollAndAnchor
+     * отдаёт поля только видимого сейчас шага, поля скрытого — undefined и
+     * должны остаться прежними, а не обнулиться.
+     * @private
+     * @param {number|string} actId - ID акта
+     * @param {Object} partial - Частичное обновление ({step} и/или {scroll, anchorNodeId})
+     */
+    static _saveViewPosition(actId, partial) {
+        if (!actId) return;
+        const current = loadViewPosition(localStorage, actId) || {
+            step: 1,
+            scroll: { treeColumn: 0, previewColumn: 0, step2: 0 },
+            anchorNodeId: null,
+        };
+        const partialScroll = partial.scroll || {};
+        saveViewPosition(localStorage, actId, {
+            step: partial.step !== undefined ? partial.step : current.step,
+            scroll: {
+                treeColumn: partialScroll.treeColumn !== undefined ? partialScroll.treeColumn : current.scroll.treeColumn,
+                previewColumn: partialScroll.previewColumn !== undefined ? partialScroll.previewColumn : current.scroll.previewColumn,
+                step2: partialScroll.step2 !== undefined ? partialScroll.step2 : current.scroll.step2,
+            },
+            anchorNodeId: partial.anchorNodeId !== undefined ? partial.anchorNodeId : current.anchorNodeId,
+        });
+    }
+
+    /**
+     * Сохраняет полный снимок текущей позиции просмотра (шаг + скролл + якорь)
+     * под явно переданным actId. Используется в точках, где window.currentActId
+     * не гарантированно совпадает с сохраняемым актом (переключение акта —
+     * вызывается ДО перезаписи window.currentActId на новый акт).
+     * @param {number|string} actId - ID акта, для которого сохраняется позиция
+     */
+    static persistViewPositionForAct(actId) {
+        if (!actId) return;
+        const { scroll, anchorNodeId } = this._captureScrollAndAnchor();
+        this._saveViewPosition(actId, { step: AppState.currentStep, scroll, anchorNodeId });
     }
 
     /**
