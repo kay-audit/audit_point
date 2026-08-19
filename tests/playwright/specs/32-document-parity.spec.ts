@@ -90,14 +90,13 @@ test.describe('Кегль таблиц — документный, а не ин�
     const m = await page.evaluate((sel) => {
       const px = (el: Element) => parseFloat(getComputedStyle(el as HTMLElement).fontSize);
       const body = document.querySelector(sel) as HTMLElement;
-      // Тело текстблока увеличено CSS-зумом, а getComputedStyle отдаёт кегль ДО
-      // зума — экранный размер получается умножением. У таблицы зума нет, её
-      // множитель уже внутри кегля, поэтому сравнивать надо экранные величины.
-      const zoom = parseFloat(getComputedStyle(body).zoom as string) || 1;
       return {
         cell: px(document.querySelector('.editable-table td')!),
         header: px(document.querySelector('.editable-table th')!),
-        bodyOnScreen: px(body) * zoom,
+        body: px(body),
+        // Экранного множителя у поверхностей правки нет: кегль читается как
+        // есть, без поправки на zoom (см. следующий сценарий).
+        bodyZoom: parseFloat(getComputedStyle(body).zoom as string) || 1,
       };
     }, EDITOR);
 
@@ -107,7 +106,38 @@ test.describe('Кегль таблиц — документный, а не ин�
     // Шапка таблицы в DOCX того же кегля, что и данные (table_header_pt = 9).
     expect(m.header).toBeCloseTo(m.cell, 1);
     // Пропорция к телу — вордовская: 9pt / 12pt.
-    expect(m.cell / m.bodyOnScreen).toBeCloseTo(9 / 12, 2);
+    expect(m.cell / m.body).toBeCloseTo(9 / 12, 2);
+    expect(m.bodyZoom).toBe(1);
+  });
+
+  test('поверхности правки показывают печатный кегль без экранного множителя', async ({ page }) => {
+    await openStep2(page);
+    const vid = await createViolation(page);
+    await seedViolationBlocks(page, vid, 'violated', ['проба масштаба']);
+    await page.locator(violationBlocksSel(vid, 'violated') + ' .violation-textarea')
+      .first().waitFor({ state: 'visible', timeout: 5000 });
+
+    // Прежний zoom 1.25 убран (решение владельца): на шаге заполнения вокруг
+    // текста живёт масса элементов конструктора, и раздутый документ их
+    // вытеснял. Проверяем не конкретный кегль (он настраиваемый —
+    // ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT), а именно отсутствие множителя:
+    // накопленный zoom по всей цепочке предков обязан быть ровно 1.
+    const zooms = await page.evaluate((sels) => Object.fromEntries(
+      (sels as string[]).map((sel) => {
+        let node = document.querySelector(sel) as HTMLElement | null;
+        if (!node) return [sel, null];
+        let z = 1;
+        while (node) {
+          z *= parseFloat(getComputedStyle(node).zoom as string) || 1;
+          node = node.parentElement;
+        }
+        return [sel, z];
+      })
+    ), ['.textblock-editor', '.violation-textarea', '.editable-table td']);
+
+    for (const [sel, z] of Object.entries(zooms)) {
+      expect(z, sel + ' не должен масштабироваться').toBe(1);
+    }
   });
 
   test('вход в правку ячейки не меняет ни кегль, ни гарнитуру', async ({ page }) => {

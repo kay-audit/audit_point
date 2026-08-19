@@ -68,9 +68,6 @@
     color: var(--input-text);
     /* Печатный интервал — общий с текстблоком, листом превью и DOCX. */
     line-height: var(--doc-line-height);
-    /* Экранный зум читаемости — тот же, что у .textblock-editor: документная
-       правда остаётся в пунктах, комфорт даёт масштаб (typography.css). */
-    zoom: var(--doc-readability-zoom);
 }
 
 /* «Малые» поля — «Нарушено»/«Установлено» (small: true в реестре

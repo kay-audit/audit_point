@@ -35,7 +35,7 @@
     padding-bottom: var(--spacing-lg);
     /* Та же гарнитура и тот же кегль, что у ячейки в покое (table-base.css). */
     font-family: var(--doc-font-family);
-    font-size: var(--doc-font-size-table-screen);
+    font-size: var(--doc-font-size-small);
     line-height: var(--line-height-normal);
     box-sizing: border-box;
     outline: none;
