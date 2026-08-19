@@ -550,7 +550,7 @@ API истории и восстановления — роутер `app/domains
 
 Параметры форматирования управляются настройками `ACTS__FORMATTING__*` (`settings.py::FormattingSettings`; полная таблица переменных — §9.5 в [`../guides/deploy-and-configuration.md`](../guides/deploy-and-configuration.md)):
 
-- **DOCX**: `DOCX_IMAGE_WIDTH=4.0` (дюймы), `DOCX_CAPTION_FONT_SIZE=10`, `DOCX_MAX_HEADING_LEVEL=9`, `MAX_IMAGE_SIZE_MB=10.0`.
+- **DOCX**: `DOCX_IMAGE_WIDTH=4.0` (дюймы), `DOCX_MAX_HEADING_LEVEL=9`, `MAX_IMAGE_SIZE_MB=10.0`.
 - **Markdown**: `MARKDOWN_MAX_HEADING_LEVEL=6` (MD `#` ограничено 6).
 - **HTML-парсинг**: `HTML_PARSE_TIMEOUT=30`, `MAX_HTML_DEPTH=100`, `HTML_PARSE_CHUNK_SIZE=1000` — защита от bomb-нагрузки на парсер.
 - **Plain text**: `TEXT_HEADER_WIDTH=80`, `TEXT_INDENT_SIZE=2`.

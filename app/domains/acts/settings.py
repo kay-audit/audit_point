@@ -40,7 +40,6 @@ class FormattingSettings(BaseModel):
     # DOCX
     max_image_size_mb: float = 10.0
     docx_image_width: float = 4.0
-    docx_caption_font_size: int = 10
     docx_max_heading_level: int = 9
     # Text
     text_header_width: int = 80
