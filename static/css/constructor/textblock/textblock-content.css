@@ -78,13 +78,17 @@
     font-style: italic;
 }
 
-/* Отступы между абзацами */
-.textblock-editor p {
-    margin-bottom: var(--spacing-sm);
-}
-
-.textblock-editor p:last-child {
-    margin-bottom: 0;
+/* Абзац идёт тем же шагом, что строка: собственных вертикальных отступов у
+   блоков content нет. Так печатает и Word — render_block_segments зануляет
+   space_after у ВСЕХ сегментов текстблока, 3pt достаётся блоку целиком; так же
+   ведёт себя лист превью (.preview-sheet .preview-textblock-content > *).
+   Правило load-bearing: Enter порождает <div> (у него отступов и не было), а
+   вставка из Word — <p>, и один и тот же текст шёл РАЗНЫМ ритмом в зависимости
+   от происхождения (замер: 34.4px против 18.4px). UA-шный margin-top: 1em у <p>
+   вдобавок рос вместе с кеглем. */
+.textblock-editor p,
+.violation-textarea p {
+    margin: 0;
 }
 
 /* Форматированный текст */
@@ -110,13 +114,25 @@
     text-decoration-thickness: var(--textblock-underline-thickness);
 }
 
-/* Заголовки внутри редактора */
+/* Заголовки внутри редактора. Как и абзацы, своих вертикальных отступов не
+   несут: заголовки в content появляются только внешней вставкой (allowlist
+   пропускает h1-h6), и UA-margin разрывал бы ритм именно на вставленном куске —
+   тем сильнее, чем крупнее кегль (margin в em). */
 .textblock-editor h1,
 .textblock-editor h2,
-.textblock-editor h3 {
+.textblock-editor h3,
+.textblock-editor h4,
+.textblock-editor h5,
+.textblock-editor h6,
+.violation-textarea h1,
+.violation-textarea h2,
+.violation-textarea h3,
+.violation-textarea h4,
+.violation-textarea h5,
+.violation-textarea h6 {
     font-weight: var(--font-weight-semibold);
     line-height: var(--line-height-tight);
-    margin-bottom: var(--spacing-sm);
+    margin: 0;
     color: var(--text-primary);
 }
 

@@ -139,6 +139,23 @@ test('читаемость даётся зумом, а не подменой к�
     assert.doesNotMatch(previewPageCss, /\.preview-sheet\s*\{[^}]*zoom:/s);
 });
 
+test('блоки content в редакторе не добавляют собственный вертикальный отступ', () => {
+    // Enter даёт <div>, вставка из Word — <p>, внешняя вставка приносит h1-h6.
+    // У всех троих ритм обязан быть одинаковым: свои margin'ы дали бы разный шаг
+    // в зависимости от происхождения текста (замер: 34.4px против 18.4px).
+    const paraRule = editorContentCss.match(
+        /\.textblock-editor p,\s*\n\.violation-textarea p\s*\{([^}]*)\}/s,
+    );
+    assert.ok(paraRule, 'правило абзацев .textblock-editor p не найдено');
+    assert.match(paraRule[1], /margin:\s*0/, `у абзаца остался свой margin: ${paraRule[1]}`);
+
+    const headingRule = editorContentCss.match(
+        /\.textblock-editor h1,[^{]*\.violation-textarea h6\s*\{([^}]*)\}/s,
+    );
+    assert.ok(headingRule, 'правило заголовков редактора не найдено');
+    assert.match(headingRule[1], /margin:\s*0/, `у заголовка остался свой margin: ${headingRule[1]}`);
+});
+
 test('списки в редакторе не добавляют собственный вертикальный отступ', () => {
     const listRule = editorContentCss.match(
         /\.textblock-editor ul,\s*\n\.textblock-editor ol,[^{]*\{([^}]*)\}/s,
