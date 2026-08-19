@@ -49,8 +49,33 @@ export class ItemsTitleEditing {
         element.contentEditable = 'true';
         element.textContent = text;
         element.focus();
+        element.addEventListener('paste', this._onPastePlainText);
 
         this._selectAllText(element);
+    }
+
+    /**
+     * Вставка в подпись — только чистым текстом: форматирование, разметка и
+     * переводы строк из буфера отбрасываются (подпись однострочная).
+     * Ссылка на обработчик общая для всех подписей (статический метод, не
+     * замыкание) — повторный addEventListener на том же элементе браузер
+     * игнорирует, дубли слушателей не накапливаются при повторном входе
+     * в редактирование одного и того же узла.
+     * @param {ClipboardEvent} e - Событие вставки
+     * @private
+     */
+    static _onPastePlainText(e) {
+        e.preventDefault();
+
+        const raw = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+        // Переводы строк и табуляции схлопываем в один пробел вместе с
+        // окружающими пробелами: многострочный буфер должен лечь в одну строку.
+        const text = (raw || '').replace(/\s*[\r\n\t]+\s*/g, ' ');
+        if (!text) return;
+
+        // insertText сам заменяет выделение и двигает каретку, оставаясь
+        // в нативном undo — тот же путь, что у редактора текстблоков.
+        document.execCommand('insertText', false, text);
     }
 
     /**
@@ -75,6 +100,7 @@ export class ItemsTitleEditing {
     static _cleanupEditing(element) {
         element.contentEditable = 'false';
         element.classList.remove('editing');
+        element.removeEventListener('paste', this._onPastePlainText);
     }
 
     /**
@@ -229,6 +255,7 @@ export class ItemsTitleEditing {
      */
     static _cleanupTreeNodeEditing(labelElement, item, treeManager) {
         labelElement.contentEditable = 'false';
+        labelElement.removeEventListener('paste', this._onPastePlainText);
         item.classList.remove('editing');
         treeManager.editingElement = null;
     }
