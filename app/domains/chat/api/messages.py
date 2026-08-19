@@ -174,13 +174,27 @@ async def send_message(
         # channel_service строим здесь, а не через Depends: в off/adaptive он
         # не нужен. Соединения он не держит — работает на исполнителе БД.
         channel_service = get_agent_channel_service()
+        # bus.media пишем в формате Nanobot (data-URL inline, без type) — не
+        # chat_messages.content-блоки. Подтягиваем байты из chat_files через
+        # репо на том же исполнителе, что и file_service (тот же пул).
+        from app.db.executor import get_executor
+        from app.domains.chat.repositories.file_repository import FileRepository
+        from app.domains.chat.services.agent_channel import (
+            build_bus_media_from_file_blocks,
+        )
+
+        bus_media = await build_bus_media_from_file_blocks(
+            file_blocks,
+            conversation_id=conversation_id,
+            file_repo=FileRepository(get_executor()),
+        )
         question_uid = await channel_service.submit(
             conversation_id=conversation_id,
             user_id=username,
             assistant_message_id=assistant_message_id,
             text=message,
             mode="always",
-            media=file_blocks if file_blocks else None,
+            media=bus_media,
         )
         poller.subscribe(
             assistant_message_id=assistant_message_id,
