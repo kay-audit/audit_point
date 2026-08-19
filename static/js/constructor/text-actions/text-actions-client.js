@@ -39,9 +39,10 @@ window.correctText = correctText;
  * Формализовать нарушение: разложить свободный текст по полям карточки.
  * @param {string} text — свободный текст нарушения.
  * @param {{signal?: AbortSignal}} [opts]
- * @returns {Promise<{violated:string, established:string, reasons:string,
- *   measures:string, responsible:string, consequences:string,
+ * @returns {Promise<{violated:string, established:string, description:string,
+ *   reasons:string, measures:string, responsible:string, consequences:string,
  *   recommendations:string[]}>} извлечённые поля (пустые — что LLM не нашла;
+ *   `description` — метрики нарушения списком, единственное поле с `<ul>`;
  *   `measures` — «Принятые меры», поле карточки под «Причинами»; `recommendations` —
  *   дисплей-онли подсказки «чего не хватает», в карточку/экспорт НЕ идут).
  */

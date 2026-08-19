@@ -63,9 +63,11 @@ export function tableToMarkdown(table) {
 }
 
 // Поля превью в порядке карточки (Принятые меры — под Причинами, как в форме).
+// «Описание» стоит третьим — так же, как в реестре VIOLATION_FIELDS.
 const _PREVIEW_FIELDS = [
     ['violated', 'Нарушено'],
     ['established', 'Установлено'],
+    ['description', 'Описание'],
     ['reasons', 'Причины'],
     ['measures', 'Принятые меры'],
     ['consequences', 'Последствия'],
