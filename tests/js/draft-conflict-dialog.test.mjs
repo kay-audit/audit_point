@@ -9,10 +9,15 @@
  *    перезаписал бы первый же markAsUnsaved DB-контентом со свежей базой.
  *
  * БЭКАП конфликтного черновика (audit_workstation_conflict:{actId})
- * проверяется, когда обычного снимка нет: конфликтен → тот же диалог
- * (restore → данные+удалить бэкап; «Оставить версию из БД» → удалить бэкап;
- * dismiss → бэкап остаётся); совпал по content_version с сервером → обычный
- * restore-диалог.
+ * проверяется ВСЕГДА и ПЕРВЫМ (он старше обычного снимка): конфликтен → тот же
+ * диалог (restore → данные+удалить бэкап; «Оставить версию из БД» → удалить
+ * бэкап; dismiss → бэкап остаётся); совпал по content_version с сервером →
+ * обычный restore-диалог.
+ *
+ * Носитель правок удаляется ТОЛЬКО явным ответом про него самого. Прежде
+ * бэкап убирала любая развязка обычного снимка — а обычный снимок после
+ * dismiss'а конфликта пересоздаётся первой же пометкой dirty (даже фоновой
+ * нормализацией при загрузке), так что бэкап гиб непоказанным.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
@@ -219,30 +224,66 @@ test('discard обычного снимка не мешает предложит
   assert.deepEqual(content.tree, BACKUP_TREE);
 });
 
-test('при валидном обычном снимке бэкап не читается, но как устаревший удаляется (restore)', async () => {
-  // Бэкап записан РАНЬШЕ обычного снимка, значит устарел. Раньше он оставался
-  // нетронутым и всплывал позже — когда обычный снимок уйдёт после успешного
-  // сохранения — как черновик «из ниоткуда», датированный давней сессией.
+// ─── Оба носителя сразу ──────────────────────────────────────────────────────
+
+test('бэкап читается и при валидном обычном снимке — вопросы задаются хронологически', async () => {
+  StorageManager.readConflictBackup = () => makeSnapshot(5, BACKUP_TREE); // конфликт, старше
+  StorageManager.readSnapshot = () => makeSnapshot(SERVER_VERSION);       // свежий, версии сошлись
+  const messages = [];
+  DialogManager.show = async (options) => { messages.push(options.message); return true; };
+  const content = makeContent();
+
+  const restored = await APIClient._maybeRestoreDraft(7, content, SERVER_VERSION);
+
+  assert.equal(messages.length, 2, 'у каждого носителя правок свой явный вопрос');
+  assert.match(messages[0], /ПЕРЕЗАПИШЕТ/, 'первым спрашивают про старый бэкап (диалог конфликта)');
+  assert.match(messages[1], /Найден несохранённый черновик/, 'вторым — про свежий обычный снимок');
+  assert.equal(restored, true);
+  assert.deepEqual(content.tree, DRAFT_TREE, 'применён последний по времени ответ — свежий снимок');
+});
+
+test('развязка обычного снимка НЕ уничтожает бэкап, по которому ответа не было', async () => {
+  // Сценарий из отчёта: dismiss диалога конфликта отложил черновик в бэкап,
+  // дальше первая же пометка dirty (даже фоновая нормализация при загрузке)
+  // пересоздала обычный снимок с актуальной базой. Прежде ЛЮБОЙ ответ по
+  // этому снимку — включая Escape, равный «Отклонить», — удалял бэкап, ни
+  // разу его не показав: правки, которых нет ни в БД, ни в снимке, гибли молча.
+  StorageManager.readConflictBackup = () => makeSnapshot(5, BACKUP_TREE);
   StorageManager.readSnapshot = () => makeSnapshot(SERVER_VERSION);
-  let backupRead = false;
-  StorageManager.readConflictBackup = () => { backupRead = true; return null; };
-  DialogManager.show = async () => true;
+  const answers = ['dismissed', false]; // бэкап отложен, свежий снимок отклонён
+  DialogManager.show = async () => answers.shift();
 
   const restored = await APIClient._maybeRestoreDraft(7, makeContent(), SERVER_VERSION);
 
-  assert.equal(restored, true);
-  assert.equal(backupRead, false, 'основной снимок главнее — бэкап не читается');
-  assert.equal(removeBackupCalls, 1, 'устаревший бэкап убран');
+  assert.equal(restored, false);
+  assert.equal(removeCalls, 1, 'обычный снимок удалён по СВОЕМУ ответу');
+  assert.equal(removeBackupCalls, 0,
+    'бэкап пережил чужую развязку: вопрос по нему отложен, а не решён за пользователя');
 });
 
-test('при валидном обычном снимке «Оставить версию из БД» убирает и снимок, и устаревший бэкап', async () => {
+test('восстановление обычного снимка не трогает отложенный бэкап', async () => {
+  StorageManager.readConflictBackup = () => makeSnapshot(5, BACKUP_TREE);
+  StorageManager.readSnapshot = () => makeSnapshot(SERVER_VERSION);
+  const answers = ['dismissed', true]; // бэкап отложен, свежий снимок восстановлен
+  DialogManager.show = async () => answers.shift();
+  const content = makeContent();
+
+  const restored = await APIClient._maybeRestoreDraft(7, content, SERVER_VERSION);
+
+  assert.equal(restored, true);
+  assert.deepEqual(content.tree, DRAFT_TREE, 'применён свежий снимок');
+  assert.equal(removeBackupCalls, 0, 'бэкап остаётся до явного ответа про него');
+  assert.equal(removeCalls, 0, 'восстановленный снимок — носитель правок до успешного PUT');
+});
+
+test('при валидном обычном снимке «Оставить версию из БД» убирает только снимок', async () => {
   StorageManager.readSnapshot = () => makeSnapshot(5); // вердикт 'conflict'
   DialogManager.show = async () => false;
 
   await APIClient._maybeRestoreDraft(7, makeContent(), SERVER_VERSION);
 
   assert.equal(removeCalls, 1, 'снимок удалён по явному выбору версии БД');
-  assert.equal(removeBackupCalls, 1, 'бэкап удалён вместе с ним');
+  assert.equal(removeBackupCalls, 0, 'чужой носитель правок этим ответом не решается');
 });
 
 test('dismiss конфликта бэкап не теряет: stash перезаписывает его текущим снимком', async () => {

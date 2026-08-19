@@ -734,12 +734,24 @@ export class APIClient {
      * metadata GET /content), восстановление черновика перезапишет чужие
      * правки. Структурно битый снимок молча удаляется; при отказе — тоже.
      *
-     * Если обычного снимка нет (или он структурно бит), дополнительно
-     * проверяется бэкап-ключ конфликтного черновика (audit_workstation_
-     * conflict:{actId}) — туда снимок откладывается при dismiss'е диалога
-     * конфликта, чтобы штатная перезапись снимка его не уничтожила.
-     * Судьба бэкапа: restore → данные из бэкапа + бэкап удаляется;
-     * «Оставить версию из БД» → бэкап удаляется; dismiss → бэкап остаётся.
+     * Носителей правок может быть ДВА, и у каждого своя судьба:
+     *  - бэкап конфликтного черновика (audit_workstation_conflict:{actId}) —
+     *    туда снимок откладывается при dismiss'е диалога конфликта, чтобы
+     *    штатная перезапись снимка его не уничтожила;
+     *  - обычный снимок (audit_workstation_state:{actId}).
+     * Диалоги идут хронологически: сначала бэкап (он старше), затем обычный
+     * снимок. Носитель удаляется ТОЛЬКО явным ответом про него самого.
+     *
+     * Прежде бэкап убирала любая развязка обычного снимка (onKeepDb/onRestore
+     * звали removeConflictBackup «как за устаревшим»). Это неверно: обычный
+     * снимок после dismiss'а конфликта пересоздаётся первой же пометкой dirty
+     * — даже фоновой нормализацией при загрузке, — так что на следующем
+     * открытии он есть всегда, и обещание «диалог конфликта вернётся при
+     * следующем открытии акта» не выполнялось ни разу: бэкап гиб непоказанным
+     * вместе с правками, которых нет ни в БД, ни в обычном снимке.
+     *
+     * Отказ по одному черновику — решение об ЭТОМ черновике, а не запрос «дай
+     * ровно версию из БД»: уже восстановленный бэкап он не откатывает.
      *
      * При согласии данные снимка подставляются в content и дальше идут
      * штатным путём загрузки (reconcile/normalize/нумерация/рендер).
@@ -748,59 +760,53 @@ export class APIClient {
      * @param {number} actId ID акта
      * @param {Object} content Контент акта из GET (мутируется при восстановлении)
      * @param {number|null} serverContentVersion Серверный acts.content_version
-     * @returns {Promise<boolean>} true если черновик восстановлен
+     * @returns {Promise<boolean>} true если восстановлен любой из носителей
      */
     static async _maybeRestoreDraft(actId, content, serverContentVersion) {
-        const snapshot = window.StorageManager.readSnapshot(actId);
-        const verdict = shouldOfferRestore(snapshot, serverContentVersion);
-
-        if (verdict === 'restore' || verdict === 'conflict') {
-            // Обычный снимок свежее бэкапа (он и записан позже), поэтому в
-            // любом исходе кроме dismiss'а бэкап устарел и должен уйти —
-            // иначе всплывёт при следующем открытии как черновик «из ниоткуда»,
-            // датированный давней сессией. Dismiss бэкап не теряет:
-            // stashConflictSnapshot перезапишет его текущим снимком.
-            return this._offerDraft(actId, content, snapshot, verdict, {
-                onKeepDb: () => {
-                    window.StorageManager.removeSnapshot(actId);
-                    window.StorageManager.removeConflictBackup(actId);
-                },
-                // Dismiss конфликта: снимок ПЕРЕМЕЩАЕТСЯ в бэкап-ключ — на
-                // прежнем месте его перезаписал бы первый же markAsUnsaved
-                // (даже фоновая нормализация при загрузке) DB-контентом со
-                // свежей базой, и конфликтный черновик молча погиб бы.
-                onDismissConflict: () => window.StorageManager.stashConflictSnapshot(actId),
-                // Снимок остаётся носителем правок до успешного PUT
-                // (finalizeDbSave снимет его штатно).
+        // 1) Бэкап конфликтного черновика, отложенный dismiss'ом прошлой сессии.
+        const backup = window.StorageManager.readConflictBackup(actId);
+        const backupVerdict = shouldOfferRestore(backup, serverContentVersion);
+        let backupRestored = false;
+        if (backupVerdict === 'discard') {
+            window.StorageManager.removeConflictBackup(actId);
+        } else if (backupVerdict !== 'none') {
+            // 'restore' здесь означает: content_version бэкапа совпал с сервером
+            // (версию откатили / с тех пор ничего не менялось) — обычный диалог.
+            backupRestored = await this._offerDraft(actId, content, backup, backupVerdict, {
+                onKeepDb: () => window.StorageManager.removeConflictBackup(actId),
+                // Dismiss: бэкап уже в своём ключе — остаётся до следующего открытия.
+                onDismissConflict: () => {},
+                // Восстановленные данные станут обычным несинхронизированным
+                // состоянием (applyRestoredDraftState перепишет обычный снимок
+                // свежей базой) — бэкап больше не нужен.
                 onRestore: () => window.StorageManager.removeConflictBackup(actId),
             });
         }
+
+        // 2) Обычный снимок.
+        const snapshot = window.StorageManager.readSnapshot(actId);
+        const verdict = shouldOfferRestore(snapshot, serverContentVersion);
         if (verdict === 'discard') {
             window.StorageManager.removeSnapshot(actId);
+            return backupRestored;
         }
-
-        // Обычного снимка нет — проверяем бэкап конфликтного черновика,
-        // отложенный dismiss'ом прошлой сессии.
-        const backup = window.StorageManager.readConflictBackup(actId);
-        const backupVerdict = shouldOfferRestore(backup, serverContentVersion);
-        if (backupVerdict === 'discard') {
-            window.StorageManager.removeConflictBackup(actId);
-            return false;
+        if (verdict === 'none') {
+            return backupRestored;
         }
-        if (backupVerdict !== 'restore' && backupVerdict !== 'conflict') {
-            return false;
-        }
-        // 'restore' здесь означает: content_version бэкапа совпал с сервером
-        // (версию откатили / с тех пор ничего не менялось) — обычный диалог.
-        return this._offerDraft(actId, content, backup, backupVerdict, {
-            onKeepDb: () => window.StorageManager.removeConflictBackup(actId),
-            // Dismiss: бэкап уже в своём ключе — остаётся до следующего открытия.
-            onDismissConflict: () => {},
-            // Восстановленные данные станут обычным несинхронизированным
-            // состоянием (applyRestoredDraftState перепишет обычный снимок
-            // свежей базой) — бэкап больше не нужен.
-            onRestore: () => window.StorageManager.removeConflictBackup(actId),
+        const snapshotRestored = await this._offerDraft(actId, content, snapshot, verdict, {
+            onKeepDb: () => window.StorageManager.removeSnapshot(actId),
+            // Dismiss конфликта: снимок ПЕРЕМЕЩАЕТСЯ в бэкап-ключ — на прежнем
+            // месте его перезаписал бы первый же markAsUnsaved (даже фоновая
+            // нормализация при загрузке) DB-контентом со свежей базой, и
+            // конфликтный черновик молча погиб бы. Прежний бэкап к этому
+            // моменту уже получил явный ответ выше (либо тоже отложен — тогда
+            // слот занимает более свежий черновик: слот бэкапа один).
+            onDismissConflict: () => window.StorageManager.stashConflictSnapshot(actId),
+            // Снимок остаётся носителем правок до успешного PUT
+            // (finalizeDbSave снимет его штатно).
+            onRestore: () => {},
         });
+        return snapshotRestored || backupRestored;
     }
 
     /**
