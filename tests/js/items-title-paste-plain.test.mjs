@@ -22,6 +22,7 @@ function makeLabel() {
     contentEditable: 'false',
     classList: { add() {}, remove() {}, contains: () => false },
     focus() {},
+    contains: () => true,
     addEventListener(type, fn) { listeners.push({ type, fn }); },
     removeEventListener(type, fn) {
       const i = listeners.findIndex((l) => l.type === type && l.fn === fn);
@@ -36,6 +37,18 @@ function makePasteEvent(html, plain, calls) {
   return {
     preventDefault() { calls.push('prevent'); },
     clipboardData: { getData: (t) => (t === 'text/html' ? html : plain) },
+  };
+}
+
+/** Событие сброса: dataTransfer с обоими представлениями перетаскиваемого. */
+function makeDropEvent(el, { html = '', plain = '', files = [] }, calls) {
+  return {
+    currentTarget: el,
+    clientX: 10,
+    clientY: 10,
+    preventDefault() { calls.push('prevent'); },
+    stopPropagation() { calls.push('stop'); },
+    dataTransfer: { files, getData: (t) => (t === 'text/html' ? html : plain) },
   };
 }
 
@@ -137,4 +150,100 @@ test('слушатель снимается вместе с contentEditable (п�
   );
   assert.equal(treeLabel.listenersOf('paste').length, 0,
     'paste остался висеть после _cleanupTreeNodeEditing');
+});
+
+test('перетаскивание форматированного текста в подпись чистится до текста', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+
+  const handlers = el.listenersOf('drop');
+  assert.equal(handlers.length, 1, 'drop-слушатель не навешан на редактируемую подпись');
+
+  const calls = [];
+  const e = makeDropEvent(el, {
+    html: '<ul><li style="font-family:Calibri">Первый</li><li>Второй</li></ul>',
+    plain: 'Первый\r\nВторой',
+  }, calls);
+  withEditing(() => withExecCommand(calls, () => handlers[0](e)));
+
+  assert.deepEqual(calls, ['prevent', 'stop', 'exec:insertText:Первый Второй']);
+});
+
+test('перетаскивание многострочного plain схлопывается в одну строку', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+  const handler = el.listenersOf('drop')[0];
+
+  const calls = [];
+  const e = makeDropEvent(el, { plain: 'Первая\nВторая\tТретья' }, calls);
+  withEditing(() => withExecCommand(calls, () => handler(e)));
+
+  assert.deepEqual(calls, ['prevent', 'stop', 'exec:insertText:Первая Вторая Третья']);
+});
+
+test('перетаскивание узла дерева на подпись не перехватывается', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+  const handler = el.listenersOf('drop')[0];
+
+  // TreeDragDrop кладёт в text/plain id узла — сброс должно обработать дерево.
+  const calls = [];
+  const e = makeDropEvent(el, { plain: 'node-42' }, calls);
+  withEditing(() => withExecCommand(calls, () => handler(e)));
+
+  assert.deepEqual(calls, [], 'однострочный plain без разметки — не наше дело');
+});
+
+test('перенос текста внутри самой подписи не перехватывается (иначе дубль)', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+  const handler = el.listenersOf('drop')[0];
+
+  el.listenersOf('dragstart')[0]({ currentTarget: el });
+
+  const calls = [];
+  const e = makeDropEvent(el, { html: '<span>Подпись</span>', plain: 'Подпись' }, calls);
+  withEditing(() => withExecCommand(calls, () => handler(e)));
+
+  assert.deepEqual(calls, [], 'свой же фрагмент вырезает браузер — вмешательство даёт дубль');
+
+  // dragend снимает метку — следующий внешний сброс снова чистится.
+  el.listenersOf('dragend')[0]({ currentTarget: el });
+  const calls2 = [];
+  const e2 = makeDropEvent(el, { html: '<b>Извне</b>', plain: 'Извне' }, calls2);
+  withEditing(() => withExecCommand(calls2, () => handler(e2)));
+  assert.deepEqual(calls2, ['prevent', 'stop', 'exec:insertText:Извне']);
+});
+
+test('перетаскивание файла в подпись гасится без вставки', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+  const handler = el.listenersOf('drop')[0];
+
+  const calls = [];
+  const e = makeDropEvent(el, { files: [{ name: 'акт.docx' }] }, calls);
+  withEditing(() => withExecCommand(calls, () => handler(e)));
+
+  assert.deepEqual(calls, ['prevent', 'stop'], 'файл не должен ни вставляться, ни улетать наружу');
+});
+
+test('drop-слушатели снимаются вместе с contentEditable', () => {
+  const el = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(el, 'Подпись'));
+  ItemsTitleEditing._cleanupEditing(el);
+  for (const type of ['drop', 'dragstart', 'dragend']) {
+    assert.equal(el.listenersOf(type).length, 0, `${type} остался висеть после _cleanupEditing`);
+  }
+
+  const treeLabel = makeLabel();
+  withEditing(() => ItemsTitleEditing._initializeEditing(treeLabel, 'Подпись'));
+  ItemsTitleEditing._cleanupTreeNodeEditing(
+    treeLabel,
+    { classList: { remove() {} } },
+    { editingElement: treeLabel },
+  );
+  for (const type of ['drop', 'dragstart', 'dragend']) {
+    assert.equal(treeLabel.listenersOf(type).length, 0,
+      `${type} остался висеть после _cleanupTreeNodeEditing`);
+  }
 });

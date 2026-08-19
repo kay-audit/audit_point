@@ -50,13 +50,29 @@ export class ItemsTitleEditing {
         element.textContent = text;
         element.focus();
         element.addEventListener('paste', this._onPastePlainText);
+        element.addEventListener('drop', this._onDropPlainText);
+        element.addEventListener('dragstart', this._onSelfDragStart);
+        element.addEventListener('dragend', this._onSelfDragEnd);
 
         this._selectAllText(element);
     }
 
     /**
+     * Схлопывает буфер в одну строку: переводы строк и табуляции вместе с
+     * окружающими пробелами заменяются одним пробелом. Подпись однострочная,
+     * многострочный источник (вордовский список, ячейки Excel) обязан лечь
+     * в одну строку.
+     * @param {string} raw - Исходный текст
+     * @returns {string} Однострочный текст
+     * @private
+     */
+    static _toSingleLine(raw) {
+        return (raw || '').replace(/\s*[\r\n\t]+\s*/g, ' ');
+    }
+
+    /**
      * Вставка в подпись — только чистым текстом: форматирование, разметка и
-     * переводы строк из буфера отбрасываются (подпись однострочная).
+     * переводы строк из буфера отбрасываются.
      * Ссылка на обработчик общая для всех подписей (статический метод, не
      * замыкание) — повторный addEventListener на том же элементе браузер
      * игнорирует, дубли слушателей не накапливаются при повторном входе
@@ -68,14 +84,89 @@ export class ItemsTitleEditing {
         e.preventDefault();
 
         const raw = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
-        // Переводы строк и табуляции схлопываем в один пробел вместе с
-        // окружающими пробелами: многострочный буфер должен лечь в одну строку.
-        const text = (raw || '').replace(/\s*[\r\n\t]+\s*/g, ' ');
+        const text = ItemsTitleEditing._toSingleLine(raw);
         if (!text) return;
 
         // insertText сам заменяет выделение и двигает каретку, оставаясь
         // в нативном undo — тот же путь, что у редактора текстблоков.
         document.execCommand('insertText', false, text);
+    }
+
+    /**
+     * Перетаскивание текста в подпись — зеркало вставки: мышью из Word или
+     * браузера прилетает тот же размеченный фрагмент, что и через Ctrl+V.
+     * @param {DragEvent} e - Событие сброса
+     * @private
+     */
+    static _onDropPlainText(e) {
+        const dt = e.dataTransfer;
+        if (!dt) return;
+
+        const element = e.currentTarget;
+
+        // Перенос текста внутри самой подписи: исходный фрагмент вырезает
+        // браузер своим действием по умолчанию. Перехватим — получим дубль,
+        // а чистить нечего, форматированию взяться неоткуда.
+        if (element && element._awSelfDrag) return;
+
+        // Файлы: ни имени, ни содержимого в подписи не нужно, но и наружу
+        // событие пускать нельзя — браузер откроет файл во вкладке.
+        if (dt.files && dt.files.length > 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+
+        const html = dt.getData('text/html') || '';
+        const raw = dt.getData('text/plain') || '';
+        // Голый однострочный plain оставляем браузеру: чистить нечего, а к
+        // подписи узла дерева так приходит перетаскивание самого узла —
+        // в его text/plain лежит id, и обрабатывать сброс должно дерево.
+        if (!html.trim() && !/[\r\n\t]/.test(raw)) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const text = ItemsTitleEditing._toSingleLine(raw);
+        if (!text) return;
+
+        if (element && typeof element.focus === 'function') element.focus();
+
+        // Каретка — в точку сброса; без неё insertText ушёл бы в выделение,
+        // оставшееся от входа в редактирование (весь текст подписи).
+        const range = typeof document.caretRangeFromPoint === 'function'
+            ? document.caretRangeFromPoint(e.clientX, e.clientY)
+            : null;
+        const selection = window.getSelection();
+        if (range && selection && element && element.contains(range.startContainer)) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+
+        document.execCommand('insertText', false, text);
+    }
+
+    /** @private */
+    static _onSelfDragStart(e) {
+        if (e.currentTarget) e.currentTarget._awSelfDrag = true;
+    }
+
+    /** @private */
+    static _onSelfDragEnd(e) {
+        if (e.currentTarget) delete e.currentTarget._awSelfDrag;
+    }
+
+    /**
+     * Снимает обработчики вставки и перетаскивания с подписи.
+     * @param {HTMLElement} element - Элемент подписи
+     * @private
+     */
+    static _removeInputGuards(element) {
+        element.removeEventListener('paste', this._onPastePlainText);
+        element.removeEventListener('drop', this._onDropPlainText);
+        element.removeEventListener('dragstart', this._onSelfDragStart);
+        element.removeEventListener('dragend', this._onSelfDragEnd);
+        delete element._awSelfDrag;
     }
 
     /**
@@ -100,7 +191,7 @@ export class ItemsTitleEditing {
     static _cleanupEditing(element) {
         element.contentEditable = 'false';
         element.classList.remove('editing');
-        element.removeEventListener('paste', this._onPastePlainText);
+        this._removeInputGuards(element);
     }
 
     /**
@@ -255,7 +346,7 @@ export class ItemsTitleEditing {
      */
     static _cleanupTreeNodeEditing(labelElement, item, treeManager) {
         labelElement.contentEditable = 'false';
-        labelElement.removeEventListener('paste', this._onPastePlainText);
+        this._removeInputGuards(labelElement);
         item.classList.remove('editing');
         treeManager.editingElement = null;
     }
