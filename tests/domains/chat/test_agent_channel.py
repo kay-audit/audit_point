@@ -532,6 +532,9 @@ def _make_poll_svc(mock_conn, settings, *, question, answer,
     fake_agent_repo = AsyncMock()
     fake_agent_repo.get_by_uid = AsyncMock(return_value=question)
     fake_agent_repo.get_answer_for_question = AsyncMock(return_value=answer)
+    fake_agent_repo.get_media_by_uid = AsyncMock(
+        return_value=(answer or {}).get("media")
+    )
     fake_agent_repo.count_pending_before = AsyncMock(return_value=count_pending_before)
 
     fake_msg_repo = AsyncMock()
@@ -1077,7 +1080,7 @@ class TestGetQueueDetails:
         question = {"id": "q-uid", "status": "pending", "created_at": created}
 
         fake_agent_repo = AsyncMock()
-        fake_agent_repo.get_by_uid = AsyncMock(return_value=question)
+        fake_agent_repo.get_status_by_uid = AsyncMock(return_value=question)
         fake_agent_repo.count_pending_before = AsyncMock(return_value=2)
 
         svc = AgentChannelService(mock_conn, settings)
@@ -1093,7 +1096,7 @@ class TestGetQueueDetails:
         question = {"id": "q-uid", "status": "processing", "created_at": None}
 
         fake_agent_repo = AsyncMock()
-        fake_agent_repo.get_by_uid = AsyncMock(return_value=question)
+        fake_agent_repo.get_status_by_uid = AsyncMock(return_value=question)
         fake_agent_repo.count_pending_before = AsyncMock(return_value=0)
 
         svc = AgentChannelService(mock_conn, settings)
@@ -1107,7 +1110,7 @@ class TestGetQueueDetails:
     async def test_question_not_found_returns_none(self, mock_conn, settings):
         """Строки-вопроса нет → None."""
         fake_agent_repo = AsyncMock()
-        fake_agent_repo.get_by_uid = AsyncMock(return_value=None)
+        fake_agent_repo.get_status_by_uid = AsyncMock(return_value=None)
 
         svc = AgentChannelService(mock_conn, settings)
         svc._agent_repo = lambda: fake_agent_repo

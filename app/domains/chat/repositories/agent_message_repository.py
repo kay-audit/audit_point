@@ -14,6 +14,14 @@ logger = logging.getLogger("audit_workstation.domains.chat.repo.agent_message")
 # Поля, хранящиеся как JSONB и требующие десериализации при чтении.
 _JSONB_FIELDS = ("media", "metadata", "buttons")
 
+# C1: колонки строки шины БЕЗ media. media может нести base64-вложение в
+# сотни МБ и читается отдельным разовым get_media_by_uid при финализации —
+# в горячий опрос (поллер каждые 2-10 с, браузер каждые 1.5 с) не попадает.
+_ROW_COLUMNS_NO_MEDIA = (
+    "id, chat_id, user_id, role, content, metadata, reply_to, buttons, "
+    "status, created_at, updated_at"
+)
+
 
 class AgentMessageRepository(BaseRepository):
     """CRUD-операции с bus-таблицей chat_agent_messages_bus.
@@ -108,27 +116,42 @@ class AgentMessageRepository(BaseRepository):
         return self._parse_row(row)
 
     async def get_by_uid(self, uid: str) -> dict | None:
-        """Возвращает строку по id (uid одного сообщения шины)."""
+        """Возвращает строку по id (uid одного сообщения шины) БЕЗ media."""
         row = await self.conn.fetchrow(
-            f"SELECT * FROM {self.table} WHERE id = $1",
+            f"SELECT {_ROW_COLUMNS_NO_MEDIA} FROM {self.table} WHERE id = $1",
             uid,
         )
         return self._parse_row(row)
 
     async def get_answer_for_question(self, question_uid: str) -> dict | None:
-        """Возвращает строку-ответ агента на вопрос ``question_uid``.
+        """Возвращает строку-ответ агента на вопрос ``question_uid`` БЕЗ media.
 
         Протокол владельца шины: агент вставляет строку-ответ
         (role='assistant') и проставляет ``reply_to`` НА ОТВЕТЕ, указывая на
         id вопроса. Берём самый свежий ответ (агент может ретраить).
         """
         row = await self.conn.fetchrow(
-            f"SELECT * FROM {self.table} "
+            f"SELECT {_ROW_COLUMNS_NO_MEDIA} FROM {self.table} "
             f"WHERE reply_to = $1 AND role = 'assistant' "
             f"ORDER BY created_at DESC LIMIT 1",
             question_uid,
         )
         return self._parse_row(row)
+
+    async def get_media_by_uid(self, uid: str) -> list | dict | None:
+        """Разовое чтение media строки шины (тяжёлая колонка — только при финализации)."""
+        row = await self.conn.fetchrow(
+            f"SELECT media FROM {self.table} WHERE id = $1", uid,
+        )
+        parsed = self._parse_row(row)
+        return parsed.get("media") if parsed else None
+
+    async def get_status_by_uid(self, uid: str) -> dict | None:
+        """Узкий запрос для отображения очереди: только status и created_at."""
+        row = await self.conn.fetchrow(
+            f"SELECT status, created_at FROM {self.table} WHERE id = $1", uid,
+        )
+        return dict(row) if row else None
 
     async def set_status(self, *, uid: str, status: str) -> None:
         """Обновляет статус строки по id (uid сообщения)."""

@@ -476,7 +476,7 @@ class AgentChannelService:
         позиция в очереди не имеет смысла.
         """
         agent_repo = self._agent_repo()
-        question = await agent_repo.get_by_uid(question_uid)
+        question = await agent_repo.get_status_by_uid(question_uid)
         if not question:
             return None
         status = question.get("status")
@@ -612,6 +612,10 @@ class AgentChannelService:
         # Транслируем кнопки (acts.open_act_page → open_url) перед маппингом в блоки.
         if answer.get("buttons"):
             answer["buttons"] = await translate_buttons(answer["buttons"])
+
+        # C1: media не пришла в узкой проекции get_answer_for_question —
+        # подкладываем разовым чтением ровно на финализации.
+        answer["media"] = await agent_repo.get_media_by_uid(str(answer["id"]))
 
         blocks = map_answer_to_blocks(
             answer,

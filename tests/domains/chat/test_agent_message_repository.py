@@ -282,6 +282,50 @@ async def test_get_answer_for_question_not_found(mock_conn):
     assert await repo.get_answer_for_question("q-uid") is None
 
 
+# ── C1: узкие проекции колонок ─────────────────────────────────────────────
+
+
+class TestColumnProjection:
+    """C1: горячий опрос не тянет media. Ratchet на текст SQL."""
+
+    async def test_get_by_uid_does_not_select_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = None
+        repo = AgentMessageRepository(mock_conn)
+        await repo.get_by_uid("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "SELECT *" not in sql
+        assert "media" not in sql
+
+    async def test_get_answer_for_question_does_not_select_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = None
+        repo = AgentMessageRepository(mock_conn)
+        await repo.get_answer_for_question("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "SELECT *" not in sql
+        assert "media" not in sql
+
+    async def test_get_media_by_uid_selects_only_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = {
+            "media": '[{"file_id": "data:text/plain;base64,QQ=="}]'
+        }
+        repo = AgentMessageRepository(mock_conn)
+        media = await repo.get_media_by_uid("a-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert sql.strip().lower().startswith("select media")
+        assert media == [{"file_id": "data:text/plain;base64,QQ=="}]
+
+    async def test_get_status_by_uid_narrow(self, mock_conn):
+        mock_conn.fetchrow.return_value = {
+            "status": "pending",
+            "created_at": datetime(2026, 6, 10, 10, 0, tzinfo=timezone.utc),
+        }
+        repo = AgentMessageRepository(mock_conn)
+        row = await repo.get_status_by_uid("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "media" not in sql and "content" not in sql
+        assert row["status"] == "pending"
+
+
 # ── set_status ───────────────────────────────────────────────────────────
 
 
