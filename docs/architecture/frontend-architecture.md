@@ -527,6 +527,8 @@ API: `registerBeforeUnload(name, handler)`, `unregister(name)`, `list()`. Исп
 | **Inactivity** | При превышении `inactivityTimeoutMinutes` минут без активности — диалог «Продолжить?» с countdown'ом; нет ответа → autoExit |
 | **Exit** | `_initiateExit(action)` — save + unlock + redirect `/acts` |
 
+**Смена акта без перезагрузки страницы переносит лок.** В конструкторе акт меняется двумя путями, и оба обязаны сделать `unlockAct(старый)` + `LockManager.init(новый)`: явное переключение через меню (`acts-menu.js::_switchToAct`) и браузерная навигация back/forward (`acts-menu.js::_handleHistoryNavigation`, вызывается из обработчика `popstate`). Если лок не перенести, `_actId` останется на покинутом акте и разойдётся с тем, чей контент лежит в `AppState` (последствия — §6.7). Порядок фаз у обоих путей задан `_autoLoadAct`: сеть (`_fetchActContent`) → права (`_applyUserPermission`, до лока — read-only лок не берёт) → лок → применение (`_loadActIntoView`). `resetForActSwitch` внутри `_loadActIntoView` — только после успешного захвата, иначе отказ лока оставил бы UI покидаемого акта разобранным. От `_switchToAct` history-путь отличается ровно двумя вещами, и обе — следствие того, что навигация уже случилась: нет `pushState` (сломал бы forward) и нет диалога «несохранённые изменения» (на `popstate` его показывает страж `StorageManager`, §5.3).
+
 ### 6.1 Состояние
 
 `lock-manager.js:20-41`. Все поля **static** (LockManager используется как singleton-class):
@@ -602,7 +604,7 @@ static async _initiateExit(action) {
 Что важно помнить:
 
 - **Идемпотентность**: повторный вызов отдаёт тот же promise.
-- **Fallback на `window.currentActId`**: страхует, если `_actId` уже сброшен после `destroy()`.
+- **Адресация save'а и unlock'а — РАЗНАЯ, это инвариант**: тело выходного PUT собирается из `AppState`, поэтому адресуется актом, который в `AppState` и лежит (`window.currentActId`); разблокируется тот акт, который реально залочен (`_actId`). Прежний общий `effectiveActId = _actId || window.currentActId` склеивал обе роли, и при рассинхроне владения (back/forward между актами) содержимое показанного акта уезжало PUT'ом в чужой, залоченный — порча данных. Расхождение логируется WARNING'ом. Побочный эффект развязки: на странице списка актов (метаданные через `LockManager`) `AppState` пуст, но модуль загружен, а `window.currentActId` не задан — save просто пропускается, вместо того чтобы увести пустое состояние в редактируемый акт. Регрессия — `tests/js/lock-act-desync.test.mjs`.
 - **Save идёт с `ChangelogTracker.flush()`** — одной транзакцией на сервере (`:627-628`).
 - **Редирект жёсткий, без `confirmNavigation`** — сессия закрывается принудительно (пояснение в коде — `:691-695`). Если save упал (409 при чужом локе), `confirmNavigation` показал бы «Несохранённые изменения. Уйти?» и заблокировал бы выход. `allowUnload()` снимает страж явно (`:603-604`).
 - **`messageFlag`**: `'sessionAutoExited'` или `'sessionExitedWithSave'` пишется в sessionStorage; `acts-manager-page.js` показывает toast на следующей загрузке. Флаги успеха ставятся, только если выходной save действительно прошёл; иначе — честный флаг причины: `'sessionExitContentConflict'` (409 `content-conflict` — акт изменил другой пользователь), `'sessionLockLost'` (409 по локу, см. §6.8), `'sessionExitSaveFailed'` (сеть/5xx/422). Плашка сообщает, что изменения НЕ в БД (правки остались локальным черновиком). Приоритет выбора `pickSessionExitNotice` — contentConflict > lockLost > exitSaveFailed > autoExited > exitedWithSave.

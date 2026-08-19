@@ -604,7 +604,28 @@ export class LockManager {
                 StorageManager.allowUnload();
             }
 
-            const effectiveActId = this._actId || (typeof window !== 'undefined' ? window.currentActId : null);
+            // Роли РАЗВЯЗАНЫ. Контент выходного save собирается из AppState,
+            // значит адресуется актом, который в AppState и лежит
+            // (window.currentActId); лок снимается с того акта, который реально
+            // залочен (this._actId). Прежний общий effectiveActId
+            // (this._actId || window.currentActId) склеивал обе роли: при
+            // рассинхроне владения содержимое показанного акта уезжало PUT'ом
+            // в ЧУЖОЙ, залоченный акт. Рассинхрон штатно не возникает
+            // (переключение и back/forward переносят лок), но цена ошибки —
+            // порча данных, поэтому адресация save'а не полагается на лок.
+            // Побочно закрыт случай страницы списка актов: там AppState пуст,
+            // но модуль загружен (LockManager импортирует его статически), а
+            // window.currentActId не задан — save пропускается, вместо того
+            // чтобы увести пустое состояние в редактируемый по метаданным акт.
+            const contentActId = (typeof window !== 'undefined' ? window.currentActId : null);
+            const lockedActId = this._actId;
+            if (lockedActId && contentActId && lockedActId !== contentActId) {
+                console.warn(
+                    `[LockManager] Владение локом разошлось с показанным актом:`
+                    + ` залочен ${lockedActId}, в AppState ${contentActId}.`
+                    + ' Сохраняем показанный, разблокируем залоченный.'
+                );
+            }
             const username = AuthManager?.getCurrentUser?.() || null;
             // Флаг для плашки на списке актов (session-exit-notice.js). Дефолт —
             // «вышли с сохранением»; при упавшем save ниже переопределяется на
@@ -614,7 +635,7 @@ export class LockManager {
                 ? 'sessionAutoExited'
                 : 'sessionExitedWithSave';
 
-            console.log(`LockManager: выход (${action}) начат… effectiveActId=${effectiveActId}`);
+            console.log(`LockManager: выход (${action}) начат… сохраняем ${contentActId}, разблокируем ${lockedActId}`);
 
             if (typeof Notifications !== 'undefined' && Notifications.warning) {
                 Notifications.warning('Сессия истекла. Сохраняем акт…');
@@ -623,7 +644,7 @@ export class LockManager {
             try {
                 // --- 1️⃣ Сохраняем акт ТОЛЬКО если есть AppState (значит открыт в конструкторе) ---
                 if (typeof AppState !== 'undefined' && AppState?.exportData) {
-                    if (Number.isInteger(effectiveActId) && effectiveActId > 0) {
+                    if (Number.isInteger(contentActId) && contentActId > 0) {
                         try {
                             // Выходной save идёт ЕДИНЫМ путём APIClient.saveActContent —
                             // тем же, что Ctrl+S и периодика: общий in-flight гард
@@ -642,7 +663,7 @@ export class LockManager {
                                     /* чужой PUT упал — выходной save всё равно нужен */
                                 }
                             }
-                            const saved = await APIClient.saveActContent(effectiveActId, { saveType: 'manual' });
+                            const saved = await APIClient.saveActContent(contentActId, { saveType: 'manual' });
                             // Гард in-flight отдаёт null вместо исключения:
                             // молча считать это успехом нельзя — плашка соврала
                             // бы «вышли с сохранением» при неуехавшем контенте.
@@ -667,16 +688,16 @@ export class LockManager {
                             console.error('LockManager: ошибка при сохранении контента конструктора:', saveErr);
                         }
                     } else {
-                        console.warn('[LockManager] _initiateExit: actId невалиден, save пропущен');
+                        console.warn('[LockManager] _initiateExit: акт в AppState не определён, save пропущен');
                     }
                 } else {
                     console.log('[LockManager] AppState отсутствует — пропускаем сохранение (страница метаданных)');
                 }
 
                 // --- 2️⃣ Снимаем блокировку ---
-                if (Number.isInteger(effectiveActId) && effectiveActId > 0 && username) {
+                if (Number.isInteger(lockedActId) && lockedActId > 0 && username) {
                     try {
-                        const resp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${effectiveActId}/unlock`), {
+                        const resp = await fetch(AppConfig.api.getUrl(`/api/v1/acts/${lockedActId}/unlock`), {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -686,7 +707,7 @@ export class LockManager {
                         if (!resp.ok) {
                             console.warn(`[LockManager] Ошибка unlock (код ${resp.status})`);
                         } else {
-                            console.log(`[LockManager] Акт ${effectiveActId} успешно разблокирован (exit)`);
+                            console.log(`[LockManager] Акт ${lockedActId} успешно разблокирован (exit)`);
                         }
                     } catch (unlockErr) {
                         console.error('[LockManager] Ошибка сети при unlock:', unlockErr);

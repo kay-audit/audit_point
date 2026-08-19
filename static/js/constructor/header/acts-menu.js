@@ -434,11 +434,12 @@ export class ActsMenuManager {
 
     /**
      * Общая последовательность применения ЗАГРУЖЕННОГО акта к UI/состоянию —
-     * используется и явным переключением через меню (_switchToAct, ПОСЛЕ
-     * захвата лока), и браузерной навигацией back/forward (popstate).
-     * Не занимается локом и диалогом «несохранённые изменения» — это
-     * ответственность вызывающего (для popstate сознательно не делается,
-     * см. комментарий у обработчика popstate).
+     * используется и явным переключением через меню (_switchToAct), и
+     * браузерной навигацией back/forward (_handleHistoryNavigation). Оба
+     * вызывающих обязаны захватить лок нового акта ДО вызова: сюда попадаем
+     * только после успешного захвата, иначе отказ лока оставил бы UI
+     * покидаемого акта уже разобранным (resetForActSwitch ниже).
+     * Диалогом «несохранённые изменения» тоже занимается вызывающий.
      *
      * Сброс UI покидаемого акта (resetForActSwitch, включая сброс маркера
      * «уже восстанавливали позицию просмотра») → загрузка контента нового
@@ -448,8 +449,12 @@ export class ActsMenuManager {
      * ChangelogTracker → markAsSyncedWithDB + сброс кеша меню.
      * @private
      * @param {number} actId - ID акта для загрузки
+     * @param {Object|null} [content] - Уже полученный по сети content акта
+     *   (фаза _fetchActContent). Передаётся вызывающим, которому пришлось
+     *   сходить за контентом раньше — чтобы установить права ДО захвата лока
+     *   (_handleHistoryNavigation); null = загрузить здесь целиком.
      */
-    static async _loadActIntoView(actId) {
+    static async _loadActIntoView(actId, content = null) {
         // Сброс пер-актного UI-состояния покидаемого акта — до загрузки
         // контента нового (включая сброс маркера восстановления позиции).
         this.resetForActSwitch();
@@ -460,7 +465,11 @@ export class ActsMenuManager {
         // примешал бы шаг нового акта в позицию старого.
         App.setActSwitchInProgress(true);
         try {
-            await APIClient.loadActContent(actId);
+            if (content) {
+                await APIClient._applyActContent(actId, content);
+            } else {
+                await APIClient.loadActContent(actId);
+            }
         } finally {
             App.setActSwitchInProgress(false);
         }
@@ -486,6 +495,71 @@ export class ActsMenuManager {
         if (typeof ChangelogTracker !== 'undefined') ChangelogTracker.init(actId);
         StorageManager.markAsSyncedWithDB();
         this._clearCache();
+    }
+
+    /**
+     * Переход на другой акт по браузерной навигации back/forward (popstate).
+     *
+     * Отличия от _switchToAct — ровно два, и оба вынуждены тем, что навигация
+     * УЖЕ случилась:
+     *  - нет pushState (URL/history — свершившийся факт, повторный push сломал
+     *    бы forward-навигацию);
+     *  - нет диалога «несохранённые изменения» — на popstate его показывает
+     *    собственный страж StorageManager (_navPopstateHandler), второй диалог
+     *    поверх дублировал бы вопрос.
+     * Лок же переносится ровно так же, как при переключении через меню: без
+     * этого LockManager._actId оставался на покинутом акте, и владение локом
+     * расходилось с тем, чей контент лежит в AppState (выходной save уводил
+     * содержимое показанного акта в чужой, залоченный).
+     *
+     * Порядок фаз — как в _autoLoadAct: сеть → права → лок → применение.
+     * Права нужны ДО лока (read-only пользователь лок не берёт), а контент
+     * забираем до снятия старого лока: сетевой сбой тогда оставляет и лок, и
+     * UI покидаемого акта нетронутыми.
+     *
+     * @private
+     * @param {number} actId - ID акта, на который вернулись/перешли
+     */
+    static async _handleHistoryNavigation(actId) {
+        // 1) Сеть: контент нового акта. Побочных эффектов нет — падение здесь
+        //    ничего не разрушает.
+        const content = await APIClient._fetchActContent(actId);
+
+        // 2) Права нового акта — до захвата лока: LockManager.init пропускает
+        //    захват для read-only.
+        APIClient._applyUserPermission(content);
+
+        // 3) Перенос лока: снимаем со старого акта, берём на новый.
+        if (typeof LockManager !== 'undefined') {
+            if (window.currentActId) {
+                try {
+                    await APIClient.unlockAct(window.currentActId);
+                    LockManager.destroy();
+                } catch (err) {
+                    console.warn('Не удалось снять блокировку покидаемого акта:', err);
+                }
+            }
+            if (LockManager.init) {
+                try {
+                    await LockManager.init(actId);
+                } catch (lockError) {
+                    // ACT_LOCKED/LOCK_FAILED: _lockAct уже показал диалог и увёл
+                    // на список актов — своё сообщение было бы вторым подряд.
+                    // Контент нового акта НЕ применяем: в AppState остаётся
+                    // старый акт, и выходной save адресует именно его.
+                    if (lockError.message === 'ACT_LOCKED' || lockError.message === 'LOCK_FAILED') return;
+                    if (lockError.message === 'INVALID_ACT_ID') {
+                        console.error('[ActsMenu] INVALID_ACT_ID при навигации к акту:', actId);
+                        Notifications.error('Не удалось перейти к акту');
+                        return;
+                    }
+                    throw lockError;
+                }
+            }
+        }
+
+        // 4) Применение уже загруженного контента к UI/состоянию.
+        await this._loadActIntoView(actId, content);
     }
 
     /**
@@ -839,26 +913,18 @@ export class ActsMenuManager {
         window.addEventListener('popstate', async event => {
             const actId = event.state?.actId;
             if (!actId || actId === this.currentActId) return;
-            // Тот же путь, что у явного переключения через меню
-            // (_loadActIntoView) — иначе позиция просмотра покидаемого акта
-            // пишется под НОВЫМ actId (window.currentActId не обновляется),
-            // позиция открываемого акта не восстанавливается (маркер
-            // _viewPositionRestoredForActId не сброшен), а пер-актное
-            // UI-состояние (реестр нарушений, DOM-индекс, undo-стек) течёт
-            // между актами — resetForActSwitch() не вызывался вовсе.
-            //
-            // Сознательно НЕ делаем здесь то, что делает _switchToAct ДО
-            // resetForActSwitch: диалог «несохранённые изменения» и
-            // перезахват лока (unlockAct/LockManager.init). Навигация
-            // browser back/forward уже случилась (URL/history — свершившийся
-            // факт, откатить её нечем без доп. pushState-трюков), а лок акта
-            // не связан с тем, какой шаг/скролл акта показан — это забота
-            // LockManager, у него свой independent жизненный цикл (в т.ч.
-            // истечёт по Redis-TTL, если лок повис на покинутом через back
-            // акте). Смешивать сюда ещё и управление локом — гораздо большая
-            // by-design-смена поведения, чем то, что просил починить ревью.
+            // Весь переход — в _handleHistoryNavigation: тот же перенос лока и
+            // тот же _loadActIntoView, что у явного переключения через меню.
+            // Прежде здесь звался голый _loadActIntoView, и лок сознательно не
+            // трогался: считалось, что владение локом не связано с тем, чей
+            // контент показан. Это неверно — обе роли играл LockManager._actId,
+            // поэтому после back выходной save собирал содержимое показанного
+            // акта и уводил его PUT'ом в акт, на котором повис лок (порча
+            // данных), а сам показанный акт сохранить было нельзя (409 без
+            // лока). Диалог «несохранённые изменения» и pushState здесь
+            // по-прежнему не делаются — см. док-комментарий метода.
             try {
-                await this._loadActIntoView(actId);
+                await this._handleHistoryNavigation(actId);
             } catch (error) {
                 console.error('Ошибка навигации к акту (popstate):', error);
                 Notifications.error('Не удалось загрузить акт');

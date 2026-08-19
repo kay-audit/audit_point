@@ -78,7 +78,11 @@ beforeEach(() => {
   globalThis.addEventListener = globalThis.addEventListener || (() => {});
   globalThis.removeEventListener = globalThis.removeEventListener || (() => {});
 
+  // Штатный случай конструктора: залоченный акт и акт в AppState — один и тот
+  // же. Выходной save адресуется window.currentActId (владелец контента), а не
+  // локу, поэтому оба поля обязаны быть выставлены (см. lock-act-desync.test.mjs).
   LockManager._actId = 7;
+  window.currentActId = 7;
   LockManager._isExiting = false;
   LockManager._exitPromise = null;
   LockManager._manualUnlockTriggered = false;
@@ -108,6 +112,7 @@ afterEach(async () => {
   AppConfig.timings.redirectAfterUnlock = realRedirectDelay;
   delete globalThis.fetch;
   LockManager._actId = null;
+  window.currentActId = undefined;
   LockManager._isExiting = false;
   LockManager._exitPromise = null;
 });

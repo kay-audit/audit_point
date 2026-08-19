@@ -6,7 +6,8 @@
  *    покидаемого акта писалась под ключ НОВОГО, позиция открываемого не
  *    восстанавливалась, пер-актное UI-состояние текло между актами.
  *    Фикс — общий приватный хелпер ActsMenuManager._loadActIntoView,
- *    используется и _switchToAct (после захвата лока), и popstate.
+ *    используется и _switchToAct, и popstate (через
+ *    _handleHistoryNavigation) — оба после захвата лока нового акта.
  *
  * 2) App._captureScrollAndAnchor снимал scrollTop СКРЫТОГО шага как 0 (у
  *    display:none элементов), а _saveViewPosition заменяла scroll ЦЕЛИКОМ —
@@ -128,21 +129,27 @@ test('_loadActIntoView гасит персист шага на всё время
     assert.equal(posOld.step, 1, 'шаг НОВОГО акта не примешался в сохранённую позицию СТАРОГО');
 });
 
-test('popstate-обработчик не делает pushState (иначе сломал бы forward-навигацию)', () => {
+test('popstate-путь не делает pushState (иначе сломал бы forward-навигацию)', () => {
     // Структурная проверка: popstate — реакция на уже случившуюся навигацию
-    // браузера, а не инициатор новой. _loadActIntoView (общий для switch и
-    // popstate) сам не зовёт pushState — это подтверждено тестом выше;
-    // pushState в acts-menu.js встречается ровно один раз — в _switchToAct,
-    // ПОСЛЕ await this._loadActIntoView(actId), не в обработчике popstate.
+    // браузера, а не инициатор новой. pushState в acts-menu.js встречается
+    // ровно один раз — в _switchToAct, ПОСЛЕ await this._loadActIntoView(actId);
+    // ни обработчик popstate, ни _handleHistoryNavigation (весь переход
+    // back/forward, включая перенос лока) его не зовут.
     const src = fs.readFileSync(
         new URL('../../static/js/constructor/header/acts-menu.js', import.meta.url),
         'utf8'
     );
     const popstateBlock = src.slice(src.indexOf("addEventListener('popstate'"), src.indexOf("const param = new URLSearchParams"));
-    // Проверяем реальный ВЫЗОВ, не голое слово — блок объясняющим комментарием
-    // упоминает «pushState» в прозе (почему НЕ делаем), это не вызов.
-    assert.ok(!popstateBlock.includes('.pushState('), 'popstate не должен звать history.pushState');
-    assert.ok(popstateBlock.includes('_loadActIntoView'), 'popstate должен идти через общий хелпер');
+    const historyNav = src.slice(
+        src.indexOf('static async _handleHistoryNavigation('),
+        src.indexOf('static async _switchToAct(')
+    );
+    // Проверяем реальные ВЫЗОВЫ, не голые слова — оба блока упоминают
+    // «pushState» и старое имя хелпера в прозе комментариев.
+    assert.ok(!popstateBlock.includes('.pushState('), 'обработчик popstate не должен звать history.pushState');
+    assert.ok(!historyNav.includes('.pushState('), '_handleHistoryNavigation не должен звать history.pushState');
+    assert.ok(popstateBlock.includes('this._handleHistoryNavigation('), 'popstate идёт через _handleHistoryNavigation');
+    assert.ok(historyNav.includes('this._loadActIntoView('), '_handleHistoryNavigation применяет акт общим хелпером');
 });
 
 // --- 2) capture/merge позиции только видимого шага -------------------------
