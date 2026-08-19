@@ -656,6 +656,32 @@ class TestTreeNormalization:
         # Исходный dict не мутирован
         assert "garbage" in raw
 
+    def test_process_mining_special_flags_preserved(self):
+        """Спец-поля узла Process Mining (special/titleLocked) переживают
+        нормализацию дерева, а незадекларированный мусор рядом с ними —
+        по-прежнему отбрасывается (extra='ignore' не должна пропускать всё).
+
+        Регресс на баг: фронт сериализует special/titleLocked
+        (state-core.js::_serializeTree), но ActItemSchema их не объявляла →
+        после save+reload узел Process Mining терял флаги, снимался запрет
+        добавлять нарушения/риски под разделом и заголовок вновь становился
+        редактируемым."""
+        tree = {
+            "id": "root", "label": "Акт",
+            "children": [
+                {
+                    "id": "6", "label": "Process Mining", "type": "item",
+                    "special": "process_mining", "titleLocked": True,
+                    "parentId": "root", "children": [],
+                },
+            ],
+        }
+        d = ActDataSchema(tree=tree)
+        child = d.tree["children"][0]
+        assert child["special"] == "process_mining"
+        assert child["titleLocked"] is True
+        assert "parentId" not in child
+
 
 # ── M.13: кросс-валидатор дерево ↔ словари ──
 
