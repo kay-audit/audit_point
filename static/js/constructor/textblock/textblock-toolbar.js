@@ -86,7 +86,7 @@ Object.assign(TextBlockManager.prototype, {
                     </button>
                     <div class="toolbar-fontsize-menu toolbar-dropdown-menu hidden" id="fontSizeMenu" role="listbox" aria-label="Размер шрифта">
                         ${this.fontSizes.map(size =>
-            `<div class="toolbar-fontsize-option toolbar-dropdown-option" role="option" data-size="${size}" tabindex="-1">${size}px</div>`
+            `<div class="toolbar-fontsize-option toolbar-dropdown-option" role="option" data-size="${size}" tabindex="-1">${size} пт</div>`
         ).join('')}
                     </div>
                 </div>
@@ -373,48 +373,21 @@ Object.assign(TextBlockManager.prototype, {
             const range = selection.getRangeAt(0);
 
             // BUG-2: расширяем границы наружу contentEditable=false маркеров.
-            // extractContents() с границей ВНУТРИ маркера клонирует его (визуальный
-            // дубль ссылки в начале строки) — двигаем границы по целым маркерам,
-            // тогда маркер уходит во фрагмент целиком, без клона.
+            // Граница ВНУТРИ маркера расщепила бы его пополам (визуальный дубль
+            // ссылки) — двигаем границы по целым маркерам.
             this._expandRangeOutOfMarkers(range);
 
-            // B-24: без execCommand/font[size=7]. Оборачиваем выделение в
-            // span[style=font-size]; extractContents сохраняет вложенную разметку
-            // (b/i/u, ссылки, сноски) — узлы перемещаются целиком, обработчики
-            // ссылок/сносок на них выживают.
-            const span = document.createElement('span');
-            span.style.fontSize = `${fontSize}px`;
-            span.appendChild(range.extractContents());
+            const touched = this._applySizeToRange(range, fontSize);
 
-            // Снимаем font-size у вложенных span (кроме ссылок/сносок) — внешний
-            // размер выигрывает.
-            span.querySelectorAll('[style]').forEach(child => {
-                if (child.style.fontSize &&
-                    !child.classList?.contains('text-link') &&
-                    !child.classList?.contains('text-footnote')) {
-                    child.style.fontSize = '';
-                    if (!child.getAttribute('style')?.trim()) {
-                        child.removeAttribute('style');
-                    }
-                }
-            });
-
-            // BUG-1: размер ставим ВСЕМ маркерам, реально попавшим во фрагмент —
-            // безусловно. Маркеры contentEditable=false, внешний span их не
-            // накрывает (нужен собственный inline font-size). Прежняя завязка на
-            // range.intersectsNode «промахивалась» по границам маркера на 2-й+
-            // смене → маркер застывал на первом применённом размере.
-            span.querySelectorAll('.text-link, .text-footnote').forEach(el => {
-                el.style.fontSize = `${fontSize}px`;
-            });
-
-            range.insertNode(span);
-
-            // Восстанавливаем выделение на новый span.
-            const newRange = document.createRange();
-            newRange.selectNodeContents(span);
-            selection.removeAllRanges();
-            selection.addRange(newRange);
+            // Восстанавливаем выделение по краям обработанного текста: узлы
+            // остались на своих местах, поэтому диапазон пересобирается по ним.
+            if (touched.first && touched.last) {
+                const newRange = document.createRange();
+                newRange.setStart(touched.first, 0);
+                newRange.setEnd(touched.last, touched.last.textContent.length);
+                selection.removeAllRanges();
+                selection.addRange(newRange);
+            }
         } else if (selection && selection.rangeCount > 0) {
             // B-2 (флагман data-loss): материализуем размер на каретке в content,
             // а НЕ в editor.style — стиль контейнера в innerHTML не попадает и
@@ -427,7 +400,7 @@ Object.assign(TextBlockManager.prototype, {
             // смены копят вложенность <span><span><span>…</span></span></span>.
             const anchor = this._reusableSizeAnchor(range);
             if (anchor) {
-                anchor.style.fontSize = `${fontSize}px`;
+                anchor.style.fontSize = `${fontSize}pt`;
                 const zwsp = anchor.firstChild;
                 if (zwsp) {
                     const caret = document.createRange();
@@ -438,7 +411,7 @@ Object.assign(TextBlockManager.prototype, {
                 }
             } else {
                 const span = document.createElement('span');
-                span.style.fontSize = `${fontSize}px`;
+                span.style.fontSize = `${fontSize}pt`;
                 span.appendChild(document.createTextNode('​'));
                 range.insertNode(span);
                 const caret = document.createRange();
@@ -456,6 +429,206 @@ Object.assign(TextBlockManager.prototype, {
         // B-4: при прямом программном вызове (stepFontSize/hotkey) тулбар иначе
         // остаётся с устаревшим значением размера.
         this.updateToolbarState();
+    },
+
+    /**
+     * @private Применяет размер к выделению ПОУЗЛОВО — каждый текстовый узел
+     * одевается в собственный span, узлы остаются на своих местах.
+     *
+     * Прежняя реализация вырезала диапазон целиком (`range.extractContents()`) и
+     * заворачивала фрагмент в ОДИН span. На выделении через несколько пунктов
+     * списка DOM-спека расщепляет частично захваченные узлы, и получалось
+     * `<ul><li></li><span><li>…</li><li>…</li></span><li></li></ul>`: пустые
+     * <li>-огрызки по краям (в них нельзя встать кареткой — ни текста, ни <br>,
+     * отсюда «фантомы, которые не удаляются») и сами пункты ВНУТРИ span, чего не
+     * понимают ни превью, ни DOCX-сегментатор.
+     *
+     * Пункт, покрытый выделением ЦЕЛИКОМ, получает размер на сам <li>: от него
+     * наследует ::marker, иначе буллит/номер застывает на базовом кегле.
+     * @param {Range} range Диапазон с уже раздвинутыми за маркеры границами.
+     * @param {number} pt Размер в пунктах.
+     * @returns {{first: Node|null, last: Node|null}} Края обработанного текста.
+     */
+    _applySizeToRange(range, pt) {
+        this._splitRangeEdges(range);
+
+        const wholeItems = this._listItemsFullyInRange(range);
+        const nodes = this._textNodesInRange(range);
+        // Снимок ДО мутаций: элементы со своим inline-размером внутри диапазона.
+        // После применения их размер всё равно перекрыт нашими span'ами — гасим,
+        // чтобы разметка не копила мёртвые слои от прошлых смен.
+        const stale = this._sizedElementsFullyInRange(range);
+
+        const applied = new Set();
+        for (const node of nodes) {
+            // Пункт покрыт целиком → размер живёт на <li>, обёртка не нужна.
+            if (this._wholeItemOwning(node, wholeItems)) continue;
+            applied.add(this._sizeTextNode(node, pt));
+        }
+        for (const li of wholeItems) li.style.fontSize = `${pt}pt`;
+
+        for (const el of stale) {
+            if (applied.has(el) || wholeItems.has(el)) continue;
+            el.style.fontSize = '';
+            if (!el.getAttribute('style')?.trim()) el.removeAttribute('style');
+        }
+
+        // BUG-1: размер ставим ВСЕМ маркерам внутри диапазона безусловно. Они
+        // contentEditable=false, внешний размер их не накрывает — нужен
+        // собственный inline font-size.
+        this._capsulesFullyInRange(range).forEach(el => {
+            el.style.fontSize = `${pt}pt`;
+        });
+
+        return { first: nodes[0] || null, last: nodes[nodes.length - 1] || null };
+    },
+
+    /**
+     * @private Расщепляет краевые текстовые узлы диапазона, чтобы внутри
+     * остались только ЦЕЛИКОМ выделенные узлы (частичное выделение слова иначе
+     * покрасило бы весь узел). Конец режем первым — расщепление начала иначе
+     * сдвинуло бы его смещение.
+     * @param {Range} range
+     */
+    _splitRangeEdges(range) {
+        const ec = range.endContainer, eo = range.endOffset;
+        if (ec.nodeType === 3 && eo > 0 && eo < ec.textContent.length) {
+            ec.splitText(eo);
+            range.setEnd(ec, ec.textContent.length);
+        }
+        const sc = range.startContainer, so = range.startOffset;
+        if (sc.nodeType === 3 && so > 0 && so < sc.textContent.length) {
+            const tail = sc.splitText(so);
+            // Оба края в одном узле: хвост уехал в tail вместе с концом. Браузер
+            // двигает живые диапазоны сам (DOM-спека), но на всякий случай
+            // доводим руками — иначе конец остался бы за длиной укоротившегося
+            // узла.
+            if (range.endContainer === sc && range.endOffset >= so) {
+                range.setEnd(tail, range.endOffset - so);
+            }
+            range.setStart(tail, 0);
+        }
+    },
+
+    /**
+     * @private Текстовые узлы диапазона, которым имеет смысл ставить размер:
+     * без невидимок (U+200B-якорь, U+FEFF-guard), без чистого пробела и без
+     * внутренностей капсул (у них размер ставится на сам маркер).
+     * @param {Range} range
+     * @returns {Text[]}
+     */
+    _textNodesInRange(range) {
+        return this._visibleTextNodesOf(this.activeEditor)
+            .filter(node => !this._capsuleAncestor(node, this.activeEditor)
+                && range.intersectsNode(node));
+    },
+
+    /**
+     * @private Ставит размер тексту: если узел — единственный ребёнок обычного
+     * span'а, правим ЕГО (иначе повторные смены копят <span><span>…), иначе
+     * заводим свой.
+     * @returns {HTMLElement} Элемент, который несёт размер.
+     */
+    _sizeTextNode(node, pt) {
+        const parent = node.parentElement;
+        if (parent && parent.tagName === 'SPAN' && !this._isCapsule?.(parent)
+            && parent.childNodes.length === 1) {
+            parent.style.fontSize = `${pt}pt`;
+            return parent;
+        }
+        const span = document.createElement('span');
+        span.style.fontSize = `${pt}pt`;
+        node.parentNode.insertBefore(span, node);
+        span.appendChild(node);
+        return span;
+    },
+
+    /**
+     * @private Пункты списка, ВЕСЬ видимый текст которых (на любой глубине,
+     * включая подпункты) попал в диапазон. Только таким размер ставится на сам
+     * <li>: иначе непокрытые подпункты унаследовали бы чужой кегль.
+     * @param {Range} range
+     * @returns {Set<HTMLElement>}
+     */
+    _listItemsFullyInRange(range) {
+        const items = new Set();
+        const root = this.activeEditor;
+        if (!root || typeof root.querySelectorAll !== 'function') return items;
+        root.querySelectorAll('li').forEach((li) => {
+            if (!range.intersectsNode(li)) return;
+            const texts = this._visibleTextNodesOf(li);
+            if (!texts.length) return;
+            if (texts.every(n => this._nodeFullyInRange(range, n))) items.add(li);
+        });
+        return items;
+    },
+
+    /**
+     * @private Видимые текстовые узлы поддерева: без невидимок и чистого
+     * пробела (межтеговые переводы строк не должны мешать признать пункт
+     * покрытым целиком).
+     * @param {Element} root
+     * @returns {Text[]}
+     */
+    _visibleTextNodesOf(root) {
+        if (!root || typeof document.createTreeWalker !== 'function') return [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            acceptNode: (node) => (
+                this._isZeroWidthNode?.(node) || !node.textContent.trim()
+                    ? NodeFilter.FILTER_REJECT
+                    : NodeFilter.FILTER_ACCEPT
+            )
+        });
+        const out = [];
+        let node;
+        while ((node = walker.nextNode())) out.push(node);
+        return out;
+    },
+
+    /**
+     * @private Ближайший <li>-предок узла, если этот пункт покрыт целиком.
+     */
+    _wholeItemOwning(node, wholeItems) {
+        let el = node.parentElement;
+        while (el && el !== this.activeEditor) {
+            if (el.tagName === 'LI') return wholeItems.has(el) ? el : null;
+            el = el.parentElement;
+        }
+        return null;
+    },
+
+    /**
+     * @private Капсулы, целиком лежащие в диапазоне. Границы к этому моменту уже
+     * раздвинуты за маркеры (_expandRangeOutOfMarkers), поэтому «зацепленная»
+     * краем капсула здесь всегда целая.
+     */
+    _capsulesFullyInRange(range) {
+        const root = this.activeEditor;
+        if (!root || typeof root.querySelectorAll !== 'function') return [];
+        return Array.from(root.querySelectorAll('.text-link, .text-footnote'))
+            .filter(el => this._nodeFullyInRange(range, el));
+    },
+
+    /**
+     * @private Элементы со своим inline-размером, целиком лежащие в диапазоне.
+     */
+    _sizedElementsFullyInRange(range) {
+        const root = this.activeEditor;
+        if (!root || typeof root.querySelectorAll !== 'function') return [];
+        return Array.from(root.querySelectorAll('[style*="font-size"]'))
+            .filter(el => !this._isCapsule?.(el) && this._nodeFullyInRange(range, el));
+    },
+
+    /**
+     * @private Содержимое узла целиком внутри диапазона? Константы сравнения
+     * границ — числами (Range.START_TO_START / END_TO_END), чтобы не зависеть от
+     * глобального конструктора Range.
+     */
+    _nodeFullyInRange(range, node) {
+        const probe = document.createRange();
+        probe.selectNodeContents(node);
+        return range.compareBoundaryPoints(0, probe) <= 0
+            && range.compareBoundaryPoints(2, probe) >= 0;
     },
 
     /**
@@ -478,7 +651,7 @@ Object.assign(TextBlockManager.prototype, {
             // B-9: размер под кареткой с учётом соседних span'ов.
             fontSize = this._resolveCaretFontSize(selection.getRangeAt(0));
         } else {
-            fontSize = parseInt(window.getComputedStyle(this.activeEditor).fontSize);
+            fontSize = this._computedFontSizePt(this.activeEditor);
         }
 
         const closestIdx = this.fontSizes.reduce((bestIdx, _, idx, arr) =>
@@ -571,7 +744,7 @@ Object.assign(TextBlockManager.prototype, {
             if (selection && selection.rangeCount > 0) {
                 fontSize = this._resolveCaretFontSize(selection.getRangeAt(0));
             } else if (this.activeEditor) {
-                fontSize = parseInt(window.getComputedStyle(this.activeEditor).fontSize);
+                fontSize = this._computedFontSizePt(this.activeEditor);
             }
             activeSize = this.fontSizes.reduce((prev, curr) =>
                 Math.abs(curr - fontSize) < Math.abs(prev - fontSize) ? curr : prev
@@ -693,7 +866,7 @@ Object.assign(TextBlockManager.prototype, {
         while (node = walker.nextNode()) {
             const el = node.parentElement;
             if (el) {
-                sizes.add(parseInt(window.getComputedStyle(el).fontSize));
+                sizes.add(this._computedFontSizePt(el));
             }
         }
 
@@ -702,7 +875,7 @@ Object.assign(TextBlockManager.prototype, {
 
     /**
      * Размер шрифта под кареткой с учётом соседних span'ов (B-9). На стыке
-     * <span 12px>|<span 18px> getComputedStyle родителя даёт ~14px — берём
+     * <span 12pt>|<span 18pt> getComputedStyle родителя даёт промежуточный — берём
      * явный размер соседа по стороне каретки.
      * @private
      */
@@ -723,9 +896,25 @@ Object.assign(TextBlockManager.prototype, {
             el = el.parentElement;
         }
         const fb = probe?.nodeType === 3 ? probe.parentElement : probe;
-        // Фолбэк — дефолт из лимитов (EXP-2, 16px), не хардкод старой базы (14px).
+        // Фолбэк — дефолт из лимитов (12pt), не хардкод старой базы (14).
         return fb && this.activeEditor?.contains(fb)
-            ? parseInt(window.getComputedStyle(fb).fontSize) : getStructureLimits().fontSizeDefault;
+            ? this._computedFontSizePt(fb) : getStructureLimits().fontSizeDefault;
+    },
+
+    /**
+     * @private Кегль элемента в ПУНКТАХ по вычисленному стилю. getComputedStyle
+     * всегда отдаёт px — и, что важно, БЕЗ учёта zoom поверхности (проверено в
+     * Chromium), поэтому достаточно перевести единицы тем же множителем, что и
+     * DOCX-экспорт (зеркало _PX_TO_PT в
+     * app/domains/acts/formatters/docx/builders/inline.py).
+     * @param {Element} el
+     * @returns {number} Целые пункты.
+     */
+    _computedFontSizePt(el) {
+        const px = parseFloat(window.getComputedStyle(el).fontSize);
+        return Number.isFinite(px)
+            ? Math.round(px * 3 / 4)
+            : getStructureLimits().fontSizeDefault;
     },
 
     /**
@@ -853,9 +1042,9 @@ export function normalizeFontSizes(textBlocks, palette, limits) {
     // (границы уже палитры) → фолбэк на всю палитру плюс финальный кламп.
     const inRange = palette.filter(s => s >= fontSizeMin && s <= fontSizeMax);
     const candidates = inRange.length ? inRange : palette;
-    const snap = (px) => {
+    const snap = (pt) => {
         const nearest = candidates.reduce((best, cur) =>
-            Math.abs(cur - px) < Math.abs(best - px) ? cur : best);
+            Math.abs(cur - pt) < Math.abs(best - pt) ? cur : best);
         return Math.max(fontSizeMin, Math.min(fontSizeMax, nearest));
     };
     let changed = false;
@@ -870,12 +1059,13 @@ export function normalizeFontSizes(textBlocks, palette, limits) {
         let blockChanged = false;
         tmp.content.querySelectorAll('[style*="font-size"]').forEach(el => {
             const raw = el.style.fontSize;
-            const px = parseFloat(raw);
-            // Нормализуем только px; em/%/pt оставляем как есть.
-            if (!raw.endsWith('px') || Number.isNaN(px)) return;
-            const snapped = snap(px);
-            if (snapped !== px) {
-                el.style.fontSize = `${snapped}px`;
+            const pt = parseFloat(raw);
+            // Нормализуем только pt (единица редактора); em/%/px оставляем как
+            // есть — их приводит санитайзер на сохранении.
+            if (!raw.endsWith('pt') || Number.isNaN(pt)) return;
+            const snapped = snap(pt);
+            if (snapped !== pt) {
+                el.style.fontSize = `${snapped}pt`;
                 blockChanged = true;
                 count++;
             }

@@ -113,13 +113,15 @@ test.describe('word-paste: _buildWordPasteFragment пайплайн (реаль�
     expect(r.text).toContain('хвост');
   });
 
-  test('font-size pt→px: 11.0pt → 15px, ни одной pt-величины в стилях', async ({ page }) => {
+  test('font-size остаётся в пунктах: 11.0pt → 11pt, ни одной px-величины в стилях', async ({ page }) => {
     const r = await buildWordFrag(page, WORD_HTML);
     // Проверяем ТОЛЬКО style-атрибуты: видимый текст «красный 11pt» тоже содержит
     // подстроку «11pt», поэтому по всему html искать pt нельзя.
     const styles = r.styleAttrs.join(' | ').toLowerCase();
-    expect(r.styleAttrs.some((s) => /font-size:\s*15px/.test(s))).toBe(true); // 11×4/3≈15
-    expect(styles).not.toMatch(/[0-9.]+pt/); // ни одной pt-единицы не выжило
+    // Word пишет размеры в пунктах — единица редактора теперь та же, поэтому
+    // нормализация лишь округляет «11.0pt» до целого.
+    expect(r.styleAttrs.some((s) => /font-size:\s*11pt/.test(s))).toBe(true);
+    expect(styles).not.toMatch(/[0-9.]+px/); // ни одной px-единицы не просочилось
   });
 
   test('color / background / text-align отброшены (маппится только набор тулбара)', async ({ page }) => {
@@ -195,12 +197,12 @@ test.describe('word-paste: E2E вставка в живой редактор', (
     expect(res.anchors).toBe(0);                         // голого <a> нет
     expect(res.boldCount).toBeGreaterThan(0);            // <b> дожил до DOM
     expect(res.italicCount).toBeGreaterThan(0);          // <i> дожил до DOM
-    expect(res.domHtml).toContain('15px');               // pt→px в живом DOM
+    expect(res.domHtml).toContain('11pt');               // pt→px в живом DOM
     expect(res.domText).toContain('внутри-контрола');    // текст из <w:sdt> сохранён
 
     // Reload-parity: сохранённый content (то, что уйдёт в БД/превью) сохранил
     // размер и ссылку, но НЕ цвет — редактор совпадёт с превью после reload.
-    expect(res.saved).toMatch(/font-size:\s*15px/);                     // размер в сохранённом content
+    expect(res.saved).toMatch(/font-size:\s*11pt/);                     // размер в сохранённом content
     expect(res.saved).toContain('data-link-url="https://example.com"'); // капсула-ссылка сохранена
     expect(res.saved.toLowerCase()).not.toContain('color');             // цвет/фон не сохранены
     expect(res.saved.toLowerCase()).not.toContain('text-align');        // выравнивание не сохранено

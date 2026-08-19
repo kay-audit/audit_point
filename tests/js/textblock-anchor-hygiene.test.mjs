@@ -95,7 +95,7 @@ test('CORE-5: applyFontSize на каретке в пустом якоре пр�
 
   mgr.applyFontSize(24);
 
-  assert.equal(anchor.style.fontSize, '24px', 'font-size существующего якоря обновлён');
+  assert.equal(anchor.style.fontSize, '24pt', 'font-size существующего якоря обновлён');
   assert.equal(insertedNew, false, 'новый span НЕ вставлен — вложенность не создаётся');
 });
 
@@ -103,8 +103,10 @@ test('CORE-5: applyFontSize на каретке в пустом якоре пр�
 
 test('TB-4: выделение с zero-width якорем не даёт ложный смешанный размер («—»)', () => {
   globalThis.NodeFilter = { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 };
-  const realSpan = { _fs: '14px' };
-  const anchorSpan = { _fs: '72px' };            // осиротевший якорь размера
+  // getComputedStyle всегда отдаёт px — размеры выделения читаются в пунктах
+  // (×0.75), поэтому фикстура задаёт именно вычисленные пиксели.
+  const realSpan = { _fs: '16px' };              // = 12pt
+  const anchorSpan = { _fs: '96px' };            // осиротевший якорь размера, = 72pt
   const realText = { nodeType: 3, textContent: 'Раз', data: 'Раз', parentElement: realSpan };
   const zwspText = { nodeType: 3, textContent: '​', data: '​', parentElement: anchorSpan };
   const root = { nodeType: 1, _textNodes: [realText, zwspText] };
@@ -133,8 +135,8 @@ test('TB-4: выделение с zero-width якорем не даёт ложн
 
   const sizes = mgr._getSelectedFontSizes(selection);
   assert.equal(sizes.size, 1, 'zero-width якорь НЕ примешал свой размер');
-  assert.ok(sizes.has(14));
-  assert.ok(!sizes.has(72), 'размер осиротевшего якоря 72px не учтён');
+  assert.ok(sizes.has(12));
+  assert.ok(!sizes.has(72), 'размер осиротевшего якоря (72pt) не учтён');
 });
 
 // ── TB-4: чистка осиротевших якорей на save, якорь под кареткой живёт ─────────
@@ -231,7 +233,7 @@ test('removeFormat-unwrap: голый текстовый узел из U+200B (�
 // ── TB-6: normalizeFontSizes уважает [min,max] ────────────────────────────────
 
 /**
- * Мини-стаб <template>: парсит font-size:<N>px из innerHTML в «элементы» с
+ * Мини-стаб <template>: парсит font-size:<N>pt из innerHTML в «элементы» с
  * читаемым/записываемым style.fontSize и реэмитит их в innerHTML — ровно то,
  * что читает normalizeFontSizes (браузерного парсера в node:test нет).
  */
@@ -245,13 +247,13 @@ function installTemplateDom() {
       set innerHTML(v) {
         html = v;
         els = [];
-        const re = /font-size:\s*([\d.]+)px/gi;
+        const re = /font-size:\s*([\d.]+)pt/gi;
         let m;
-        while ((m = re.exec(v)) !== null) els.push({ style: { fontSize: `${m[1]}px` } });
+        while ((m = re.exec(v)) !== null) els.push({ style: { fontSize: `${m[1]}pt` } });
       },
       get innerHTML() {
         let i = 0;
-        return html.replace(/font-size:\s*[\d.]+px/gi, () => `font-size: ${els[i++].style.fontSize}`);
+        return html.replace(/font-size:\s*[\d.]+pt/gi, () => `font-size: ${els[i++].style.fontSize}`);
       },
       content: { querySelectorAll: () => els },
     };
@@ -261,34 +263,34 @@ function installTemplateDom() {
 test('TB-6: normalizeFontSizes снапит к пересечению палитры и [min,max]', () => {
   installTemplateDom();
   const textBlocks = {
-    a: { content: '<span style="font-size: 72px">x</span>' }, // 72 вне [10,24] → 24
-    b: { content: '<span style="font-size: 4px">y</span>' },  // 4  вне [10,24] → 10
-    c: { content: '<span style="font-size: 18px">z</span>' }, // 18 в диапазоне → без изменений
+    a: { content: '<span style="font-size: 72pt">x</span>' }, // 72 вне [10,24] → 24
+    b: { content: '<span style="font-size: 4pt">y</span>' },  // 4  вне [10,24] → 10
+    c: { content: '<span style="font-size: 18pt">z</span>' }, // 18 в диапазоне → без изменений
   };
   const res = normalizeFontSizes(textBlocks, PALETTE, { fontSizeMin: 10, fontSizeMax: 24 });
 
   assert.equal(res.changed, true);
-  assert.ok(textBlocks.a.content.includes('font-size: 24px'), textBlocks.a.content);
-  assert.ok(textBlocks.b.content.includes('font-size: 10px'), textBlocks.b.content);
-  assert.ok(textBlocks.c.content.includes('font-size: 18px'), textBlocks.c.content);
+  assert.ok(textBlocks.a.content.includes('font-size: 24pt'), textBlocks.a.content);
+  assert.ok(textBlocks.b.content.includes('font-size: 10pt'), textBlocks.b.content);
+  assert.ok(textBlocks.c.content.includes('font-size: 18pt'), textBlocks.c.content);
 });
 
 test('TB-6: значение в границах не меняется (в т.ч. дефолтные границы через getStructureLimits)', () => {
   installTemplateDom();
   // Границы не переданы → берутся из getStructureLimits() (дефолт 8..72 в node).
-  const textBlocks = { a: { content: '<span style="font-size: 13px">x</span>' } };
+  const textBlocks = { a: { content: '<span style="font-size: 13pt">x</span>' } };
   const res = normalizeFontSizes(textBlocks, PALETTE);
   assert.equal(res.changed, true);
   // 13 → ближайший в полной палитре = 12 (обе дист 1, reduce берёт первый меньший).
-  assert.ok(textBlocks.a.content.includes('font-size: 12px'), textBlocks.a.content);
+  assert.ok(textBlocks.a.content.includes('font-size: 12pt'), textBlocks.a.content);
 });
 
 test('TB-6: пустое пересечение (границы уже палитры) → фолбэк + финальный кламп', () => {
   installTemplateDom();
   // Палитра [30,40], границы [10,24] — пересечение пусто; снап по палитре, затем
   // кламп к 24 (обе за верхней границей).
-  const textBlocks = { a: { content: '<span style="font-size: 35px">x</span>' } };
+  const textBlocks = { a: { content: '<span style="font-size: 35pt">x</span>' } };
   const res = normalizeFontSizes(textBlocks, [30, 40], { fontSizeMin: 10, fontSizeMax: 24 });
   assert.equal(res.changed, true);
-  assert.ok(textBlocks.a.content.includes('font-size: 24px'), textBlocks.a.content);
+  assert.ok(textBlocks.a.content.includes('font-size: 24pt'), textBlocks.a.content);
 });

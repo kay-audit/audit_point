@@ -7,14 +7,16 @@ import { getStructureLimits } from '../violation/violation-image-validator.js';
 Object.assign(TextBlockManager.prototype, {
     /**
      * Применяет базовый размер шрифта к редактору из /acts/limits (единый
-     * источник с превью и экспортом, EXP-2: дефолт 16px). Выравнивание здесь НЕ
-     * задаётся: оно живёт per-line в inline-HTML content (TB-1), дефолт по
-     * ширине — CSS-правилом на .textblock-editor.
+     * источник с превью и экспортом; дефолт — 12pt тела акта). Размер задаётся
+     * в ПУНКТАХ: выбранное пользователем число — это кегль Word, экранную
+     * читаемость даёт zoom поверхности (CSS). Выравнивание здесь НЕ задаётся:
+     * оно живёт per-line в inline-HTML content (TB-1), дефолт по ширине —
+     * CSS-правилом на .textblock-editor.
      * @param {HTMLElement} editor - DOM-элемент редактора
      */
     applyBaseFontSize(editor) {
         if (!editor) return;
-        editor.style.fontSize = `${getStructureLimits().fontSizeDefault}px`;
+        editor.style.fontSize = `${getStructureLimits().fontSizeDefault}pt`;
     },
 
     /**

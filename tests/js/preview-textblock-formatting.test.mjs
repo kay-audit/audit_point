@@ -11,12 +11,12 @@ import assert from 'node:assert/strict';
 import { PreviewTextBlockRenderer } from '../../static/js/constructor/preview/preview-textblock-renderer.js';
 import { getStructureLimits } from '../../static/js/constructor/violation/violation-image-validator.js';
 
-test('_applyBaseFontSize ставит базовый размер из limits (дефолт 16px)', () => {
+test('_applyBaseFontSize ставит базовый размер из limits (дефолт 12pt)', () => {
     const el = { style: {} };
     PreviewTextBlockRenderer._applyBaseFontSize(el);
-    assert.equal(el.style.fontSize, `${getStructureLimits().fontSizeDefault}px`);
-    // Единый источник с редактором и экспортом — дефолт 16px.
-    assert.equal(el.style.fontSize, '16px');
+    assert.equal(el.style.fontSize, `${getStructureLimits().fontSizeDefault}pt`);
+    // Единый источник с редактором и экспортом — тело акта 12pt.
+    assert.equal(el.style.fontSize, '12pt');
 });
 
 test('выравнивание НЕ задаётся контейнером (per-line в content, дефолт — CSS)', () => {

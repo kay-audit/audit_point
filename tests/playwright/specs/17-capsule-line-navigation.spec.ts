@@ -222,7 +222,7 @@ test.describe('смена размера шрифта не ломает caret-gu
       const tbm = (window as any).textBlockManager;
       // Сохранённый контент с U+200B-якорем размера ВПЛОТНУЮ к капсуле (U+FEFF
       // стрипается при save, U+200B — нет), как после смены размера + reload.
-      ed.innerHTML = 'строка1<br><span style="font-size: 20px;">\u200B</span>' +
+      ed.innerHTML = 'строка1<br><span style="font-size: 20pt;">\u200B</span>' +
         '<span class="text-footnote" data-footnote-id="F1" data-footnote-text="прим">сноска</span>' +
         '<br>строка3';
       tbm.normalizeMarkers(ed);   // именно это выполняется на createEditor (reload)

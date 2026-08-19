@@ -1114,11 +1114,12 @@ Object.assign(TextBlockManager.prototype, {
     },
 
     /**
-     * @private Приводит inline font-size у всех элементов поддерева к целым px в
-     * диапазоне [fontSizeMin,fontSizeMax]: pt→px = round(v*4/3), px оставляем,
-     * em/rem/%/прочее — declaration отбрасываем (не-px единиц не оставляем).
-     * Переписываем даже px-в-диапазоне, чтобы после нормализации не осталось ни
-     * одной не-px величины.
+     * @private Приводит inline font-size у всех элементов поддерева к целым pt в
+     * диапазоне [fontSizeMin,fontSizeMax]: pt оставляем, px→pt = round(v*0.75),
+     * em/rem/%/прочее — declaration отбрасываем (не-pt единиц не оставляем).
+     * Переписываем даже pt-в-диапазоне, чтобы после нормализации не осталось ни
+     * одной не-pt величины. Word и так пишет размеры в пунктах, так что для
+     * типичной вставки это тождество; px приходит из веб-источников.
      * @param {HTMLElement} root
      */
     _normalizeWordFontSizes(root) {
@@ -1128,29 +1129,29 @@ Object.assign(TextBlockManager.prototype, {
             if (!el || !el.style) return;
             const raw = el.style.fontSize;
             if (!raw) return;
-            const px = this._wordFontSizeToPx(raw, fontSizeMin, fontSizeMax);
-            // null → единица не-px: убираем только font-size, прочие allowed-свойства
-            // (font-weight/…) не трогаем.
-            el.style.fontSize = px == null ? '' : `${px}px`;
+            const pt = this._wordFontSizeToPt(raw, fontSizeMin, fontSizeMax);
+            // null → единица не-pt/не-px: убираем только font-size, прочие
+            // allowed-свойства (font-weight/…) не трогаем.
+            el.style.fontSize = pt == null ? '' : `${pt}pt`;
         });
     },
 
     /**
-     * @private Чистая конвертация значения font-size из Word в целые px внутри
-     * [min,max]. pt→round(v*4/3), px→round(v), em/rem/%/без единицы/прочее → null
-     * (отбросить). Возвращает число px или null.
+     * @private Чистая конвертация значения font-size из Word в целые pt внутри
+     * [min,max]. pt→round(v), px→round(v*0.75), em/rem/%/без единицы/прочее →
+     * null (отбросить). Возвращает число pt или null.
      */
-    _wordFontSizeToPx(raw, min, max) {
+    _wordFontSizeToPt(raw, min, max) {
         const m = String(raw).trim().match(/^([0-9]*\.?[0-9]+)\s*(pt|px|em|rem|%)?$/i);
         if (!m) return null;
         const val = parseFloat(m[1]);
         if (!Number.isFinite(val)) return null;
         const unit = m[2] ? m[2].toLowerCase() : '';
-        let px;
-        if (unit === 'pt') px = Math.round(val * 4 / 3);
-        else if (unit === 'px') px = Math.round(val);
+        let pt;
+        if (unit === 'pt') pt = Math.round(val);
+        else if (unit === 'px') pt = Math.round(val * 3 / 4);
         else return null;
-        return Math.max(min, Math.min(max, px));
+        return Math.max(min, Math.min(max, pt));
     },
 
     /**
