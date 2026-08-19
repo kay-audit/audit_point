@@ -1,9 +1,14 @@
 """TB-6: мягкий кламп font-size бэк-санитайзера к [min,max] из настроек.
 
+Единица контракта — ПУНКТЫ: редактор эмитит pt, границы настроек в pt, и
+ровно это число уходит в Word. px редактор не создаёт — он приходит из прямого
+API/внешней вставки и КОНВЕРТИРУЕТСЯ в pt (×0.75), а не вырезается: заданный
+автором кегль не должен молча теряться. Прочие единицы (em/%/rem) убираются
+целиком — относительный размер нечем клампить, и превью↔DOCX разошлись бы.
+
 После вырезания formatting-объекта (Task 5) серверная схема размер шрифта не
 валидирует. Границу держат тулбар (фронт) и числовой пост-проход санитайзера
-(_FontSizeClampFilter): легаси-контент/прямой API/внешняя вставка с размером
-вне диапазона приводятся к границе, а не отвергаются. Дефолты границ — 8/72
+(_FontSizeClampFilter). Дефолты границ — 8/72 pt
 (TextblocksSettings.font_size_min/max).
 """
 from app.domains.acts.settings import ActsSettings, TextblocksSettings
@@ -11,52 +16,69 @@ from app.domains.acts.utils.html_sanitizer import sanitize_html
 
 
 def test_font_size_above_max_clamped_to_max():
-    out = sanitize_html('<span style="font-size: 99px">крупно</span>')
-    assert "72px" in out
-    assert "99px" not in out
+    out = sanitize_html('<span style="font-size: 99pt">крупно</span>')
+    assert "72pt" in out
+    assert "99pt" not in out
 
 
 def test_font_size_below_min_clamped_to_min():
-    out = sanitize_html('<span style="font-size: 4px">мелко</span>')
-    assert "8px" in out
-    assert "4px" not in out
+    out = sanitize_html('<span style="font-size: 4pt">мелко</span>')
+    assert "8pt" in out
+    assert "4pt" not in out
 
 
 def test_font_size_in_range_untouched():
-    """Валидный размер остаётся дословным (в т.ч. паритетные фикстуры 20px)."""
-    out = sanitize_html('<span style="font-size: 20px">норма</span>')
-    assert "20px" in out
+    """Валидный размер в pt остаётся дословным (не переформатируется)."""
+    out = sanitize_html('<span style="font-size: 20pt">норма</span>')
+    assert "font-size: 20pt" in out
 
 
 def test_font_size_at_boundaries_untouched():
     for size in (8, 72):
-        out = sanitize_html(f'<span style="font-size: {size}px">г</span>')
-        assert f"{size}px" in out
+        out = sanitize_html(f'<span style="font-size: {size}pt">г</span>')
+        assert f"{size}pt" in out
 
 
 def test_clamp_preserves_other_css_properties():
     """Кламп трогает только font-size — соседние свойства span остаются."""
-    out = sanitize_html('<span style="font-size: 120px; color: red">т</span>')
-    assert "72px" in out
-    assert "120px" not in out
+    out = sanitize_html('<span style="font-size: 120pt; color: red">т</span>')
+    assert "72pt" in out
+    assert "120pt" not in out
     assert "color" in out and "red" in out
 
 
-def test_non_px_font_size_stripped():
-    """Не-px размер (em/%/pt/rem) редактор не эмитит; приходит из прямого API/
-    внешней вставки и обошёл бы границы (500pt) или рассогласовал превью↔DOCX —
-    санитайзер убирает объявление font-size целиком, текст остаётся."""
-    for value in ("1.5em", "150%", "40pt", "3rem", "500pt"):
+def test_px_converted_to_pt():
+    """Внешняя вставка в px не вырезается, а конвертируется: 20px → 15pt."""
+    out = sanitize_html('<span style="font-size: 20px">крупно</span>')
+    assert "font-size: 15pt" in out
+    assert "20px" not in out
+
+
+def test_px_converted_then_clamped():
+    """Сначала px→pt, потом кламп: 200px = 150pt → 72pt; 4px = 3pt → 8pt."""
+    assert "font-size: 72pt" in sanitize_html('<span style="font-size: 200px">a</span>')
+    assert "font-size: 8pt" in sanitize_html('<span style="font-size: 4px">b</span>')
+
+
+def test_px_conversion_keeps_fractional_pt():
+    """Некруглый результат конвертации сохраняется дробным (18px → 13.5pt)."""
+    out = sanitize_html('<span style="font-size: 18px">т</span>')
+    assert "font-size: 13.5pt" in out
+
+
+def test_relative_font_size_stripped():
+    """Относительный размер (em/%/rem/без единицы) клампу не поддаётся и
+    рассогласовал бы превью↔DOCX — объявление убирается целиком, текст остаётся."""
+    for value in ("1.5em", "150%", "3rem", "24"):
         out = sanitize_html(f'<span style="font-size: {value}">т</span>')
         assert "font-size" not in out
-        assert value not in out
         assert "т" in out
 
 
-def test_non_px_font_size_stripped_keeps_siblings():
-    """Убирается только не-px font-size; соседние CSS-свойства span остаются."""
-    out = sanitize_html('<span style="font-size: 40pt; color: red">т</span>')
-    assert "font-size" not in out and "40pt" not in out
+def test_relative_font_size_stripped_keeps_siblings():
+    """Убирается только неподдержанный font-size; соседние свойства остаются."""
+    out = sanitize_html('<span style="font-size: 1.5em; color: red">т</span>')
+    assert "font-size" not in out and "1.5em" not in out
     assert "color" in out and "red" in out
     assert "т" in out
 
@@ -68,18 +90,18 @@ def test_clamp_respects_settings_bounds(monkeypatch):
     narrow = ActsSettings(textblocks=TextblocksSettings(font_size_min=10, font_size_max=24))
     monkeypatch.setattr(mod, "_acts_settings", lambda: narrow)
 
-    assert "24px" in sanitize_html('<span style="font-size: 72px">т</span>')
-    assert "10px" in sanitize_html('<span style="font-size: 8px">т</span>')
-    assert "18px" in sanitize_html('<span style="font-size: 18px">т</span>')
+    assert "24pt" in sanitize_html('<span style="font-size: 72pt">т</span>')
+    assert "10pt" in sanitize_html('<span style="font-size: 8pt">т</span>')
+    assert "18pt" in sanitize_html('<span style="font-size: 18pt">т</span>')
 
 
 def test_multiple_spans_each_clamped():
     out = sanitize_html(
-        '<span style="font-size: 200px">a</span>'
-        '<span style="font-size: 2px">b</span>'
+        '<span style="font-size: 200pt">a</span>'
+        '<span style="font-size: 2pt">b</span>'
     )
-    # Полные объявления, чтобы «2px» не совпадал как подстрока «72px».
-    assert "font-size: 72px" in out
-    assert "font-size: 8px" in out
-    assert "font-size: 200px" not in out
-    assert "font-size: 2px" not in out
+    # Полные объявления, чтобы «2pt» не совпадал как подстрока «72pt».
+    assert "font-size: 72pt" in out
+    assert "font-size: 8pt" in out
+    assert "font-size: 200pt" not in out
+    assert "font-size: 2pt" not in out

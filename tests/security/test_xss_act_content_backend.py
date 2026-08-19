@@ -148,9 +148,9 @@ class TestSanitizeRichHtmlDirect:
         assert 'data-link-id="l1"' in out and 'data-link-url="https://e.com"' in out
 
     def test_font_size_clamped(self):
-        out = sanitize_rich_html('<span style="font-size: 500px">x</span>')
-        assert "500px" not in out
-        assert "72px" in out  # font_size_max по умолчанию (TextblocksSettings)
+        out = sanitize_rich_html('<span style="font-size: 500pt">x</span>')
+        assert "500pt" not in out
+        assert "72pt" in out  # font_size_max по умолчанию (TextblocksSettings)
 
     def test_block_keeps_only_text_align(self):
         out = sanitize_rich_html('<div style="text-align: center; color: red">x</div>')
@@ -423,7 +423,7 @@ class TestSaveContentViolationBlocksSanitized:
     async def test_allowlisted_formatting_survives(self):
         """Разрешённые тег/CSS/ссылка переживают санитизацию."""
         svc, _ = _make_service()
-        raw = '<span style="font-size: 20px">крупно</span><a href="https://e.com">l</a>'
+        raw = '<span style="font-size: 20pt">крупно</span><a href="https://e.com">l</a>'
         data = _violation_with_blocks(violated=[ViolationTextBlockSchema(
             id="b1", type="text", content=raw,
         )])
@@ -431,7 +431,7 @@ class TestSaveContentViolationBlocksSanitized:
         await svc.save_content(act_id=1, data=data, username="12345")
 
         content = data.violations["v1"].violated.blocks[0].content
-        assert "font-size" in content and "20px" in content
+        assert "font-size" in content and "20pt" in content
         assert 'href="https://e.com"' in content
 
     async def test_lists_survive_sanitization(self):

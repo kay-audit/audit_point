@@ -203,7 +203,7 @@ class TestActsLimitsEndpoint:
         assert body["textblocks"] == {
             "font_size_min": FONT_SIZE_MIN,
             "font_size_max": FONT_SIZE_MAX,
-            "font_size_default": 16,
+            "font_size_default": 12,
             "per_node": 10,
             "max_list_level": 4,
         }
@@ -214,7 +214,7 @@ class TestActsLimitsEndpoint:
             "max_rows": 64, "max_cols": 16, "min_col_width_px": 80, "per_node": 10,
         }
         assert body["textblocks"] == {
-            "font_size_min": 8, "font_size_max": 72, "font_size_default": 16, "per_node": 10,
+            "font_size_min": 8, "font_size_max": 72, "font_size_default": 12, "per_node": 10,
             "max_list_level": 4,
         }
         # B-5: секция sanitizer — единый allowlist фронт↔бэк.

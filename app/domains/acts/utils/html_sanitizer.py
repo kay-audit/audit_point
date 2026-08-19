@@ -149,55 +149,68 @@ class _BlockStyleFilter(Filter):
             yield token
 
 
-# TB-6: мягкий кламп font-size к [min,max] из настроек. Кламп — по px (редактор
-# эмитит именно px); значение в диапазоне остаётся дословным — паритетные
-# фикстуры (font-size: 20px) не переформатируются. Не-px размер (pt/em/%/rem)
-# редактор не создаёт — он приходит из прямого API/внешней вставки и убирается
-# целиком (_strip_nonpx_font_size), иначе обошёл бы границы (500pt проходит мимо
-# клампа) и рассогласовал превью↔DOCX (em/%/rem превью рендерит, inline._SIZE_RE
-# роняет).
-_FONT_SIZE_PX_RE = re.compile(
-    r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*px",
+# TB-6: мягкий кламп font-size к [min,max] из настроек. Единица контракта —
+# ПУНКТЫ: редактор эмитит pt, границы настроек — тоже pt, и ровно это число
+# уходит в Word. Значение в диапазоне остаётся дословным — паритетные фикстуры
+# (font-size: 20pt) не переформатируются.
+#
+# px редактор не создаёт — он приходит из прямого API/внешней вставки (Word,
+# браузер), и вырезать его молча значило бы терять заданный автором кегль.
+# Поэтому px КОНВЕРТИРУЕТСЯ в pt (×0.75) и клампится наравне с pt: превью и
+# DOCX (inline._SIZE_RE читает обе единицы) получают одно значение.
+#
+# Прочие единицы (em/%/rem/без единицы) убираются целиком
+# (_strip_unsupported_font_size): относительный размер не с чем сравнивать при
+# клампе, а превью его отрисовало бы — был бы шов превью↔DOCX.
+_PX_TO_PT = 0.75
+
+# Объявление font-size в поддержанной единице (pt — как есть, px — с
+# конвертацией). Зеркало inline._SIZE_RE DOCX-экспорта.
+_FONT_SIZE_RE = re.compile(
+    r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(pt|px)",
     re.IGNORECASE,
 )
 
-# Одно объявление font-size с единицей ≠ px (или без единицы) внутри style —
-# вместе с примыкающим ';', чтобы не осталось пустой декларации. Негативный
-# lookahead пропускает валидный <N>px (его обрабатывает кламп).
-_FONT_SIZE_NONPX_DECL_RE = re.compile(
-    r"font-size\s*:\s*(?!\s*\d+(?:\.\d+)?\s*px\b)[^;]*;?",
+# Одно объявление font-size с неподдержанной единицей (или без единицы) внутри
+# style — вместе с примыкающим ';', чтобы не осталось пустой декларации.
+# Негативный lookahead пропускает валидные <N>pt/<N>px (их обрабатывает кламп).
+_FONT_SIZE_OTHER_DECL_RE = re.compile(
+    r"font-size\s*:\s*(?!\s*\d+(?:\.\d+)?\s*(?:pt|px)\b)[^;]*;?",
     re.IGNORECASE,
 )
 
 
-def _strip_nonpx_font_size(style: str) -> str:
-    """Убирает из style объявления font-size в НЕ-px единицах (pt/em/%/rem…).
+def _strip_unsupported_font_size(style: str) -> str:
+    """Убирает из style объявления font-size в единицах кроме pt/px (em/%/rem…).
 
-    Редактор эмитит размер только в px; не-px приходит из прямого API/внешней
-    вставки. Оставленный, он либо обошёл бы границы клампа (font-size:500pt), либо
-    рассогласовал превью↔DOCX (em/%/rem превью показывает, а inline._SIZE_RE не
-    распознаёт). Удаляем объявление целиком — оба рендера падают на базовый
-    размер. px не трогаем: его зажимает _clamp_font_size_px.
+    Относительный размер невозможно зажать границами [min,max] (они в pt), а
+    превью его отрисовало бы — DOCX (inline._SIZE_RE) нет. Удаляем объявление
+    целиком: оба рендера падают на базовый размер. pt/px не трогаем — их
+    приводит к пунктам и зажимает _clamp_font_size_pt.
     """
-    return _FONT_SIZE_NONPX_DECL_RE.sub("", style)
+    return _FONT_SIZE_OTHER_DECL_RE.sub("", style)
 
 
-def _clamp_font_size_px(style: str, min_px: int, max_px: int) -> str:
-    """Зажимает каждое font-size:<N>px в style-строке к [min_px, max_px].
+def _clamp_font_size_pt(style: str, min_pt: int, max_pt: int) -> str:
+    """Приводит каждое font-size в style-строке к пунктам и зажимает к [min,max].
 
-    В диапазоне — возвращает исходное совпадение без изменений (не
-    переформатирует). Вне — переписывает границей (целое из настроек).
+    pt в диапазоне — возвращает исходное совпадение без изменений (не
+    переформатирует). px — всегда переписывает пунктами (×0.75), даже если
+    результат в диапазоне: единица контракта одна. Вне диапазона — граница
+    из настроек.
     """
 
     def _repl(match: re.Match) -> str:
         value = float(match.group(1))
-        clamped = min(float(max_px), max(float(min_px), value))
-        if clamped == value:
+        unit = match.group(2).lower()
+        size_pt = value * _PX_TO_PT if unit == "px" else value
+        clamped = min(float(max_pt), max(float(min_pt), size_pt))
+        if unit == "pt" and clamped == value:
             return match.group(0)
         num = int(clamped) if clamped == int(clamped) else clamped
-        return f"font-size: {num}px"
+        return f"font-size: {num}pt"
 
-    return _FONT_SIZE_PX_RE.sub(_repl, style)
+    return _FONT_SIZE_RE.sub(_repl, style)
 
 
 class _FontSizeClampFilter(Filter):
@@ -215,17 +228,17 @@ class _FontSizeClampFilter(Filter):
 
     def __iter__(self):
         tb = _acts_settings().textblocks
-        min_px, max_px = tb.font_size_min, tb.font_size_max
+        min_pt, max_pt = tb.font_size_min, tb.font_size_max
         for token in super().__iter__():
             if token.get("type") in ("StartTag", "EmptyTag"):
                 data = token.get("data") or {}
                 key = (None, "style")
                 style = data.get(key)
                 if style and "font-size" in style.lower():
-                    style = _strip_nonpx_font_size(style)
-                    style = _clamp_font_size_px(style, min_px, max_px)
-                    # Осталась пустая/только-разделители строка (был лишь не-px
-                    # font-size) — снимаем style целиком.
+                    style = _strip_unsupported_font_size(style)
+                    style = _clamp_font_size_pt(style, min_pt, max_pt)
+                    # Осталась пустая/только-разделители строка (был лишь
+                    # неподдержанный font-size) — снимаем style целиком.
                     if style.strip(" ;\t\r\n"):
                         data[key] = style
                     else:
@@ -290,8 +303,8 @@ def _rich_attribute_filter(tag: str, attr: str, value: str) -> str | None:
         match = _BLOCK_TEXT_ALIGN_RE.search(value or "")
         return f"text-align: {match.group(1).lower()}" if match else None
     tb = _acts_settings().textblocks
-    style = _clamp_font_size_px(
-        _strip_nonpx_font_size(value or ""), tb.font_size_min, tb.font_size_max
+    style = _clamp_font_size_pt(
+        _strip_unsupported_font_size(value or ""), tb.font_size_min, tb.font_size_max
     )
     style = style.strip(" ;\t\r\n")
     return style or None
