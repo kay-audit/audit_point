@@ -150,28 +150,6 @@
     z-index: var(--z-sticky);
 }
 
-/* Контейнер таблиц внутри элемента */
-.item-tables {
-    margin-top: var(--spacing-md);
-    padding: 0 var(--spacing-sm);
-    overflow: visible;
-}
-
-/* Секция таблицы внутри элемента */
-.item-tables .table-section {
-    margin: var(--spacing-md) 0;
-    padding: var(--spacing-lg);
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    border: var(--border-width-thin) solid var(--border-light);
-    box-shadow: var(--shadow-xs);
-}
-
-/* Уменьшенный размер шрифта для вложенных таблиц */
-.item-tables .editable-table {
-    font-size: var(--font-size-xs);
-}
-
 /* Разделитель в контекстном меню */
 .context-menu-separator {
     height: var(--border-width-thin);
