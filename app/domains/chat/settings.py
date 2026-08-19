@@ -59,10 +59,10 @@ class TextActionsSettings(BaseModel):
     орфография/пунктуация (``fix``) и улучшение читаемости/структуры
     (``readability``).
 
-    Режим ``fix`` — перенос наработки D17 (папка 1). Дефолтная температура ниже
+    Режим ``fix`` — перенос наработки D17 (папка 2). Дефолтная температура ниже
     исходной D17 (0.7) — корректору нужна детерминированность правок; при желании
     переопределяется через CHAT__TEXT_ACTIONS__CORRECTOR_TEMPERATURE. Режим
-    ``readability`` — базовый (доработка команды D17).
+    ``readability`` — улучшайзер «Пиши, сокращай» (наработка D17, папка 1).
     """
 
     # None → использовать основную модель профиля чата (ChatDomainSettings.model).
@@ -70,9 +70,10 @@ class TextActionsSettings(BaseModel):
     # settings_registry делает поля с default=None обязательными.
     corrector_model: str | None = Field(default_factory=lambda: None)
     corrector_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
-    # Режим «улучшение читаемости»: чуть выше корректорской, чтобы
-    # переструктурировать текст, но остаться верным фактам.
-    readability_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    # Режим «улучшение читаемости» — улучшайзер «Пиши, сокращай» D17. Значение
+    # из config.py их наработки: переписывание формы должно быть предсказуемым,
+    # а не «креативным».
+    readability_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     # Формализация нарушения (4 экстрактора D17): температура ~0 ради
     # детерминизма извлечения. None-модель → основная модель профиля чата.
     formalizer_model: str | None = Field(default_factory=lambda: None)

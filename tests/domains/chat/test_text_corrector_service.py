@@ -55,10 +55,10 @@ async def test_correct_readability_mode_uses_readability_prompt():
 
     assert out == "улучшено"
     kwargs = fake.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.3  # температура режима читаемости
-    system = kwargs["messages"][0]["content"].lower()
-    assert "читаемость" in system  # промпт улучшения читаемости, не корректорский
-    assert "корректор банковских документов" not in system
+    assert kwargs["temperature"] == 0.1  # температура улучшайзера D17
+    system = kwargs["messages"][0]["content"]
+    assert "Пиши, сокращай" in system  # промпт улучшайзера, не корректорский
+    assert "корректор банковских документов" not in system.lower()
 
 
 async def test_correct_rejects_unknown_mode():
