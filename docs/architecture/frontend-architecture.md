@@ -478,7 +478,7 @@ UI:
 
 `_setupNavigationInterception()` (`storage-manager.js:418`) защищает от навигации с несохранёнными изменениями двумя слоями:
 
-1. **`popstate`-страж** — `history.replaceState({_lockNavGuard:true}, ...)` плюс `history.pushState`. Перехватывает «Назад» в браузере и предлагает диалог сохранения.
+1. **`popstate`-страж** — `history.replaceState({_lockNavGuard:true}, ...)` плюс `history.pushState`. Перехватывает «Назад» в браузере и предлагает диалог сохранения. Оба вызова **мержат** `_lockNavGuard` в текущий `history.state`, а не заменяют его целиком — запись истории одновременно несёт `actId`, записанный `acts-menu.js` (см. §6, «Первая запись истории обязана нести `actId`»).
 2. **Click-handler на `<a href>` с внутренним hostname** — захватывает клик до навигации, показывает диалог.
 
 `confirmNavigation(targetUrl, opts)` (`:1177`) — публичный API: показать диалог «Сохранить и уйти / уйти без сохранения / отменить», вернуть Promise<bool>. Используется в `LockManager._lockAct` (на 409 и на 5xx: `lock-manager.js:220, 241`), `acts-menu.js` (при switch'е акта).
@@ -528,6 +528,8 @@ API: `registerBeforeUnload(name, handler)`, `unregister(name)`, `list()`. Исп
 | **Exit** | `_initiateExit(action)` — save + unlock + redirect `/acts` |
 
 **Смена акта без перезагрузки страницы переносит лок.** В конструкторе акт меняется двумя путями, и оба обязаны сделать `unlockAct(старый)` + `LockManager.init(новый)`: явное переключение через меню (`acts-menu.js::_switchToAct`) и браузерная навигация back/forward (`acts-menu.js::_handleHistoryNavigation`, вызывается из обработчика `popstate`). Если лок не перенести, `_actId` останется на покинутом акте и разойдётся с тем, чей контент лежит в `AppState` (последствия — §6.7). Порядок фаз у обоих путей задан `_autoLoadAct`: сеть (`_fetchActContent`) → права (`_applyUserPermission`, до лока — read-only лок не берёт) → лок → применение (`_loadActIntoView`). `resetForActSwitch` внутри `_loadActIntoView` — только после успешного захвата, иначе отказ лока оставил бы UI покидаемого акта разобранным. От `_switchToAct` history-путь отличается ровно двумя вещами, и обе — следствие того, что навигация уже случилась: нет `pushState` (сломал бы forward) и нет диалога «несохранённые изменения» (на `popstate` его показывает страж `StorageManager`, §5.3).
+
+**Первая запись истории обязана нести `actId` — иначе `popstate`-обработчик расходится с URL.** `ActsMenuManager` и `StorageManager` пишут в **одну и ту же** запись `history.state` независимо друг от друга (`_autoLoadAct` — поле `actId`, `_switchToAct` — тоже `actId` через `pushState`; `StorageManager._setupNavigationInterception`/`_navPopstateHandler`, §5.3 — поле `_lockNavGuard`), и порядок `StorageManager.init`/`ActsMenuManager.init` не гарантирован. Оба писателя **мержат** свои поля в текущий `history.state` (`{...(history.state || {}), ...}`), а не заменяют его целиком — иначе тот, кто пишет вторым, стирал бы поле первого. Без слияния особенно страдала самая первая запись (страница открылась с `?act_id=`, если `_autoLoadAct` вообще не писал `actId`, либо более поздний `replaceState` из `StorageManager` стирал уже записанный `actId`): первое «Назад» после переключения на другой акт приходило в `popstate`-обработчик `ActsMenuManager` с `state` без `actId`, тот молча выходил (`if (!actId ...) return`) — адресная строка показывала старый акт, а приложение продолжало показывать новый (и держать его лок). Регрессия — `tests/js/history-state-actid-merge.test.mjs`.
 
 ### 6.1 Состояние
 

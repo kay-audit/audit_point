@@ -558,14 +558,19 @@ export class StorageManager {
         // pushState восстанавливает URL.
         // Хендлеры храним в полях (стрелки сохраняют this=класс), чтобы снять
         // их в _teardownEventHandlers (pfe-10/12).
-        history.replaceState({_lockNavGuard: true}, '', window.location.href);
+        // Слияние с текущим history.state, а не замена целиком: ActsMenuManager
+        // пишет в ту же запись истории свой actId (порядок init'ов двух модулей
+        // не гарантирован), и замена состояния целиком стирала бы его.
+        history.replaceState({...(history.state || {}), _lockNavGuard: true}, '', window.location.href);
         this._navPopstateHandler = async (event) => {
             if (window._allowNavigation) return;
             if (!this.hasUnsyncedChanges()) return;
 
             // Возвращаем URL обратно, чтобы юзер физически не ушёл со страницы,
-            // пока думает над диалогом.
-            history.pushState({_lockNavGuard: true}, '', window.location.href);
+            // пока думает над диалогом. Мержим с history.state (см. комментарий
+            // выше) — иначе actId текущей записи терялся бы при каждом отменённом
+            // back/forward.
+            history.pushState({...(history.state || {}), _lockNavGuard: true}, '', window.location.href);
 
             const confirmed = await DialogManager.show({
                 title: 'Несохраненные изменения',

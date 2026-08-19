@@ -828,6 +828,14 @@ export class ActsMenuManager {
         this._initialLoadInProgress = true;
         this.currentActId = actId;
         window.currentActId = actId;
+        // Запись истории, с которой открылась страница, обязана нести actId —
+        // иначе первое же «Назад» после переключения на другой акт придёт с
+        // state без actId, и popstate-обработчик ниже (условие `!actId`)
+        // молча выйдет, оставив URL и показанный акт рассинхронизированными.
+        // Мержим с history.state (не заменяем): StorageManager._setupNavigationInterception
+        // мог уже успеть записать сюда _lockNavGuard — порядок init'ов двух
+        // модулей не гарантирован.
+        history.replaceState({...(history.state || {}), actId}, '', window.location.href);
         if (typeof ChangelogTracker !== 'undefined') ChangelogTracker.init(actId);
 
         try {
