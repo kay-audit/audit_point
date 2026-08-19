@@ -1696,7 +1696,14 @@ Object.assign(TextBlockManager.prototype, {
             // нормализацию в живом DOM: уровнем выше здесь — сам внешний список.
             container.insertBefore(li, list.nextSibling);
         } else {
-            this._listItemToParagraph(li, list, container);
+            const para = this._listItemToParagraph(li, list, container);
+            // Каретка могла стоять на САМОМ <li> (штатное состояние Chromium
+            // для пустого пункта `<li><br></li>`), а он уходит из документа —
+            // снимок надо перецелить на созданный абзац. Иначе диапазон
+            // собирается на отсоединённом узле, addRange его молча глотает, и
+            // каретка пропадает: следующий ввод уходит мимо редактора.
+            if (caret && caret.sc === li) { caret.sc = para; caret.so = 0; }
+            if (caret && caret.ec === li) { caret.ec = para; caret.eo = 0; }
         }
         this._dropEmptyList(list);
         this._restoreCaretRange(caret);
@@ -1714,6 +1721,8 @@ Object.assign(TextBlockManager.prototype, {
      * @param {Element} li
      * @param {Element} list Список, из которого уходит пункт.
      * @param {Element} container Родитель списка (редактор или блок).
+     * @returns {Element} Созданный абзац (в него перецеливается каретка, если
+     *   она стояла на самом <li> — узел уезжает из документа).
      */
     _listItemToParagraph(li, list, container) {
         const anchor = list.nextSibling; // якорь ДО мутаций: место сразу за списком
@@ -1729,6 +1738,7 @@ Object.assign(TextBlockManager.prototype, {
         list.removeChild(li);
         container.insertBefore(para, anchor);
         for (const sub of sublists) container.insertBefore(sub, anchor);
+        return para;
     },
 
     /**
@@ -1774,6 +1784,10 @@ Object.assign(TextBlockManager.prototype, {
      */
     _restoreCaretRange(snapshot) {
         if (!snapshot || !snapshot.sc) return;
+        // Отсоединённый узел (удалённый мутацией) в диапазон не годится:
+        // selection ушла бы за пределы документа и каретка исчезла бы совсем —
+        // лучше оставить её там, куда браузер поставил сам.
+        if (snapshot.sc.isConnected === false) return;
         const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
         if (!sel || typeof sel.removeAllRanges !== 'function') return;
         if (typeof document.createRange !== 'function') return;

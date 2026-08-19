@@ -685,6 +685,50 @@ test('outdent на уровне 0: пустой пункт даёт абзац �
   assert.equal(editor.innerHTML, '<ul><li>a</li></ul><div><br></div>');
 });
 
+test('outdent на уровне 0: каретка с самого <li> переезжает в созданный абзац', () => {
+  // Регрессия ревью: у пустого пункта Chromium держит каретку НА <li>, а тот
+  // уходит из документа — снимок собирался на отсоединённом узле, addRange его
+  // молча глотал и каретка пропадала (следующий ввод мимо редактора).
+  // Стаб stubCaret не даёт removeAllRanges → путь восстановления там вообще не
+  // исполняется; здесь selection и Range стабятся целиком, чтобы увидеть, КУДА
+  // каретка встала.
+  const editor = parseHtml('<ul><li>a</li><li></li></ul>');
+  const m = mgr();
+  m.activeEditor = editor;
+  editor.dataset.textBlockId = 'tb1';
+  m.saveContent = () => {};
+  const li = editor.querySelectorAll('li')[1];
+  const restored = [];
+  const origSel = globalThis.getSelection;
+  const origRange = globalThis.document.createRange;
+  const origExec = globalThis.document.execCommand;
+  globalThis.getSelection = () => ({
+    rangeCount: 1,
+    isCollapsed: true,
+    getRangeAt: () => ({ startContainer: li, startOffset: 0 }),
+    removeAllRanges: () => {},
+    addRange: (r) => restored.push(r),
+  });
+  globalThis.document.createRange = () => ({
+    setStart(node, offset) { this.startContainer = node; this.startOffset = offset; },
+    setEnd(node, offset) { this.endContainer = node; this.endOffset = offset; },
+  });
+  globalThis.document.execCommand = () => true;
+  try {
+    m.execCommand('outdent');
+  } finally {
+    globalThis.getSelection = origSel;
+    globalThis.document.createRange = origRange;
+    globalThis.document.execCommand = origExec;
+  }
+  assert.equal(editor.innerHTML, '<ul><li>a</li></ul><div><br></div>');
+  assert.equal(restored.length, 1);
+  const para = editor.querySelector('div');
+  assert.equal(restored[0].startContainer, para);
+  assert.equal(restored[0].endContainer, para);
+  assert.notEqual(restored[0].startContainer, li);
+});
+
 test('execCommand(outdent): выделение по двум пунктам поднимает ОБА, порядок сохраняется', () => {
   const editor = parseHtml('<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>');
   const items = editor.querySelectorAll('li');
