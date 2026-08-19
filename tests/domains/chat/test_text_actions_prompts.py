@@ -4,7 +4,7 @@ from app.domains.chat.services.text_actions import prompts as P
 
 
 def test_auditor_prompt_verbatim_markers():
-    # Ключевые дословные маркеры из D17 (папка 1, orphography_v2.py).
+    # Ключевые дословные маркеры из D17 (папка 2, orphography_v2.py).
     assert "корректор банковских документов" in P.AUDITOR_SYSTEM_PROMPT
     assert "трансакция" in P.AUDITOR_SYSTEM_PROMPT
     assert "транзакция" in P.AUDITOR_SYSTEM_PROMPT
