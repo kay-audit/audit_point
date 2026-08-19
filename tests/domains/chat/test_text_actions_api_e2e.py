@@ -22,7 +22,12 @@ from app.domains.chat.exceptions import (
     TextActionUnavailableError,
     TextActionValidationError,
 )
-from app.domains.chat.schemas.text_actions import FormalizeResponse
+from app.domains.chat.schemas.text_actions import (
+    CorrectResponse,
+    FormalizeResponse,
+    ReadabilityMetrics,
+    ReadabilityReport,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +62,7 @@ def _app(service):
 
 def test_correct_ok():
     svc = MagicMock()
-    svc.correct = AsyncMock(return_value="исправлено")
+    svc.correct = AsyncMock(return_value=CorrectResponse(corrected_text="исправлено"))
     with TestClient(_app(svc)) as c:
         r = c.post("/api/v1/chat/text-actions/correct", json={"text": "исходый"})
     assert r.status_code == 200
@@ -66,7 +71,7 @@ def test_correct_ok():
 
 def test_correct_forwards_mode():
     svc = MagicMock()
-    svc.correct = AsyncMock(return_value="улучшено")
+    svc.correct = AsyncMock(return_value=CorrectResponse(corrected_text="улучшено"))
     with TestClient(_app(svc)) as c:
         r = c.post(
             "/api/v1/chat/text-actions/correct",
@@ -78,7 +83,7 @@ def test_correct_forwards_mode():
 
 def test_correct_rejects_bad_mode():
     svc = MagicMock()
-    svc.correct = AsyncMock(return_value="x")
+    svc.correct = AsyncMock(return_value=CorrectResponse(corrected_text="x"))
     with TestClient(_app(svc)) as c:
         r = c.post(
             "/api/v1/chat/text-actions/correct",
@@ -98,7 +103,7 @@ def test_correct_too_long_422():
 
 def test_correct_empty_text_rejected_by_dto():
     svc = MagicMock()
-    svc.correct = AsyncMock(return_value="x")
+    svc.correct = AsyncMock(return_value=CorrectResponse(corrected_text="x"))
     with TestClient(_app(svc)) as c:
         r = c.post("/api/v1/chat/text-actions/correct", json={"text": ""})
     assert r.status_code == 422  # min_length=1 в CorrectRequest
@@ -151,3 +156,42 @@ def test_formalize_empty_text_rejected_by_dto():
             json={"text": ""},
         )
     assert r.status_code == 422  # min_length=1 в FormalizeRequest
+
+
+def _metrics(level: str, penalty: float) -> ReadabilityMetrics:
+    return ReadabilityMetrics(
+        average_penalty=penalty, level=level, recommendation="…",
+        sentence_count=1, total_words=10, noun_verb_ratio=2.0,
+        longest_genitive_chain=[], avg_word_count=10.0, avg_comma_count=1.0,
+        bureaucratic_markers_total=0, amplifier_total=0, intro_total=0,
+        passive_count=0, reasons=["Все показатели в норме"],
+    )
+
+
+def test_correct_returns_readability_report():
+    svc = MagicMock()
+    svc.correct = AsyncMock(return_value=CorrectResponse(
+        corrected_text="улучшено",
+        readability=ReadabilityReport(
+            before=_metrics("Красный (тяжело)", 150.0),
+            after=_metrics("Зелёный (хорошо)", 12.0),
+        ),
+    ))
+    with TestClient(_app(svc)) as c:
+        r = c.post(
+            "/api/v1/chat/text-actions/correct",
+            json={"text": "текст", "mode": "readability"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["corrected_text"] == "улучшено"
+    assert body["readability"]["before"]["level"] == "Красный (тяжело)"
+    assert body["readability"]["after"]["average_penalty"] == 12.0
+
+
+def test_correct_fix_mode_readability_is_null():
+    svc = MagicMock()
+    svc.correct = AsyncMock(return_value=CorrectResponse(corrected_text="исправлено"))
+    with TestClient(_app(svc)) as c:
+        r = c.post("/api/v1/chat/text-actions/correct", json={"text": "текст"})
+    assert r.json()["readability"] is None

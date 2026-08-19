@@ -33,9 +33,11 @@ async def correct_text(
     service=Depends(get_text_corrector_service),
 ) -> CorrectResponse:
     """Обработать выделенный текст: орфография/пунктуация (``fix``) или
-    улучшение читаемости/структуры (``readability``)."""
-    corrected = await service.correct(body.text, body.mode)
-    return CorrectResponse(corrected_text=corrected)
+    улучшение читаемости/структуры (``readability``).
+
+    В режиме ``readability`` ответ дополнительно содержит ``readability`` —
+    индекс тяжести и светофор до и после правки (анализатор D17)."""
+    return await service.correct(body.text, body.mode)
 
 
 @router.post("/formalize-violation", response_model=FormalizeResponse)

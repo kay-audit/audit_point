@@ -16,10 +16,46 @@ class CorrectRequest(BaseModel):
     mode: Literal["fix", "readability"] = "fix"
 
 
+class ReadabilityMetrics(BaseModel):
+    """Снимок диагностики читаемости (анализатор D17, папка 1).
+
+    ``noun_verb_ratio`` — ``None``, когда в тексте нет глаголов: анализатор
+    отдаёт в этом случае ``float('inf')``, а такого значения в JSON нет.
+    """
+
+    average_penalty: float
+    level: str
+    recommendation: str
+    sentence_count: int
+    total_words: int
+    noun_verb_ratio: float | None = None
+    longest_genitive_chain: list[str] = Field(default_factory=list)
+    avg_word_count: float
+    avg_comma_count: float
+    bureaucratic_markers_total: int
+    amplifier_total: int
+    intro_total: int
+    passive_count: int
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ReadabilityReport(BaseModel):
+    """Диагностика до и после правки — как в ``process()`` наработки D17."""
+
+    before: ReadabilityMetrics
+    after: ReadabilityMetrics
+
+
 class CorrectResponse(BaseModel):
-    """Ответ корректора — обработанный текст."""
+    """Ответ корректора — обработанный текст и (для ``readability``) диагностика.
+
+    ``readability`` заполняется ТОЛЬКО в режиме ``readability``: анализатор меряет
+    канцелярит, к правке букв в режиме ``fix`` он отношения не имеет. ``None``
+    также при сбое анализатора — исправленный текст пользователю важнее метрик.
+    """
 
     corrected_text: str
+    readability: ReadabilityReport | None = None
 
 
 class FormalizeRequest(BaseModel):
