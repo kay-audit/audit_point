@@ -208,8 +208,8 @@ underline}` **вырезан целиком** (директива владель
 `content`. При `extra="forbid"` подача поля `formatting` теперь **отвергается**
 (шим-валидатор `_drop_legacy_formatting` снят — обратная совместимость не
 нужна, БД пересоздаётся с нуля); базовый размер шрифта — единый дефолт
-настроек (`ACTS__TEXTBLOCKS__FONT_SIZE_*`, экранные 16px → 12pt ×0.75), не
-хранится per-block. Deep-dive — [`textblock-editor-architecture.md`](textblock-editor-architecture.md) §2/§10.
+настроек (`ACTS__TEXTBLOCKS__FONT_SIZE_*`, пункты — тот же кегль уходит в
+DOCX без конвертации), не хранится per-block. Deep-dive — [`textblock-editor-architecture.md`](textblock-editor-architecture.md) §2/§10.
 
 `ViolationSchema` (`act_content.py::ViolationSchema`) — нарушение, прикреплённое к узлу; блочная модель (полный дизайн реестра — §13):
 

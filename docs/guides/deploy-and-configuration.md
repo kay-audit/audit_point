@@ -708,9 +708,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__TABLES__MAX_COLS` | int | `16` | Макс. колонок таблицы |
 | `ACTS__TABLES__MIN_COL_WIDTH_PX` | int | `80` | Мин. ширина колонки (px) |
 | `ACTS__TABLES__PER_NODE` | int | `10` | Макс. таблиц-детей одного узла (серверный гейт, включая закреплённые metrics/risk) |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока |
-| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `16` | Базовый экранный размер текстблока (px; 16px → 12pt в DOCX) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_MIN` | int | `8` | Мин. размер шрифта текстблока, пункты (pt) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_MAX` | int | `72` | Макс. размер шрифта текстблока, пункты (pt) |
+| `ACTS__TEXTBLOCKS__FONT_SIZE_DEFAULT` | int | `12` | Базовый размер текстблока, пункты (pt) — тот же кегль уходит в DOCX без конвертации |
 | `ACTS__TEXTBLOCKS__PER_NODE` | int | `10` | Макс. текстблоков-детей одного узла (серверный гейт) |
 | `ACTS__TEXTBLOCKS__MAX_LIST_LEVEL` | int | `4` | Потолок глубины вложенности списков редактора (0-based; максимум 8 — предел нумерации OOXML) |
 | `ACTS__VIOLATIONS__PER_NODE` | int | `10` | Макс. нарушений-детей одного узла (серверный гейт) |
