@@ -16,8 +16,12 @@ import './_browser-stub.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { App } from '../../static/js/constructor/app.js';
+import { ChangelogTracker } from '../../static/js/constructor/changelog-tracker.js';
 import { ActsMenuManager } from '../../static/js/constructor/header/acts-menu.js';
+import { StorageManager } from '../../static/js/constructor/storage-manager.js';
+import { AppState } from '../../static/js/constructor/state/state-core.js';
 import { APIClient } from '../../static/js/shared/api.js';
+import { AuthManager } from '../../static/js/shared/auth.js';
 import { loadViewPosition, saveViewPosition } from '../../static/js/constructor/state/view-position-store.js';
 
 /** Минимальный in-memory Storage. */
@@ -110,6 +114,68 @@ test('APIClient._restoreViewPosition восстанавливает позици
     // Для акта 9 сохранённой позиции нет — goToStep вообще не должен дёргаться.
     APIClient._restoreViewPosition(9);
     assert.equal(calls, 1, 'для акта без сохранённой позиции восстанавливать нечего');
+});
+
+test('_loadActIntoView держит guard до присвоения нового actId, а не до конца загрузки контента', async () => {
+    // Окно, которое закрывает guard, кончается не на загрузке контента, а на
+    // присвоении window.currentActId. Между ними у новых/пустых актов ждёт
+    // сеть (_saveDefaultStructure) — снятый в finally сразу после загрузки
+    // флаг открывал ровно ту гонку, ради которой он и заведён.
+    const realApply = APIClient._applyActContent;
+    const realDefaultSave = APIClient._saveDefaultStructure;
+    const realGetUser = AuthManager.getCurrentUser;
+    const realChangelogInit = ChangelogTracker.init;
+    const realChangelogDestroy = ChangelogTracker.destroy;
+    const realSynced = StorageManager.markAsSyncedWithDB;
+    const realClearCache = ActsMenuManager._clearCache;
+
+    globalThis.currentActId = 42;
+    ActsMenuManager.currentActId = 42;
+    // Покидаемый акт 42 стоит на шаге 1 — именно его resetForActSwitch снимет
+    // в позицию акта 42 (штатно, до окна гонки).
+    AppState.currentStep = 1;
+    saveViewPosition(localStorage, 42, {
+        step: 1,
+        scroll: { treeColumn: 10, previewColumn: 0, step2: 0 },
+        anchorNodeId: null,
+    });
+
+    let guardDuringDefaultSave = null;
+    APIClient._applyActContent = async () => {};
+    APIClient._pendingDefaultStructureSave = true;
+    APIClient._saveDefaultStructure = async () => {
+        guardDuringDefaultSave = App._actSwitchInProgress;
+        // Клик по табу «шаг 2», пока PUT дефолтной структуры в полёте:
+        // window.currentActId здесь ЕЩЁ 42 (старый акт).
+        App.goToStep(2);
+    };
+    AuthManager.getCurrentUser = () => 'u1';
+    ChangelogTracker.init = () => {};
+    ChangelogTracker.destroy = () => {};
+    StorageManager.markAsSyncedWithDB = () => {};
+    ActsMenuManager._clearCache = () => {};
+
+    try {
+        await ActsMenuManager._loadActIntoView(99, { tree: {} });
+
+        assert.equal(guardDuringDefaultSave, true,
+            'guard обязан быть взведён всё время сетевого ожидания');
+        const pos = loadViewPosition(localStorage, 42);
+        assert.equal(pos.step, 1, 'шаг НОВОГО акта не примешался в позицию старого');
+        assert.equal(App._actSwitchInProgress, false, 'после переключения guard снят');
+        assert.equal(window.currentActId, 99);
+    } finally {
+        APIClient._applyActContent = realApply;
+        APIClient._saveDefaultStructure = realDefaultSave;
+        APIClient._pendingDefaultStructureSave = false;
+        AuthManager.getCurrentUser = realGetUser;
+        ChangelogTracker.init = realChangelogInit;
+        ChangelogTracker.destroy = realChangelogDestroy;
+        StorageManager.markAsSyncedWithDB = realSynced;
+        ActsMenuManager._clearCache = realClearCache;
+        ActsMenuManager.currentActId = null;
+        window.currentActId = undefined;
+    }
 });
 
 test('после resetForActSwitch повторный вход в тот же акт восстанавливает позицию заново', () => {
