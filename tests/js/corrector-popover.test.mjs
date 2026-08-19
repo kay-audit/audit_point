@@ -99,3 +99,106 @@ test('_textChanged: реальная правка слова — изменен�
 test('_textChanged: недоступный диапазон (null) — считаем изменением', () => {
     assert.equal(CorrectorPopover._textChanged('текст', null), true);
 });
+
+// --- Светофор диагностики читаемости (анализатор D17) -----------------------
+
+// Узел с достаточным API: браузер-стаб отдаёт no-op элементы, а здесь нужно
+// видеть реально собранное содержимое и состояние classList.
+function trackedNode() {
+    const node = {
+        className: '',
+        textContent: '',
+        children: [],
+        classes: new Set(),
+        classList: {
+            add: (c) => node.classes.add(c),
+            remove: (c) => node.classes.delete(c),
+            contains: (c) => node.classes.has(c),
+        },
+        append: (...kids) => node.children.push(...kids),
+        appendChild: (kid) => node.children.push(kid),
+    };
+    return node;
+}
+
+function withDom(fn) {
+    const origCreate = document.createElement;
+    document.createElement = () => trackedNode();
+    try { return fn(); } finally { document.createElement = origCreate; }
+}
+
+// Плоский текст собранного поддерева — для проверки содержимого светофора.
+function flatText(node) {
+    return [node.textContent, ...node.children.map(flatText)].join(' ').trim();
+}
+
+const _metrics = (level, penalty, extra = {}) => ({
+    level, average_penalty: penalty,
+    noun_verb_ratio: 2, longest_genitive_chain: [], avg_word_count: 10,
+    bureaucratic_markers_total: 0, ...extra,
+});
+
+function renderInto(mode, readability) {
+    const box = trackedNode();
+    const prev = { els: CorrectorPopover._els, mode: CorrectorPopover._mode,
+        r: CorrectorPopover._readability };
+    CorrectorPopover._els = { readability: box };
+    CorrectorPopover._mode = mode;
+    CorrectorPopover._readability = readability;
+    try {
+        withDom(() => CorrectorPopover._renderReadability());
+    } finally {
+        CorrectorPopover._els = prev.els;
+        CorrectorPopover._mode = prev.mode;
+        CorrectorPopover._readability = prev.r;
+    }
+    return box;
+}
+
+test('_renderReadability: режим fix — блок скрыт даже с данными', () => {
+    const box = renderInto('fix', {
+        before: _metrics('Красный (тяжело)', 150),
+        after: _metrics('Зелёный (хорошо)', 12),
+    });
+    assert.ok(box.classes.has('hidden'), 'блок должен быть скрыт в режиме fix');
+});
+
+test('_renderReadability: readability без данных — блок скрыт', () => {
+    assert.ok(renderInto('readability', null).classes.has('hidden'));
+});
+
+test('_renderReadability: readability с данными — светофор «до → после»', () => {
+    const box = renderInto('readability', {
+        before: _metrics('Красный (тяжело)', 150),
+        after: _metrics('Зелёный (хорошо)', 12),
+    });
+    assert.equal(box.classes.has('hidden'), false, 'блок должен быть показан');
+    const text = flatText(box);
+    assert.match(text, /Красный \(тяжело\) 150/);
+    assert.match(text, /→/);
+    assert.match(text, /Зелёный \(хорошо\) 12/);
+});
+
+test('_renderReadability: дельты только по изменившимся метрикам', () => {
+    const box = renderInto('readability', {
+        before: _metrics('Красный (тяжело)', 150, {
+            noun_verb_ratio: 8, bureaucratic_markers_total: 3, avg_word_count: 34,
+        }),
+        after: _metrics('Зелёный (хорошо)', 12, {
+            noun_verb_ratio: 1.5, bureaucratic_markers_total: 3, avg_word_count: 9,
+        }),
+    });
+    const text = flatText(box);
+    assert.match(text, /сущ\.\/глаг\. 8→1\.5/);
+    assert.match(text, /слов в предл\. 34→9/);
+    // Не изменилось — в дельтах не показываем.
+    assert.equal(/канцеляризмы/.test(text), false);
+});
+
+test('_renderReadability: noun_verb_ratio=null не попадает в дельты', () => {
+    const box = renderInto('readability', {
+        before: _metrics('Жёлтый (средне)', 40, { noun_verb_ratio: null }),
+        after: _metrics('Зелёный (хорошо)', 10, { noun_verb_ratio: 2 }),
+    });
+    assert.equal(/сущ\.\/глаг\./.test(flatText(box)), false);
+});

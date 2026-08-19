@@ -381,6 +381,49 @@
     color: var(--primary);
 }
 
+/* Диагностика читаемости (анализатор D17): светофор «до → после» над дифом.
+   Показывается только в режиме «Улучшить читаемость»; в режиме «Исправить
+   ошибки» и при сбое анализатора блок скрыт классом hidden. */
+.corrector-readability {
+    flex-shrink: 0;
+    padding: var(--spacing-xs) 0;
+    border-bottom: var(--border-width-thin) solid var(--border);
+    font-size: var(--font-size-xs);
+}
+
+.corrector-readability.hidden {
+    display: none;
+}
+
+.corrector-readability-head {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    flex-wrap: wrap;
+    font-weight: var(--font-weight-semibold);
+}
+
+.corrector-readability-arrow {
+    color: var(--text-secondary);
+}
+
+.corrector-readability-deltas {
+    margin-top: 2px;
+    color: var(--text-secondary);
+}
+
+.corrector-level-green {
+    color: var(--success);
+}
+
+.corrector-level-yellow {
+    color: var(--warning);
+}
+
+.corrector-level-red {
+    color: var(--error);
+}
+
 .corrector-body {
     flex: 1 1 auto;
     overflow: auto;
