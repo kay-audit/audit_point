@@ -32,7 +32,10 @@
        зум (--doc-readability-zoom). */
     /* Базовый кегль тела акта — 12pt (Times New Roman эталонного DOCX). */
     --doc-font-size: 12pt;
-    /* «Мелкий» кегль — поля нарушения «Нарушено»/«Установлено», Sizes.violation_pt. */
+    /* «Мелкий» кегль документа — 9pt. В DOCX его несут сразу три сущности с
+       одним значением: поля нарушения (Sizes.violation_pt), содержимое и шапка
+       таблиц (Sizes.table_data_pt / table_header_pt) и расшифровка сноски
+       (Sizes.footnote_pt). */
     --doc-font-size-small: 9pt;
     /* Печатный межстрочный — Word «одинарный» (Spacing.line_single,
        w:line=240/lineRule=auto). Лист превью читает его же через
@@ -44,6 +47,15 @@
        остаётся нетронутой — на экспорт в DOCX/MD/TXT и на геометрию листа
        превью он НЕ влияет. */
     --doc-readability-zoom: 1.25;
+    /* Экранный кегль ячеек таблиц конструктора: те же документные 9pt, взятые
+       с множителем читаемости. Множитель здесь применён к КЕГЛЮ, а не через
+       CSS zoom, как у текстблока и полей нарушения, — сознательно: ширины
+       колонок считаются в JS как доля от table.offsetWidth по смещению курсора
+       (static/js/constructor/table/table-sizes.js::startColumnResize), а под
+       zoom эти две системы координат расходятся. Замер: под zoom 1.25 тот же
+       жест мышью на 100px двигал границу колонки на 125px — граница убегает
+       от курсора. Кегль на координаты не влияет, поэтому здесь calc. */
+    --doc-font-size-table-screen: calc(var(--doc-font-size-small) * var(--doc-readability-zoom));
 
     --letter-spacing-tight: -0.025em;
     --letter-spacing-normal: 0;

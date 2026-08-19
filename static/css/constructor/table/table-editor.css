@@ -11,7 +11,9 @@
     border: none;
     padding: var(--spacing-sm) var(--spacing);
     font-family: var(--font-family-base);
-    font-size: var(--font-size-sm);
+    /* Тот же кегль, что у ячейки в покое (table-base.css): иначе на входе в
+       правку текст скачком меняет размер. */
+    font-size: var(--doc-font-size-table-screen);
     line-height: var(--line-height-normal);
     box-sizing: border-box;
     outline: none;

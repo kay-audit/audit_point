@@ -58,7 +58,13 @@
     white-space: normal;
     height: auto;
     box-sizing: border-box;
-    font-size: var(--font-size-sm);
+    /* Содержимое ячейки — документ, а не UI: в DOCX таблицы печатаются 9pt
+       (Sizes.table_data_pt / table_header_pt), лист превью рисует их тем же
+       кеглем (preview-page.css). Прежний --font-size-sm тянулся за плотностью
+       интерфейса и давал 9.75px — МЕНЬШЕ печатных 9pt (12px), тогда как тело
+       текстблока показывается на 25% КРУПНЕЕ печатного. Токен ниже снимает это
+       расхождение: 9pt с тем же множителем читаемости. */
+    font-size: var(--doc-font-size-table-screen);
     line-height: var(--line-height-normal);
     transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
