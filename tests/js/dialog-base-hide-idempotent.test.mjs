@@ -53,3 +53,48 @@ test('двойной синхронный _hideDialog у preserveInDom-узла 
     assert.equal(overlay.parentNode, parent, 'узел не должен быть удалён из DOM повторным hide()');
     assert.ok(overlay.classList.contains('hidden'), 'узел должен получить класс hidden');
 });
+
+/**
+ * Overlay, пригодный для реального _showDialog: мини-DOM не знает про
+ * addEventListener (focus-trap), а `document.activeElement instanceof
+ * HTMLElement` требует самого HTMLElement в глобалах.
+ */
+globalThis.HTMLElement = MiniElement;
+
+function makeShowableOverlay() {
+    const { parent, overlay } = makePreservedOverlay();
+    overlay.addEventListener = () => {};
+    overlay.removeEventListener = () => {};
+    DialogBase._activeDialogs.length = 0;
+    return { parent, overlay };
+}
+
+test('повторный show() внутри задержки закрытия не гасится отменённым таймером', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { overlay } = makeShowableOverlay();
+
+    DialogBase._hideDialog(overlay);
+    t.mock.timers.tick(100);          // ещё внутри closeDelay
+    overlay.classList.remove('hidden');
+    DialogBase._showDialog(overlay, {appendToBody: false, animate: false});
+    t.mock.timers.tick(500);          // старый таймер закрытия сработал бы здесь
+
+    assert.ok(!overlay.classList.contains('hidden'), 'заново открытый диалог не должен скрыться сам');
+    assert.ok(!overlay.classList.contains('closing'), 'класс закрытия должен быть снят при show()');
+    assert.ok(overlay.classList.contains('visible'), 'диалог должен остаться видимым');
+});
+
+test('close → show → close внутри задержки не удаляет preserveInDom-узел из DOM', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { parent, overlay } = makeShowableOverlay();
+
+    DialogBase._hideDialog(overlay);
+    t.mock.timers.tick(100);
+    DialogBase._showDialog(overlay, {appendToBody: false, animate: false});
+    t.mock.timers.tick(100);
+    DialogBase._hideDialog(overlay);
+    t.mock.timers.tick(500);
+
+    assert.equal(overlay.parentNode, parent, 'узел должен остаться в DOM');
+    assert.ok(overlay.classList.contains('hidden'), 'узел должен быть скрыт классом hidden');
+});

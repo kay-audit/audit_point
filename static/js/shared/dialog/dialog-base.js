@@ -148,13 +148,23 @@ export class DialogBase {
         // Признак "уже в DOM" — _hideDialog не будет удалять.
         overlay._preserveInDom = !appendToBody;
 
-        // Снимаем флаг закрытия: новый show() отменяет предыдущий незавершённый
-        // hide() по этому overlay (иначе следующий hide() увидел бы _closing=true
-        // от прошлого цикла и стал бы no-op).
+        // Отменяем предыдущий незавершённый hide() по этому overlay: без
+        // clearTimeout его таймер догонит уже открытый диалог — снимет
+        // _preserveInDom и повесит обратно 'hidden' (диалог схлопнется сам
+        // собой), а следующий hide() увидит _preserveInDom=undefined и удалит
+        // статическую ноду из DOM. Флаг снимаем здесь же, иначе следующий
+        // hide() стал бы no-op с _closing=true от прошлого цикла.
+        if (overlay._closeTimer) {
+            clearTimeout(overlay._closeTimer);
+            delete overlay._closeTimer;
+        }
         delete overlay._closing;
 
         // Принудительный reflow для анимации (void — явное выражение, чтобы линтеры/минификаторы не выкинули его как «unused expression»)
         if (animate) void overlay.offsetHeight;
+        // Класс закрытия мог остаться от отменённого hide() — он держит opacity: 0
+        // и перебивает .visible (идёт ниже в таблице стилей).
+        overlay.classList.remove('closing');
         overlay.classList.add('visible');
 
         // ARIA-маркеры модального диалога. role/aria-modal не перетираем,
@@ -233,8 +243,9 @@ export class DialogBase {
         const previousFocus = overlay._previousFocus;
         delete overlay._previousFocus;
 
-        setTimeout(() => {
+        overlay._closeTimer = setTimeout(() => {
             delete overlay._closing;
+            delete overlay._closeTimer;
             const preserveInDom = overlay._preserveInDom;
             delete overlay._preserveInDom;
             if (preserveInDom) {
