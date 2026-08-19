@@ -15,6 +15,7 @@ import {
     collectViolationLines,
     imagePresentationStyle,
     splitTopLevelBlocks,
+    startsWithList,
     PreviewViolationRenderer,
 } from '../../static/js/constructor/preview/preview-violation-renderer.js';
 import { VIOLATION_FIELDS, VIOLATION_LABELS, VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
@@ -107,6 +108,40 @@ test('поле, начинающееся с картинки, даёт метк�
     assert.equal(lines[idx].text, '', 'метка без инлайн-текста');
     assert.equal(lines[idx + 1].type, 'image');
     assert.equal(lines[idx + 2].text, 'после картинки');
+});
+
+test('поле, начинающееся со списка, даёт метку отдельной строкой', () => {
+    const v = makeViolation({
+        reasons: { enabled: true, blocks: [text('<ul><li>Список 2-1</li></ul><div>Просто текст</div>')] },
+    });
+    const lines = collectViolationLines(v);
+    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.reasons);
+    // Метка не забирает первый блок себе: служебное слово в одной строке с
+    // первым пунктом читается как часть маркера (а в DOCX ещё и физически
+    // попадало внутрь нумерации).
+    assert.equal(lines[idx].text, '', 'метка без инлайн-текста');
+    assert.equal(lines[idx + 1].label, '');
+    assert.ok(lines[idx + 1].text.startsWith('<ul>'), lines[idx + 1].text);
+});
+
+test('обычная первая строка перед списком — метка инлайнится как раньше', () => {
+    const v = makeViolation({
+        reasons: { enabled: true, blocks: [text('<div>вступление</div><ul><li>пункт</li></ul>')] },
+    });
+    const lines = collectViolationLines(v);
+    const idx = lines.findIndex(l => l.label === VIOLATION_LABELS.reasons);
+    assert.equal(lines[idx].text, '<div>вступление</div><ul><li>пункт</li></ul>');
+});
+
+test('startsWithList: обёртка не мешает, текст перед списком не считается', () => {
+    assert.equal(startsWithList('<ul><li>раз</li></ul>'), true);
+    assert.equal(startsWithList('<ol><li>раз</li></ol>'), true);
+    assert.equal(startsWithList('<div><ul><li>раз</li></ul></div>'), true, 'обёртка отбрасывается');
+    assert.equal(startsWithList('  <ul><li>раз</li></ul>'), true, 'ведущие пробелы');
+    assert.equal(startsWithList('текст<ul><li>раз</li></ul>'), false, 'первая строка обычная');
+    assert.equal(startsWithList('<div>текст</div><ul><li>раз</li></ul>'), false);
+    assert.equal(startsWithList(''), false);
+    assert.equal(startsWithList('<ultra>не список</ultra>'), false, 'ul — не префикс');
 });
 
 // --- labeled=false: CodeMining / ProcessMining / Дополнительный контент ---

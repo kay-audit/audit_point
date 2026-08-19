@@ -798,9 +798,12 @@ def render_block_segments(
     последний — без прямого форматирования (наследует Normal), как у
     прежней одноабзацной модели.
 
-    Список из самого HTML (<ul>/<ol>) — сегмент-пункт получает СВОЙ w:numPr
-    на любой позиции, включая first_paragraph (метка поля «Причины:» тогда
-    стоит внутри первого пункта — нумерация у всех пунктов списка общая).
+    Список из самого HTML (<ul>/<ol>) — сегмент-пункт получает СВОЙ w:numPr.
+    Исключение ровно одно: ПЕРВЫЙ сегмент, когда хост передал свой
+    first_paragraph. Чужой абзац уже несёт метку поля («Причины:»), и вместе с
+    нумерацией метка уехала бы ВНУТРЬ маркера — «• Причины: текст пункта».
+    Тогда first_paragraph остаётся самостоятельным абзацем-меткой, а список
+    начинается со следующего абзаца (ветка label_only ниже).
     Нумерации заводятся по ходу: локальный кеш instance → num_id живёт ровно
     на этот вызов, поэтому разные текстблоки и разные поля нарушения получают
     независимые списки автоматически.
@@ -814,7 +817,8 @@ def render_block_segments(
     first_paragraph — если хост уже создал первый абзац сам (например,
     _labeled_paragraph уже вписал в него метку "Причины:"), он используется
     повторно для первого сегмента вместо нового doc.add_paragraph(): метка
-    остаётся на первом абзаце, продолжения — обычные абзацы без неё.
+    остаётся на первом абзаце, продолжения — обычные абзацы без неё. Не
+    переиспользуется, если первый сегмент — пункт списка (см. выше).
     """
     segments = split_block_segments(html)
     if not segments:
@@ -825,6 +829,16 @@ def render_block_segments(
         para.alignment = default_alignment
         apply_inline_html(para, html, base_size_pt=base_size_pt, base_italic=base_italic)
         return [para]
+
+    # Метка не может стоять внутри пункта списка: первой строкой поля бывает
+    # список, и тогда абзац хоста (уже с меткой) нельзя отдавать под пункт —
+    # w:numPr сделал бы из «Причины:» часть первого маркера. Метка остаётся
+    # своим абзацем, список идёт следом. Обычный первый сегмент (текст) по-
+    # прежнему инлайнится с меткой — привычный вид «Метка: текст».
+    label_only: Paragraph | None = None
+    if first_paragraph is not None and segments[0].list_ref is not None:
+        label_only = first_paragraph
+        first_paragraph = None
 
     paragraphs: list[Paragraph] = []
     num_ids: dict[int, int] = {}  # ListRef.instance → numId в numbering.xml
@@ -844,6 +858,12 @@ def render_block_segments(
             _set_paragraph_mark_size(para, size_pt)
         apply_inline_html(para, segment.html, base_size_pt=size_pt, base_italic=base_italic)
         paragraphs.append(para)
+
+    if label_only is not None:
+        # Абзац-метка идёт первым и участвует в общем правиле «всем, кроме
+        # последнего, space_after=0» — иначе между «Причины:» и списком повис
+        # бы отбивочный интервал.
+        paragraphs.insert(0, label_only)
 
     for para in paragraphs[:-1]:
         para.paragraph_format.space_after = Pt(0)

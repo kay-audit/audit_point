@@ -394,8 +394,10 @@ def test_list_in_act_textblock(doc):
 def test_list_in_violation_rich_field(doc):
     """Точка входа 2 — rich-поле нарушения (_labeled_paragraph rich=True).
 
-    Метка поля живёт в первом абзаце, который и становится первым пунктом:
-    нумерацию получают ВСЕ пункты списка, включая абзац с меткой.
+    Поле, НАЧИНАЮЩЕЕСЯ со списка: метка остаётся самостоятельным абзацем без
+    нумерации, пункты идут следом. Прежде абзац с меткой сам становился первым
+    пунктом, и в Word выходило «• Причины: раз» — служебное слово читалось как
+    часть маркированного пункта, а его собственный текст терял строку.
     """
     before = len(doc.paragraphs)
     _labeled_paragraph(
@@ -403,14 +405,23 @@ def test_list_in_violation_rich_field(doc):
         italic=True, size_pt=Sizes.violation_pt, rich=True,
     )
     paragraphs = doc.paragraphs[before:]
-    assert _texts(paragraphs) == ["Причины: раз", "два"]
-    num_ids = _num_ids(paragraphs)
-    assert None not in num_ids
-    assert len(set(num_ids)) == 1
+    # Хвостовой пробел — от run'а метки (label + " "), как и в ветке
+    # «первый блок — картинка/таблица».
+    assert _texts(paragraphs) == ["Причины: ", "раз", "два"]
+    label_num, first, second = _num_ids(paragraphs)
+    assert label_num is None, "метка не должна быть пунктом списка"
+    assert first == second is not None, "оба пункта — одна нумерация"
     assert paragraphs[0].runs[0].underline is True  # метка осталась меткой
+    # Между меткой и первым пунктом не должно повиснуть отбивки.
+    assert paragraphs[0].paragraph_format.space_after == Pt(0)
 
 
 def test_numbered_list_in_violation_rich_field(doc):
+    """Обратная сторона правила: обычная первая строка — прежний инлайн.
+
+    Список ниже по тексту метку никуда не двигает; ветка label_only включается
+    ТОЛЬКО когда пунктом списка оказывается САМЫЙ ПЕРВЫЙ сегмент.
+    """
     before = len(doc.paragraphs)
     _labeled_paragraph(
         doc, "Причины:", "<div>вступление</div><ol><li>раз</li></ol>",
