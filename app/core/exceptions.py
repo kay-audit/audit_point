@@ -160,11 +160,11 @@ CHECK_CONSTRAINT_MESSAGES: dict[str, str] = {
     #    словари — подтверждённая спека владельца таблицы) ───────────────────
     "check_chat_agent_messages_bus_role_values": (
         "Недопустимая роль сообщения шины агента. "
-        "Допустимые значения: user, assistant, system"
+        "Допустимые значения: user, assistant, system, tool"
     ),
     "check_chat_agent_messages_bus_status_values": (
         "Недопустимый статус сообщения шины агента. "
-        "Допустимые значения: pending, processing, completed, failed"
+        "Допустимые значения: pending, processing, completed, error, failed"
     ),
     # ── chat: chat_message_feedback ──────────────────────────────────────────
     "check_chat_message_feedback_rating_values": (

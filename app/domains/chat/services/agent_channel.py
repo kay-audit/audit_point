@@ -10,10 +10,12 @@
         upsert'ит частичный reasoning-блок пока ответ нетерминальный; финализирует
         draft, когда статус ответа терминальный.
 
-Словарь status владельца (CHECK на его таблице): pending | processing |
-completed | failed; role: user | assistant | system. Записи статуса от AW —
-best-effort: CheckViolation логируется и глотается, финализацию/таймаут это
-не ломает (защита от смены словаря владельцем).
+Словарь status владельца (NanoBot 2.3): pending | processing | completed |
+error | failed; role: user | assistant | system | tool. 'error' —
+ПОВТОРЯЕМАЯ ошибка: агент вернёт вопрос в пул и переобработает его (до
+max_stuck_retries раз), удалив свою строку-ответ; терминален только 'failed'.
+Записи статуса от AW — best-effort: CheckViolation логируется и глотается,
+финализацию/таймаут это не ломает (защита от смены словаря владельцем).
 
 bus.media: AW пишет сюда в формате Nanobot — массив
 ``{file_id, filename, mime_type, file_size}``, где ``file_id`` это
@@ -48,11 +50,15 @@ _TRIM_MARKER_BYTES = len(_TRIM_MARKER.encode("utf-8"))
 # агентом — финализировать рано. Словарь владельца: 'processing' (агент создаёт
 # строку-ответ сразу при claim'е и стримит reasoning-дельты в metadata, пока не
 # запишет финальный content); 'in_progress' — legacy-синоним для старых dev-строк.
+# 'error' — повторяемая ошибка NanoBot 2.3 (_mark_failed: пока
+# retry_count < max_stuck_retries задача вернётся в пул через
+# error_retry_delay; assistant-строка при этом удаляется). Терминальным
+# остаётся только 'failed'.
 # Любой другой статус при наличии строки-ответа считаем терминальным.
-_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress")
+_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress", "error")
 
-# Терминальные статусы ошибки: 'failed' — словарь владельца, 'error' — legacy.
-_BUS_ERROR_STATUSES = ("failed", "error")
+# Терминальный статус ошибки — словарь владельца шины.
+_BUS_ERROR_STATUSES = ("failed",)
 
 
 # ── Pure-функции ─────────────────────────────────────────────────────────────
@@ -527,6 +533,15 @@ class AgentChannelService:
 
         answer = await agent_repo.get_answer_for_question(question_uid)
         if not answer:
+            if question.get("status") == "error":
+                meta = question.get("metadata") or {}
+                logger.info(
+                    "poll_once: вопрос %s в состоянии 'error' (retry %s, причина=%s) — "
+                    "ждём повторной обработки агентом",
+                    question_uid,
+                    meta.get("retry_count") if isinstance(meta, dict) else None,
+                    meta.get("error") if isinstance(meta, dict) else None,
+                )
             # Агент мог закрыть вопрос со status='failed' без строки-ответа.
             if question.get("status") in _BUS_ERROR_STATUSES:
                 failed = await message_repo.mark_failed(

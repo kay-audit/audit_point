@@ -98,6 +98,7 @@ class TestSubscribe:
         assert entry["last_queue_ahead"] is None
         assert entry["last_answer_updated_at"] is None
         assert entry["consecutive_errors"] == 0
+        assert entry["pending_reversions"] == 0
 
     def test_subscribe_idempotent(self, settings):
         """Повторный вызов с тем же uid — реестр не дублируется."""
@@ -493,16 +494,16 @@ class TestTick:
             await poller._tick(mock_conn)
             assert poller._subscriptions["Q1"]["last_activity"] == 20.0
 
-    async def test_tick_phase_does_not_roll_back_to_pending(self, settings, mock_conn):
-        """Фаза монотонна: откат шины (ответ исчез / статус вернулся pending)
-        НЕ откатывает phase processing → pending, НЕ обновляет last_activity,
-        и по истечении answer_timeout_sec наступает mark_timeout(reason='answer').
+    async def test_reclaim_to_pending_counts_as_liveness(self, settings, mock_conn):
+        """processing → pending (reclaim NanoBot) возвращает фазу и продлевает окно.
+
+        NanoBot при истёкшем lease возвращает вопрос в пул (status='pending')
+        и удаляет строку-ответ. Для AW это признак жизни, а не тишина:
+        фаза откатывается в pending, счётчик откатов растёт, idle-таймер
+        сбрасывается.
         """
-        answer_timeout = settings.agent_channel.answer_timeout_sec
-        # subscribe=0, тик1=5 (answer_exists → processing), тик2=10 (шина «откатилась»),
-        # тик3=10+answer_timeout+1 (нет признаков жизни → answer-таймаут)
-        t1, t2, t3 = 5.0, 10.0, float(10 + answer_timeout + 1)
-        times = [0.0, t1, t2, t3]
+        dt1 = datetime(2024, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+        times = [0.0, 5.0, 10.0]
         idx = [0]
 
         def fake_now():
@@ -523,6 +524,126 @@ class TestTick:
                 new_callable=AsyncMock,
             ) as mock_mark,
         ):
+            # Тик 1 (now=5): агент взял вопрос в работу и создал строку-ответ.
+            mock_poll.return_value = _poll_res(
+                answer_exists=True, question_status="processing",
+                answer_updated_at=dt1, reasoning_len=42,
+            )
+            await poller._tick(mock_conn)
+            entry = poller._subscriptions["Q1"]
+            assert entry["phase"] == "processing"
+            assert entry["last_activity"] == 5.0
+            assert entry["last_answer_updated_at"] == dt1
+            assert entry["last_reasoning_len"] == 42
+
+            # Тик 2 (now=10): lease истёк, NanoBot вернул вопрос в пул и снёс ответ.
+            mock_poll.return_value = _poll_res(
+                answer_exists=False, question_status="pending", answer_updated_at=None,
+            )
+            await poller._tick(mock_conn)
+
+        entry = poller._subscriptions["Q1"]
+        assert entry["phase"] == "pending"
+        assert entry["pending_reversions"] == 1
+        assert entry["last_activity"] == 10.0
+        # Baseline'ы сброшены: следующая строка-ответ будет новой, и reasoning
+        # повторной попытки должен доехать до черновика с первого же символа.
+        assert entry["last_answer_updated_at"] is None
+        assert entry["last_reasoning_len"] == 0
+        mock_mark.assert_not_called()
+
+    async def test_reclaim_liveness_capped_at_three(self, settings, mock_conn):
+        """4-й возврат в pending фазу уже НЕ возвращает (защита от флаппинга)."""
+        from app.domains.chat.services.agent_channel_poller import (
+            _MAX_PENDING_REVERSIONS,
+        )
+
+        assert _MAX_PENDING_REVERSIONS == 3
+
+        t = [0.0]
+
+        def fake_now():
+            val = t[0]
+            t[0] += 1.0
+            return val
+
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
+        poller.subscribe(assistant_message_id="m1", question_uid="Q1")
+
+        processing_res = _poll_res(answer_exists=True, question_status="processing")
+        reclaim_res = _poll_res(answer_exists=False, question_status="pending")
+
+        with (
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.poll_once",
+                new_callable=AsyncMock,
+            ) as mock_poll,
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.mark_timeout",
+                new_callable=AsyncMock,
+            ),
+        ):
+            # Три полных цикла «взял в работу → вернул в пул».
+            for expected in (1, 2, 3):
+                mock_poll.return_value = processing_res
+                await poller._tick(mock_conn)
+                assert poller._subscriptions["Q1"]["phase"] == "processing"
+                mock_poll.return_value = reclaim_res
+                await poller._tick(mock_conn)
+                assert poller._subscriptions["Q1"]["phase"] == "pending"
+                assert poller._subscriptions["Q1"]["pending_reversions"] == expected
+
+            # Четвёртый цикл: кап исчерпан — фаза остаётся processing.
+            mock_poll.return_value = processing_res
+            await poller._tick(mock_conn)
+            assert poller._subscriptions["Q1"]["phase"] == "processing"
+            activity_before = poller._subscriptions["Q1"]["last_activity"]
+
+            mock_poll.return_value = reclaim_res
+            await poller._tick(mock_conn)
+
+        entry = poller._subscriptions["Q1"]
+        assert entry["phase"] == "processing"
+        assert entry["pending_reversions"] == _MAX_PENDING_REVERSIONS
+        assert entry["last_activity"] == activity_before
+
+    async def test_tick_phase_rollback_beyond_cap_does_not_extend(self, settings, mock_conn):
+        """Исчерпанный кап откатов: откат шины (ответ исчез / статус вернулся
+        pending) больше НЕ откатывает phase processing → pending, НЕ обновляет
+        last_activity, и по истечении answer_timeout_sec наступает
+        mark_timeout(reason='answer'). Защита от флаппинга чужой таблицы.
+        """
+        from app.domains.chat.services.agent_channel_poller import (
+            _MAX_PENDING_REVERSIONS,
+        )
+
+        answer_timeout = settings.agent_channel.answer_timeout_sec
+        # subscribe=0, тик1=5 (answer_exists → processing), тик2=10 (шина «откатилась»),
+        # тик3=10+answer_timeout+1 (нет признаков жизни → answer-таймаут)
+        t1, t2, t3 = 5.0, 10.0, float(10 + answer_timeout + 1)
+        times = [0.0, t1, t2, t3]
+        idx = [0]
+
+        def fake_now():
+            val = times[idx[0]]
+            idx[0] = min(idx[0] + 1, len(times) - 1)
+            return val
+
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
+        poller.subscribe(assistant_message_id="m1", question_uid="Q1")
+        # Кап откатов уже исчерпан предыдущими reclaim'ами агента.
+        poller._subscriptions["Q1"]["pending_reversions"] = _MAX_PENDING_REVERSIONS
+
+        with (
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.poll_once",
+                new_callable=AsyncMock,
+            ) as mock_poll,
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.mark_timeout",
+                new_callable=AsyncMock,
+            ) as mock_mark,
+        ):
             # Тик 1: answer_exists=True → phase становится processing, activity=t1
             mock_poll.return_value = _poll_res(answer_exists=True, question_status="processing")
             await poller._tick(mock_conn)
@@ -530,7 +651,7 @@ class TestTick:
             assert poller._subscriptions["Q1"]["last_activity"] == t1
 
             # Тик 2: шина «откатилась» — answer_exists=False, question_status="pending";
-            # phase НЕ должна вернуться к pending, last_activity НЕ должна обновиться
+            # кап исчерпан → phase НЕ возвращается к pending, last_activity не растёт
             mock_poll.return_value = _poll_res(answer_exists=False, question_status="pending")
             await poller._tick(mock_conn)
             assert poller._subscriptions["Q1"]["phase"] == "processing"
@@ -600,11 +721,13 @@ class TestTick:
             assert poller._subscriptions["Q1"]["last_answer_updated_at"] == dt1
             assert poller._subscriptions["Q1"]["last_activity"] == t_subscribe  # не изменилась
 
-            # Тик 2 (now=t2): ответ исчез из шины — answer_updated_at=None
+            # Тик 2 (now=t2): ответ исчез из шины — answer_updated_at=None.
+            # Вопрос при этом остаётся claim'нутым (question_status='processing'),
+            # то есть это НЕ reclaim, а именно пропажа строки-ответа.
             # Ключевой ассерт: last_activity НЕ должна обновиться
             mock_poll.return_value = _poll_res(
                 answer_exists=False,
-                question_status="pending",
+                question_status="processing",
                 answer_updated_at=None,
             )
             await poller._tick(mock_conn)
@@ -613,7 +736,7 @@ class TestTick:
             # Тик 3 (now=t3): от last_activity=t_subscribe прошло answer_timeout+1 → таймаут
             mock_poll.return_value = _poll_res(
                 answer_exists=False,
-                question_status="pending",
+                question_status="processing",
                 answer_updated_at=None,
             )
             n = await poller._tick(mock_conn)

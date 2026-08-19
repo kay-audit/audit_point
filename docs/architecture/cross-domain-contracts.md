@@ -225,7 +225,7 @@ SSE в чате нет. Транспорт единый для всех режи
 | Шина агента | таблица `chat_agent_messages_bus` (см. §10) |
 | Лимит параллельных запросов | `AgentMessageRepository.count_active_for_user` ≥ `CHAT__MAX_PARALLEL_STREAMS_PER_USER` (default 3) → `ChatLimitError` (HTTP 422) до записей в БД |
 | Фоновый хук поллера | `chat.agent_channel_poller` (наряду с `chat.tool_metrics_batcher`, `chat.audit_log_batcher`) |
-| Настройки канала | `AgentChannelSettings` (`app/domains/chat/settings.py:22`), env-префикс `CHAT__AGENT_CHANNEL__` (`TABLE_NAME=chat_agent_messages_bus`, `SCHEMA_NAME=""` — пусто → схема домена чата, затем основная схема адаптера, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=600`, `MAX_BLOCK_TEXT_SIZE=262144`) |
+| Настройки канала | `AgentChannelSettings` (`app/domains/chat/settings.py:22`), env-префикс `CHAT__AGENT_CHANNEL__` (`TABLE_NAME=chat_agent_messages_bus`, `SCHEMA_NAME=""` — пусто → схема домена чата, затем основная схема адаптера, `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`, `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=1800`, `MAX_BLOCK_TEXT_SIZE=262144`) |
 
 ---
 

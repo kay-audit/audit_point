@@ -276,7 +276,7 @@ DISTRIBUTED BY (chat_id);                              -- на GP; см. greenpl
 - Строка-**вопрос** от AW: `role='user'`, `status='pending'`, `reply_to=NULL`, `buttons=[]`, `media={}` или `[]`. `id` = UUID, который AW сохраняет в `chat_messages.agent_ref`.
 - Строка-**ответ** от агента: `role='assistant'`, `reply_to = id строки-вопроса`, `content` = финальный текст, `status` переходит `processing → completed` (или `failed`).
 - Агент **обязан** переводить `pending → processing` при взятии в работу. Без этого поллер AW считает, что агент не работает (`phase='pending'`, `claim_timeout_sec=1800`).
-- Агент **обязан** обновлять `updated_at` на каждой дельте (`metadata.reasoning` стримится). Без этого поллер решит, что агент завис (`phase='processing'`, `answer_timeout_sec=600`).
+- Агент **обязан** обновлять `updated_at` на каждой дельте (`metadata.reasoning` стримится). Без этого поллер решит, что агент завис (`phase='processing'`, `answer_timeout_sec=1800`).
 
 ### 6.2. `status`
 

@@ -30,7 +30,8 @@ class AgentChannelSettings(BaseModel):
     poll_min_interval_sec: float = Field(default=2.0, gt=0.0)
     poll_max_interval_sec: float = Field(default=10.0, gt=0.0)
     poll_backoff_multiplier: float = Field(default=1.5, gt=1.0)
-    answer_timeout_sec: int = Field(default=600, gt=0)  # 10 минут
+    # 30 минут: 3 ретрая NanoBot × (lease 300 + backoff 60) ≈ 1080 с + очередь.
+    answer_timeout_sec: int = Field(default=1800, gt=0)
     # Таймаут взятия вопроса в работу: вопрос висит в 'pending' без движения
     # очереди дольше этого времени → черновик закрывается ошибкой. Idle-семантика:
     # движение очереди (см. poller) сбрасывает отсчёт.

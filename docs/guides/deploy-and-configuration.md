@@ -647,7 +647,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__AGENT_CHANNEL__POLL_MAX_INTERVAL_SEC` | float | `10.0` | Максимальный интервал polling (при тишине от агента) |
 | `CHAT__AGENT_CHANNEL__POLL_BACKOFF_MULTIPLIER` | float | `1.5` | Шаг роста интервала при пустом тике (> 1.0) |
 | `CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC` | int | `1800` | Idle-таймаут фазы `pending` (агент ещё не взял вопрос в работу); по истечении `mark_timeout(reason='claim')` |
-| `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` | int | `600` | Idle-таймаут фазы `processing` (агент взял, но ответ не пришёл); по истечении `mark_timeout(reason='answer')` |
+| `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` | int | `1800` | Idle-таймаут фазы `processing` (агент взял, но ответ не пришёл); по истечении `mark_timeout(reason='answer')` |
 | `CHAT__AGENT_CHANNEL__MAX_BLOCK_TEXT_SIZE` | int | `262144` | Лимит размера текста блока (`reasoning`/`text`) от агента в UTF-8 байт. Превышение → блок обрезается с маркером `…[обрезано]` + WARNING-лог. Защищает БД / фронт от malicious-агента |
 
 > **Удалён** прежний неймспейс `CHAT__AGENT_BRIDGE__*` (старая 3-табличная шина). Если переменные остались в `.env` — игнорируются без ошибки (модели Settings используют `extra="ignore"`).

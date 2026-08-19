@@ -31,7 +31,7 @@
 
 **Связь с чатом**: `chat_messages.agent_ref VARCHAR(36)` — ссылка из
 ассистент-сообщения (draft) на `id` строки-вопроса в шине.
-`CLAIM_TIMEOUT_SEC=1800` (пока `pending`) / `ANSWER_TIMEOUT_SEC=600` (пока
+`CLAIM_TIMEOUT_SEC=1800` (пока `pending`) / `ANSWER_TIMEOUT_SEC=1800` (пока
 `processing`) — двухфазный таймаут поллера; см. `AgentChannelSettings`
 (`CHAT__AGENT_CHANNEL__`).
 
@@ -187,8 +187,15 @@ sequenceDiagram
 client-action (`open_url`).
 
 Терминальность строки-ответа определяется наборами
-`_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress")` и
-`_BUS_ERROR_STATUSES = ("failed", "error")` (`agent_channel.py:42-45`).
+`_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress", "error")` и
+`_BUS_ERROR_STATUSES = ("failed",)` (модульные константы `agent_channel.py`).
+Статус `error` в словаре NanoBot 2.3 — **повторяемая** ошибка: агент удаляет
+свою строку-ответ и возвращает вопрос в пул (до `max_stuck_retries` раз),
+поэтому `poll_once` отдаёт `outcome='pending'` и подписка живёт. Терминален
+только `failed`. Возврат вопроса `processing → pending` (reclaim по истёкшему
+lease воркера) поллер считает признаком жизни и откатывает фазу обратно — не
+более `_MAX_PENDING_REVERSIONS = 3` раз (`agent_channel_poller.py`), защита от
+флаппинга чужой таблицы.
 
 ---
 
@@ -241,7 +248,7 @@ client-action (`open_url`).
   env-префикс `CHAT__AGENT_CHANNEL__`: `TABLE_NAME=chat_agent_messages_bus`,
   `SCHEMA_NAME=""` (пусто → схема домена чата, затем основная схема адаптера),
   `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`,
-  `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=600`,
+  `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=1800`,
   `MAX_BLOCK_TEXT_SIZE=262144`
 - фоновый хук — `chat.agent_channel_poller`
 - Frontend — `static/js/shared/chat/chat-stream.js`, `chat-messages.js`

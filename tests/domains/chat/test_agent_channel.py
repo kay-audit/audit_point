@@ -868,6 +868,82 @@ class TestPollOnce:
         assert error_block["code"] == "agent_error"
         fake_msg_repo.finalize.assert_not_called()
 
+    async def test_question_error_status_keeps_waiting(self, mock_conn, settings):
+        """NanoBot 2.3: 'error' на вопросе = повторяемая ошибка, подписку не снимаем.
+
+        Агент вернёт задачу в пул после error_retry_delay и повторит её
+        (пока retry_count < max_stuck_retries), поэтому AW обязан продолжать
+        ждать: mark_failed не вызывается, вопрос в шине не закрывается.
+        """
+        question = {
+            "id": "q-uid",
+            "status": "error",
+            "metadata": {"retry_count": 1, "error": "dispatch_error"},
+            "created_at": None,
+        }
+
+        svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
+            mock_conn, settings, question=question, answer=None
+        )
+
+        res = await svc.poll_once(assistant_message_id="msg-1", question_uid="q-uid")
+
+        assert res["outcome"] == "pending"
+        assert res["question_status"] == "error"
+        assert res["answer_exists"] is False
+        fake_msg_repo.mark_failed.assert_not_awaited()
+        fake_msg_repo.finalize.assert_not_called()
+        fake_agent_repo.set_status.assert_not_awaited()
+
+    async def test_question_failed_status_terminates(self, mock_conn, settings):
+        """'failed' — терминальный: mark_failed + outcome='done' (в контраст с 'error')."""
+        question = {"id": "q-uid", "status": "failed", "created_at": None}
+
+        svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
+            mock_conn, settings, question=question, answer=None
+        )
+
+        res = await svc.poll_once(assistant_message_id="msg-1", question_uid="q-uid")
+
+        assert res["outcome"] == "done"
+        assert res["question_status"] == "failed"
+        fake_msg_repo.mark_failed.assert_awaited_once()
+        assert (
+            fake_msg_repo.mark_failed.call_args.kwargs["error_block"]["code"]
+            == "agent_error"
+        )
+
+    async def test_answer_error_status_keeps_waiting(self, mock_conn, settings):
+        """Строка-ответ со status='error' — нетерминальная (агент повторит).
+
+        NanoBot при повторяемой ошибке удаляет свою строку-ответ, но если она
+        всё же наблюдается со статусом 'error' — финализировать нельзя.
+        """
+        question = {"id": "q-uid", "status": "error", "metadata": {}}
+        answer = {
+            "id": "a-uid",
+            "role": "assistant",
+            "content": "",
+            "metadata": {},
+            "buttons": None,
+            "media": None,
+            "reply_to": "q-uid",
+            "status": "error",
+            "updated_at": None,
+        }
+
+        svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
+            mock_conn, settings, question=question, answer=answer
+        )
+
+        res = await svc.poll_once(assistant_message_id="msg-1", question_uid="q-uid")
+
+        assert res["outcome"] == "pending"
+        assert res["answer_exists"] is True
+        fake_msg_repo.mark_failed.assert_not_awaited()
+        fake_msg_repo.finalize.assert_not_called()
+        fake_agent_repo.set_status.assert_not_awaited()
+
     async def test_poll_once_calls_translate_buttons_when_answer_has_buttons(
         self, mock_conn, settings
     ):

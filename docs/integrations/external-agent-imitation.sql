@@ -30,7 +30,7 @@
 --                        НА СТРОКЕ-ОТВЕТЕ — наличие ответа с
 --                        reply_to=<id вопроса> и есть сигнал «ответ готов»
 --    • role            = 'user' (вопрос от AW) | 'assistant' (ответ агента)
---                        | 'system'; CHECK владельца роль 'tool' НЕ допускает
+--                        | 'system' | 'tool' (служебные сообщения цикла агента)
 --    • metadata        = JSONB: у вопроса ключи {mode, kb} (mode = agent_mode
 --                        запроса: 'adaptive' | 'always'; kb по умолчанию 'oarb');
 --                        у ответа ключ
@@ -42,9 +42,12 @@
 --                        file_id — либо id строки в chat_files, либо инлайн
 --                        data-URL `data:<mime>;base64,<...>` (так отдаёт
 --                        nanobot); filename необязателен, см. сценарий 3
---    • status          = pending | processing | completed | failed
---                        (CHECK владельца, подтверждённая спека; 'timeout'
---                        и 'error' ЗАПРЕЩЕНЫ — записи статуса от AW best-effort)
+--    • status          = pending | processing | completed | error | failed
+--                        (словарь NanoBot 2.3; 'timeout' ЗАПРЕЩЁН — записи
+--                        статуса от AW best-effort). 'error' — ПОВТОРЯЕМАЯ
+--                        ошибка: агент вернёт вопрос в пул и переобработает
+--                        его, удалив свою строку-ответ. Терминален только
+--                        'failed'
 --    У владельца на колонках есть DEFAULT'ы (id, status, таймстемпы, JSONB),
 --    но AW на них не полагается и передаёт значения явно.
 --
@@ -62,13 +65,23 @@
 --       «В очереди: впереди N запросов» — N = число pending-вопросов всех пользователей (включая свои) с created_at раньше.
 --    Признаки жизни, продлевающие claim-таймер (30 мин idle для pending):
 --       уменьшение N, переход pending→processing.
---    Признаки жизни, продлевающие answer-таймер (10 мин idle для processing):
---       рост metadata.reasoning на строке-ответа, изменение её updated_at.
+--    Признаки жизни, продлевающие answer-таймер (30 мин idle для processing):
+--       рост metadata.reasoning на строке-ответа, изменение её updated_at,
+--       возврат вопроса в 'pending'/'error' с удалением ответа (reclaim,
+--       засчитывается не более 3 раз).
 --    Сообщения одного chat_id агент НЕ обрабатывает параллельно — ждёт
 --    завершения активного, затем берёт следующее из той же беседы.
+--    Повторяемая ошибка и reclaim: при сбое агент ставит вопросу
+--    status='error' (retry_count/error в metadata) и удаляет строку-ответ —
+--    через error_retry_delay задача вернётся в пул. Если у воркера истёк
+--    lease (public.agent_worker_claims, см. раздел 12), вопрос точно так же
+--    возвращается в 'pending' с удалением ответа. Для AW и то и другое —
+--    признак жизни: подписка живёт, idle-таймер сбрасывается (откат фазы
+--    processing → pending засчитывается не более 3 раз).
 --    Idle-таймауты двухфазные, отсчёт от последнего признака жизни:
 --    30 мин для pending (CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800) и
---    10 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600);
+--    30 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800 —
+--    покрывает 3 ретрая NanoBot с backoff'ом);
 --    по истечении AW сам закрывает зависший draft в chat_messages и
 --    best-effort ставит вопросу status='failed'.
 --
@@ -89,6 +102,8 @@
 --                              metadata.reasoning, фронт допечатывает дельты; финализация
 --   11. ВИТРИНА MARKDOWN   — ответ со всеми основными md-элементами (заголовки,
 --                              списки, таблица, код, цитата) для проверки рендера
+--   12. АРЕНДА ЗАДАЧ        — DDL public.agent_worker_claims и имитация reclaim'а
+--                              по истёкшему lease (вопрос возвращается в pending)
 --
 --  ВАЖНО — GP-ограничения (Greenplum 6.x = PostgreSQL 9.4):
 --    БЕЗ ON CONFLICT DO UPDATE, БЕЗ gen_random_uuid(), БЕЗ jsonb_set,
@@ -121,9 +136,13 @@ LIMIT 20;
 --   pending     — вопрос вставлен AW, агент ещё не взял.
 --   processing  — агент claim'ит вопрос и работает над ответом.
 --   completed   — агент вставил ответ (reply_to=<id вопроса> НА ОТВЕТЕ) и закрыл вопрос.
---   failed      — агент зафиксировал ошибку; этим же статусом AW best-effort
---                 закрывает вопрос по таймауту (слот лимита дополнительно
---                 страхует отсечка по возрасту в count_active_for_user).
+--   error       — ПОВТОРЯЕМАЯ ошибка: агент снёс свою строку-ответ и вернёт
+--                 задачу в пул через error_retry_delay (metadata.retry_count /
+--                 metadata.error). AW НЕ закрывает draft — продолжает ждать.
+--   failed      — терминальная ошибка (retry_count исчерпан); этим же статусом
+--                 AW best-effort закрывает вопрос по таймауту (слот лимита
+--                 дополнительно страхует отсечка по возрасту в
+--                 count_active_for_user).
 --
 -- Для наблюдения «всё, что в работе»:
 SELECT id, chat_id, content, status, created_at
@@ -369,6 +388,7 @@ END$$;
 -- Можно вставить строку-ответ со status='failed' и текстом ошибки, либо просто
 -- закрыть вопрос со status='failed' без ответа — AW в обоих случаях покажет
 -- error-блок (во втором — стандартный текст «Внешний агент вернул ошибку»).
+-- ВНИМАНИЕ: терминален только 'failed'. Для ПОВТОРЯЕМОЙ ошибки — вариант В.
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 
 -- Вариант А — только закрыть вопрос (AW покажет стандартное сообщение об ошибке):
@@ -398,6 +418,35 @@ BEGIN
 
     UPDATE chat_agent_messages_bus
     SET status     = 'failed',
+        updated_at = now()
+    WHERE id = q_id;
+END$$;
+
+
+-- Вариант В — ПОВТОРЯЕМАЯ ошибка (status='error'): агент сносит свою
+-- строку-ответ и вернёт задачу в пул через error_retry_delay. AW черновик НЕ
+-- закрывает — подписка живёт, idle-таймер сбрасывается, в логах появляется
+-- «вопрос … в состоянии 'error' … ждём повторной обработки агентом».
+-- Проверка: после этого блока завершить сценарием 1 — ответ доедет до UI.
+DO $$
+DECLARE
+    q_id  uuid := '<QUESTION_ID>';   -- ← подставь сюда
+    v_try int;
+BEGIN
+    -- Агент удаляет свою строку-ответ (если успел её создать).
+    DELETE FROM chat_agent_messages_bus WHERE reply_to = q_id AND role = 'assistant';
+
+    SELECT COALESCE((metadata->>'retry_count')::int, 0) + 1 INTO v_try
+    FROM chat_agent_messages_bus WHERE id = q_id;
+
+    -- jsonb_set и оператор `jsonb || jsonb` — PG 9.5+, в GP 6.x их нет:
+    -- пересобираем metadata вопроса целиком из текстового литерала.
+    UPDATE chat_agent_messages_bus
+    SET status     = 'error',
+        metadata   = ('{"mode": "'  || COALESCE(metadata->>'mode', 'always')
+                   || '", "kb": "'  || COALESCE(metadata->>'kb', 'oarb')
+                   || '", "retry_count": ' || v_try
+                   || ', "error": "dispatch_error"}')::jsonb,
         updated_at = now()
     WHERE id = q_id;
 END$$;
@@ -495,7 +544,7 @@ WHERE status IN ('completed', 'failed')
 -- Зависшие processing/pending дольше 2 часов — ручное закрытие:
 -- (AW закрывает draft в chat_messages сам по idle-таймауту —
 -- 30 мин для pending (CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800),
--- 10 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600) —
+-- 30 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800) —
 -- и best-effort ставит вопросу 'failed';
 -- если запись не прошла, строки остаются в pending —
 -- закрываем вручную тем же 'failed' из словаря CHECK'а владельца.)
@@ -612,7 +661,7 @@ WHERE id     = '<QUESTION_ID>'
 
 -- ── После этого UPDATE фронт покажет «Агент работает над ответом…»
 -- ── вместо строки с позицией в очереди. Поллер зафиксировал переход
--- ── pending→processing как признак жизни и продлил answer-таймер (10 мин idle).
+-- ── pending→processing как признак жизни и продлил answer-таймер (30 мин idle).
 -- ── Далее — сценарий 10 (порционный reasoning) или 1/2/3 (сразу ответить).
 
 
@@ -623,7 +672,7 @@ WHERE id     = '<QUESTION_ID>'
 -- Цель: наблюдать, как фронт допечатывает рассуждения агента по мере их роста.
 -- AW поллит строку-ответ (role='assistant', reply_to=<id вопроса>) и при каждом
 -- обновлении updated_at / росте metadata.reasoning отображает новый фрагмент.
--- Изменение updated_at — признак жизни, продлевающий answer-таймер (10 мин idle).
+-- Изменение updated_at — признак жизни, продлевающий answer-таймер (30 мин idle).
 --
 -- ВАЖНО: сценарий рассчитан на PostgreSQL (dev-имитация). jsonb_set() недоступен
 -- в Greenplum 6.x — но шина в проде принадлежит агенту и это не нужно там руками.
@@ -817,3 +866,78 @@ END$$;
 -- ── чекбоксы ☑/☐, таблица в пузыре, fenced-код с цветной подсветкой hljs
 -- ── (кнопки «Копировать» нет — это код внутри text-блока, а не отдельный
 -- ── code-блок), цитата, линия. Reasoning над ответом — тоже с markdown.
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 12. АРЕНДА ЗАДАЧ ВОРКЕРАМИ (public.agent_worker_claims) и reclaim
+-- ────────────────────────────────────────────────────────────────────────────
+--
+-- Таблица принадлежит стороне агента (NanoBot, класс PostgresChannel) и
+-- приложением НЕ создаётся и НЕ читается — она лежит здесь, чтобы дев-стенд
+-- можно было поднять целиком и воспроизвести reclaim по истёкшему lease.
+-- Схема в DDL ниже — `public` (как у владельца); на GP подставь схему
+-- имитации (значение DATABASE__GP__SCHEMA, в .env.dev —
+-- s_grnplm_ld_audit_da_project_4).
+--
+-- Инвариант: задача обрабатывается воркером (status='processing')  ⇔
+--            существует ровно одна claim-запись для task_id (с живым lease).
+-- PK (task_id) — жёсткая гарантия эксклюзивности: два INSERT'а с одним
+-- task_id невозможны (второй падает на unique-индексе), поэтому одна задача
+-- физически не может быть захвачена двумя воркерами.
+-- Индексов сверх PK НЕТ сознательно (решение владельца — в долг).
+
+CREATE TABLE IF NOT EXISTS public.agent_worker_claims (
+    task_id     UUID NOT NULL PRIMARY KEY,   -- = chat_agent_messages_bus.id
+    worker_id   TEXT NOT NULL,               -- идентификатор воркера ({host}:{pid}:{rand})
+    claimed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until TIMESTAMPTZ NOT NULL,        -- продлевается heartbeat'ом воркера
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+-- Клауза только для Greenplum; на PostgreSQL строку ниже удалить,
+-- а точку с запятой перенести на закрывающую скобку.
+DISTRIBUTED BY (task_id);
+
+COMMENT ON TABLE  public.agent_worker_claims IS 'Аренда задач воркерами PostgresChannel. PK(task_id) гарантирует, что одна задача обрабатывается ровно одним воркером; lease_until продлевается heartbeat воркера и по истечении возвращает задачу в пул.';
+COMMENT ON COLUMN public.agent_worker_claims.task_id     IS 'PK — ID задачи (= chat_agent_messages_bus.id). Два INSERT с одним task_id невозможны.';
+COMMENT ON COLUMN public.agent_worker_claims.worker_id   IS 'Идентификатор воркера, держащего аренду ({hostname}:{pid}:{rand8}).';
+COMMENT ON COLUMN public.agent_worker_claims.claimed_at  IS 'Момент захвата аренды.';
+COMMENT ON COLUMN public.agent_worker_claims.lease_until IS 'Срок жизни аренды; продлевается heartbeat воркера; после истечения задача возвращается в пул (reclaim).';
+COMMENT ON COLUMN public.agent_worker_claims.created_at  IS 'Время создания записи аренды.';
+
+-- ── Имитация claim'а: воркер взял вопрос в работу на 5 минут.
+-- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
+INSERT INTO public.agent_worker_claims (task_id, worker_id, claimed_at, lease_until, created_at)
+VALUES ('<QUESTION_ID>', 'devhost:1234:ab12cd34', now(), now() + interval '5 minutes', now());
+
+UPDATE chat_agent_messages_bus
+SET status     = 'processing',
+    updated_at = now()
+WHERE id = '<QUESTION_ID>';
+
+-- ── Имитация RECLAIM'а: lease истёк, воркер не отозвался. NanoBot удаляет
+-- ── claim-запись и свою строку-ответ, возвращая вопрос в пул ('pending').
+-- ── Для AW это ПРИЗНАК ЖИЗНИ: подписка живёт, фаза откатывается
+-- ── processing → pending, idle-таймер сбрасывается. Откат засчитывается
+-- ── не более 3 раз (_MAX_PENDING_REVERSIONS в agent_channel_poller.py) —
+-- ── защита от бесконечного продления флаппингом чужой таблицы.
+DO $$
+DECLARE
+    q_id uuid := '<QUESTION_ID>';   -- ← подставь сюда
+BEGIN
+    DELETE FROM public.agent_worker_claims WHERE task_id = q_id;
+    DELETE FROM chat_agent_messages_bus WHERE reply_to = q_id AND role = 'assistant';
+
+    UPDATE chat_agent_messages_bus
+    SET status     = 'pending',
+        updated_at = now()
+    WHERE id = q_id;
+END$$;
+
+-- ── Диагностика аренд: кто что держит и не протух ли lease.
+SELECT c.task_id, c.worker_id, c.claimed_at, c.lease_until,
+       (c.lease_until < now()) AS lease_expired,
+       b.status AS question_status
+FROM public.agent_worker_claims c
+LEFT JOIN chat_agent_messages_bus b ON b.id = c.task_id
+ORDER BY c.claimed_at DESC
+LIMIT 50;
