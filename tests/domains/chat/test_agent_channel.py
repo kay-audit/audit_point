@@ -774,6 +774,44 @@ class TestPollOnce:
             uid="q-uid", status="completed",
         )
 
+    async def test_answer_completed_wires_media_from_get_media_by_uid(
+        self, mock_conn, settings
+    ):
+        """C1: media в финальных блоках приходит из get_media_by_uid(answer id), не из
+        get_answer_for_question (узкая проекция её больше не отдаёт)."""
+        question = {"id": "q-uid", "status": "completed", "reply_to": None}
+        answer = {
+            "id": "a-uid",
+            "role": "assistant",
+            "content": "Ответ от агента",
+            "metadata": {},
+            "buttons": None,
+            "media": None,
+            "reply_to": "q-uid",
+            "status": "completed",
+        }
+
+        svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
+            mock_conn, settings, question=question, answer=answer
+        )
+        fake_agent_repo.get_media_by_uid = AsyncMock(
+            return_value=[
+                {"file_id": "f9", "filename": "att.png", "mime_type": "image/png"}
+            ]
+        )
+
+        res = await svc.poll_once(
+            assistant_message_id="msg-1",
+            question_uid="q-uid",
+        )
+
+        assert res["outcome"] == "done"
+        fake_agent_repo.get_media_by_uid.assert_awaited_once_with("a-uid")
+        blocks = fake_msg_repo.finalize.call_args.kwargs["final_blocks"]
+        media_blocks = [b for b in blocks if b["type"] == "image"]
+        assert len(media_blocks) == 1
+        assert media_blocks[0]["file_id"] == "f9"
+
     async def test_answer_failed_marks_failed_and_returns_done(
         self, mock_conn, settings
     ):

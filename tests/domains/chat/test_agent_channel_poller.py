@@ -779,6 +779,8 @@ class _BusFakeConn:
     async def fetchrow(self, query, *args, **kwargs):
         if "FOR UPDATE" in query:          # draft в chat_messages
             return {"content": "[]", "status": "streaming"}
+        if query.strip().lower().startswith("select media"):  # C1: get_media_by_uid
+            return {"media": self._answer.get("media")}
         if "WHERE reply_to" in query:      # строка-ответ агента (C1: reply_to
             return self._answer            # теперь ещё и в списке колонок get_by_uid)
         return self._question              # строка-вопрос по id
