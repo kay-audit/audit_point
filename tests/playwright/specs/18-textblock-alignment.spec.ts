@@ -1,4 +1,11 @@
-import { test, expect, openAct, SEED_ACTS, waitForSaveComplete } from '../fixtures';
+import {
+  test,
+  expect,
+  openAct,
+  SEED_ACTS,
+  waitForSaveComplete,
+  discardLocalDraftIfPrompted,
+} from '../fixtures';
 
 /**
  * TB-1: round-trip per-line выравнивания текстблока.
@@ -72,13 +79,11 @@ test.describe('Textblock alignment round-trip (TB-1)', () => {
     // Reload: контент пришёл из БД — центр пережил bleach и доехал в редактор.
     await openAct(page, SEED_ACTS.withContent);
 
-    // Снимок в localStorage (StorageManager пишет его при уходе со страницы)
-    // теперь переживает повторное открытие акта: блокировки уехали на TTL-ключи
-    // и больше не трогают acts.updated_at, а H3 считает снимок устаревшим
-    // только после сохранения акта. Отклоняем черновик — проверяем копию из БД.
-    const discardDraft = page.getByRole('button', { name: 'Отклонить' });
-    await discardDraft.waitFor({ state: 'visible', timeout: 5000 });
-    await discardDraft.click();
+    // Черновика тут быть не должно: Ctrl+S выше синхронизировал акт с БД, а
+    // снимок в localStorage StorageManager пишет в beforeunload только при
+    // несохранённых правках (успешный DB-save его вдобавок вытесняет). Диалог
+    // всё же гасим — проверяем именно копию из БД, а не локальный снимок.
+    await discardLocalDraftIfPrompted(page);
 
     await page.locator('.step[data-step="2"]').click();
     await editor.waitFor({ state: 'visible', timeout: 5000 });

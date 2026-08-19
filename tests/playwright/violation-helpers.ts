@@ -3,15 +3,17 @@ import type { Page } from '@playwright/test';
 /**
  * Хелперы для e2e-сценариев с полями нарушения (rich-editor-followups).
  *
- * Сид актов (seed.py) НЕ содержит нарушений — поле `.violation-field` появляется
- * в DOM только через рантайм-создание (createViolation). Все три сценария волны
- * (drop капсул в поле, find/replace по полям, ownership корректора) стартуют с
- * этого шага.
+ * Сид актов (seed.py) НЕ содержит нарушений, поэтому сценарии стартуют с
+ * рантайм-создания (createViolation). Одного его мало: в блочной модели поле —
+ * контейнер {enabled, blocks}, а rich-редактор живёт ВНУТРИ блока, поэтому у
+ * свежесозданного нарушения ни одного `.violation-field` в DOM ещё нет — его
+ * поднимает seedViolationBlocks.
  */
 
-/** Селектор редактируемого поля нарушения. querySelector по нему в DOM-порядке:
- *  первое совпадение = поле «Нарушено» (violated), второе = «Установлено»
- *  (established) — обе колонки всегда видимы. */
+/** Селектор редактируемого поля нарушения — это редактор ВНУТРИ блока, так что
+ *  совпадения появляются только после сида блоков. querySelector по нему в
+ *  DOM-порядке: первое совпадение = поле «Нарушено» (violated), второе =
+ *  «Установлено» (established) — обе колонки всегда видимы. */
 export function violationFieldSel(vid: string): string {
   return `.violation-section[data-violation-id="${vid}"] .violation-field`;
 }
@@ -44,27 +46,6 @@ export async function createViolation(page: Page, nodeId = '2.1'): Promise<strin
     const ids = Object.keys(AppState.violations);
     return ids[ids.length - 1];
   }, nodeId);
-}
-
-/**
- * Наполняет rich-поле нарушения текстом через его поверхность (setContent —
- * штатный путь модель→DOM). path: 'violated' | 'established' | ...
- */
-export async function seedViolationField(
-  page: Page,
-  vid: string,
-  fieldIndex: number,
-  html: string,
-): Promise<void> {
-  await page.evaluate(
-    ({ sel, fieldIndex, html }) => {
-      const field = document.querySelectorAll(sel)[fieldIndex] as HTMLElement & {
-        __surface?: { setContent: (h: string) => void };
-      };
-      field.__surface!.setContent(html);
-    },
-    { sel: violationFieldSel(vid), fieldIndex, html },
-  );
 }
 
 /** Контейнер блоков КОНКРЕТНОГО поля нарушения (адрес поля — в его dataset). */

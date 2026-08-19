@@ -4,7 +4,7 @@ import {
   openStep2,
   createViolation,
   violationFieldSel,
-  seedViolationField,
+  seedViolationBlocks,
 } from '../violation-helpers';
 
 /**
@@ -47,8 +47,16 @@ async function openBar(page: Page): Promise<void> {
   await expect(page.locator(BAR)).not.toHaveClass(/\bhidden\b/);
 }
 
+/**
+ * Текст поля «Нарушено» из модели. В блочной модели поле — контейнер
+ * {enabled, blocks}, поэтому склеиваем содержимое блоков: сценарии сидят одним
+ * блоком, и склейка даёт ровно его текст (а опустошённое поле — пустую строку).
+ */
 const violatedModel = (page: Page, vid: string) =>
-  page.evaluate((v) => (window as any).AppState.violations[v].violated as string, vid);
+  page.evaluate((v) => {
+    const blocks = (window as any).AppState.violations[v].violated.blocks || [];
+    return blocks.map((b: any) => b.content).join('') as string;
+  }, vid);
 const tbModel = (page: Page) =>
   page.evaluate(() => (window as any).AppState.textBlocks['txt-seed-1'].content as string);
 
@@ -65,16 +73,19 @@ test.describe('Find/Replace по полям нарушения (сценарий
     const vid2 = await createViolation(page, '3'); // нарушение в секции 3 (ПОСЛЕ)
     // Сидим ПОСЛЕ обоих createViolation — renderAll внутри них пересоздаёт DOM.
     await seedTextblock(page, 'кот сидит');
-    await seedViolationField(page, vid1, 0, 'кот думает');
-    await seedViolationField(page, vid2, 0, 'кот спит');
+    // Поле-цель поиска = редактор ВНУТРИ блока, поэтому сид идёт блоками:
+    // у поля без блоков нет ни одного `.violation-field`, и buildTargets его
+    // не увидит вовсе.
+    const [b1] = await seedViolationBlocks(page, vid1, 'violated', ['кот думает']);
+    const [b2] = await seedViolationBlocks(page, vid2, 'violated', ['кот спит']);
 
     // Порядок целей в документе: v1 (секция 1) → tb (секция 2) → v2 (секция 3).
     const order = await page.evaluate(
       () => (window as any).ActSearchEngine.buildTargets().map((t: any) => t.id) as string[],
     );
-    const iV1 = order.indexOf(`viol:${vid1}:violated`);
+    const iV1 = order.indexOf(`viol:${vid1}:violated:block:${b1}`);
     const iTb = order.indexOf('txt-seed-1');
-    const iV2 = order.indexOf(`viol:${vid2}:violated`);
+    const iV2 = order.indexOf(`viol:${vid2}:violated:block:${b2}`);
     expect(iV1).toBeGreaterThanOrEqual(0);
     expect(iTb).toBeGreaterThan(iV1);
     expect(iV2).toBeGreaterThan(iTb);
@@ -109,7 +120,7 @@ test.describe('Find/Replace по полям нарушения (сценарий
     page,
   }) => {
     const vid = await createViolation(page, '1');
-    await seedViolationField(page, vid, 0, 'удалить');
+    await seedViolationBlocks(page, vid, 'violated', ['удалить']);
 
     await openBar(page);
     await findInput(page).fill('удалить');

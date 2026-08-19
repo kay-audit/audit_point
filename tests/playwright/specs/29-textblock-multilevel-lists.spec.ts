@@ -1,4 +1,11 @@
-import { test, expect, openAct, SEED_ACTS, waitForSaveComplete } from '../fixtures';
+import {
+  test,
+  expect,
+  openAct,
+  SEED_ACTS,
+  waitForSaveComplete,
+  discardLocalDraftIfPrompted,
+} from '../fixtures';
 
 /**
  * Многоуровневые списки в rich-редакторе текстблока (B3/C1/D2).
@@ -163,23 +170,6 @@ async function ownItemTexts(editor): Promise<string[]> {
         .trim()
     )
   );
-}
-
-/**
- * После сохранения и перезагрузки акта H3 может предложить восстановить
- * несинхронизированный локальный черновик (диалог «Найден несохранённый
- * черновик» с кнопками Восстановить/Отклонить, см. 18-textblock-alignment).
- * Отклоняем — round-trip тесты проверяют именно копию из БД. Диалог может не
- * появиться (нечего восстанавливать) — тогда просто продолжаем.
- */
-async function discardLocalDraftIfPrompted(page): Promise<void> {
-  const discardDraft = page.getByRole('button', { name: 'Отклонить' });
-  try {
-    await discardDraft.waitFor({ state: 'visible', timeout: 2000 });
-    await discardDraft.click();
-  } catch {
-    // Черновика не было.
-  }
 }
 
 test.describe('Textblock multilevel lists (B3/C1/D2)', () => {

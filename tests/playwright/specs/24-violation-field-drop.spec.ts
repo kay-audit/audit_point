@@ -1,6 +1,11 @@
 import { test, expect, openAct, SEED_ACTS } from '../fixtures';
 import type { Page } from '@playwright/test';
-import { openStep2, createViolation, violationFieldSel } from '../violation-helpers';
+import {
+  openStep2,
+  createViolation,
+  violationFieldSel,
+  seedViolationBlocks,
+} from '../violation-helpers';
 
 /**
  * Сценарий 1 (T7 #6): нативный drag капсул (сноска + ссылка) из текстблока в
@@ -66,6 +71,10 @@ test.describe('violation-field drop (T7 #6): нативный drag капсул 
     page,
   }) => {
     const vid = await createViolation(page);
+    // Пустой блок = принимающая поверхность. В блочной модели у поля без блоков
+    // rich-редактора нет вовсе, а значит и ронять капсулы физически некуда —
+    // ровно как у пользователя.
+    await seedViolationBlocks(page, vid, 'violated', ['']);
     const fieldSel = violationFieldSel(vid); // querySelector → первое поле (violated)
 
     // Поле НЕ в фокусе — drop сам его сфокусирует (обработчик с создания поля).
@@ -98,7 +107,10 @@ test.describe('violation-field drop (T7 #6): нативный drag капсул 
 
     // Модель нарушения обновлена (commit несмонтированного поля): ссылка есть,
     // сноски (data-footnote-text/якорь) нет.
-    const model = await page.evaluate((v) => (window as any).AppState.violations[v].violated, vid);
+    const model = await page.evaluate(
+      (v) => (window as any).AppState.violations[v].violated.blocks[0].content as string,
+      vid,
+    );
     expect(model).toContain('data-link-url="https://a.ru"');
     expect(model).not.toContain('data-footnote-text');
     expect(model).not.toContain('якорь');

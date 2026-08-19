@@ -70,19 +70,47 @@ export const test = base.extend<{}>({
 export { expect } from '@playwright/test';
 
 /**
- * Открывает /constructor?act_id={actId} и ждёт что step1 (дерево + preview)
- * прогрузился. Бросает ошибку если за 10 сек дерево не появилось.
+ * Открывает /constructor?act_id={actId} и ждёт что контент акта прогрузился.
+ * Бросает ошибку если за 10 сек дерево не отрисовалось.
+ *
+ * Дерево ждём В DOM, а не видимым: при ПОВТОРНОМ открытии акта внутри одного
+ * теста ActsAPI._restoreViewPosition (`static/js/shared/api.js`) восстанавливает
+ * сохранённый шаг из localStorage['audit_workstation_viewpos:{actId}'], и акт,
+ * который тест уже смотрел на шаге 2, откроется снова на шаге 2 — а там #step1
+ * вместе с #tree уходит в display:none. Само дерево при этом отрисовано:
+ * renderAll отрабатывает до переключения шага. Тесту, которому нужен именно
+ * видимый шаг 1, достаточно кликнуть `.step[data-step="1"]`.
  */
 export async function openAct(page: Page, actId: number): Promise<void> {
   await page.goto(`/constructor?act_id=${actId}`);
   // #tree — ul внутри tree-container (tree_panel.html), всегда есть на step1.
-  await page.locator('#tree').waitFor({ state: 'visible', timeout: 10000 });
+  await page.locator('#tree').waitFor({ state: 'attached', timeout: 10000 });
   // tree-renderer вкладывает <ul class="tree"> внутрь #tree (который сам ul),
   // и в нём — <li class="tree-item"> на каждую секцию.
   await page
     .locator('#tree li.tree-item')
     .first()
     .waitFor({ state: 'attached', timeout: 10000 });
+}
+
+/**
+ * Отклоняет диалог восстановления локального черновика, если он появился.
+ *
+ * Диалог («Найден несохранённый черновик» с кнопками Восстановить/Отклонить,
+ * `static/js/shared/api.js`) показывается только когда в localStorage лежит
+ * снимок: StorageManager пишет его в beforeunload ТОЛЬКО при `_hasUnsavedChanges`,
+ * а успешный DB-save вытесняет снимок (`removeSnapshot` внутри `forceSaveToDb`).
+ * Поэтому после Ctrl+S диалога не будет вовсе — round-trip тесты и так проверяют
+ * копию из БД, и отсутствие диалога для них нормальный исход, а не сбой.
+ */
+export async function discardLocalDraftIfPrompted(page: Page): Promise<void> {
+  const discardDraft = page.getByRole('button', { name: 'Отклонить' });
+  try {
+    await discardDraft.waitFor({ state: 'visible', timeout: 2000 });
+    await discardDraft.click();
+  } catch {
+    // Черновика не было.
+  }
 }
 
 /**

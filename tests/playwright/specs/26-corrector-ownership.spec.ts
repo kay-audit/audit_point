@@ -1,6 +1,6 @@
 import { test, expect, openAct, SEED_ACTS } from '../fixtures';
 import type { Page } from '@playwright/test';
-import { openStep2, createViolation, violationFieldSel, seedViolationField } from '../violation-helpers';
+import { openStep2, createViolation, violationFieldSel, seedViolationBlocks } from '../violation-helpers';
 
 /**
  * Сценарий 3: ownership корректора (#1 HIGH). «Улучшить текст» в поле A, во время
@@ -37,9 +37,10 @@ async function openCorrectorOnField(page: Page, vid: string, fieldIndex: number)
   );
 }
 
+/** Текст первого блока поля: в блочной модели поле — контейнер {enabled, blocks}. */
 const fieldModel = (page: Page, vid: string, path: 'violated' | 'established') =>
   page.evaluate(
-    ({ v, p }) => (window as any).AppState.violations[v][p] as string,
+    ({ v, p }) => (window as any).AppState.violations[v][p].blocks[0].content as string,
     { v: vid, p: path },
   );
 
@@ -62,8 +63,14 @@ test.describe('Корректор: ownership поля при уходе фоку
     });
 
     const vid = await createViolation(page);
-    await seedViolationField(page, vid, 0, 'Текст поля А с ашибками'); // A = violated
-    await seedViolationField(page, vid, 1, 'Текст поля Б неизменный'); // B = established
+    // Сидим блоками: rich-редактор (.violation-field) живёт ВНУТРИ блока, у поля
+    // без блоков его нет вовсе — «поверхность поля» без сида не существует.
+    const [blockA] = await seedViolationBlocks(page, vid, 'violated', [
+      'Текст поля А с ашибками',
+    ]); // A = violated
+    const [blockB] = await seedViolationBlocks(page, vid, 'established', [
+      'Текст поля Б неизменный',
+    ]); // B = established
 
     // Открываем корректор на поле A — владелец должен захватиться сразу.
     await openCorrectorOnField(page, vid, 0);
@@ -71,7 +78,7 @@ test.describe('Корректор: ownership поля при уходе фоку
     const ownerId = await page.evaluate(
       () => (window as any).CorrectorPopover._ownerSurface?.id ?? null,
     );
-    expect(ownerId).toBe(`viol:${vid}:violated`); // владелец = поле A
+    expect(ownerId).toBe(`viol:${vid}:violated:block:${blockA}`); // владелец = поле A
 
     // Запускаем обработку (клик по режиму) — уходит запрос к моку.
     await page.locator('.corrector-mode[data-mode="fix"]').click();
@@ -82,7 +89,7 @@ test.describe('Корректор: ownership поля при уходе фоку
     const activeAfterClick = await page.evaluate(
       () => (window as any).EditorRegistry.getActive()?.id ?? null,
     );
-    expect(activeAfterClick).toBe(`viol:${vid}:established`); // активна теперь B, НЕ A
+    expect(activeAfterClick).toBe(`viol:${vid}:established:block:${blockB}`); // активна теперь B, НЕ A
 
     // Мок отвечает → диф отрисован, «Принять» доступна.
     await expect(page.locator('.corrector-accept')).toBeEnabled();
