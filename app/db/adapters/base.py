@@ -198,8 +198,10 @@ class DatabaseAdapter(ABC):
         но таблица могла быть создана старой версией схемы. Без этой проверки
         приложение стартует «успешно» и падает уже в рантайме
         (``UndefinedColumnError`` на отсутствующей колонке). Только WARNING —
-        старт не блокируется; миграцию выполняет человек (``ALTER TABLE`` или
-        пересоздание БД, ``docs/migrations/drop-all-tables.md``).
+        старт не блокируется; миграцию выполняет человек: файл
+        ``docs/migrations/<дата>-<таблица>-<поле>.md`` для расширяющего изменения
+        либо пересоздание БД (``docs/migrations/drop-all-tables.md``) для
+        ломающего.
         """
         try:
             expected_cols = self._extract_columns_from_sql(schema_sql)
@@ -218,8 +220,8 @@ class DatabaseAdapter(ABC):
                         f"{db_label}: таблица '{table.split('.')[-1]}' домена "
                         f"'{domain_name}' устарела — в БД отсутствуют колонки: "
                         f"{', '.join(sorted(missing_cols))}. Схема рассинхронизирована "
-                        f"с кодом; примените ALTER TABLE или пересоздайте БД "
-                        f"(docs/migrations/drop-all-tables.md)."
+                        f"с кодом; накатите миграцию из docs/migrations/ или "
+                        f"пересоздайте БД (docs/migrations/drop-all-tables.md)."
                     )
         except Exception as e:  # диагностика не должна ронять старт
             logger.debug(f"{db_label}: проверка дрейфа колонок пропущена: {e}")

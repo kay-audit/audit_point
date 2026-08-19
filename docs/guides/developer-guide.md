@@ -51,6 +51,7 @@
 - [`testing/retry-test-scenarios.md`](../testing/retry-test-scenarios.md) — покрытие retry-политики.
 - [`testing/manual-qa-agent-channel.md`](../testing/manual-qa-agent-channel.md) — ручной QA моста к внешнему агенту.
 - [`migrations/drop-all-tables.md`](../migrations/drop-all-tables.md) — пересоздание схемы с нуля.
+- `migrations/<дата>-<таблица>-<поле>.md` — расширения схемы для уже развёрнутых БД (формат — [`database.md`](database.md) §6.5.5).
 
 ---
 
@@ -146,7 +147,8 @@ python -m app.main
 ```
 
 Таблицы создаются автоматически при первом запуске (`create_tables_if_not_exist`) — только отсутствующие
-целиком, ALTER-миграций нет.
+целиком; в существующие таблицы приложение ничего не дописывает. Расширения уже развёрнутой БД
+накатываются руками файлами `docs/migrations/<дата>-*.md` ([`database.md`](database.md) §6.5.5).
 
 > На ПРОМе собственные таблицы приложения живут в другой схеме (`_project_34`), чем справочники UA/ЦК и
 > каталог пользователей (`_project_4`) — это не опечатка, подробности в
