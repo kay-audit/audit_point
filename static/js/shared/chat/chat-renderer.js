@@ -351,20 +351,8 @@ export const ChatRenderer = {
     renderBlocks(container, blocks, opts) {
         if (!container || !Array.isArray(blocks)) return;
 
-        // Pre-scan: вытаскиваем из text-блоков имена файлов, которые ассистент
-        // перечислил в ответе ("• capabilities.txt — текстовый, ...). Порядок
-        // имён сохраняем — сопоставление с file-блоками идёт по индексу
-        // появления. Это позволяет не возвращать filename с бэка для
-        // бот-генерации (data-URL в file_id), но при этом дать карточке
-        // осмысленное имя.
-        const fileNames = this._extractFileNamesFromText(blocks);
-        let fileIdx = 0;
-
         for (const block of blocks) {
-            const ctx = (block && block.type === 'file')
-                ? Object.assign({}, opts, { _suggestedName: fileNames[fileIdx++] || '' })
-                : opts;
-            const el = this.renderBlock(block, ctx);
+            const el = this.renderBlock(block, opts);
             if (el) this.appendBlock(container, el);
         }
     },
@@ -493,7 +481,7 @@ export const ChatRenderer = {
             case 'plan':
                 el = this._renderPlan(block); break;
             case 'file':
-                el = this._renderFile(block, options); break;
+                el = this._renderFile(block); break;
             case 'image':
                 el = this._renderImage(block); break;
             case 'buttons':
@@ -775,22 +763,20 @@ export const ChatRenderer = {
      * Блок файла — карточка с иконкой, именем, размером и кнопками действий
      * @private
      */
-    _renderFile(block, options) {
+    _renderFile(block) {
         const div = document.createElement('div');
         div.className = 'chat-block chat-block-file';
 
-        // Имя: backend-имя → извлечённое из text-блока (см. renderBlocks) →
-        // дефолт по mime → 'Файл'. Это позволяет не подгонять бэк под каждый
-        // случай (multipart-загрузка присылает filename в блоке; data-URL от
-        // бота — извлекаем из text-блока, в котором ассистент перечислил имена).
-        const suggestedName = (options && options._suggestedName) || '';
-        // Резервный канал: если в text имени нет, а бот прислал data-URL с
-        // ``data:application/x-zip-compressed;base64,...`` — пробуем извлечь
-        // подстроку mime из file_id (между ``data:`` и ``;``) и смаппить через
-        // _defaultFilenameForMime. Это закрывает кейс «у zip нету» при
-        // application/octet-stream или ``application/x-*-compressed``, для
-        // которых нет ни имени в text, ни готового расширения в file_id.
-        let baseName = block.filename || block.name || suggestedName;
+        // Имя: backend-имя → дефолт по mime → 'Файл'. Backend теперь всегда
+        // присылает filename для материализованных файлов (UUID из chat_files);
+        // фолбэк по mime остаётся на случай data-URL от бота без имени.
+        // Резервный канал: если и по mime ничего не нашлось, а бот прислал
+        // data-URL с ``data:application/x-zip-compressed;base64,...`` —
+        // пробуем извлечь подстроку mime из file_id (между ``data:`` и ``;``)
+        // и смаппить через _defaultFilenameForMime. Это закрывает кейс «у zip
+        // нету» при application/octet-stream или ``application/x-*-compressed``,
+        // для которых нет готового расширения в file_id.
+        let baseName = block.filename || block.name;
         if (!baseName) {
             const fallback = this._defaultFilenameForMime(block.mime_type);
             if (fallback) {
@@ -862,7 +848,14 @@ export const ChatRenderer = {
     },
 
     /**
-     * Блок изображения с ленивой загрузкой и предпросмотром по клику
+     * Блок изображения с ленивой загрузкой и предпросмотром по клику.
+     *
+     * ``?inline=true`` (Content-Disposition: inline) добавляется только к
+     * backend-адресу (UUID из chat_files) — та же логика, что в
+     * ``_openFileViewer``. Для data-URL и http(s)-ссылки агента (passthrough,
+     * см. ``_resolveFileUrl``) query добавлять нельзя: для data-URL это часть
+     * base64-payload'а, для внешней ссылки — риск сломать её (например,
+     * подписанный URL).
      * @private
      */
     _renderImage(block) {
@@ -873,9 +866,15 @@ export const ChatRenderer = {
         img.loading = 'lazy';
         img.alt = block.alt || 'Изображение';
 
-        const imgUrl = block.url || (block.file_id
-            ? this._resolveFileUrl(block.file_id).url
-            : '');
+        let imgUrl = block.url || '';
+        if (!imgUrl && block.file_id) {
+            const resolved = this._resolveFileUrl(block.file_id);
+            const isPassthrough = typeof block.file_id === 'string'
+                && (block.file_id.startsWith('http://') || block.file_id.startsWith('https://'));
+            imgUrl = (resolved.isDataUrl || isPassthrough)
+                ? resolved.url
+                : resolved.url + (resolved.url.includes('?') ? '&' : '?') + 'inline=true';
+        }
 
         img.src = imgUrl;
 
@@ -1051,6 +1050,11 @@ export const ChatRenderer = {
         if (typeof fileId === 'string' && fileId.startsWith('data:')) {
             return { url: fileId, isDataUrl: true };
         }
+        if (typeof fileId === 'string' && (fileId.startsWith('http://') || fileId.startsWith('https://'))) {
+            // Ссылка от агента (NanoBot кладёт http(s)-URL в file_id как есть) —
+            // отдаём напрямую, backend-эндпоинт для неё вернул бы 404.
+            return { url: fileId, isDataUrl: false };
+        }
         const url = (typeof AppConfig === 'undefined')
             ? `/api/v1/chat/files/${fileId}`
             : AppConfig.api.getUrl(AppConfig.chatEndpoints.file(fileId));
@@ -1095,37 +1099,6 @@ export const ChatRenderer = {
             console.warn('ChatRenderer: не удалось декодировать data-URL', err);
             return null;
         }
-    },
-
-/**
-     *  Извлекает имена файлов из text-блоков массива в порядке появления.
-     *
-     *  Используется ``renderBlocks`` чтобы передать в ``_renderFile`` подсказку
-     *  для случая, когда у блока нет ``block.filename`` (типично для бот-генерации:
-     *  ассистент упоминает файлы в предыдущем text-блоке вида ``• capabilities.txt
-     *  — текстовый``, а в file-блоке приходит только ``file_id`` data-URL).
-     *
-     *  Ловим распространённые офисные/текстовые/графические/архивные
-     *  расширения. Регистр игнорируется, повторы не дедуплицируются —
-     *  сопоставление идёт по индексу с file-блоками, чтобы ``capabilities.txt``
-     *  в тексте соответствовал первому file-блоку в порядке рендера.
-     *
-     *  @param {Array<Object>} blocks — массив блоков сообщения
-     *  @returns {Array<string>} — список имён файлов в порядом появления
-     *  @private
-     */
-    _extractFileNamesFromText(blocks) {
-        if (!Array.isArray(blocks)) return [];
-        // \b граница слова, имена могут содержать точку/подчёркивание/дефис,
-        // расширения — буквенно-цифровые 1-5 символов.
-        const re = /\b[\w][\w\-.]*?\.(txt|pdf|csv|xlsx|docx|sql|ipynb|rar|zip|pptx|png|jpe?g|gif|bmp|webp|svg|json|xml|html|css|ts|js|py|md|log|ya?ml|tar|gz|7z|ipynb|ip)\b/gi;
-        const names = [];
-        for (const b of blocks) {
-            if (!b || b.type !== 'text' || typeof b.content !== 'string') continue;
-            const matches = b.content.match(re);
-            if (matches) names.push(...matches);
-        }
-        return names;
     },
 
     /**
