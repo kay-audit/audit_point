@@ -49,9 +49,8 @@ export function collectValidationItems() {
   const state = (typeof window !== 'undefined' && window.AppState) || {};
   const issues = Array.isArray(state.validationIssues) ? state.validationIssues : [];
   return issues
-    .map((issue, i) => ({ issue, i }))
-    .filter(({ issue }) => !SUPPRESSED_CODES.has(issue.code))
-    .map(({ issue, i }) => ({
+    .filter((issue) => !SUPPRESSED_CODES.has(issue.code))
+    .map((issue, i) => ({
       id: `validation:${issue.code || 'issue'}:${issue.ref || i}`,
       title: 'Структура акта',
       body: issue.message || '',

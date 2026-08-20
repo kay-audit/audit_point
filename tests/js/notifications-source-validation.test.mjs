@@ -85,7 +85,7 @@ test('нетабличные коды показываются все четыр
   ]);
 });
 
-test('смешанный набор: табличные отфильтрованы, остальные сохраняют исходные id', () => {
+test('смешанный набор: табличные отфильтрованы, остальные нумеруются после фильтрации', () => {
   window.AppState.validationIssues = [
     { code: 'table_no_data', severity: 'warning', ref: 't1', message: 'Таблица без данных' },
     { code: 'empty_structure', severity: 'error', message: 'Структура акта пуста' },
@@ -94,8 +94,8 @@ test('смешанный набор: табличные отфильтрован
   ];
   const items = collectValidationItems();
   assert.equal(items.length, 2);
-  // id нетабличного замечания без ref строится по ИСХОДНОМУ индексу в снимке —
-  // фильтрация не должна его сдвигать.
-  assert.equal(items[0].id, 'validation:empty_structure:1');
+  // id нетабличного замечания без ref строится по индексу в УЖЕ отфильтрованном
+  // списке: это первый показанный элемент, значит индекс 0.
+  assert.equal(items[0].id, 'validation:empty_structure:0');
   assert.equal(items[1].id, 'validation:violation_incomplete:v9');
 });
