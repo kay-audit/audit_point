@@ -18,6 +18,7 @@
   - [9.5a Observability: HTTP metrics и MetricsBatcher](#95a-observability-http-metrics-и-metricsbatcher)
   - [9.5b Diagnostics endpoint и `observability_registry`](#95b-diagnostics-endpoint-и-observability_registry)
   - [9.5c Audit-лог отказов доступа (`access_denied_audit`)](#95c-audit-лог-отказов-доступа-access_denied_audit)
+  - [9.5d Rate limit: по кому считается и при чём тут топология сети](#95d-rate-limit-по-кому-считается-и-при-чём-тут-топология-сети)
   - [9.6 Retention bus-таблицы chat_agent_messages_bus](#96-retention-bus-таблицы-chat_agent_messages_bus)
 
 ---
@@ -260,7 +261,7 @@ settings = get_settings()
 settings.app_title                    # "Audit Workstation"
 settings.database.type                # "postgresql"
 settings.server.host                  # "0.0.0.0"
-settings.security.max_request_size    # 545259520
+settings.security.max_request_size    # 1073741824
 # Доменные настройки чата (через settings_registry)
 from app.core.settings_registry import get as get_domain_settings
 from app.domains.chat.settings import ChatDomainSettings
@@ -289,8 +290,8 @@ DATABASE__PASSWORD=secret_password
 REDIS__HOST=127.0.0.1
 REDIS__PORT=6379
 
-SECURITY__MAX_REQUEST_SIZE=545259520
-SECURITY__RATE_LIMIT_PER_MINUTE=1024
+SECURITY__MAX_REQUEST_SIZE=1073741824
+SECURITY__RATE_LIMIT_PER_MINUTE=2048
 
 # AI-чат (опционально)
 # CHAT__PROFILE=openai
@@ -515,16 +516,16 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `REDIS__PORT` | int | `6379` | Порт Redis. На ПРОМе нестандартный — `.env.prod`: `10.110.10.38:7474` |
 | `REDIS__DB` | int | `0` | Индекс БД Redis (0-15). БД `15` занята e2e-прогоном: `global-setup.ts` делает на ней FLUSHDB перед стартом сервера |
 | `REDIS__PASSWORD` | SecretStr | (пусто) | Пароль Redis |
-| `REDIS__MAX_CONNECTIONS` | int | `10` | Максимум соединений в пуле клиента Redis |
+| `REDIS__MAX_CONNECTIONS` | int | `64` | Максимум соединений в пуле клиента Redis. Redis обслуживает роли, user-контекст, уведомления, локи актов, ОТП и мост к LLM на всех пользователей сразу — в отличие от пула БД, тесниться здесь нечем |
 | `REDIS__SOCKET_TIMEOUT` | float | `5.0` | Таймаут операций сокета Redis, сек |
 
 #### Security
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
-| `SECURITY__MAX_REQUEST_SIZE` | int | `545259520` | Макс. размер запроса (байт), 520 МБ — согласован с лимитом вложения чата (512 МБ) плюс запас на multipart-обвязку |
-| `SECURITY__RATE_LIMIT_PER_MINUTE` | int | `1024` | Лимит запросов/мин на IP |
-| `SECURITY__MAX_TRACKED_IPS` | int | `100` | Макс. отслеживаемых IP |
+| `SECURITY__MAX_REQUEST_SIZE` | int | `1073741824` | Макс. размер запроса (байт), 1 ГБ — согласован с лимитом вложения чата (512 МБ) плюс запас на multipart-обвязку и текст сообщения |
+| `SECURITY__RATE_LIMIT_PER_MINUTE` | int | `2048` | Лимит запросов/мин **на клиента**: опознанный пользователь (`u:<username>`) либо IP анонима (`ip:<addr>`). Статика (`/static/*`) в лимите не считается вовсе. Ключевание и топология — §9.5d |
+| `SECURITY__MAX_TRACKED_CLIENTS` | int | `256` | Ёмкость `TTLCache` со счётчиками. Клиент — пользователь или IP (см. §9.5d). При превышении LRU вытесняет счётчики, и лимит начинает пропускать: держать заведомо выше числа одновременно активных клиентов |
 | `SECURITY__RATE_LIMIT_TTL` | int | `120` | TTL метрик (сек) |
 
 #### Security: response headers
@@ -535,7 +536,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 |-----------|-----|-------------|----------|
 | `SECURITY__CSP_ENABLED` | bool | `True` | Отдавать заголовок CSP |
 | `SECURITY__CSP_REPORT_ONLY` | bool | `False` | `true` — `Content-Security-Policy-Report-Only` (наблюдение без блокировок). `.env.dev` — `true`, `.env.prod` — `false` |
-| `SECURITY__CSP_POLICY` | str | `default-src 'self'; script-src 'self' 'nonce-{nonce}'; …` | Сама политика; плейсхолдер `{nonce}` обязателен, иначе inline-модули шаблонов перестанут исполняться. Полное значение — `app/core/config.py:132-143` |
+| `SECURITY__CSP_POLICY` | str | `default-src 'self'; script-src 'self' 'nonce-{nonce}'; …` | Сама политика; плейсхолдер `{nonce}` обязателен, иначе inline-модули шаблонов перестанут исполняться. Полное значение — `SecuritySettings.csp_policy` в `app/core/config.py` |
 | `SECURITY__HSTS_ENABLED` | bool | `True` | Отдавать `Strict-Transport-Security`. Добавляется **только на HTTPS-ответы** (`scope.scheme == 'https'` либо `X-Forwarded-Proto`), поэтому на HTTP-ПРОМе не проявляется |
 | `SECURITY__HSTS_MAX_AGE` | int | `31536000` | `max-age` HSTS (сек, 1 год) |
 | `SECURITY__HSTS_INCLUDE_SUBDOMAINS` | bool | `True` | Добавлять `includeSubDomains` |
@@ -578,7 +579,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__SMALLTALK_MODE` | str | `local` | `local` — отвечает локальный LLM; `forward` — пробрасывать всё агенту |
 | `CHAT__SYSTEM_PROMPT` | str | `Ты — AI-ассистент...` | Системный промпт |
 | `CHAT__MAX_HISTORY_LENGTH` | int | `50` | Макс. сообщений в истории |
-| `CHAT__MAX_MESSAGE_CONTENT_LENGTH` | int | `10000` | Макс. длина сообщения |
+| `CHAT__MAX_MESSAGE_CONTENT_LENGTH` | int | `32768` | Макс. длина сообщения (символов). Рассчитано на вставку фрагмента акта в чат целиком |
 | `CHAT__HISTORY_FULL_CONTEXT_DEPTH` | int | `5` | Сообщений с полным контентом (file/image-блоки); старые получают placeholder |
 | `CHAT__EXTRA_HEADERS` | JSON | `{}` | Доп. заголовки для primary-провайдера. OpenRouter принимает `HTTP-Referer`/`X-Title` |
 
@@ -590,7 +591,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 |-----------|-----|-------------|----------|
 | `CHAT__RETRY__ON_429` | bool | `True` | Повторять при 429 (rate-limit) |
 | `CHAT__RETRY__ON_5XX` | bool | `True` | Повторять при 5xx |
-| `CHAT__RETRY__MAX_ATTEMPTS` | int | `5` | Макс. попыток |
+| `CHAT__RETRY__MAX_ATTEMPTS` | int | `5` | Макс. попыток. Для **text-actions** («Корректор», формализация нарушения) применяется кап `2` (`budget.MAX_ATTEMPTS_CAP`): там пользователь ждёт ответа синхронно, а таймаут одного вызова растёт с объёмом текста — полный цикл повторов дал бы десятки минут ожидания. Кап, а не подмена: заданное меньшее значение уважается. См. §7.10 в [`ai-assistant.md`](ai-assistant.md) |
 | `CHAT__RETRY__BACKOFF_BASE_SEC` | float | `2.0` | База экспоненциального backoff (сек) |
 | `CHAT__RETRY__CONNECT_MAX_ATTEMPTS` | int | `2` | Отдельный кап для обрывов соединения (`ConnectError`/`APIConnectionError`/`PoolTimeout`): сервер лёг — быстро падаем на fallback, не выбирая полный `MAX_ATTEMPTS`. `APITimeoutError` («сервер медленный») сюда не относится |
 | `CHAT__FALLBACK_PROFILE` | str | (пусто) | Маршрут fallback-провайдера (тот же формат, что `CHAT__PROFILE`); **пусто = fallback отключён**. ПРОМ — `redis-bridge,openai` |
@@ -615,7 +616,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 
 #### Chat: text_actions («Корректор» и формализация нарушения)
 
-Правка выделенного текста (`fix` — орфография/пунктуация, `readability` — улучшайзер «Пиши, сокращай») и извлечение полей нарушения. `*_model = None` → берётся основная модель профиля чата (`CHAT__MODEL`). В шаблонах `.env` эти переменные не вынесены — работают на дефолтах.
+Правка выделенного текста (`fix` — орфография/пунктуация, `readability` — улучшайзер «Пиши, сокращай») и извлечение полей нарушения. `*_model = None` → берётся основная модель профиля чата (`CHAT__MODEL`).
+
+Ручек, задающих `max_tokens` и фактический таймаут, здесь нет намеренно: оба значения выводятся из длины исходного текста (`app/domains/chat/services/text_actions/budget.py`) — это не политика, а физика (как русский текст ложится в токены и как быстро генерирует модель). Разбор — §7.10 в [`ai-assistant.md`](ai-assistant.md).
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
@@ -624,8 +627,8 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__TEXT_ACTIONS__READABILITY_TEMPERATURE` | float | `0.1` | Температура улучшайзера «Пиши, сокращай» (значение D17) |
 | `CHAT__TEXT_ACTIONS__FORMALIZER_MODEL` | str \| null | (не задана) | Модель формализатора нарушения; пусто → `CHAT__MODEL` |
 | `CHAT__TEXT_ACTIONS__FORMALIZER_TEMPERATURE` | float | `0.01` | Температура извлечения полей (почти детерминированно) |
-| `CHAT__TEXT_ACTIONS__PER_CALL_TIMEOUT_SEC` | float | `60.0` | Таймаут одного вызова |
-| `CHAT__TEXT_ACTIONS__MAX_INPUT_CHARS` | int | `20000` | Потолок длины входного текста |
+| `CHAT__TEXT_ACTIONS__PER_CALL_TIMEOUT_SEC` | float | `60.0` | **Нижняя граница** ожидания одного вызова, а не жёсткое значение: фактический таймаут считается от длины ввода (`text_actions/budget.py`) и на предельном тексте доходит до ≈9.5 минут. Настройка защищает короткое выделение от слишком тесного таймаута; поднимать её имеет смысл только под заведомо медленный маршрут. См. §7.10 в [`ai-assistant.md`](ai-assistant.md) |
+| `CHAT__TEXT_ACTIONS__MAX_INPUT_CHARS` | int | `32768` | Потолок длины входного текста (символов). Превышение → `TextActionValidationError` (422) до вызова LLM |
 
 #### Chat: Redis-мост LLM (redis-bridge-маршруты)
 
@@ -691,7 +694,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__RESOURCE__MAX_TREE_DEPTH` | int | `50` | Макс. глубина дерева |
 | `ACTS__INVOICE__HIVE_SCHEMA` | str | `team_sva_oarb_3` | Hive-схема |
 | `ACTS__INVOICE__GP_SCHEMA` | str | `s_grnplm_ld_audit_da_sandbox_oarb` | GP-схема для списка таблиц |
-| `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` | str | `s_grnplm_ld_audit_project_4` | Схема реестра Hive. Дефолт кода **без** `da_`; оба шаблона `.env` задают `s_grnplm_ld_audit_da_project_4` — на дефолт кода полагаться нельзя |
+| `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема реестра Hive. Дефолт кода приведён к шаблонам (`da_` на месте) — прежнее расхождение «в коде без `da_`, в `.env` с `da_`» исправлено |
 | `ACTS__INVOICE__HIVE_REGISTRY_TABLE` | str | `t_db_oarb_ua_hadoop_tables` | Таблица реестра Hive |
 | `ACTS__AUDIT_LOG__RETENTION_DAYS` | int | `365` | Дни хранения лога |
 | `ACTS__AUDIT_LOG__MAX_CONTENT_VERSIONS` | int | `50` | Макс. версий содержимого |
@@ -933,6 +936,22 @@ GROUP BY username
 ORDER BY denied_count DESC
 LIMIT 20;
 ```
+
+### 9.5d Rate limit: по кому считается и при чём тут топология сети
+
+`RateLimitMiddleware` (`app/core/middleware.py`) стоит снаружи всего приложения и ведёт скользящее окно в 60 секунд на каждого клиента: `SECURITY__RATE_LIMIT_PER_MINUTE` запросов, счётчики в `TTLCache` ёмкостью `SECURITY__MAX_TRACKED_CLIENTS` с `SECURITY__RATE_LIMIT_TTL`. Раздел объясняет два решения, которые из значений переменных не выводятся: **кто такой «клиент»** и **почему заголовки прокси не читаются**.
+
+**Ключ счётчика — пользователь, а не адрес.** `_client_key` сначала спрашивает резолвер личности, внедрённый снаружи из `app/main.py` (`identify=resolve_scope_username`). `resolve_scope_username` (`app/auth/middleware.py`) достаёт username прямо из JWT-cookie ASGI-запроса: сначала `access_token`, затем `refresh_token` (пользователь с живым refresh — не аноним: `AuthMiddleware` умеет прозрачно ротировать пару, и терять его личность на этом шаге нельзя). Подпись проверяется полностью (`JWTTokenHandler.decode_token`) — доверять неверифицированному payload нельзя, иначе ключ лимита подделывается подстановкой произвольной cookie. Резолвер живёт в `app.auth`, а не в `app.core`, потому что middleware лимитера стоит **снаружи** `AuthMiddleware` и `scope["state"]["user"]` ещё не видит; внедрение параметром заодно оставляет тестам возможность подменить опознание одной функцией.
+
+Получившийся ключ — `u:<username>`. Аноним (нет cookie, токен битый/просрочен, `AUTH__ENABLED=false`) считается по IP TCP-пира: `ip:<addr>`, а при отсутствии `scope["client"]` — `ip:unknown`. Префиксы `u:`/`ip:` обязательны: без них username, совпавший с текстом адреса, разделил бы счётчик с этим адресом. Сбой опознания запрос не роняет — пишется WARNING и ключ молча откатывается на IP.
+
+**Почему не по IP.** Вход в приложение — ОТП на корпоративный e-mail плюс JWT, то есть пользователь опознан надёжно, и считать его по адресу незачем. Ключ по пользователю корректен независимо от сетевой топологии: NAT, общий выход в интернет и прокси больше не схлопывают всех сидящих за одним адресом в один счётчик (иначе лимит срабатывал бы на пятом человеке из отдела), а сменой IP лимит не обходится. Анонимов оставляем на IP осознанно: иначе поток на `/auth/*` до входа остался бы вообще без ограничения.
+
+**`X-Forwarded-For` сознательно НЕ читается.** Заголовок ставит клиент, а не сеть; доверять ему без списка доверенных прокси — значит дать любому обойти лимит одной строкой в запросе (и заодно засорить `TTLCache` бесконечным числом выдуманных ключей). Соседний `HTTPSRedirectMiddleware` разбирает `X-Forwarded-Proto`, но там цена подделки — неправильная схема в `url_for()`, а здесь — дыра в защите. На SDP приложение открыто по IP:порту напрямую (§9.2), прокси между пользователями и приложением нет, поэтому сегодня вопрос не стоит.
+
+> **Если перед приложением появится прокси** (§9.3) — это НЕ прозрачная смена: без доработки все анонимные запросы схлопнутся в один счётчик по адресу прокси, и лимит начнёт отбивать вход на `/auth/*` для всех сразу. Понадобится завести список доверенных прокси и разбирать `X-Forwarded-For` **только** от адресов из этого списка, беря из цепочки крайний недоверенный адрес. Опознанных пользователей это не затронет — их ключ от адреса не зависит.
+
+**Статика в лимите не считается вовсе.** `RATE_LIMIT_EXEMPT_PREFIXES = ("/static/",)` проверяется первым делом в `__call__`. Причина — Native ES Modules без бандлера (§4 в [`architecture-and-backend.md`](architecture-and-backend.md)): страница конструктора тянет ~230 отдельных файлов (модули + CSS), портальная — около сотни. При подсчёте статики бюджет любого разумного лимита съедали несколько жёстких перезагрузок (Ctrl+Shift+R), причём 429 прилетал и на сами модули — страница собиралась с дырами вместо внятной ошибки. Защищать статику лимитом нечего: `StaticFiles` отдаёт её с диска, в БД и к LLM не ходит. Оставшийся расход — API-вызовы и поллеры (уведомления, локи, автосейв, версия), десятки в минуту на человека.
 
 ### 9.6 Retention bus-таблицы chat_agent_messages_bus
 

@@ -117,6 +117,23 @@ async def test_retries_on_5xx_then_succeeds():
   `BridgePollError` от `APIConnectionError`) не ретраится, даже если базовый класс
   ретраится.
 
+## Text-actions: свой кап попыток поверх того же слоя
+
+«Корректор» и формализация нарушения строят `retry_on_transient` **сами**
+(`text_actions/corrector_service.py`, `formalizer_service.py`), передавая
+`max_attempts=budget.retry_attempts(r.max_attempts)` — то есть не больше
+`budget.MAX_ATTEMPTS_CAP` (2). Причина в вызывающем коде, а не в retry: там
+пользователь ждёт ответа синхронно, а таймаут одного вызова считается от длины
+ввода и на предельном тексте доходит до ≈9.5 минут; у формализатора цена
+умножается на шесть вызовов. Кап, а не подмена — заданное меньшее значение
+уважается (`retry_attempts` берёт минимум и не опускается ниже 1).
+
+Сам `retry_on_transient` при этом **не менялся**: классы исключений, лимиты
+`connect_max_attempts` и backoff остались прежними, вся таблица сценариев выше
+действует и здесь. Разбор бюджета — §7.10 в
+[`../guides/ai-assistant.md`](../guides/ai-assistant.md); тесты кап-функции —
+`tests/domains/chat/test_text_actions_budget.py`.
+
 ## Что НЕ покрыто (намеренно)
 
 - Тесты, где провайдер возвращает 200 с пустым телом / битым JSON — это
