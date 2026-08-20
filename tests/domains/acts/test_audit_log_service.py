@@ -783,8 +783,7 @@ class TestRestoreVersionPreSnapshot:
 
 # Маленькая, но валидная data:image-картинка (payload-маркер для проверки,
 # что base64 не утекает в diff).
-_IMG_BASE64_PAYLOAD = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-_IMG_DATA_URL = f"data:image/png;base64,{_IMG_BASE64_PAYLOAD}"
+_IMG_ID = "img-0001-abcdef"
 
 
 def _make_act_data(violations: dict) -> "ActDataSchema":
@@ -852,8 +851,12 @@ class TestComputeFieldDiffsViolationCollections:
         assert diff["old_blocks"] == 1
         assert diff["new_blocks"] == 2
 
-    async def test_additional_content_change_detected_without_base64_leak(self, mock_conn):
-        """Изменение доп. контента фиксируется компактно — без base64 в diff."""
+    async def test_additional_content_change_detected_compactly(self, mock_conn):
+        """Изменение доп. контента фиксируется компактно — только счётчиками.
+
+        Содержимое блоков (в т.ч. ссылка image_id) в diff не попадает: аудит
+        хранит «что изменилось», а не копию контента.
+        """
         repo = ActAuditLogRepository(mock_conn)
         mock_conn.fetch.side_effect = [
             [], [],
@@ -861,7 +864,7 @@ class TestComputeFieldDiffsViolationCollections:
         ]
         data = _make_act_data({"v1": self._make_violation(
             additionalContent={"enabled": True, "blocks": [
-                {"id": "image_1", "type": "image", "url": _IMG_DATA_URL},
+                {"id": "image_1", "type": "image", "image_id": _IMG_ID},
             ]},
         )})
 
@@ -872,8 +875,8 @@ class TestComputeFieldDiffsViolationCollections:
         assert diff["changed"] is True
         assert diff["old_blocks"] == 0
         assert diff["new_blocks"] == 1
-        # base64-payload картинки не должен утекать в аудит-лог
-        assert _IMG_BASE64_PAYLOAD not in json.dumps(result)
+        # содержимое блока (ссылка на картинку) в аудит-лог не утекает
+        assert _IMG_ID not in json.dumps(result)
 
     async def test_unchanged_containers_not_reported(self, mock_conn):
         """Совпадающие контейнеры (включая NULL в БД ↔ схемный дефолт) — не diff."""

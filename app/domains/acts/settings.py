@@ -38,8 +38,6 @@ class AutosaveSettings(BaseModel):
 class FormattingSettings(BaseModel):
     """Параметры форматирования документов."""
     # DOCX
-    max_image_size_mb: float = 10.0
-    docx_image_width: float = 4.0
     docx_max_heading_level: int = 9
     # Text
     text_header_width: int = 80
@@ -72,7 +70,7 @@ class InvoiceSettings(BaseModel):
     """
     hive_schema: str = Field(default="team_sva_oarb_3")
     gp_schema: str = Field(default="s_grnplm_ld_audit_da_sandbox_oarb")
-    hive_registry_schema: str = Field(default="s_grnplm_ld_audit_project_4")
+    hive_registry_schema: str = Field(default="s_grnplm_ld_audit_da_project_4")
     hive_registry_table: str = Field(default="t_db_oarb_ua_hadoop_tables")
 
     @field_validator(
@@ -98,26 +96,32 @@ class AuditLogSettings(BaseModel):
 
 class ImagesSettings(BaseModel):
     """
-    Лимиты картинок нарушений (inline data-URL в дополнительном контенте).
+    Лимиты картинок нарушений (отдельная таблица act_images, не data-URL).
 
-    Фронт читает их через GET /acts/limits и валидирует файлы ДО
-    кодирования в base64. Жёсткий серверный потолок длины data-URL —
-    константа VIOLATION_IMAGE_URL_MAX_LENGTH в schemas/act_content.py;
-    она обязана быть заведомо выше max_file_size с учётом
-    base64-оверхеда (×4/3 + префикс).
+    Единственная точка серверной проверки размеров — загрузка
+    (``POST /api/v1/acts/{act_id}/images``, ``ActImageService.upload``): и
+    ``max_file_size``, и суммарный вес картинок акта считаются по сырым
+    байтам файла. Фронт читает те же значения через GET /acts/limits, чтобы
+    отбить заведомо большой файл до отправки.
 
-    Пороги согласованы с SecuritySettings.max_request_size (общий с доменом
-    chat лимит тела HTTP-запроса, который сам НЕ поднимаем): дефолты — сырые
-    (pre-base64) байты, а на провод внутри JSON акта уходит base64 (+×4/3).
-    Инвариант — tests/domains/acts/test_acts_limits_api.py::
+    Порог одного файла соотнесён с SecuritySettings.max_request_size (общий
+    с доменом chat лимит тела HTTP-запроса, который сам НЕ поднимаем):
+    картинка едет multipart'ом, поэтому base64-оверхед ×4/3 больше не
+    применяется — но сам файл обязан влезать в лимит запроса.
+    ``max_total_size_per_act`` в лимит запроса не упирается вовсе: он
+    накапливается загрузками по одной. Инвариант —
+    tests/domains/acts/test_acts_limits_api.py::
     test_image_budgets_fit_in_http_request_size_limit.
     """
-    max_file_size: int = Field(default=4 * 1024 * 1024, gt=0)
-    max_total_size_per_act: int = Field(default=5 * 1024 * 1024, gt=0)
-    # webp исключён сознательно: python-docx (без Pillow) не встраивает его
-    # в DOCX — картинка молча расходилась бы между превью и экспортом.
+    max_file_size: int = Field(default=10 * 1024 * 1024, gt=0)
+    max_total_size_per_act: int = Field(default=50 * 1024 * 1024, gt=0)
+    # webp разрешён: фронт кодирует скриншоты в него ради размера. python-docx
+    # webp не встраивает, поэтому DOCX-builder перекодирует такие картинки в
+    # PNG через Pillow на лету (см. formatters/docx/builders/violation.py).
+    # SVG в whitelist НЕ добавлять — это XSS (картинка отдаётся с origin'а
+    # приложения и рендерится в <img src>).
     allowed_mime_types: list[str] = Field(
-        default=["image/jpeg", "image/png", "image/gif"]
+        default=["image/jpeg", "image/png", "image/gif", "image/webp"]
     )
     max_items_per_violation: int = Field(default=50, gt=0)
     # Потолок высоты картинки нарушения (% полезной высоты листа A4). Управляет

@@ -376,6 +376,49 @@ COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.created_at IS 'Дата и в�
 COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_violations.updated_at IS 'Дата и время последнего изменения записи';
 
 -- ============================================================================
+-- ТАБЛИЦА КАРТИНОК НАРУШЕНИЙ
+-- ============================================================================
+
+-- Бинарь картинок нарушений вынесен из JSONB-полей act_violations: блок
+-- image хранит только image_id, байты живут здесь. Мотив — снимки версий
+-- (act_content_versions, до 50 штук) больше не множат объём картинок, а
+-- PUT /content не гоняет мегабайты base64 при каждом автосохранении.
+-- BYTEA на GP работает (прецедент — chat_files.file_data); BLOB/CLOB нет.
+-- Дедупликация — в пределах ОДНОГО акта (UNIQUE (act_id, content_hash)):
+-- глобальный дедуп дал бы одну строку на два акта, и пользователь без
+-- доступа ко второму получил бы её содержимое через первый.
+-- PK (id, act_id) ⊇ DISTRIBUTED BY (act_id); id ведущий — lookups
+-- WHERE id = $1 идут по PK-индексу. UNIQUE (act_id, content_hash) тоже
+-- содержит ключ распределения (правило подмножества соблюдено).
+CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_images (
+    id VARCHAR(36) NOT NULL,
+    act_id BIGINT NOT NULL REFERENCES {SCHEMA}.{PREFIX}acts(id),
+    content_hash VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    byte_size INTEGER NOT NULL
+        CONSTRAINT check_act_images_byte_size_positive
+        CHECK (byte_size > 0),
+    data BYTEA NOT NULL,
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (id, act_id),
+    UNIQUE (act_id, content_hash)
+)
+WITH (appendonly=false)
+DISTRIBUTED BY (act_id);
+
+COMMENT ON TABLE {SCHEMA}.{PREFIX}act_images IS 'Байты картинок нарушений; блок image ссылается на id';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.id IS 'uuid4-строка, на неё ссылается image_id блока нарушения';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.act_id IS 'Акт-владелец картинки';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.content_hash IS 'SHA-256 сырых байт (hex) — дедупликация в пределах акта';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.mime_type IS 'Реальный MIME из allowlist ACTS__IMAGES__ALLOWED_MIME_TYPES';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.byte_size IS 'Размер сырых байт';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.data IS 'Байты картинки';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.created_by IS 'Кто загрузил';
+COMMENT ON COLUMN {SCHEMA}.{PREFIX}act_images.created_at IS 'Время загрузки';
+
+-- ============================================================================
 -- ТАБЛИЦА ФАКТУР
 -- ============================================================================
 
@@ -608,6 +651,10 @@ CREATE INDEX idx_{PREFIX}act_violations_act_violation
 CREATE INDEX idx_{PREFIX}act_violations_node_number
     ON {SCHEMA}.{PREFIX}act_violations(act_id, node_number)
     WHERE node_number IS NOT NULL;
+
+-- Индексы на act_images
+CREATE INDEX idx_{PREFIX}act_images_act_id
+    ON {SCHEMA}.{PREFIX}act_images(act_id);
 
 -- Индексы на act_invoices
 CREATE INDEX idx_{PREFIX}act_invoices_act_id

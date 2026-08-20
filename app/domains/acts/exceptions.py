@@ -126,3 +126,15 @@ class InvoiceError(AppError):
     """Ошибка при работе с фактурой (неподдерживаемый тип БД и т.п.)."""
     status_code = 400
     code: ClassVar[str] = "act-invoice-error"
+
+
+class ActImageValidationError(AppError):
+    """Загружаемая картинка нарушения не прошла проверку формата или размера."""
+    status_code = 422
+    code: ClassVar[str] = "act-image-validation"
+
+
+class ActImageNotFoundError(AppError):
+    """Картинка нарушения не найдена (нет строки act_images у этого акта)."""
+    status_code = 404
+    code: ClassVar[str] = "act-image-not-found"

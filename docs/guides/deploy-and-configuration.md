@@ -299,7 +299,6 @@ SECURITY__RATE_LIMIT_PER_MINUTE=1024
 
 ACTS__LOCK__DURATION_MINUTES=15
 ACTS__LOCK__INACTIVITY_TIMEOUT_MINUTES=5
-ACTS__FORMATTING__DOCX_IMAGE_WIDTH=4.0
 ACTS__RESOURCE__MAX_TREE_DEPTH=50
 ACTS__AUDIT_LOG__RETENTION_DAYS=365
 ```
@@ -676,8 +675,6 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__LOCK__MIN_EXTENSION_INTERVAL_MINUTES` | float | `5.0` | Мин. интервал продления (антифлуд) |
 | `ACTS__LOCK__INACTIVITY_DIALOG_TIMEOUT_SECONDS` | int | `15` | Timeout диалога |
 | `ACTS__AUTOSAVE__PERIOD_SECONDS` | int | `3` | Дебаунс автосохранения черновика акта в localStorage (сек) |
-| `ACTS__FORMATTING__MAX_IMAGE_SIZE_MB` | float | `10.0` | Макс. размер изображения |
-| `ACTS__FORMATTING__DOCX_IMAGE_WIDTH` | float | `4.0` | Ширина изображения (дюймы) |
 | `ACTS__FORMATTING__DOCX_MAX_HEADING_LEVEL` | int | `9` | Макс. уровень заголовков |
 | `ACTS__FORMATTING__TEXT_HEADER_WIDTH` | int | `80` | Ширина заголовка |
 | `ACTS__FORMATTING__TEXT_INDENT_SIZE` | int | `2` | Отступ в тексте |
@@ -699,9 +696,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__AUDIT_LOG__MAX_CONTENT_VERSIONS` | int | `50` | Макс. версий содержимого |
 | `ACTS__AUDIT_LOG__MAX_DIFF_ELEMENTS` | int | `20` | Макс. элементов в diff |
 | `ACTS__AUDIT_LOG__MAX_DIFF_CELLS_PER_TABLE` | int | `50` | Макс. ячеек diff на таблицу |
-| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `4194304` | Макс. размер картинки нарушения (сырые байты; согласован с лимитом HTTP-запроса по base64) |
-| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `5242880` | Суммарный размер картинок на акт (сырые байты) |
-| `ACTS__IMAGES__ALLOWED_MIME_TYPES` | list | `jpeg/png/gif` | Whitelist MIME картинок (без SVG; без webp — python-docx не встраивает его в DOCX) |
+| `ACTS__IMAGES__MAX_FILE_SIZE` | int | `10485760` | Макс. размер картинки нарушения (сырые байты; проверяется на `POST /acts/{id}/images`) |
+| `ACTS__IMAGES__MAX_TOTAL_SIZE_PER_ACT` | int | `52428800` | Суммарный размер картинок на акт (сырые байты; считается запросом к `act_images`) |
+| `ACTS__IMAGES__ALLOWED_MIME_TYPES` | list | `jpeg/png/gif/webp` | Whitelist MIME картинок. Без SVG — это XSS (картинка отдаётся с origin'а приложения и рендерится в `<img src>`). WebP разрешён; python-docx его не встраивает, поэтому DOCX-builder перекодирует такие картинки в PNG через Pillow |
 | `ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION` | int | `50` | Макс. блоков в одном поле нарушения (блочная модель — лимит на каждое из 10 полей независимо, не на нарушение целиком) |
 | `ACTS__IMAGES__IMAGE_MAX_HEIGHT_PERCENT` | int | `40` | Макс. высота картинки нарушения (% листа A4) — превью и DOCX |
 | `ACTS__TABLES__MAX_ROWS` | int | `64` | Макс. строк таблицы |
@@ -719,7 +716,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ACTS__SANITIZER__ALLOWED_DATA_ATTRS` | list | `data-footnote-*`, `data-link-*` | Data-атрибуты капсул ссылок/сносок |
 | `ACTS__EDITOR_TELEMETRY_ENABLED` | bool | `True` | Kill-switch телеметрии здоровья редактора: `false` → `POST /acts/editor-telemetry` отвечает 204 без записи, а фронт (получив флаг через `GET /acts/limits`) перестаёт слать батчи |
 
-Лимиты картинок и жёсткие границы таблиц/текстблоков фронт получает через `GET /api/v1/acts/limits` (образец — chat `GET /limits`). Эти настройки — **единый источник истины** end-to-end: и UI-гейты, и `/limits`, и Pydantic-валидаторы схемы (`grid`/`colWidths`/`colSpan`/`rowSpan`/`fontSize`, число элементов нарушения, whitelist MIME картинок) читают их в рантайме. Статические константы в `schemas/act_content.py` (`VIOLATION_CONTENT_ITEMS_MAX`, `IMAGE_DATA_URL_PATTERN`, и т.п.) остаются только как фолбэк на импорт-тайм/тесты; whitelist-регекс MIME выводится из `ACTS__IMAGES__ALLOWED_MIME_TYPES` (с сохранённым алиасом `jpe?g` для `image/jpg`).
+Лимиты картинок и жёсткие границы таблиц/текстблоков фронт получает через `GET /api/v1/acts/limits` (образец — chat `GET /limits`). Эти настройки — **единый источник истины** end-to-end: и UI-гейты, и `/limits`, и Pydantic-валидаторы схемы (`grid`/`colWidths`/`colSpan`/`rowSpan`/`fontSize`, число блоков поля нарушения) читают их в рантайме. Статические константы в `schemas/act_content.py` (`VIOLATION_CONTENT_ITEMS_MAX`, `TABLE_MAX_ROWS`, и т.п.) остаются только как фолбэк на импорт-тайм/тесты.
+
+Размер и формат самой картинки схема НЕ проверяет: блок-картинка хранит лишь `image_id` (ссылку на строку `act_images`), а байты валидируются один раз при загрузке — `ActImageService.upload` определяет реальный формат по байтам через Pillow и сверяет его с `ACTS__IMAGES__ALLOWED_MIME_TYPES` (заявленный клиентом `Content-Type` не является контрактом).
 
 #### Admin и Observability
 

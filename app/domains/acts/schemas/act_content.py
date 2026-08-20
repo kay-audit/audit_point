@@ -5,8 +5,6 @@ Pydantic схемы для валидации данных актов.
 таблицы, текстовые блоки, нарушения и древовидную структуру.
 """
 
-import re
-from functools import lru_cache
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -24,28 +22,10 @@ TABLE_MAX_COLS = 16
 FONT_SIZE_MIN = 8
 FONT_SIZE_MAX = 72
 
-# Лимиты картинок нарушений (4.3.M.2 + 5.2.2). Лимит длины url — константа:
-# схема статична и не может читать настройки. Инвариант согласованности:
-# константа обязана быть заведомо выше ACTS__IMAGES__MAX_FILE_SIZE с учётом
-# base64-оверхеда (×4/3 + префикс data:image/...;base64,): 10 МБ файла
-# ≈ 14 млн символов data-URL < 15 млн. Пин — тест
-# test_url_max_length_covers_max_file_size_in_base64.
-VIOLATION_IMAGE_URL_MAX_LENGTH = 15_000_000
 # Фолбэк-дефолт числа элементов нарушения. ИСТОЧНИК ИСТИНЫ —
 # ACTS__IMAGES__MAX_ITEMS_PER_VIOLATION (валидатор validate_items_count читает
 # его в рантайме); константа — только для импорт-тайма/тестов.
 VIOLATION_CONTENT_ITEMS_MAX = 50
-
-# Whitelist data-URL картинок. ИСТОЧНИК ИСТИНЫ форматов —
-# ACTS__IMAGES__ALLOWED_MIME_TYPES (settings.py): и валидатор схемы
-# (_image_data_url_re), и DOCX-builder нарушений
-# (formatters/docx/builders/violation.py через image_data_url_pattern())
-# выводят regex из ОДНОГО списка настроек — whitelist не разъезжается между
-# валидацией и сборкой DOCX. IMAGE_DATA_URL_PATTERN/_IMAGE_DATA_URL_RE ниже —
-# фолбэк-дефолт (растровые png/jpeg/gif; без SVG — XSS; без webp — python-docx
-# его не встраивает) для импорт-тайма/тестов.
-IMAGE_DATA_URL_PATTERN = r"data:image/(?:png|jpe?g|gif);base64,"
-_IMAGE_DATA_URL_RE = re.compile("^" + IMAGE_DATA_URL_PATTERN)
 
 
 def _acts_settings():
@@ -64,42 +44,6 @@ def _acts_settings():
         from app.domains.acts.settings import ActsSettings
         return ActsSettings()
 
-
-@lru_cache(maxsize=8)
-def _image_data_url_body(mime_types: tuple[str, ...]) -> str:
-    """Строит тело regex whitelist'а data:image-URL из списка MIME настроек.
-
-    `image/jpeg`/`image/jpg` → алиас `jpe?g` (браузеры эмитят и `jpg`).
-    Прочие — экранированный подтип. Кэш по кортежу MIME.
-    """
-    subtypes: set[str] = set()
-    for mime in mime_types:
-        if not mime.startswith("image/"):
-            continue
-        sub = mime.split("/", 1)[1].strip().lower()
-        if sub in ("jpeg", "jpg"):
-            subtypes.add("jpe?g")
-        elif sub:
-            subtypes.add(re.escape(sub))
-    if not subtypes:
-        # Пустой whitelist — не матчим ничего (валидатор отвергнет любой url).
-        return r"(?!x)x"
-    return r"data:image/(?:" + "|".join(sorted(subtypes)) + r");base64,"
-
-
-@lru_cache(maxsize=8)
-def _image_data_url_re(mime_types: tuple[str, ...]) -> re.Pattern:
-    """Компилированный whitelist data:image-URL для текущих MIME настроек."""
-    return re.compile("^" + _image_data_url_body(mime_types))
-
-
-def image_data_url_pattern() -> str:
-    """Тело regex whitelist'а data:image-URL из настроек (без якорей).
-
-    Единый источник формата для валидатора схемы (`validate_image_url`) и
-    DOCX-builder'а нарушений (`formatters/docx/builders/violation.py`).
-    """
-    return _image_data_url_body(tuple(_acts_settings().images.allowed_mime_types))
 
 # Подвиды таблиц (enum kind). 'regular' — обычная таблица (дефолт/отсутствие
 # подвида). Единый источник значений на бэке; СИНХРОНИЗИРУЕТСЯ ВРУЧНУЮ с
@@ -399,47 +343,31 @@ class ViolationTextBlockSchema(BaseModel):
 
 
 class ViolationImageBlockSchema(BaseModel):
-    """Блок-картинка поля нарушения: inline data:image-URL + подпись."""
+    """Блок-картинка поля нарушения: ссылка на строку act_images + подпись.
+
+    Байты картинки в контенте акта НЕ живут: блок хранит только ``image_id``
+    — id строки ``act_images`` (uuid4-строка), загруженной через
+    ``POST /api/v1/acts/{act_id}/images``. Прежнее поле ``url`` с inline
+    data:image-URL убрано вместе с валидатором формата: и XSS-whitelist
+    форматов, и лимиты размера теперь проверяются один раз на загрузке
+    (``ActImageService.upload``), а не на каждом сохранении контента.
+
+    Пустой ``image_id`` допустим — черновик блока без картинки (так же, как
+    раньше был допустим пустой ``url``). Существование строки ``act_images``
+    здесь НЕ проверяется: схема статична и в БД не ходит; висячая ссылка
+    рендерится плейсхолдером «Изображение: {filename}» во всех экспортах.
+    """
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(description="ID блока (uuid4-строка, стабилен весь жизненный цикл)")
     type: Literal["image"] = Field(description="Дискриминатор типа блока")
-    url: str = Field(default="", description="data:image-URL изображения")
+    image_id: str = Field(default="", description="ID картинки в act_images")
     caption: str = Field(default="", description="Подпись изображения (rich)")
     filename: str = Field(default="", description="Имя файла")
     width: int = Field(
         default=0, ge=0, le=100,
         description="Ширина изображения, % полезной ширины страницы (0 — авто)",
     )
-
-    @model_validator(mode="after")
-    def validate_image_url(self) -> "ViolationImageBlockSchema":
-        """
-        Валидирует url картинки (4.3.M.2 + 5.2.2).
-
-        Непустой url обязан быть data:image-URL разрешённого растрового
-        формата (png/jpeg/gif, base64) — отсекает javascript:/data:text-схемы
-        (XSS) и не-картинки. Пустая строка допустима (черновик без
-        содержимого). Лимит длины защищает БД и снимки версий от
-        многомегабайтных payload'ов.
-        """
-        if len(self.url) > VIOLATION_IMAGE_URL_MAX_LENGTH:
-            raise ValueError(
-                f"Размер изображения превышает допустимый лимит "
-                f"({VIOLATION_IMAGE_URL_MAX_LENGTH} символов data-URL). "
-                f"Уменьшите изображение."
-            )
-        if self.url:
-            mime_types = tuple(_acts_settings().images.allowed_mime_types)
-            if not _image_data_url_re(mime_types).match(self.url):
-                allowed = ", ".join(
-                    m.split("/", 1)[1] for m in mime_types if m.startswith("image/")
-                )
-                raise ValueError(
-                    "Изображение нарушения должно быть встроенным data:image-URL "
-                    f"разрешённого формата ({allowed or 'нет'}, base64)."
-                )
-        return self
 
 
 class ViolationTableBlockSchema(BaseModel):

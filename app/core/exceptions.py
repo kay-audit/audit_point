@@ -117,6 +117,10 @@ CHECK_CONSTRAINT_MESSAGES: dict[str, str] = {
     "check_field_order_is_array_or_null": (
         "Порядок полей нарушения (field_order) должен быть массивом JSON или отсутствовать"
     ),
+    # ── acts: act_images ─────────────────────────────────────────────────────
+    "check_act_images_byte_size_positive": (
+        "Размер картинки должен быть положительным — пустой файл загрузить нельзя"
+    ),
     # ── acts: act_invoices ───────────────────────────────────────────────────
     # PG-имена (явные, добавлены при заполнении)
     "check_act_invoices_db_type_values": (

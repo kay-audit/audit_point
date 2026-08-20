@@ -16,18 +16,19 @@ field_label_for_render), не локальные условия: поля без
   внутрь первого маркера — см. render_block_segments);
 - image — inline shape: отдельный абзац по центру, подпись курсивом по
   центру ниже (Б-1.5). Ширина — поле `width` (% полезной ширины страницы);
-  0 — натуральный размер, но не шире полезной ширины (Б-1.4). Допустимые
-  форматы — из ACTS__IMAGES__ALLOWED_MIME_TYPES (image_data_url_pattern,
-  тот же источник, что у валидатора url). Битый/пустой url → текстовый
-  плейсхолдер «Изображение: {filename}» (паритет с MD/TXT);
+  0 — натуральный размер, но не шире полезной ширины (Б-1.4). Байты берутся
+  из карты `images` (предзагрузка всех картинок акта ОДНИМ запросом до
+  сборки документа — см. ExportService; внутри рендера, который идёт в пуле
+  потоков, обращений к БД нет). Формат, который python-docx не встраивает
+  (WebP), перекодируется в PNG через Pillow. Пустой/висячий `image_id`
+  или нераспознанные байты → текстовый плейсхолдер
+  «Изображение: {filename}» (паритет с MD/TXT);
 - table — обычная таблица через общий build_table (та же графика, что у
   таблиц-узлов дерева).
 """
-import base64
-import binascii
 import io
-import re
-from functools import lru_cache
+import logging
+from typing import Mapping
 
 from docx.document import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -38,7 +39,6 @@ from app.domains.acts.formatters.docx.builders.tables import build_table
 from app.domains.acts.formatters.docx.styles import Fonts, Margins, Page, Sizes
 from app.domains.acts.schemas.act_content import (
     _acts_settings,
-    image_data_url_pattern,
     ViolationImageBlockSchema,
     ViolationSchema,
 )
@@ -55,27 +55,22 @@ _USABLE_WIDTH_TWIPS = Page.width_twips - Margins.left - Margins.right
 _USABLE_HEIGHT_TWIPS = Page.height_twips - Margins.top - Margins.bottom
 
 
-@lru_cache(maxsize=8)
-def _data_url_re_for(pattern: str) -> re.Pattern:
-    """regex выделения base64-payload для данного whitelist-паттерна."""
-    return re.compile("^" + pattern + r"(?P<payload>.+)$", re.IGNORECASE | re.DOTALL)
+logger = logging.getLogger("audit_workstation.formatters.docx.violation")
 
 
-def _data_url_re() -> re.Pattern:
-    """data:image-URL regex с выделением payload по живому whitelist'у настроек.
-
-    Whitelist форматов берётся из ACTS__IMAGES__ALLOWED_MIME_TYPES (через
-    image_data_url_pattern) — тот же источник, что и у валидатора схемы, чтобы
-    форматы не разъезжались между валидацией и сборкой DOCX.
-    """
-    return _data_url_re_for(image_data_url_pattern())
-
-
-def build_violation(doc: Document, violation: ViolationSchema) -> None:
+def build_violation(
+    doc: Document,
+    violation: ViolationSchema,
+    images: Mapping[str, Mapping] | None = None,
+) -> None:
     """Рендерит нарушение в документ (без заголовка и нумерации).
 
     Видимость поля и его метка — общая политика реестра (should_render_field /
     field_label_for_render), та же, что у MD/TXT (violation_render).
+
+    images — карта ``image_id → {"data": bytes, "mime_type": str}``,
+    предзагруженная экспортом. None/пропуск ключа означает «байт нет»:
+    картинка выводится текстовым плейсхолдером, экспорт не падает.
     """
     for field in ordered_fields({"fieldOrder": violation.fieldOrder}):
         container = getattr(violation, field.key)
@@ -114,27 +109,30 @@ def build_violation(doc: Document, violation: ViolationSchema) -> None:
                         default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
                     )
             elif block.type == "image":
-                _add_image(doc, block)
+                _add_image(doc, block, images)
             elif block.type == "table":
                 build_table(doc, block.table)
 
 
-def _add_image(doc: Document, item: ViolationImageBlockSchema) -> None:
+def _add_image(
+    doc: Document,
+    item: ViolationImageBlockSchema,
+    images: Mapping[str, Mapping] | None = None,
+) -> None:
     """Картинка: абзац по центру; подпись курсивом по центру ниже (Б-1.5).
 
-    Не удалось встроить (битый base64, пустой url, формат без поддержки
-    в python-docx) → текстовый плейсхолдер «Изображение: {filename}».
-    Подпись выводится в обоих случаях.
+    Не удалось встроить (пустой/висячий image_id, битые байты, формат без
+    поддержки в python-docx и без Pillow) → текстовый плейсхолдер
+    «Изображение: {filename}». Подпись выводится в обоих случаях.
     """
     embedded = False
-    data = _decode_data_url(item.url)
+    data = _image_bytes(item.image_id, images)
     if data is not None:
         para = doc.add_paragraph()
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = para.add_run()
-        try:
-            shape = run.add_picture(io.BytesIO(data))
-        except Exception:
+        shape = _add_picture(run, data)
+        if shape is None:
             # Байты не распознаны как картинка (обрезанный файл и т.п.) —
             # убираем пустой абзац и откатываемся к плейсхолдеру. Экспорт не
             # должен падать из-за одной битой картинки.
@@ -161,16 +159,58 @@ def _add_image(doc: Document, item: ViolationImageBlockSchema) -> None:
         )
 
 
-def _decode_data_url(url: str) -> bytes | None:
-    """Достаёт байты картинки из data:image-URL; None — если url не пригоден."""
-    if not url:
+def _image_bytes(
+    image_id: str, images: Mapping[str, Mapping] | None,
+) -> bytes | None:
+    """Байты картинки из предзагруженной карты; None — если их нет.
+
+    Висячая ссылка (картинка собрана мусорщиком, акт восстановлен из версии
+    старше загрузки) — не ошибка экспорта: рендер уходит в плейсхолдер.
+    """
+    if not image_id or not images:
         return None
-    match = _data_url_re().match(url)
-    if not match:
+    record = images.get(image_id)
+    if not record:
+        return None
+    data = record.get("data")
+    return data if isinstance(data, (bytes, bytearray)) else None
+
+
+def _add_picture(run, data: bytes):
+    """Встраивает байты картинки в run; None — если встроить не удалось.
+
+    python-docx умеет ограниченный набор форматов и WebP среди них нет, а
+    фронт кодирует скриншоты именно в него. Поэтому на отказе делается ОДНА
+    попытка перекодировать байты в PNG через Pillow: без неё разрешённый
+    настройками формат молча исчезал бы из DOCX, оставляя плейсхолдер.
+    """
+    try:
+        return run.add_picture(io.BytesIO(data))
+    except Exception:
+        pass
+
+    png = _transcode_to_png(data)
+    if png is None:
         return None
     try:
-        return base64.b64decode(match.group("payload"), validate=True)
-    except (binascii.Error, ValueError):
+        return run.add_picture(io.BytesIO(png))
+    except Exception:
+        logger.warning("Картинку не удалось встроить в DOCX даже после перекодировки")
+        return None
+
+
+def _transcode_to_png(data: bytes) -> bytes | None:
+    """Перекодирует картинку в PNG (Pillow); None — если байты не картинка."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            mode = "RGBA" if img.mode in ("P", "RGBA", "LA") else "RGB"
+            frame = img.convert(mode)
+            buffer = io.BytesIO()
+            frame.save(buffer, format="PNG")
+            return buffer.getvalue()
+    except Exception:
         return None
 
 

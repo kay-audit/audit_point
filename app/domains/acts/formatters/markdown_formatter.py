@@ -5,6 +5,8 @@
 таблиц, HTML и форматирования.
 """
 
+import base64
+
 from app.core.config import Settings
 from app.domains.acts.block_types import NODE_TYPE_TABLE
 from app.domains.acts.settings import ActsSettings
@@ -12,6 +14,24 @@ from .base_formatter import BaseFormatter
 from .tree_walker import WalkContext, collect_blocks, walk
 from .utils import HTMLUtils, MarkdownUtils, TableUtils
 from .violation_render import format_violation, wrap_bold
+
+
+def _image_data_url(image_id: str, images: dict | None) -> str:
+    """Собирает data:image-URL из предзагруженных байт; '' — если байт нет.
+
+    Единственное место, где base64 картинки вообще появляется: хранение и
+    транспорт контента акта работают со ссылкой ``image_id``.
+    """
+    if not image_id or not images:
+        return ""
+    record = images.get(image_id)
+    if not record:
+        return ""
+    data = record.get("data")
+    if not isinstance(data, (bytes, bytearray)):
+        return ""
+    mime = record.get("mime_type") or "application/octet-stream"
+    return f"data:{mime};base64,{base64.b64encode(bytes(data)).decode('ascii')}"
 
 
 class MarkdownFormatter(BaseFormatter):
@@ -38,7 +58,10 @@ class MarkdownFormatter(BaseFormatter):
         Форматирует данные акта в Markdown.
 
         Args:
-            data: Данные акта (tree, tables, textBlocks, violations)
+            data: Данные акта (tree, tables, textBlocks, violations); ключ
+                ``images`` — предзагруженные байты картинок нарушений
+                (``image_id → {"data": bytes, "mime_type": str}``), из них
+                восстанавливаются data-URL картинок (см. ``_add_image``)
 
         Returns:
             Markdown-текст акта
@@ -50,7 +73,7 @@ class MarkdownFormatter(BaseFormatter):
         result.append("")
 
         # Обход дерева — единый walker, представление — в визиторе.
-        visitor = _MarkdownTreeVisitor(self)
+        visitor = _MarkdownTreeVisitor(self, data.get('images') or {})
         walk(data.get('tree', {}), visitor, collect_blocks(data))
         result.extend(visitor.lines)
 
@@ -111,12 +134,13 @@ class MarkdownFormatter(BaseFormatter):
         # Используем HTML утилиту
         return HTMLUtils.html_to_markdown(content)
 
-    def _format_violation(self, violation_data: dict) -> str:
+    def _format_violation(self, violation_data: dict, images: dict | None = None) -> str:
         """
         Форматирует нарушение (блочная модель: цикл по полям реестра).
 
         Args:
             violation_data: Данные нарушения
+            images: Предзагруженные байты картинок акта (см. ``format``)
 
         Returns:
             Markdown-текст нарушения
@@ -125,7 +149,7 @@ class MarkdownFormatter(BaseFormatter):
             violation_data,
             bold_wrap=wrap_bold,
             text_conv=HTMLUtils.html_to_markdown,
-            add_image=self._add_image,
+            add_image=lambda lines, item: self._add_image(lines, item, images),
             add_table=self._add_violation_table,
         )
 
@@ -140,14 +164,22 @@ class MarkdownFormatter(BaseFormatter):
         lines.append(self._format_table(table_data))
         lines.append("")
 
-    def _add_image(self, lines: list[str], item: dict):
+    def _add_image(self, lines: list[str], item: dict, images: dict | None = None):
         r"""
         Встраивает картинку (#16).
 
-        При непустом url — markdown-изображение `![alt](url "filename")`:
+        РЕШЕНИЕ: в .md картинка восстанавливается ОБРАТНО в data-URL, а не
+        отдаётся именем файла или ссылкой на API. Экспорт — один файл, который
+        пользователь уносит с собой: ссылка на `/api/v1/acts/.../images/...`
+        протухла бы вне сессии (и требовала бы авторизации), а имя файла без
+        приложенных байт просто теряет картинку. Байты берутся из карты
+        `images`, предзагруженной ExportService; в БД data-URL по-прежнему НЕ
+        хранится — он собирается только на выходе.
+
+        При доступных байтах — markdown-изображение `![alt](url "filename")`:
         alt = подпись или имя файла, имя файла сохраняется в title (чтобы не
-        теряться при непустом url). Пустой url (черновик) → текстовый
-        fallback `*filename*` (с подписью, если есть).
+        теряться при непустом url). Нет байт (пустой/висячий image_id) →
+        текстовый fallback `*filename*` (с подписью, если есть).
 
         filename хранится дословно (без bleach, T4) — экранируем через
         MarkdownUtils.escape_inline (backslash экранируется первым, иначе
@@ -176,7 +208,7 @@ class MarkdownFormatter(BaseFormatter):
         # первым и удвоил бы уже проставленные конвертером слэши).
         caption = caption.replace("\r", " ").replace("\n", " ")
         filename = item.get('filename', '')
-        url = item.get('url', '')
+        url = _image_data_url(item.get('image_id') or '', images)
 
         if url:
             alt = caption or MarkdownUtils.escape_inline(filename, '[]')
@@ -201,8 +233,11 @@ class _MarkdownTreeVisitor:
     # Дети корня дерева начинаются с заголовков второго уровня (после '# АКТ').
     _BASE_HEADING_LEVEL = 2
 
-    def __init__(self, formatter: MarkdownFormatter):
+    def __init__(self, formatter: MarkdownFormatter, images: dict | None = None):
         self._fmt = formatter
+        # Байты картинок нарушений (предзагрузка экспорта); пусто — картинки
+        # уйдут текстовым плейсхолдером.
+        self._images = images or {}
         self.lines: list[str] = []
 
     def on_item_enter(self, node: dict, ctx: WalkContext) -> None:
@@ -245,5 +280,5 @@ class _MarkdownTreeVisitor:
 
     def on_violation(self, node: dict, schema: dict | None, ctx: WalkContext) -> None:
         if schema is not None:
-            self.lines.append(self._fmt._format_violation(schema))
+            self.lines.append(self._fmt._format_violation(schema, self._images))
             self.lines.append("")

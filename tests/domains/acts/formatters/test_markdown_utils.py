@@ -74,33 +74,40 @@ def _has_unescaped_char(text: str, ch: str) -> bool:
     return found
 
 
+# Байты картинки приезжают отдельной картой (блок хранит только image_id);
+# b"\x00\x00\x00" даёт base64 "AAAA" — data-URL в ассертах остаётся коротким.
+_IMAGE_ID = "img-1"
+_IMAGES = {_IMAGE_ID: {"data": b"\x00\x00\x00", "mime_type": "image/png"}}
+_DATA_URL = "data:image/png;base64,AAAA"
+
+
 class TestAddImageUrlBranchEscaping:
-    """url-присутствующая ветка `_add_image`: `![alt](url "title")`."""
+    """Ветка с доступными байтами: `![alt](data-URL "title")`."""
 
     def test_caption_with_escaped_bracket_cannot_splice_link(self):
         lines: list[str] = []
         item = {
             "caption": "before\\](http://evil.example)after",
             "filename": "f.png",
-            "url": "http://good.example/img.png",
+            "image_id": _IMAGE_ID,
         }
-        _md()._add_image(lines, item)
+        _md()._add_image(lines, item, _IMAGES)
         out = "\n".join(lines)
 
         # alt-текст — между первой '[' и первой НЕэкранированной ']'.
         alt = _extract_between_unescaped(out, "[", "]")
         assert alt == "before\\](http://evil.example)after"
-        # Настоящий url акта должен остаться единственной ссылкой.
-        assert "(http://good.example/img.png " in out
+        # Настоящий url картинки должен остаться единственной ссылкой.
+        assert f"({_DATA_URL} " in out
 
     def test_filename_with_quote_cannot_close_title_early(self):
         lines: list[str] = []
         item = {
             "caption": "",
             "filename": 'evil.png" onclick="alert(1)',
-            "url": "http://good.example/img.png",
+            "image_id": _IMAGE_ID,
         }
-        _md()._add_image(lines, item)
+        _md()._add_image(lines, item, _IMAGES)
         out = "\n".join(lines)
 
         title = _extract_between_unescaped(out, '"', '"', start_after=out.index("("))
@@ -111,16 +118,16 @@ class TestAddImageUrlBranchEscaping:
         item = {
             "caption": "line1\nline2",
             "filename": "f.png",
-            "url": "http://good.example/img.png",
+            "image_id": _IMAGE_ID,
         }
-        _md()._add_image(lines, item)
+        _md()._add_image(lines, item, _IMAGES)
         out = "\n".join(lines)
         assert "line1 line2" in out
         assert "line1\nline2" not in out
 
 
 class TestAddImageDraftBranchEscaping:
-    """Пустой url (черновик): `*{filename}* - {caption}` / `*{filename}*`."""
+    """Байт нет (черновик): `*{filename}* - {caption}` / `*{filename}*`."""
 
     def test_caption_html_bold_converted_not_escaped(self):
         """Task 6: caption — rich HTML, конвертируется через html_to_markdown
@@ -134,7 +141,7 @@ class TestAddImageDraftBranchEscaping:
         item = {
             "caption": "<b>bold</b> caption",
             "filename": "f.png",
-            "url": "",
+            "image_id": "",
         }
         _md()._add_image(lines, item)
         out = "\n".join(lines)
@@ -151,7 +158,7 @@ class TestAddImageDraftBranchEscaping:
         item = {
             "caption": "<b>bold</b> [evil](http://x)",
             "filename": "f.png",
-            "url": "",
+            "image_id": "",
         }
         _md()._add_image(lines, item)
         out = "\n".join(lines)
@@ -162,14 +169,14 @@ class TestAddImageDraftBranchEscaping:
 
     def test_filename_with_asterisk_does_not_break_italic_wrapper(self):
         lines: list[str] = []
-        item = {"caption": "", "filename": "e*vil.png", "url": ""}
+        item = {"caption": "", "filename": "e*vil.png", "image_id": ""}
         _md()._add_image(lines, item)
         out = "\n".join(lines)
         assert out.startswith("*e\\*vil.png*")
 
     def test_newline_in_filename_collapses_to_space(self):
         lines: list[str] = []
-        item = {"caption": "", "filename": "a\nb.png", "url": ""}
+        item = {"caption": "", "filename": "a\nb.png", "image_id": ""}
         _md()._add_image(lines, item)
         out = "\n".join(lines)
         assert "a b.png" in out

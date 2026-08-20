@@ -28,9 +28,16 @@ def _text_block(content: str, bid: str = "text_1_a") -> dict:
     return {"id": bid, "type": "text", "content": content}
 
 
+# Байты картинки живут отдельно от контента: блок хранит image_id, а карту
+# предзагруженных байт форматтеру передаёт экспорт. b"\x00\x00\x00" выбрано
+# так, чтобы base64 дал ровно "AAAA" — ассерты остались читаемыми.
+_IMAGE_ID = "img-1"
+_IMAGES = {_IMAGE_ID: {"data": b"\x00\x00\x00", "mime_type": "image/png"}}
+
+
 def _image_block(**kw) -> dict:
     return {"id": "image_1_b", "type": "image",
-            "url": kw.get("url", ""), "caption": kw.get("caption", ""),
+            "image_id": kw.get("image_id", ""), "caption": kw.get("caption", ""),
             "filename": kw.get("filename", ""), "width": kw.get("width", 0)}
 
 
@@ -199,15 +206,15 @@ def test_text_text_block_strips_html():
 
 def test_markdown_image_embedded_with_filename_in_title():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="data:image/png;base64,AAAA", caption="Подпись", filename="pic.png"),
+        _image_block(image_id=_IMAGE_ID, caption="Подпись", filename="pic.png"),
     ]})
-    out = _md()._format_violation(v)
+    out = _md()._format_violation(v, _IMAGES)
     assert '![Подпись](data:image/png;base64,AAAA "pic.png")' in out
 
 
-def test_markdown_image_empty_url_falls_back_to_filename():
+def test_markdown_image_empty_id_falls_back_to_filename():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="", caption="", filename="draft.png"),
+        _image_block(image_id="", caption="", filename="draft.png"),
     ]})
     out = _md()._format_violation(v)
     assert "*draft.png*" in out
@@ -216,31 +223,31 @@ def test_markdown_image_empty_url_falls_back_to_filename():
 
 def test_markdown_image_filename_with_quote_escaped_in_title():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="data:image/png;base64,AAAA", caption="Подпись", filename='pic "one".png'),
+        _image_block(image_id=_IMAGE_ID, caption="Подпись", filename='pic "one".png'),
     ]})
-    out = _md()._format_violation(v)
+    out = _md()._format_violation(v, _IMAGES)
     assert '![Подпись](data:image/png;base64,AAAA "pic \\"one\\".png")' in out
 
 
 def test_markdown_image_caption_with_bracket_escaped_in_alt():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="data:image/png;base64,AAAA", caption="рост] на 10%", filename="pic.png"),
+        _image_block(image_id=_IMAGE_ID, caption="рост] на 10%", filename="pic.png"),
     ]})
-    out = _md()._format_violation(v)
+    out = _md()._format_violation(v, _IMAGES)
     assert '![рост\\] на 10%](data:image/png;base64,AAAA "pic.png")' in out
 
 
 def test_markdown_image_caption_is_rich():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="data:image/png;base64,AAAA", caption="<b>важно</b>", filename="pic.png"),
+        _image_block(image_id=_IMAGE_ID, caption="<b>важно</b>", filename="pic.png"),
     ]})
-    out = _md()._format_violation(v)
+    out = _md()._format_violation(v, _IMAGES)
     assert '![**важно**](data:image/png;base64,AAAA "pic.png")' in out
 
 
 def test_markdown_image_caption_none_falls_back_to_filename():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        {"id": "image_1_b", "type": "image", "url": "", "caption": None, "filename": "draft.png"},
+        {"id": "image_1_b", "type": "image", "image_id": "", "caption": None, "filename": "draft.png"},
     ]})
     out = _md()._format_violation(v)
     assert "*draft.png*" in out
@@ -248,7 +255,7 @@ def test_markdown_image_caption_none_falls_back_to_filename():
 
 def test_text_image_caption_is_rich():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        _image_block(url="", caption="<b>важно</b>", filename="pic.png"),
+        _image_block(image_id="", caption="<b>важно</b>", filename="pic.png"),
     ]})
     out = _txt()._format_violation(v)
     assert "Изображение: pic.png - важно" in out
@@ -257,7 +264,7 @@ def test_text_image_caption_is_rich():
 
 def test_text_image_caption_none_falls_back_to_filename_only():
     v = _violation(additionalContent={"enabled": True, "blocks": [
-        {"id": "image_1_b", "type": "image", "url": "", "caption": None, "filename": "draft.png"},
+        {"id": "image_1_b", "type": "image", "image_id": "", "caption": None, "filename": "draft.png"},
     ]})
     out = _txt()._format_violation(v)
     assert "Изображение: draft.png" in out

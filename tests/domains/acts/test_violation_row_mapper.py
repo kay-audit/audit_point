@@ -33,7 +33,7 @@ def _sample_violation(field_order=None) -> ViolationSchema:
                  "table": {"grid": [[{"content": "A"}, {"content": "B"}]],
                            "colWidths": [50, 50]}},
                 {"id": "image_1_c", "type": "image",
-                 "url": "data:image/png;base64,AAAA", "caption": "Подпись",
+                 "image_id": "img-0001", "caption": "Подпись",
                  "filename": "a.png", "width": 40},
             ],
         },

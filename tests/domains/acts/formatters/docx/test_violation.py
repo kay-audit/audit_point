@@ -5,6 +5,8 @@
 у полей с labeled=False метки нет вовсе — только контент. Размер/курсив
 поля — из флага small дескриптора (9pt курсив / 12pt без).
 """
+import base64
+
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt, Twips
@@ -12,8 +14,9 @@ from docx.shared import Emu, Pt, Twips
 from app.domains.acts.formatters.docx.builders.violation import (
     _USABLE_HEIGHT_TWIPS,
     _USABLE_WIDTH_TWIPS,
-    _decode_data_url,
+    _image_bytes,
     _scale_picture,
+    _transcode_to_png,
     build_violation,
 )
 from app.domains.acts.formatters.docx.styles import Sizes
@@ -25,7 +28,12 @@ _PNG_1PX_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
     "AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 )
-_PNG_1PX_DATA_URL = f"data:image/png;base64,{_PNG_1PX_B64}"
+_PNG_1PX = base64.b64decode(_PNG_1PX_B64)
+_IMAGE_ID = "img-1"
+
+# Карта предзагруженных байт, которую экспорт передаёт builder'у: блок
+# нарушения хранит только image_id, байты приезжают отдельно.
+_IMAGES = {_IMAGE_ID: {"data": _PNG_1PX, "mime_type": "image/png"}}
 
 
 def _text_block(content, bid="text_1_a"):
@@ -34,7 +42,7 @@ def _text_block(content, bid="text_1_a"):
 
 def _image_block(**overrides):
     base = dict(
-        id="image_1_b", type="image", url=_PNG_1PX_DATA_URL,
+        id="image_1_b", type="image", image_id=_IMAGE_ID,
         caption="", filename="screen.png", width=0,
     )
     base.update(overrides)
@@ -68,7 +76,7 @@ def _v(**field_overrides):
 
 def test_violation_renders_required_fields(doc):
     """Поля «Нарушено:»/«Установлено:» присутствуют."""
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Нарушено:" in text
     assert "Текст нарушения" in text
@@ -88,7 +96,7 @@ def _runs_for_label(doc, label):
 
 def test_violated_established_are_9pt_italic(doc):
     """«Нарушено:»/«Установлено:» — 9pt курсивом, метка подчёркнута."""
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     for label in ("Нарушено:", "Установлено:"):
         label_run, body_run = _runs_for_label(doc, label)
         assert label_run is not None and body_run is not None
@@ -101,7 +109,7 @@ def test_violated_established_are_9pt_italic(doc):
 
 def test_optional_group_stays_12pt_non_italic(doc):
     """Причины/Принятые меры/Последствия/Ответственные — 12pt без курсива."""
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     for label in ("Причины:", "Принятые меры:", "Последствия:", "Ответственные:"):
         label_run, body_run = _runs_for_label(doc, label)
         assert label_run is not None and body_run is not None
@@ -136,7 +144,7 @@ def _unlabeled_violation():
 
 def test_unlabeled_fields_render_content_without_label(doc):
     """CM/PM/доп. контент выводят только контент — заголовка-метки нет."""
-    build_violation(doc, _unlabeled_violation())
+    build_violation(doc, _unlabeled_violation(), _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     for marker in ("CM-контент", "PM-контент", "Доп-контент"):
         assert marker in text
@@ -150,7 +158,7 @@ def test_unlabeled_fields_are_12pt_non_italic(doc):
     Регрессия решения владельца: additionalContent выведен из 9pt-группы
     (small=False) — раньше он рендерился 9pt курсивом.
     """
-    build_violation(doc, _unlabeled_violation())
+    build_violation(doc, _unlabeled_violation(), _IMAGES)
     for marker in ("CM-контент", "PM-контент", "Доп-контент"):
         run = next(
             r for p in doc.paragraphs for r in p.runs if marker in r.text
@@ -161,7 +169,7 @@ def test_unlabeled_fields_are_12pt_non_italic(doc):
 
 def test_unlabeled_field_is_not_underlined(doc):
     """Без метки нет и подчёркнутого label-run'а — контент обычным начертанием."""
-    build_violation(doc, _unlabeled_violation())
+    build_violation(doc, _unlabeled_violation(), _IMAGES)
     run = next(r for p in doc.paragraphs for r in p.runs if "CM-контент" in r.text)
     assert not run.underline
 
@@ -172,7 +180,7 @@ def test_unlabeled_field_with_table_first_renders_no_label(doc):
         _table_block([["A"]]),
         _text_block("после таблицы"),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "CodeMining" not in text
     assert "после таблицы" in text
@@ -185,7 +193,7 @@ def test_unlabeled_field_multiple_text_blocks_all_rendered(doc):
         _text_block("Первый PM", "text_1"),
         _text_block("Второй PM", "text_2"),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert text.index("Первый PM") < text.index("Второй PM")
 
@@ -196,7 +204,7 @@ def test_mandatory_labels_shown_when_empty(doc):
         violated={"enabled": True, "blocks": []},
         established={"enabled": True, "blocks": []},
     )
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Нарушено:" in text
     assert "Установлено:" in text
@@ -204,7 +212,7 @@ def test_mandatory_labels_shown_when_empty(doc):
 
 def test_disabled_optional_fields_not_rendered(doc):
     v = _v(reasons={"enabled": False, "blocks": [_text_block("скрытая")]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "скрытая" not in text
     assert "Причины:" not in text
@@ -212,7 +220,7 @@ def test_disabled_optional_fields_not_rendered(doc):
 
 def test_enabled_empty_optional_field_not_rendered(doc):
     v = _v(reasons={"enabled": True, "blocks": []})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     assert "Причины:" not in "\n".join(p.text for p in doc.paragraphs)
 
 
@@ -221,7 +229,7 @@ def test_field_order_respected(doc):
     order = list(VIOLATION_FIELD_KEYS)
     order.remove("responsible")
     order.insert(0, "responsible")
-    build_violation(doc, _v(fieldOrder=order))
+    build_violation(doc, _v(fieldOrder=order), _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert text.index("Иванов И.И.") < text.index("Текст нарушения")
 
@@ -231,7 +239,7 @@ def test_multiple_text_blocks_render_in_order(doc):
         _text_block("Первый абзац", "text_1"),
         _text_block("Второй абзац", "text_2"),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert text.index("Первый абзац") < text.index("Второй абзац")
     # Метка одна — на первом блоке.
@@ -240,13 +248,13 @@ def test_multiple_text_blocks_render_in_order(doc):
 
 def test_violation_has_no_header_paragraph(doc):
     """Нет абзаца, начинающегося со слова «Проблема»."""
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     assert not any(p.text.strip().startswith("Проблема") for p in doc.paragraphs)
 
 
 def test_violation_has_no_numbering(doc):
     """Ни в одном абзаце нарушения нет numPr (списки ul/ol — отдельные тесты)."""
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     for p in doc.paragraphs:
         p_pr = p._p.find(qn("w:pPr"))
         if p_pr is None:
@@ -255,7 +263,7 @@ def test_violation_has_no_numbering(doc):
 
 
 def test_labels_are_underlined(doc):
-    build_violation(doc, _v())
+    build_violation(doc, _v(), _IMAGES)
     label_runs = [
         r for p in doc.paragraphs for r in p.runs
         if r.text.strip() in {"Причины:", "Принятые меры:", "Последствия:", "Ответственные:"}
@@ -271,7 +279,7 @@ def test_table_block_renders_docx_table(doc):
     v = _v(codeMining={"enabled": True, "blocks": [
         _table_block([["Запрос", "Результат"], ["SELECT 1", "OK"]]),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     assert len(doc.tables) == 1
     cells = [c.text for row in doc.tables[0].rows for c in row.cells]
     assert "Запрос" in cells and "SELECT 1" in cells
@@ -283,7 +291,7 @@ def test_field_with_table_first_renders_label_alone(doc):
         _table_block([["A"]]),
         _text_block("после таблицы"),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Причины:" in text
     assert "после таблицы" in text
@@ -299,7 +307,7 @@ def test_field_starting_with_list_renders_label_alone(doc):
     v = _v(reasons={"enabled": True, "blocks": [
         _text_block("<ul><li>раз</li><li>два</li></ul><div>хвост</div>"),
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     texts = [p.text for p in doc.paragraphs]
     idx = next(i for i, t in enumerate(texts) if t.strip() == "Причины:")
     assert texts[idx + 1:idx + 4] == ["раз", "два", "хвост"]
@@ -310,7 +318,7 @@ def test_empty_table_block_renders_nothing(doc):
     v = _v(codeMining={"enabled": True, "blocks": [
         {"id": "table_1_c", "type": "table", "table": {"grid": [], "colWidths": []}},
     ]})
-    build_violation(doc, v)
+    build_violation(doc, v, _IMAGES)
     assert len(doc.tables) == 0
 
 
@@ -323,13 +331,13 @@ def _v_with_blocks(*blocks):
 
 def test_image_embedded_as_inline_shape(doc):
     """PNG 1×1 из data-URL встраивается в документ как inline shape."""
-    build_violation(doc, _v_with_blocks(_image_block()))
+    build_violation(doc, _v_with_blocks(_image_block()), _IMAGES)
     assert len(doc.inline_shapes) == 1
 
 
 def test_image_paragraph_centered(doc):
     """Абзац с картинкой выровнен по центру (Б-1.5)."""
-    build_violation(doc, _v_with_blocks(_image_block()))
+    build_violation(doc, _v_with_blocks(_image_block()), _IMAGES)
     pic_para = next(
         p for p in doc.paragraphs if p._p.findall(".//" + qn("w:drawing"))
     )
@@ -338,7 +346,7 @@ def test_image_paragraph_centered(doc):
 
 def test_image_caption_italic_centered_below(doc):
     """Подпись — отдельный абзац под картинкой: курсив, по центру."""
-    build_violation(doc, _v_with_blocks(_image_block(caption="Скриншот экрана")))
+    build_violation(doc, _v_with_blocks(_image_block(caption="Скриншот экрана")), _IMAGES)
     cap_para = next(p for p in doc.paragraphs if "Скриншот экрана" in p.text)
     assert cap_para.alignment == WD_ALIGN_PARAGRAPH.CENTER
     cap_runs = [r for r in cap_para.runs if r.text.strip()]
@@ -348,7 +356,7 @@ def test_image_caption_italic_centered_below(doc):
 
 def test_image_caption_bold_html_renders_bold_run(doc):
     """Task 6: жирный фрагмент rich-подписи → bold run (не текст тегов)."""
-    build_violation(doc, _v_with_blocks(_image_block(caption="<b>важно</b>: подпись")))
+    build_violation(doc, _v_with_blocks(_image_block(caption="<b>важно</b>: подпись")), _IMAGES)
     cap_para = next(p for p in doc.paragraphs if "подпись" in p.text)
     assert "<b>" not in cap_para.text
     bold_run = next(r for r in cap_para.runs if r.text.strip() == "важно")
@@ -357,29 +365,29 @@ def test_image_caption_bold_html_renders_bold_run(doc):
     assert bold_run.font.size == Pt(Sizes.violation_pt)
 
 
-def test_broken_base64_renders_placeholder(doc):
-    """Битый base64 → текстовый плейсхолдер «Изображение: …», без исключения."""
+def test_broken_bytes_render_placeholder(doc):
+    """Байты не картинка → текстовый плейсхолдер «Изображение: …», без исключения."""
     build_violation(doc, _v_with_blocks(
-        _image_block(url="data:image/png;base64,@@не-base64@@"),
-    ))
+        _image_block(image_id="broken"),
+    ), {"broken": {"data": b"ne-kartinka", "mime_type": "image/png"}})
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Изображение: screen.png" in text
     assert len(doc.inline_shapes) == 0
 
 
-def test_empty_url_renders_placeholder(doc):
-    """Пустой url (черновик без содержимого) → плейсхолдер (паритет с MD/TXT)."""
+def test_empty_image_id_renders_placeholder(doc):
+    """Пустой image_id (черновик без содержимого) → плейсхолдер (паритет с MD/TXT)."""
     build_violation(doc, _v_with_blocks(
-        _image_block(url="", filename="ext.png"),
-    ))
+        _image_block(image_id="", filename="ext.png"),
+    ), _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Изображение: ext.png" in text
     assert len(doc.inline_shapes) == 0
 
 
-def test_undecodable_image_bytes_render_placeholder(doc):
-    """Валидный base64, но не картинка → плейсхолдер, без исключения."""
-    build_violation(doc, _v_with_blocks(_image_block(url="data:image/png;base64,AAAA")))
+def test_dangling_image_id_renders_placeholder(doc):
+    """image_id есть, а байт в карте нет (картинка собрана GC) → плейсхолдер."""
+    build_violation(doc, _v_with_blocks(_image_block(image_id="ushla")), _IMAGES)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Изображение: screen.png" in text
     assert len(doc.inline_shapes) == 0
@@ -387,7 +395,7 @@ def test_undecodable_image_bytes_render_placeholder(doc):
 
 def test_image_placeholder_is_9pt_italic(doc):
     """Текстовый плейсхолдер «Изображение: …» — 9pt курсивом."""
-    build_violation(doc, _v_with_blocks(_image_block(url="")))
+    build_violation(doc, _v_with_blocks(_image_block(image_id="")), _IMAGES)
     run = next(
         r for p in doc.paragraphs for r in p.runs
         if r.text.strip().startswith("Изображение:")
@@ -396,26 +404,52 @@ def test_image_placeholder_is_9pt_italic(doc):
     assert run.italic is True
 
 
-# --- Whitelist форматов builder'а = whitelist схемы (единый IMAGE_DATA_URL_PATTERN) ---
+# --- Разрешение байт по image_id и перекодировка форматов ---
 
 
-def test_decode_rejects_webp_and_svg():
-    """Builder отбрасывает форматы вне whitelist (webp/svg)."""
-    assert _decode_data_url(f"data:image/webp;base64,{_PNG_1PX_B64}") is None
-    assert _decode_data_url(f"data:image/svg+xml;base64,{_PNG_1PX_B64}") is None
+def test_image_bytes_resolves_from_map():
+    """Байты берутся из предзагруженной карты по image_id."""
+    assert _image_bytes(_IMAGE_ID, _IMAGES) == _PNG_1PX
 
 
-def test_decode_accepts_png_jpeg_gif():
-    """Builder принимает png/jpeg/gif и возвращает декодированные байты."""
-    for subtype in ("png", "jpeg", "jpg", "gif"):
-        data = _decode_data_url(f"data:image/{subtype};base64,{_PNG_1PX_B64}")
-        assert data is not None, f"формат {subtype} должен приниматься builder'ом"
-        assert isinstance(data, bytes)
+def test_image_bytes_none_for_missing_or_empty():
+    """Пустой id, отсутствующая карта и висячая ссылка дают None (не исключение)."""
+    assert _image_bytes("", _IMAGES) is None
+    assert _image_bytes(_IMAGE_ID, None) is None
+    assert _image_bytes("net-takogo", _IMAGES) is None
+    assert _image_bytes(_IMAGE_ID, {_IMAGE_ID: {"mime_type": "image/png"}}) is None
+
+
+def test_webp_is_embedded_via_png_transcode(doc):
+    """WebP python-docx не встраивает — builder перекодирует его в PNG.
+
+    Без перекодировки разрешённый настройками формат молча превращался бы
+    в текстовый плейсхолдер (фронт кодирует скриншоты именно в WebP).
+    """
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (4, 4), (10, 20, 30)).save(buf, format="WEBP")
+
+    build_violation(
+        doc, _v_with_blocks(_image_block(image_id="w1")),
+        {"w1": {"data": buf.getvalue(), "mime_type": "image/webp"}},
+    )
+    assert len(doc.inline_shapes) == 1
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Изображение: screen.png" not in text
+
+
+def test_transcode_returns_none_for_non_image():
+    """Не-картинка перекодировке не поддаётся — None, без исключения."""
+    assert _transcode_to_png(b"not-an-image-at-all") is None
 
 
 def test_image_width_50_percent_is_half_usable_width(doc):
     """width=50 → ширина shape ≈ 5173 твип (половина полезной ширины)."""
-    build_violation(doc, _v_with_blocks(_image_block(width=50)))
+    build_violation(doc, _v_with_blocks(_image_block(width=50)), _IMAGES)
     shape = doc.inline_shapes[0]
     expected = Twips(_USABLE_WIDTH_TWIPS * 50 // 100)
     assert abs(int(shape.width) - int(expected)) <= int(Twips(1))

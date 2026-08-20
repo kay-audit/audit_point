@@ -69,11 +69,11 @@ def _reference_violation(field_order=None) -> ViolationSchema:
             "enabled": True,
             "blocks": [_text_block(FIELD_MARKERS[key], f"text_{i}")],
         }
-    # additionalContent: + картинка-черновик (пустой url → одинаковый
+    # additionalContent: + картинка-черновик (пустой image_id → одинаковый
     # текст-плейсхолдер во всех трёх форматтерах).
     payload["additionalContent"]["blocks"].append({
         "id": "image_x", "type": "image",
-        "url": "", "caption": "", "filename": IMAGE_FILENAME, "width": 0,
+        "image_id": "", "caption": "", "filename": IMAGE_FILENAME, "width": 0,
     })
     # codeMining: + блок-таблица.
     payload["codeMining"]["blocks"].append({

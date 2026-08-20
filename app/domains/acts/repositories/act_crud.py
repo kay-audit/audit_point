@@ -789,6 +789,7 @@ class ActCrudRepository(BaseRepository):
 
     # Порядок важен: сначала зависимые таблицы, потом родительская
     _CHILD_TABLES = [
+        "act_images",
         "act_invoices",
         "act_violations",
         "act_textblocks",

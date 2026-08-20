@@ -183,14 +183,14 @@ def test_violation_empty_text_block_is_warning():
     assert "violation_incomplete" in _codes(issues)
 
 
-def test_violation_image_block_with_url_is_complete():
+def test_violation_image_block_with_image_id_is_complete():
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
         "violated": {
             "enabled": True,
             "blocks": [{
                 "id": "b1", "type": "image",
-                "url": "data:image/png;base64,iVBORw0KGgo=",
+                "image_id": "img-0001",
             }],
         },
         "established": _text_field("Установлено расхождение"),
@@ -199,7 +199,7 @@ def test_violation_image_block_with_url_is_complete():
     assert "violation_incomplete" not in _codes(issues)
 
 
-def test_violation_image_block_without_url_is_warning():
+def test_violation_image_block_without_image_id_is_warning():
     data = _act_with_violation({
         "id": "v1", "nodeId": "vnode1",
         "violated": {"enabled": True, "blocks": [{"id": "b1", "type": "image"}]},

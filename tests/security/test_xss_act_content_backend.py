@@ -10,7 +10,7 @@ XSS-санитизация content-полей акта на бэкенде.
 разрешает p/b/i/span/a/ul/ol/li/... и атрибуты {a:href,title;
 span:class,style; div/p:class,style; *:class}.
 
-Plain-text поля image-блока (url/filename) через санитайзер НЕ гоняются —
+Plain-text поля image-блока (image_id/filename) через санитайзер НЕ гоняются —
 нигде не рендерятся как innerHTML, поэтому хранятся дословно (см. те же
 тесты). Ячейки table-блока — тот же инвариант, что у больших таблиц акта
 (B8): рендерятся только как текст, санитайзер их не трогает.
@@ -334,7 +334,7 @@ class TestSaveContentViolationBlocksSanitized:
     единый контейнер {enabled, blocks}. text-блок.content и image-блок.caption
     несут реальный HTML (rich-редактор, innerHTML) — санитизируются как любой
     другой HTML-контент (см. докстринг sanitize_act_data). image-блок
-    url/filename — plain, не трогаются. table-блок — ячейки хранятся
+    image_id/filename — plain, не трогаются. table-блок — ячейки хранятся
     дословно (тот же инвариант B8, что у больших таблиц акта, см.
     TestSaveContentTableCellsStoredVerbatim).
     """
@@ -391,20 +391,20 @@ class TestSaveContentViolationBlocksSanitized:
         assert "<b>подпись</b>" in block.caption
         assert "<img" not in block.caption and "onerror" not in block.caption
 
-    async def test_image_url_filename_verbatim(self):
-        """url/filename image-блока — plain, дословно (не HTML-контент)."""
+    async def test_image_id_filename_verbatim(self):
+        """image_id/filename image-блока — plain, дословно (не HTML-контент)."""
         svc, _ = _make_service()
         raw_filename = "<script>x</script>ф.png"
-        url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        image_id = "8f14e45f-ea0b-4d1e-9c2a-1b2c3d4e5f60"
         data = _violation_with_blocks(additionalContent=[ViolationImageBlockSchema(
-            id="b1", type="image", url=url, filename=raw_filename,
+            id="b1", type="image", image_id=image_id, filename=raw_filename,
         )])
 
         await svc.save_content(act_id=1, data=data, username="12345")
 
         block = data.violations["v1"].additionalContent.blocks[0]
         assert block.filename == raw_filename
-        assert block.url == url
+        assert block.image_id == image_id
 
     async def test_table_block_cells_verbatim(self):
         """table-блок: ячейки не тронуты — тот же инвариант, что у больших таблиц (B8)."""

@@ -64,7 +64,7 @@ class DocxFormatter:
 
     def _render_tree(self, doc, ctx: ExportContext, num_id: int) -> None:
         # Обход дерева — единый walker, представление — в визиторе.
-        visitor = _DocxTreeVisitor(self, doc, num_id)
+        visitor = _DocxTreeVisitor(self, doc, num_id, ctx.images)
         walk(ctx.content.tree or {}, visitor, collect_blocks(ctx.content))
 
     def _render_item(self, doc, node, *, num_id, ilvl) -> None:
@@ -152,10 +152,13 @@ class _DocxTreeVisitor:
     DocxFormatter — сами builders walker'ом не затронуты.
     """
 
-    def __init__(self, formatter: DocxFormatter, doc, num_id: int):
+    def __init__(self, formatter: DocxFormatter, doc, num_id: int, images=None):
         self._fmt = formatter
         self._doc = doc
         self._num_id = num_id
+        # Байты картинок нарушений (предзагрузка экспорта); пусто — картинки
+        # уйдут плейсхолдерами, рендер не падает.
+        self._images = images or {}
 
     def on_item_enter(self, node: dict, ctx: WalkContext) -> None:
         if ctx.depth == 0:
@@ -192,7 +195,7 @@ class _DocxTreeVisitor:
     def on_violation(self, node: dict, schema, ctx: WalkContext) -> None:
         if schema is not None:
             # Нарушение: без заголовка и без нумерации (см. build_violation).
-            build_violation(self._doc, schema)
+            build_violation(self._doc, schema, self._images)
 
 
 def _set_mark_bold(paragraph) -> None:

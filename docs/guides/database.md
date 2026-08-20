@@ -41,6 +41,7 @@
 | `act_textblocks` | Текстовые блоки с форматированием | FK → acts |
 | `act_violations` | Карточки нарушений | FK → acts |
 | `act_invoices` | Прикрепленные фактуры | FK → acts |
+| `act_images` | Байты картинок нарушений (BYTEA); блок-картинка ссылается на `id` | FK → acts, UNIQUE(act_id, content_hash) |
 | `{REF_HADOOP_TABLES}` | Реестр hive-таблиц (реплика для фактур) | Справочная, только PG |
 | `audit_log` | Журнал операций (JSONB details) | FK → acts |
 | `act_content_versions` | Снимки содержимого для истории; дедуп по `content_hash` | FK → acts |

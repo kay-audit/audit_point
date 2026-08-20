@@ -17,10 +17,12 @@ from app.api.v1.deps.auth_deps import get_username
 from app.core.config import get_settings, Settings
 from app.core.exceptions import AppError
 from app.db.connection import get_db
+from app.db.executor import get_executor
 from app.domains.acts.deps import _get_acts_settings, get_crud_service, get_content_service
 from app.domains.acts.exceptions import ActExportTimeoutError
 from app.domains.acts.repositories.act_access import ActAccessRepository
 from app.domains.acts.repositories.act_audit_log import ActAuditLogRepository
+from app.domains.acts.repositories.act_image import ActImageRepository
 from app.domains.acts.settings import ActsSettings
 from app.domains.acts.schemas.act_content import ActSaveResponse
 from app.domains.acts.services.act_content_service import ActContentService
@@ -72,6 +74,9 @@ def get_act_service(
         acts_settings=acts_settings,
         act_crud_service=act_crud_service,
         act_content_service=act_content_service,
+        # Байты картинок нарушений: репозиторий на исполнителе — соединение
+        # берётся на один SELECT предзагрузки, а не на весь экспорт.
+        image_repository=ActImageRepository(get_executor()),
     )
 
 
