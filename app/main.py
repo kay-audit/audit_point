@@ -12,9 +12,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
-from app.auth.middleware import AuthMiddleware
+from app.auth.middleware import AuthMiddleware, resolve_scope_username
 from app.api.v1.routes import api_router as api_v1_router
 from app.core.config import get_settings, setup_logging
 from app.core.domain_registry import (
@@ -31,6 +30,7 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
 )
 from app.core.middlewares.http_metrics import HttpMetricsMiddleware
+from app.core.templating import VersionedStaticFiles
 import asyncpg
 from asyncpg import CheckViolationError, UniqueViolationError
 
@@ -319,11 +319,15 @@ def create_app() -> FastAPI:
         )
     app.add_middleware(HttpMetricsMiddleware, service=_http_metrics_service)
 
-    # 3. Rate limiting
+    # 3. Rate limiting. Ключ — пользователь из JWT-cookie, аноним — по IP.
+    #    Резолвер передаётся снаружи: лимитер стоит СНАРУЖИ AuthMiddleware
+    #    (чтобы считать и неавторизованный поток), поэтому scope["state"]["user"]
+    #    на этом шаге ещё не заполнен, а app/core не должен знать про app.auth.
     app.add_middleware(
         RateLimitMiddleware,
         rate_limit=settings.security.rate_limit_per_minute,
-        settings=settings
+        settings=settings,
+        identify=resolve_scope_username,
     )
 
     # 4. Request size limit
@@ -344,10 +348,12 @@ def create_app() -> FastAPI:
     #    иначе за прокси HSTS не выставится (схема осталась бы http).
     app.add_middleware(HTTPSRedirectMiddleware)
 
-    # Подключение статических файлов (доступны по URL /static/*)
+    # Подключение статических файлов. Работают оба адреса: прямой
+    # /static/<путь> (его строит url_for) и версионированный
+    # /static/v<версия>/<путь> (cache-busting, см. VersionedStaticFiles).
     app.mount(
         "/static",
-        StaticFiles(directory=str(settings.static_dir)),
+        VersionedStaticFiles(directory=str(settings.static_dir)),
         name="static"
     )
 
