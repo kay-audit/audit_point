@@ -7,6 +7,8 @@ AgentChannelService.poll_once, AgentChannelService.get_queue_details.
 
 import base64
 import uuid
+
+import asyncpg
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +18,7 @@ from app.domains.chat.services.agent_channel import (
     build_bus_media_from_file_blocks,
     build_timeout_error_block,
     map_answer_to_blocks,
+    materialize_media_entries,
     parse_media_items,
 )
 from app.domains.chat.settings import ChatDomainSettings
@@ -349,6 +352,7 @@ class TestBuildBusMediaFromFileBlocks:
             None,
             conversation_id="c1",
             file_repo=fake_repo,
+            max_size=512 * 1024 * 1024,
         )
         assert result is None
         fake_repo.get_file_content.assert_not_called()
@@ -360,6 +364,7 @@ class TestBuildBusMediaFromFileBlocks:
             [],
             conversation_id="c1",
             file_repo=fake_repo,
+            max_size=512 * 1024 * 1024,
         )
         assert result is None
         fake_repo.get_file_content.assert_not_called()
@@ -379,6 +384,7 @@ class TestBuildBusMediaFromFileBlocks:
               "mime_type": "text/markdown", "file_size": len(file_data)}],
             conversation_id="conv-1",
             file_repo=file_repo,
+            max_size=512 * 1024 * 1024,
         )
 
         assert result is not None
@@ -407,6 +413,7 @@ class TestBuildBusMediaFromFileBlocks:
             [{"filename": "y", "mime_type": "text/plain", "file_size": 1}],
             conversation_id="conv-1",
             file_repo=file_repo,
+            max_size=512 * 1024 * 1024,
         )
 
         assert result is None
@@ -421,6 +428,7 @@ class TestBuildBusMediaFromFileBlocks:
             [{"file_id": "uuid-missing", "filename": "x", "mime_type": "t", "file_size": 1}],
             conversation_id="conv-1",
             file_repo=file_repo,
+            max_size=512 * 1024 * 1024,
         )
 
         assert result is None
@@ -448,6 +456,7 @@ class TestBuildBusMediaFromFileBlocks:
             ],
             conversation_id="conv-1",
             file_repo=file_repo,
+            max_size=512 * 1024 * 1024,
         )
 
         assert result is not None
@@ -473,11 +482,287 @@ class TestBuildBusMediaFromFileBlocks:
             ],
             conversation_id="conv-1",
             file_repo=file_repo,
+            max_size=512 * 1024 * 1024,
         )
 
         assert result is not None
         assert len(result) == 1
         assert result[0]["filename"] == "ok.txt"
+
+
+    async def test_skip_file_larger_than_max_size(self):
+        """Файл сверх лимита вложения шины не отправляется агенту (skip + warning)."""
+        file_repo = AsyncMock()
+        file_repo.get_file_content = AsyncMock(return_value={
+            "filename": "big.bin",
+            "mime_type": "application/octet-stream",
+            "file_data": b"x" * 200,
+        })
+
+        result = await build_bus_media_from_file_blocks(
+            [{"file_id": "uuid-big", "filename": "big.bin",
+              "mime_type": "application/octet-stream", "file_size": 200}],
+            conversation_id="conv-1",
+            file_repo=file_repo,
+            max_size=100,
+        )
+
+        assert result is None
+
+
+# ── materialize_media_entries ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def mock_file_repo():
+    """FileRepository-мок: create отдаёт метаданные, как настоящий репозиторий."""
+    repo = AsyncMock()
+    repo.create = AsyncMock(return_value={"id": "saved"})
+    return repo
+
+
+def _data_url(mime: str, raw: bytes) -> str:
+    """data-URL из сырых байт — формат inline-вложения шины."""
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
+class TestMaterializeMediaEntries:
+    """H2 вариант A: входящий data-URL сохраняется в chat_files, в блок уходит UUID."""
+
+    async def test_data_url_saved_to_chat_files_and_block_has_uuid(self, mock_file_repo):
+        """Транспорт (base64) отделён от хранения (BYTEA): блок ссылается на UUID."""
+        entries = parse_media_items([
+            {"file_id": "data:text/plain;base64,0J/RgNC40LLQtdGC", "filename": "привет.txt"}
+        ])
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "file"
+        uuid.UUID(blocks[0]["file_id"])  # UUID, не data-URL
+        saved = mock_file_repo.create.call_args.kwargs
+        assert saved["id"] == blocks[0]["file_id"]
+        assert saved["conversation_id"] == "c1"
+        assert saved["message_id"] == "m1"
+        assert saved["filename"] == "привет.txt"
+        assert saved["mime_type"] == "text/plain"
+        assert saved["file_data"] == "Привет".encode("utf-8")
+        assert saved["file_size"] == len("Привет".encode("utf-8"))
+
+    async def test_deterministic_id_idempotent_on_retry(self, mock_file_repo):
+        """Повторная финализация (ретрай тика) не плодит дубликаты: id = uuid5(answer_uid:idx)."""
+        mock_file_repo.create.side_effect = asyncpg.exceptions.UniqueViolationError("dup")
+        entries = parse_media_items([
+            {"file_id": "data:text/plain;base64,0J/RgNC40LLQtdGC", "filename": "привет.txt"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["file_id"] == str(
+            uuid.uuid5(uuid.NAMESPACE_URL, "agent-media:a1:0")
+        )
+
+    async def test_oversized_becomes_error_block_and_rest_survives(self, mock_file_repo):
+        """Файл сверх лимита → error-блок про него, остальные вложения целы."""
+        entries = parse_media_items([
+            {"file_id": _data_url("application/pdf", b"x" * 300), "filename": "big.pdf"},
+            {"file_id": "data:text/plain;base64,0J/RgNC40LLQtdGC", "filename": "ok.txt"},
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=100,
+        )
+
+        assert blocks[0]["type"] == "error"
+        assert blocks[0]["code"] == "agent_file_too_large"
+        assert "big.pdf" in blocks[0]["message"]
+        assert blocks[1]["type"] == "file"
+        assert mock_file_repo.create.await_count == 1
+
+    async def test_broken_base64_becomes_error_block(self, mock_file_repo):
+        """Битый payload → error-блок agent_file_invalid, в chat_files ничего не пишем."""
+        entries = parse_media_items([
+            {"file_id": "data:text/plain;base64,!!!", "filename": "broken.txt"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "error"
+        assert blocks[0]["code"] == "agent_file_invalid"
+        assert "broken.txt" in blocks[0]["message"]
+        mock_file_repo.create.assert_not_awaited()
+
+    async def test_empty_payload_becomes_error_block(self, mock_file_repo):
+        """Пустое вложение → error-блок: chat_files.file_size под CHECK (> 0)."""
+        entries = parse_media_items([
+            {"file_id": "data:text/plain;base64,", "filename": "empty.txt"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "error"
+        assert blocks[0]["code"] == "agent_file_invalid"
+        assert "пуст" in blocks[0]["message"]
+        mock_file_repo.create.assert_not_awaited()
+
+    async def test_image_mime_gives_image_block_with_uuid(self, mock_file_repo):
+        """image/* → блок image с UUID из chat_files (а не с data-URL)."""
+        entries = parse_media_items([
+            {"file_id": _data_url("image/png", b"\x89PNG\r\n\x1a\n"), "filename": "pic.png"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "image"
+        uuid.UUID(blocks[0]["file_id"])
+        assert blocks[0]["alt"] == "pic.png"
+
+    async def test_uuid_and_http_entries_pass_through(self, mock_file_repo):
+        """kind='uuid' и 'http' в chat_files не пишутся — блок как в _entry_to_block."""
+        known_uuid = str(uuid.uuid4())
+        entries = parse_media_items([
+            {"file_id": known_uuid, "filename": "att.png", "mime_type": "image/png"},
+            {"file_id": "https://example.com/doc.pdf", "filename": "doc.pdf",
+             "mime_type": "application/pdf", "file_size": 10},
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0] == {"type": "image", "file_id": known_uuid, "alt": "att.png"}
+        assert blocks[1]["type"] == "file"
+        assert blocks[1]["file_id"] == "https://example.com/doc.pdf"
+        mock_file_repo.create.assert_not_awaited()
+
+    async def test_other_and_empty_kinds_give_card_without_file_id(self, mock_file_repo):
+        """kind='other'/'empty' → карточка без file_id (битый путь агента не станет 404-ссылкой)."""
+        entries = parse_media_items([
+            {"file_id": "/tmp/agent/out.txt", "filename": "out.txt", "mime_type": "text/plain"},
+            {"file_id": "", "filename": "nofile.txt", "mime_type": "text/plain"},
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert all(b["type"] == "file" and "file_id" not in b for b in blocks)
+        mock_file_repo.create.assert_not_awaited()
+
+    async def test_any_mime_accepted(self, mock_file_repo):
+        """Whitelist аплоада НЕ применяется ко входящим: application/zip сохраняется."""
+        entries = parse_media_items([
+            {"file_id": _data_url("application/zip", b"PK\x03\x04"), "filename": "arc.zip"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "file"
+        assert mock_file_repo.create.call_args.kwargs["mime_type"] == "application/zip"
+
+    async def test_filename_sanitized(self, mock_file_repo):
+        """Разделители пути и null-byte вычищаются; пустое имя → file_<idx> по MIME."""
+        entries = parse_media_items([
+            {"file_id": _data_url("text/plain", b"a"), "filename": "..\\..\\evil\x00.txt"},
+            {"file_id": _data_url("text/plain", b"b"), "filename": ""},
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        first = mock_file_repo.create.await_args_list[0].kwargs["filename"]
+        assert "\\" not in first and "/" not in first and "\x00" not in first
+        second = mock_file_repo.create.await_args_list[1].kwargs["filename"]
+        assert second.startswith("file_1")
+        assert blocks[1]["filename"] == second
+
+    async def test_empty_entries_give_no_blocks(self, mock_file_repo):
+        """Пустой вход — пустой список блоков, БД не трогаем."""
+        blocks = await materialize_media_entries(
+            [],
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks == []
+        mock_file_repo.create.assert_not_awaited()
+
+
+# ── Дефолты лимитов вложений ──────────────────────────────────────────────────
+
+
+class TestFileSizeDefaults:
+    """Потолок вложений согласован с шиной агента: 512 МБ."""
+
+    def test_upload_and_bus_limits_are_512mb(self):
+        s = ChatDomainSettings()
+        assert s.max_file_size == 536870912
+        assert s.max_total_file_size == 536870912
+        assert s.agent_channel.max_media_file_size == 536870912
 
 
 # ── AgentChannelService.submit ────────────────────────────────────────────────
@@ -846,7 +1131,8 @@ class TestPollOnce:
         self, mock_conn, settings
     ):
         """C1: media в финальных блоках приходит из get_media_by_uid(answer id), не из
-        get_answer_for_question (узкая проекция её больше не отдаёт)."""
+        get_answer_for_question (узкая проекция её больше не отдаёт). Готовый UUID
+        агента проходит насквозь — материализовать нечего."""
         question = {"id": "q-uid", "status": "completed", "reply_to": None}
         answer = {
             "id": "a-uid",
@@ -880,6 +1166,54 @@ class TestPollOnce:
         media_blocks = [b for b in blocks if b["type"] == "image"]
         assert len(media_blocks) == 1
         assert media_blocks[0]["file_id"] == file_id
+
+    async def test_answer_completed_materializes_data_url_media(
+        self, mock_conn, settings
+    ):
+        """data-URL из шины материализуется в chat_files, в финальный блок уходит UUID."""
+        question = {"id": "q-uid", "chat_id": "conv-7", "status": "completed", "reply_to": None}
+        answer = {
+            "id": "a-uid",
+            "role": "assistant",
+            "content": "Ответ с файлом",
+            "metadata": {},
+            "buttons": None,
+            "media": None,
+            "reply_to": "q-uid",
+            "status": "completed",
+        }
+
+        svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
+            mock_conn, settings, question=question, answer=answer
+        )
+        fake_agent_repo.get_media_by_uid = AsyncMock(
+            return_value=[{
+                "file_id": "data:text/plain;base64,0J/RgNC40LLQtdGC",
+                "filename": "привет.txt",
+            }]
+        )
+        fake_file_repo = AsyncMock()
+        fake_file_repo.create = AsyncMock(return_value={"id": "saved"})
+
+        with patch(
+            "app.domains.chat.services.agent_channel.FileRepository",
+            return_value=fake_file_repo,
+        ):
+            res = await svc.poll_once(
+                assistant_message_id="msg-1",
+                question_uid="q-uid",
+            )
+
+        assert res["outcome"] == "done"
+        saved = fake_file_repo.create.call_args.kwargs
+        assert saved["conversation_id"] == "conv-7"
+        assert saved["message_id"] == "msg-1"
+        assert saved["file_data"] == "Привет".encode("utf-8")
+        blocks = fake_msg_repo.finalize.call_args.kwargs["final_blocks"]
+        file_blocks = [b for b in blocks if b["type"] == "file"]
+        assert len(file_blocks) == 1
+        assert file_blocks[0]["file_id"] == saved["id"]
+        uuid.UUID(file_blocks[0]["file_id"])
 
     async def test_answer_failed_marks_failed_and_returns_done(
         self, mock_conn, settings

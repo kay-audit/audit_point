@@ -37,6 +37,10 @@ class AgentChannelSettings(BaseModel):
     # движение очереди (см. poller) сбрасывает отсчёт.
     claim_timeout_sec: int = Field(default=1800, gt=0)  # 30 минут
     max_block_text_size: int = Field(default=262144, gt=0)
+    # Максимальный размер ОДНОГО вложения, проходящего через шину (в обе
+    # стороны). Входящее сверх лимита не материализуется — вместо файла
+    # пользователь получает error-блок; исходящее пропускается с warning.
+    max_media_file_size: int = Field(default=512 * 1024 * 1024, gt=0)
 
 
 class LLMHealthProbeSettings(BaseModel):
@@ -222,7 +226,9 @@ class ChatDomainSettings(BaseModel):
     history_full_context_depth: int = Field(default=5, ge=1)
 
     # Файлы
-    max_file_size: int = Field(default=10 * 1024 * 1024, gt=0)
+    # Потолок согласован с шиной агента (AgentChannelSettings.max_media_file_size):
+    # файл, который пользователь может отправить агенту, должен пройти и обратно.
+    max_file_size: int = Field(default=512 * 1024 * 1024, gt=0)
     # Жёсткий whitelist точных MIME-типов (БЕЗ подстановок). Сравнение
     # производится посимвольно — браузерные "text/html; charset=utf-8"
     # отклоняются, что блокирует попытки залить HTML под видом текста.
@@ -242,7 +248,9 @@ class ChatDomainSettings(BaseModel):
         "image/webp",
     ]
     max_files_per_message: int = Field(default=5, gt=0)
-    max_total_file_size: int = Field(default=30 * 1024 * 1024, gt=0)
+    # Тот же потолок, что и на одиночный файл: суммарный размер вложений
+    # сообщения не должен резать то, что шина агента пропускает поштучно.
+    max_total_file_size: int = Field(default=512 * 1024 * 1024, gt=0)
 
     @field_validator("allowed_mime_types")
     @classmethod

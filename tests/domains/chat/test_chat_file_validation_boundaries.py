@@ -1,7 +1,7 @@
 """Граничные тесты валидации файлов чата.
 
 Покрывает:
-- Точные границы ``max_file_size`` (10 MB): размер == max — проходит,
+- Точные границы ``max_file_size``: размер == max — проходит,
   размер == max+1 — падает с ``ChatFileValidationError``.
 - UTF-8 charset fallback: text/plain с ``charset=invalid`` остаётся валидным
   text/plain, парсер падать не должен.
@@ -51,7 +51,7 @@ def clean_registries():
 
 @pytest.fixture
 def settings() -> ChatDomainSettings:
-    """Настройки чата с дефолтным max_file_size = 10 MB."""
+    """Настройки чата с дефолтным max_file_size (512 МБ)."""
     return ChatDomainSettings()
 
 
@@ -71,12 +71,12 @@ def file_service(settings: ChatDomainSettings) -> FileService:
 
 
 class TestFileSizeBoundary:
-    """Точные границы ``max_file_size`` (10 MB)."""
+    """Точные границы ``max_file_size``."""
 
     def test_exact_max_size_passes(
         self, file_service: FileService, settings: ChatDomainSettings,
     ):
-        """Размер ровно ``max_file_size`` (10 MB) — проходит валидацию."""
+        """Размер ровно ``max_file_size`` — проходит валидацию."""
         # Ровно лимит — допустимо
         file_service.validate_file(
             filename="exact.pdf",

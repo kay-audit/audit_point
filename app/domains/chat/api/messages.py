@@ -192,6 +192,7 @@ async def send_message(
                 file_blocks,
                 conversation_id=conversation_id,
                 file_repo=FileRepository(get_executor()),
+                max_size=file_service.settings.agent_channel.max_media_file_size,
             )
         question_uid = await channel_service.submit(
             conversation_id=conversation_id,

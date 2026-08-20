@@ -116,6 +116,7 @@ async def _handle_forward_terminal(
                     file_blocks,
                     conversation_id=conversation_id,
                     file_repo=FileRepository(conn),
+                    max_size=orch.settings.agent_channel.max_media_file_size,
                 )
             question_uid = await channel.submit(
                 conversation_id=conversation_id,
