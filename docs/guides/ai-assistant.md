@@ -123,7 +123,7 @@ always / forward: submit вопроса в шину + черновик (status='
 | `ChatAnalyticsService` | `chat_analytics_service.py` | Аналитика чата для admin-просмотра (только чтение): сводные метрики фидбэка (`get_stats`), список оценок с текстом ответа (`list_feedback`), инспектор диалога с classify_route/outcome (`inspect_conversation`) |
 | `LLMHealthProbe` | `llm_health_probe.py` | Process-level фоновый probe primary-LLM при открытом circuit breaker: adaptive-backoff, пингует `client.models.list()` (для redis-маршрута это чтение heartbeat'а воркера с `require_healthy=True`), закрывает breaker через `probe_succeeded()` при восстановлении — перепроверка уходит из пути пользователя в фон |
 | `TextCorrectorService` | `text_actions/corrector_service.py` | Фича «Корректор»: один синхронный LLM-вызов над выделенным текстом в режиме `fix` / `readability` (см. [7.10](#710-text-actions-корректор-и-формализация-нарушения)) |
-| `ViolationFormalizerService` | `text_actions/formalizer_service.py` | Формализация нарушения: 4 параллельных JSON-экстрактора + этап рекомендаций → поля карточки нарушения |
+| `ViolationFormalizerService` | `text_actions/formalizer_service.py` | Формализация нарушения: конвейер D17 в две стадии — 4 параллельных JSON-экстрактора, затем параллельно сборщик отчёта и рекомендации → поля карточки нарушения |
 | `resolve_target` | `text_actions/llm_route.py` | Выбор клиента и модели для text-action по плану доступных маршрутов (тот же план, что у чата) |
 | `route_classifier` | `route_classifier.py` | Чистые функции классификации маршрута/исхода ответа ассистента: `classify_route` (`kb_agent`/`non_kb_llm`/`smalltalk`/`unknown`) и `outcome` (`ok`/`error`) — восстанавливаются из сохранённого сообщения без изменения hot-path оркестратора |
 
@@ -825,8 +825,8 @@ async def open_act_page_handler(
 
 | Эндпоинт | Сервис | Что делает |
 |---|---|---|
-| `POST /text-actions/correct` | `TextCorrectorService.correct(text, mode)` | `mode="fix"` — орфография/пунктуация (`AUDITOR_SYSTEM_PROMPT`, температура `CORRECTOR_TEMPERATURE` = 0.1); `mode="readability"` — читаемость/структура (`READABILITY_SYSTEM_PROMPT`, `READABILITY_TEMPERATURE` = 0.3). Один вызов, ответ — исправленный текст |
-| `POST /text-actions/formalize-violation` | `ViolationFormalizerService.formalize(text)` | 4 JSON-экстрактора параллельно (`asyncio.gather`: суть/нормдок, причины+ответственные, последствия, меры) + 2-й этап «рекомендации, чего не хватает». Сбой отдельного экстрактора → пустое поле, а не 500 |
+| `POST /text-actions/correct` | `TextCorrectorService.correct(text, mode)` | `mode="fix"` — орфография/пунктуация (`AUDITOR_SYSTEM_PROMPT`, температура `CORRECTOR_TEMPERATURE` = 0.1); `mode="readability"` — улучшайзер «Пиши, сокращай» (`READABILITY_SYSTEM_PROMPT`, `READABILITY_TEMPERATURE` = 0.1). Один вызов LLM; в режиме `readability` ответ дополнительно несёт `readability: {before, after}` — метрики детерминированного анализатора D17 (`readability_analyzer.py`, оба замера через `run_in_threadpool`), при его сбое `null` |
+| `POST /text-actions/formalize-violation` | `ViolationFormalizerService.formalize(text)` | Стадия 1 — 4 JSON-экстрактора параллельно (`asyncio.gather`: суть/нормдок, причины+ответственные, последствия, меры); стадия 2 — тоже параллельно — сборщик отчёта (`VIOLATION_SYSTEM`, переписывает извлечённое в официально-деловой текст полей) и «рекомендации, чего не хватает». Сбой отдельного экстрактора → пустое поле, а не 500; сбой сборщика → поля собираются напрямую из экстракторов |
 
 **Маршрут выбирается, а не берётся из настроек.** `resolve_target` строит тот же план доступных маршрутов, что и чат, и отдаёт клиента с моделью первого живого. Без этого text-actions всегда били бы в `CHAT__PROFILE`: при `redis-bridge,openai` и воркере, поднятом только под gigachat, чат отвечал через fallback, а корректор на том же стенде отдавал 503. Если живых маршрутов нет, запрос не уходит вовсе — сразу `TextActionUnavailableError` (503).
 
