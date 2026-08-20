@@ -28,6 +28,7 @@ chat_files. Блок формата chat_messages.content ({type:"file", file_id
 
 import base64
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -108,13 +109,121 @@ def _normalize_button(btn: dict, idx: int) -> dict:
     }
 
 
-def map_answer_to_blocks(row: dict, max_block_text_size: int = 262144) -> list[dict]:
+_DATA_URL_HEAD_RE = re.compile(r"^data:([^;,]*)(?:;[^,]*)*,", re.DOTALL)
+
+
+def _classify_file_id(value) -> str:
+    """Вид file_id: 'data' | 'http' | 'uuid' | 'other' | 'empty'."""
+    if not value or not isinstance(value, str):
+        return "empty"
+    if value.startswith("data:"):
+        return "data"
+    if value.startswith(("http://", "https://")):
+        return "http"
+    try:
+        uuid.UUID(value)
+        return "uuid"
+    except (ValueError, AttributeError, TypeError):
+        return "other"
+
+
+def _data_url_mime_and_size(data_url: str) -> tuple[str, int]:
+    """(mime, приблизительный размер байт) из data-URL без декодирования payload.
+
+    Размер оценивается как len(base64)*3/4 — точность достаточна для
+    отображения и лимитов, а декодировать сотни МБ ради длины не нужно.
+    """
+    m = _DATA_URL_HEAD_RE.match(data_url)
+    mime = (m.group(1).strip().lower() if m else "") or "application/octet-stream"
+    comma = data_url.find(",")
+    payload_len = max(len(data_url) - comma - 1, 0) if comma >= 0 else 0
+    return mime, payload_len * 3 // 4
+
+
+def parse_media_items(media) -> list[dict]:
+    """Нормализует bus.media в список записей единой формы (best-effort).
+
+    Принимает список/одиночный объект/строку; элемент — dict схемы NanoBot
+    ({file_id|url, filename|name, mime_type, file_size}) либо строка-data-URL
+    (runtime-формат NanoBot). Кривой элемент пропускается с warning — один
+    битый файл не должен ронять весь ответ (H3 аудита).
+    """
+    if media is None:
+        return []
+    if isinstance(media, (dict, str)):
+        media = [media]
+    if not isinstance(media, list):
+        logger.warning("parse_media_items: media неожиданного типа %s — пропускаем", type(media).__name__)
+        return []
+    out: list[dict] = []
+    for i, item in enumerate(media):
+        try:
+            if isinstance(item, str):
+                if not item.startswith("data:"):
+                    logger.warning("parse_media_items: строковый элемент media[%d] не data-URL — пропускаем", i)
+                    continue
+                mime, size = _data_url_mime_and_size(item)
+                out.append({"file_id": item, "filename": "", "mime_type": mime,
+                            "file_size": size, "kind": "data"})
+                continue
+            if not isinstance(item, dict):
+                logger.warning("parse_media_items: элемент media[%d] типа %s — пропускаем", i, type(item).__name__)
+                continue
+            file_id = item.get("file_id") or item.get("url") or ""
+            kind = _classify_file_id(file_id)
+            mime = str(item.get("mime_type") or "")
+            try:
+                size = int(item.get("file_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if kind == "data" and (not mime or not size):
+                d_mime, d_size = _data_url_mime_and_size(file_id)
+                mime = mime or d_mime
+                size = size or d_size
+            out.append({
+                "file_id": file_id if isinstance(file_id, str) else "",
+                "filename": str(item.get("filename") or item.get("name") or ""),
+                "mime_type": mime,
+                "file_size": size,
+                "kind": kind,
+            })
+        except Exception:
+            logger.warning("parse_media_items: не удалось разобрать media[%d] — пропускаем", i, exc_info=True)
+    return out
+
+
+def _entry_to_block(entry: dict) -> dict:
+    """Запись parse_media_items → блок чата (без материализации).
+
+    kind='other'/'empty' → карточка без file_id (фронт не рисует кнопок —
+    битые пути агента не превращаются в 404-ссылки, M2 аудита).
+    """
+    file_id = entry["file_id"] if entry["kind"] in ("data", "http", "uuid") else ""
+    if entry["mime_type"].startswith("image/") and file_id:
+        return {"type": "image", "file_id": file_id, "alt": entry["filename"]}
+    block = {
+        "type": "file",
+        "filename": entry["filename"],
+        "mime_type": entry["mime_type"],
+        "file_size": entry["file_size"],
+    }
+    if file_id:
+        block["file_id"] = file_id
+    return block
+
+
+def map_answer_to_blocks(
+    row: dict, max_block_text_size: int = 262144, media_blocks: list[dict] | None = None
+) -> list[dict]:
     """Маппит строку-ответ chat_agent_messages_bus в блоки чата.
 
     Порядок: reasoning (metadata.reasoning, legacy metadata.thinking) →
     text (content) → buttons → media.
     block_id кнопок и reasoning: ``f"{row['id']}:btn:0"`` / ``f"{row['id']}:reasoning:0"``.
     Тексты обрезаются через _trim_text_if_oversized.
+    ``media_blocks`` — готовые блоки от материализатора (Task 4); при
+    ``None`` секция media строится best-effort из ``row["media"]`` через
+    ``parse_media_items`` (passthrough, как раньше).
     """
     row_id = row.get("id", "unknown")
     blocks: list[dict] = []
@@ -158,33 +267,12 @@ def map_answer_to_blocks(row: dict, max_block_text_size: int = 262144) -> list[d
             "block_id": f"{row_id}:btn:0",
         })
 
-    # 4. media
-    media = row.get("media")
-    if media is not None:
-        # Одиночный объект → оборачиваем в список.
-        if isinstance(media, dict):
-            media = [media]
-        if isinstance(media, list):
-            for item in media:
-                if not isinstance(item, dict):
-                    continue
-                mime = item.get("mime_type", "")
-                file_id = item.get("file_id", item.get("url", ""))
-                filename = item.get("filename", item.get("name", ""))
-                if mime.startswith("image/"):
-                    blocks.append({
-                        "type": "image",
-                        "file_id": file_id,
-                        "alt": filename,
-                    })
-                else:
-                    blocks.append({
-                        "type": "file",
-                        "file_id": file_id,
-                        "filename": filename,
-                        "mime_type": mime,
-                        "file_size": int(item.get("file_size", 0)),
-                    })
+    # 4. media: готовые блоки от материализатора (Task 4) либо passthrough.
+    if media_blocks is not None:
+        blocks.extend(media_blocks)
+    else:
+        for entry in parse_media_items(row.get("media")):
+            blocks.append(_entry_to_block(entry))
 
     return blocks
 

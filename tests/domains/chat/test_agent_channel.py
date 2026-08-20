@@ -6,6 +6,7 @@ AgentChannelService.poll_once, AgentChannelService.get_queue_details.
 """
 
 import base64
+import uuid
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from app.domains.chat.services.agent_channel import (
     build_bus_media_from_file_blocks,
     build_timeout_error_block,
     map_answer_to_blocks,
+    parse_media_items,
 )
 from app.domains.chat.settings import ChatDomainSettings
 
@@ -125,18 +127,19 @@ class TestMapAnswerToBlocks:
         assert btn_blocks[0]["buttons"][1]["params"] == {}  # дефолт
 
     def test_media_image_by_mime(self):
-        """media с image/* mime → блок type='image'."""
+        """media с image/* mime и валидным (uuid) file_id → блок type='image'."""
+        file_id = str(uuid.uuid4())
         row = {
             "id": "a2",
             "content": None,
             "metadata": {},
             "buttons": None,
-            "media": [{"file_id": "f1", "filename": "photo.jpg", "mime_type": "image/jpeg"}],
+            "media": [{"file_id": file_id, "filename": "photo.jpg", "mime_type": "image/jpeg"}],
         }
         blocks = map_answer_to_blocks(row)
         assert len(blocks) == 1
         assert blocks[0]["type"] == "image"
-        assert blocks[0]["file_id"] == "f1"
+        assert blocks[0]["file_id"] == file_id
         assert blocks[0]["alt"] == "photo.jpg"
 
     def test_media_non_image_file_block(self):
@@ -167,7 +170,7 @@ class TestMapAnswerToBlocks:
             "content": None,
             "metadata": {},
             "buttons": None,
-            "media": {"file_id": "f3", "filename": "x.png", "mime_type": "image/png"},
+            "media": {"file_id": str(uuid.uuid4()), "filename": "x.png", "mime_type": "image/png"},
         }
         blocks = map_answer_to_blocks(row)
         assert len(blocks) == 1
@@ -204,7 +207,7 @@ class TestMapAnswerToBlocks:
             "content": "Текст",
             "metadata": {"thinking": "Рассуждение"},
             "buttons": [{"action_id": "a", "label": "Кнопка"}],
-            "media": [{"file_id": "f", "filename": "pic.png", "mime_type": "image/png"}],
+            "media": [{"file_id": str(uuid.uuid4()), "filename": "pic.png", "mime_type": "image/png"}],
         }
         blocks = map_answer_to_blocks(row)
         types = [b["type"] for b in blocks]
@@ -240,6 +243,71 @@ class TestMapAnswerToBlocks:
         assert blocks[0]["type"] == "reasoning"
         assert blocks[0]["content"].endswith("…[обрезано]")
         assert len(blocks[0]["content"].encode("utf-8")) <= 30
+
+
+# ── parse_media_items (H3: устойчивый парсинг media) ──────────────────────────
+
+
+class TestParseMediaItemsRobustness:
+
+    def test_mime_none_does_not_crash(self):
+        items = parse_media_items([{"file_id": "data:image/png;base64,QQ==", "mime_type": None, "filename": "a.png", "file_size": 1}])
+        assert items[0]["mime_type"].startswith("image/")  # взят из data-URL
+
+    def test_file_size_none_and_str(self):
+        items = parse_media_items([
+            {"file_id": "data:text/plain;base64,QQ==", "file_size": None},
+            {"file_id": "data:text/plain;base64,QQ==", "file_size": "неизвестно"},
+        ])
+        assert [i["file_size"] for i in items] == [0, 0] or all(isinstance(i["file_size"], int) for i in items)
+
+    def test_one_broken_item_does_not_drop_others(self):
+        items = parse_media_items([object(), {"file_id": "data:text/plain;base64,QQ==", "filename": "ok.txt"}])
+        assert len(items) == 1 and items[0]["filename"] == "ok.txt"
+
+    def test_string_data_url_item_accepted(self):
+        items = parse_media_items(["data:image/png;base64,QQ=="])
+        assert items[0]["kind"] == "data" and items[0]["mime_type"] == "image/png"
+
+    def test_string_non_data_item_skipped_with_warning(self, caplog):
+        assert parse_media_items(["/home/agent/report.xlsx"]) == []
+        assert "media" in caplog.text.lower() or caplog.records
+
+    def test_http_and_local_path_and_uuid_classified(self):
+        kinds = [parse_media_items([{"file_id": v}])[0]["kind"] for v in (
+            "https://example.org/f.xlsx", str(uuid.uuid4()), "C:/tmp/f.xlsx")]
+        assert kinds == ["http", "uuid", "other"]
+
+
+class TestMapAnswerToBlocksMediaKind:
+
+    def test_other_kind_file_block_has_no_file_id(self):
+        """kind='other' (не uuid/data/http) → карточка без file_id (M2)."""
+        row = {
+            "id": "a7",
+            "content": None,
+            "metadata": {},
+            "buttons": None,
+            "media": [{"file_id": "C:/tmp/report.xlsx", "filename": "report.xlsx", "mime_type": "application/octet-stream"}],
+        }
+        blocks = map_answer_to_blocks(row)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "file"
+        assert "file_id" not in blocks[0]
+
+    def test_http_kind_file_block_has_file_id(self):
+        """kind='http' → file-блок с file_id=URL."""
+        row = {
+            "id": "a8",
+            "content": None,
+            "metadata": {},
+            "buttons": None,
+            "media": [{"file_id": "https://example.org/report.xlsx", "filename": "report.xlsx", "mime_type": "application/octet-stream"}],
+        }
+        blocks = map_answer_to_blocks(row)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "file"
+        assert blocks[0]["file_id"] == "https://example.org/report.xlsx"
 
 
 # ── build_timeout_error_block ─────────────────────────────────────────────────
@@ -791,12 +859,13 @@ class TestPollOnce:
             "status": "completed",
         }
 
+        file_id = str(uuid.uuid4())
         svc, fake_agent_repo, fake_msg_repo = _make_poll_svc(
             mock_conn, settings, question=question, answer=answer
         )
         fake_agent_repo.get_media_by_uid = AsyncMock(
             return_value=[
-                {"file_id": "f9", "filename": "att.png", "mime_type": "image/png"}
+                {"file_id": file_id, "filename": "att.png", "mime_type": "image/png"}
             ]
         )
 
@@ -810,7 +879,7 @@ class TestPollOnce:
         blocks = fake_msg_repo.finalize.call_args.kwargs["final_blocks"]
         media_blocks = [b for b in blocks if b["type"] == "image"]
         assert len(media_blocks) == 1
-        assert media_blocks[0]["file_id"] == "f9"
+        assert media_blocks[0]["file_id"] == file_id
 
     async def test_answer_failed_marks_failed_and_returns_done(
         self, mock_conn, settings
