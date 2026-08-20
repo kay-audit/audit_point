@@ -19,6 +19,7 @@ from app.core.templating import (
 
 
 IMMUTABLE = "public, max-age=31536000, immutable"
+REVALIDATE = "public, max-age=0, must-revalidate"
 
 
 # ---------------------------------------------------------------------
@@ -236,3 +237,61 @@ class TestPathTraversal:
         with pytest.raises(HTTPException) as exc:
             await static.get_response(static.get_path(scope), scope)
         assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------
+# Флаг SECURITY__STATIC_IMMUTABLE
+# ---------------------------------------------------------------------
+
+class TestStaticImmutableFlag:
+    """Политика кеша версионированного пути переключается настройкой.
+
+    На ПРОМе адрес меняется с релизом → вечный кеш. На DEV версия в пути при
+    правке ``.js`` не меняется, поэтому вечный кеш прячет изменения от F5 —
+    там нужен обязательный поход на сервер за ETag.
+    """
+
+    @staticmethod
+    def _client(tmp_path, *, immutable: bool) -> AsyncClient:
+        (tmp_path / "app.js").write_text("export const A = 1;", encoding="utf-8")
+        app = FastAPI()
+        app.mount(
+            "/static",
+            VersionedStaticFiles(directory=str(tmp_path), immutable=immutable),
+            name="static",
+        )
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+    async def test_enabled_serves_immutable(self, tmp_path):
+        async with self._client(tmp_path, immutable=True) as client:
+            response = await client.get("/static/v16.0.0/app.js")
+        assert response.headers["cache-control"] == IMMUTABLE
+
+    async def test_disabled_forces_revalidation(self, tmp_path):
+        async with self._client(tmp_path, immutable=False) as client:
+            response = await client.get("/static/v16.0.0/app.js")
+        assert response.headers["cache-control"] == REVALIDATE
+        # ETag обязан присутствовать — на нём и держится 304.
+        assert response.headers.get("etag")
+
+    async def test_disabled_still_answers_304_by_etag(self, tmp_path):
+        """Выключенный флаг — не «без кеша»: тело повторно не гоняется."""
+        async with self._client(tmp_path, immutable=False) as client:
+            first = await client.get("/static/v16.0.0/app.js")
+            second = await client.get(
+                "/static/v16.0.0/app.js",
+                headers={"if-none-match": first.headers["etag"]},
+            )
+        assert second.status_code == 304
+
+    async def test_flag_does_not_touch_plain_path(self, tmp_path):
+        """Неверсионированный /static/... остаётся на дефолтах StaticFiles."""
+        async with self._client(tmp_path, immutable=False) as client:
+            plain = await client.get("/static/app.js")
+        assert plain.headers.get("cache-control") not in (IMMUTABLE, REVALIDATE)
+
+    def test_settings_default_is_revalidation(self):
+        """Дефолт кода — безопасный для DEV; ПРОМ включает флаг явно."""
+        from app.core.config import SecuritySettings
+
+        assert SecuritySettings().static_immutable is False

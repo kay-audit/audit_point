@@ -542,6 +542,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `SECURITY__FRAME_OPTIONS` | str | `SAMEORIGIN` | `X-Frame-Options`: только `DENY` или `SAMEORIGIN` (Literal) |
 | `SECURITY__REFERRER_POLICY` | str | `strict-origin-when-cross-origin` | Значение `Referrer-Policy` |
 | `SECURITY__PERMISSIONS_POLICY` | str | `camera=(), microphone=(), …` | Значение `Permissions-Policy`; по умолчанию всё запрещено. В шаблонах `.env` не вынесен |
+| `SECURITY__STATIC_IMMUTABLE` | bool | `False` | `Cache-Control` на версионированных путях `/static/v<версия>/…` (`VersionedStaticFiles`, `app/core/templating.py`). `true` — `public, max-age=31536000, immutable` (ПРОМ: адрес меняется с релизом, revalidation не нужен); `false` — `public, max-age=0, must-revalidate`, браузер проверяет ETag (DEV: версия в пути при правке `.js` не меняется, вечный кеш прятал бы изменения). Неверсионированный `/static/…` флаг не затрагивает. `.env.prod` — `true`, `.env.dev` — `false` |
 
 #### Auth (ОТП/JWT)
 

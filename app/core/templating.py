@@ -89,7 +89,16 @@ class VersionedStaticFiles(StaticFiles):
     Path traversal безопасен: сегмент срезается ДО ``StaticFiles.get_path``,
     поэтому нормализация пути и проверка ``commonpath`` в ``lookup_path``
     остаются на месте — ``/static/v1/../../etc/passwd`` по-прежнему 404.
+
+    ``immutable`` — политика кеша на версионированном пути (см.
+    ``SECURITY__STATIC_IMMUTABLE``). Класс по умолчанию отдаёт вечный кеш,
+    потому что в этом смысл версии в адресе; конкретное окружение решает за
+    себя — mount в ``app/main.py`` передаёт значение из настроек явно.
     """
+
+    def __init__(self, *args, immutable: bool = True, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._immutable = immutable
 
     def get_path(self, scope) -> str:
         stripped, _ = _strip_static_version(scope["path"], scope.get("root_path", ""))
@@ -102,9 +111,17 @@ class VersionedStaticFiles(StaticFiles):
         )
         if is_versioned:
             # Адрес меняется с каждым релизом, поэтому вечный кеш безопасен и
-            # снимает revalidation-запросы. Неверсионированный /static/...
-            # остаётся на дефолтных ETag/Last-Modified.
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            # снимает revalidation-запросы. Когда флаг выключен (DEV), кешировать
+            # ответ по-прежнему разрешаем, но с нулевым временем свежести: браузер
+            # обязан сходить на сервер и получит 304 по ETag, который StaticFiles
+            # ставит сам. Явное `must-revalidate` нужно, чтобы кеш не отдавал
+            # протухшее в оффлайне. Неверсионированный /static/... в обоих
+            # случаях остаётся на дефолтных ETag/Last-Modified.
+            response.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable"
+                if self._immutable
+                else "public, max-age=0, must-revalidate"
+            )
         return response
 
 

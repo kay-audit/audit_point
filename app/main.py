@@ -353,7 +353,10 @@ def create_app() -> FastAPI:
     # /static/v<версия>/<путь> (cache-busting, см. VersionedStaticFiles).
     app.mount(
         "/static",
-        VersionedStaticFiles(directory=str(settings.static_dir)),
+        VersionedStaticFiles(
+            directory=str(settings.static_dir),
+            immutable=settings.security.static_immutable,
+        ),
         name="static"
     )
 
