@@ -88,6 +88,28 @@ test('collectTableWarnings: нет строки заголовка → одно 
   assert.equal(warnings[0].issue, 'нет строки заголовка');
 });
 
+test('collectTableWarnings: нет заголовка И нет данных → два замечания (зеркало сервера)', () => {
+  // Сервер отдаёт `table_no_header` веткой if/elif, а `table_no_data` — ОТДЕЛЬНЫМ
+  // if, поэтому для такой таблицы приходят ОБА замечания. Клиент — единственная
+  // поверхность, которая их показывает (серверный источник подавляет табличные
+  // коды), значит обязан считать обе проверки, а не обрываться на первой.
+  // Ветка «не заполнены заголовки» не срабатывает: hasEmptyHeaders при нулевой
+  // шапке возвращает false ранним выходом.
+  const tables = {
+    t1: {
+      grid: [
+        row([{ content: '' }, { content: '' }]),
+      ],
+    },
+  };
+  const warnings = collectTableWarnings(tables, nameById);
+  assert.equal(warnings.length, 2);
+  const byIssue = new Map(warnings.map((w) => [w.issue, w]));
+  assert.equal(byIssue.get('нет строки заголовка')?.severity, 'error');
+  assert.equal(byIssue.get('нет данных')?.severity, 'warning');
+  assert.equal(byIssue.has('не заполнены заголовки'), false);
+});
+
 test('collectTableWarnings: пустая ячейка шапки → error «не заполнены заголовки»', () => {
   const tables = {
     t1: {

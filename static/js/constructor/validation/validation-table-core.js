@@ -198,6 +198,11 @@ export function hasStructuralDefect(grid, colWidths) {
  *     см. SUPPRESSED_CODES), поэтому расхождение критичности было бы видимым.
  *   - 'warning' (оранжевый) — неполнота: нет данных (E5).
  *
+ * Отсутствие шапки НЕ отменяет проверку данных: сервер отдаёт `table_no_data`
+ * отдельным `if` (а не веткой `elif`), поэтому таблица без шапки и без данных
+ * даёт ДВА замечания. Ветка «не заполнены заголовки» при этом не сработает —
+ * `hasEmptyHeaders` при нулевой шапке возвращает false ранним выходом.
+ *
  * @param {Object<string,{grid?:Object[][], colWidths?:number[]}>} tables Словарь таблиц (tableId → таблица).
  * @param {(tableId:string)=>string} getTableName Резолвер имени таблицы по id.
  * @returns {Array<{tableId:string, tableName:string, issue:string, severity:'error'|'warning'}>}
@@ -214,7 +219,7 @@ export function collectTableWarnings(tables, getTableName) {
     // Ленивое разрешение имени: getTableName делает DFS по дереву, а валидные
     // таблицы (большинство) не дают ни одного замечания. Резолвим имя только при
     // первом push-сайте; мемо гарантирует максимум один DFS на проблемную
-    // таблицу (ветки hasEmptyHeaders и !hasDataRows могут сработать обе).
+    // таблицу (контентные ветки могут сработать по две сразу).
     let resolvedName;
     const nameOf = () => (resolvedName ??= getTableName(tableId));
 
@@ -225,7 +230,6 @@ export function collectTableWarnings(tables, getTableName) {
 
     if (countHeaderRows(grid) === 0) {
       warnings.push({ tableId, tableName: nameOf(), issue: 'нет строки заголовка', severity: 'error' });
-      continue;
     }
     if (hasEmptyHeaders(grid)) {
       warnings.push({ tableId, tableName: nameOf(), issue: 'не заполнены заголовки', severity: 'error' });
