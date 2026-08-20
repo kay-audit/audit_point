@@ -227,6 +227,10 @@ def _sanitize_agent_filename(name: str, mime: str, idx: int) -> str:
 
     Те же правила, что FileService.validate_file для аплоада; пустое или
     служебное имя заменяется на file_<idx> с расширением по MIME.
+
+    Имя обрезается до 500 символов — ширина колонки chat_files.filename.
+    Переполнение уронило бы INSERT, и весь ответ агента дошёл бы до
+    пользователя только по таймауту (тот же класс отказа, что H3).
     """
     name = (name or "").strip()
     for ch in ("/", "\\", "\x00"):
@@ -234,7 +238,7 @@ def _sanitize_agent_filename(name: str, mime: str, idx: int) -> str:
     if name in ("", ".", ".."):
         ext = mimetypes.guess_extension(mime or "") or ""
         name = f"file_{idx}{ext}"
-    return name
+    return name[:500]
 
 
 def _file_error_block(code: str, filename: str, message: str) -> dict:

@@ -111,7 +111,12 @@ class DatabaseSettings(BaseModel):
 
 class SecuritySettings(BaseModel):
     """Лимиты безопасности."""
-    max_request_size: int = Field(default=10 * 1024 * 1024, gt=0)
+    # 520 МБ: 512 МБ файлов чата (CHAT__MAX_TOTAL_FILE_SIZE) + запас на
+    # multipart-оверхед и текст сообщения. Лимит глобальный (режет ЛЮБОЙ
+    # запрос до доменной валидации), согласован с потолком вложений шины
+    # агента — иначе поднятые лимиты чата были бы недостижимы: аплоад
+    # отбивался бы 413 в RequestSizeLimitMiddleware.
+    max_request_size: int = Field(default=545259520, gt=0)
     rate_limit_per_minute: int = Field(default=1024, gt=0)
     max_tracked_ips: int = 100
     rate_limit_ttl: int = 120

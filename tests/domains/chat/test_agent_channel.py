@@ -737,6 +737,25 @@ class TestMaterializeMediaEntries:
         assert second.startswith("file_1")
         assert blocks[1]["filename"] == second
 
+    async def test_filename_truncated_to_column_width(self, mock_file_repo):
+        """Имя длиннее 500 символов обрезается: колонка chat_files.filename VARCHAR(500)."""
+        entries = parse_media_items([
+            {"file_id": _data_url("text/plain", b"a"), "filename": "и" * 600 + ".txt"}
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        saved = mock_file_repo.create.call_args.kwargs["filename"]
+        assert len(saved) == 500
+        assert blocks[0]["filename"] == saved
+
     async def test_empty_entries_give_no_blocks(self, mock_file_repo):
         """Пустой вход — пустой список блоков, БД не трогаем."""
         blocks = await materialize_media_entries(
