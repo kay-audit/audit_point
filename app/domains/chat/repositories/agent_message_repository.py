@@ -1,5 +1,6 @@
 """Репозиторий bus-таблицы chat_agent_messages_bus (канал к внешнему агенту)."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -84,18 +85,19 @@ class AgentMessageRepository(BaseRepository):
 
         ``id`` — uid сообщения-вопроса (его же хранит ``chat_messages.agent_ref``).
         created_at/updated_at передаются явно: таблица чужая, DEFAULT'ы на её
-        стороне не гарантированы, а колонки NOT NULL. media/buttons на
-        стороне владельца тоже NOT NULL без DEFAULT — вместо SQL NULL
-        передаём пустой JSON-объект. Для ``media`` это ещё и соответствие
-        формату колонки: ``map_answer_to_blocks`` (agent_channel.py) уже умеет
-        разворачивать единичный JSON-объект в список — колонка на стороне
-        владельца хранит и объект, и массив вперемешку, не строго массив
-        (``buttons`` у вопроса всегда пуст, кнопки бывают только в ответе
-        агента, и там колонка строго массив — но пустой объект тоже валиден
-        для NOT NULL).
+        стороне не гарантированы, а колонки NOT NULL. ``media`` на стороне
+        владельца — ``JSONB DEFAULT '[]'::jsonb`` (массив): без вложений
+        передаём пустой массив, не SQL NULL. Большой media (base64-вложения)
+        сериализуется в worker-потоке, не в event loop. ``buttons`` у вопроса
+        всегда пуст (кнопки бывают только в ответе агента) — тоже пустой
+        JSON-массив вместо NULL.
 
         Возвращает вставленную запись со всеми колонками.
         """
+        media_json = (
+            await asyncio.to_thread(json.dumps, media, ensure_ascii=False)
+            if media else "[]"
+        )
         row = await self.conn.fetchrow(
             f"""
             INSERT INTO {self.table}
@@ -109,7 +111,7 @@ class AgentMessageRepository(BaseRepository):
             chat_id,
             user_id,
             content,
-            json.dumps(media or {}, ensure_ascii=False),
+            media_json,
             json.dumps(metadata or {}, ensure_ascii=False),
             json.dumps([], ensure_ascii=False),
         )

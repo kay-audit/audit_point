@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.domains.chat.exceptions import ChatLimitError
 from app.domains.chat.services.agent_channel import (
     AgentChannelService,
+    build_bus_media_for_submit,
     build_bus_media_from_file_blocks,
     build_timeout_error_block,
     map_answer_to_blocks,
@@ -346,7 +347,7 @@ class TestBuildBusMediaFromFileBlocks:
     """
 
     async def test_none_returns_none(self):
-        """На None — None (insert_question сериализует как '{}')."""
+        """На None — None (insert_question сериализует как '[]')."""
         fake_repo = AsyncMock()
         result = await build_bus_media_from_file_blocks(
             None,
@@ -508,6 +509,34 @@ class TestBuildBusMediaFromFileBlocks:
         )
 
         assert result is None
+
+
+class TestBuildBusMediaForSubmit:
+    """``build_bus_media_for_submit`` — единая точка конверсии для
+    messages.py и agent_loop.py: строит ``FileRepository`` на ``DbExecutor``
+    (соединение на операцию) сам, без файлов — не трогает БД."""
+
+    async def test_none_without_files_no_db_access(self):
+        """Без file_blocks — None, без обращений к get_executor/FileRepository."""
+        with patch(
+            "app.db.executor.get_executor",
+        ) as mock_get_executor:
+            result = await build_bus_media_for_submit(
+                None, conversation_id="c", max_size=1,
+            )
+        assert result is None
+        mock_get_executor.assert_not_called()
+
+    async def test_empty_list_without_files_no_db_access(self):
+        """Пустой список file_blocks — тоже None, без обращений к БД."""
+        with patch(
+            "app.db.executor.get_executor",
+        ) as mock_get_executor:
+            result = await build_bus_media_for_submit(
+                [], conversation_id="c", max_size=1,
+            )
+        assert result is None
+        mock_get_executor.assert_not_called()
 
 
 # ── materialize_media_entries ─────────────────────────────────────────────────

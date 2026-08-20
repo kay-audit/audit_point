@@ -97,27 +97,22 @@ async def _handle_forward_terminal(
             "token_usage": token_usage,
         }
 
+    # bus.media пишем в формате Nanobot (data-URL inline, без type), а не
+    # chat_messages.content-блоки. Конверсия ДО get_db(): build_bus_media_for_submit
+    # сам работает на исполнителе БД (соединение на операцию) и без файлов
+    # не трогает БД вовсе — соединение из get_db() ниже не удерживается на
+    # время base64-кодирования вложений.
+    from app.domains.chat.services.agent_channel import build_bus_media_for_submit
+
+    bus_media = await build_bus_media_for_submit(
+        file_blocks,
+        conversation_id=conversation_id,
+        max_size=orch.settings.agent_channel.max_media_file_size,
+    )
+
     try:
         async with get_db() as conn:
             channel = AgentChannelService(conn, orch.settings)
-            # bus.media пишем в формате Nanobot (data-URL inline, без type),
-            # а не chat_messages.content-блоки. Без файлов передаём None —
-            # helper вернёт None сразу, не дёргая БД.
-            bus_media = None
-            if file_blocks:
-                from app.domains.chat.repositories.file_repository import (
-                    FileRepository,
-                )
-                from app.domains.chat.services.agent_channel import (
-                    build_bus_media_from_file_blocks,
-                )
-
-                bus_media = await build_bus_media_from_file_blocks(
-                    file_blocks,
-                    conversation_id=conversation_id,
-                    file_repo=FileRepository(conn),
-                    max_size=orch.settings.agent_channel.max_media_file_size,
-                )
             question_uid = await channel.submit(
                 conversation_id=conversation_id,
                 user_id=user_id or "",

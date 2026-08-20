@@ -487,7 +487,7 @@ async def build_bus_media_from_file_blocks(
                 file_id, len(raw), max_size,
             )
             continue
-        encoded = base64.b64encode(raw).decode("ascii")
+        encoded = (await asyncio.to_thread(base64.b64encode, raw)).decode("ascii")
         out.append({
             "file_id": f"data:{mime};base64,{encoded}",
             "filename": row["filename"],
@@ -495,6 +495,30 @@ async def build_bus_media_from_file_blocks(
             "file_size": len(raw),
         })
     return out or None
+
+
+async def build_bus_media_for_submit(
+    file_blocks: list[dict] | None,
+    *,
+    conversation_id: str,
+    max_size: int,
+) -> list[dict] | None:
+    """Единая точка конверсии file_blocks → bus.media для messages.py и agent_loop.py.
+
+    Работает на DbExecutor (соединение на операцию): чтение байт из chat_files
+    не удерживает соединение на время base64-кодирования. Без файлов — None
+    без обращений к БД.
+    """
+    if not file_blocks:
+        return None
+    from app.db.executor import get_executor
+
+    return await build_bus_media_from_file_blocks(
+        file_blocks,
+        conversation_id=conversation_id,
+        file_repo=FileRepository(get_executor()),
+        max_size=max_size,
+    )
 
 
 def _extract_reasoning(answer: dict) -> str:

@@ -133,18 +133,16 @@ async def test_insert_question_media_serialized(mock_conn):
     assert json.loads(params[4]) == media
 
 
-async def test_insert_question_no_media_passes_empty_object(mock_conn):
-    """Если media не передан, в параметр идёт пустой JSON-объект, не NULL.
+async def test_insert_question_media_default_is_empty_list(mock_conn):
+    """Если media не передан, в параметр идёт пустой JSON-массив, не NULL.
 
-    Владелец шины держит media/buttons NOT NULL без DEFAULT — SQL NULL
-    в этих колонках роняет INSERT. Пустой объект (не массив) — потому что
-    колонка media на стороне владельца хранит и объект, и массив вперемешку
-    (map_answer_to_blocks разворачивает единичный объект в список).
+    Владелец шины держит media NOT NULL без DEFAULT (``media JSONB DEFAULT
+    '[]'::jsonb`` — массив) — SQL NULL в этой колонке роняет INSERT.
     """
     mock_conn.fetchrow.return_value = {
         "id": "m", "chat_id": "c", "user_id": "u",
         "role": "user", "content": "x",
-        "media": "{}", "metadata": "{}", "buttons": "[]", "status": "pending",
+        "media": "[]", "metadata": "{}", "buttons": "[]", "status": "pending",
     }
     repo = AgentMessageRepository(mock_conn)
     await repo.insert_question(
@@ -152,7 +150,8 @@ async def test_insert_question_no_media_passes_empty_object(mock_conn):
     )
     _, *params = mock_conn.fetchrow.call_args.args
     assert params[4] is not None
-    assert json.loads(params[4]) == {}  # media
+    assert mock_conn.fetchrow.call_args[0][5] == "[]"
+    assert json.loads(params[4]) == []  # media
 
 
 async def test_insert_question_buttons_always_empty_list(mock_conn):
