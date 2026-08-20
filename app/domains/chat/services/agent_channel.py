@@ -207,9 +207,16 @@ def _entry_to_block(entry: dict) -> dict:
 
     kind='other'/'empty' → карточка без file_id (фронт не рисует кнопок —
     битые пути агента не превращаются в 404-ссылки, M2 аудита).
+
+    kind='http' ВСЕГДА даёт file-блок (карточка со скачиванием), даже при
+    mime image/*: CSP ПРОМа (`img-src 'self' data: blob:`, enforce) блокирует
+    `<img src>` на внешний http(s)-хост — картинка была бы гарантированно
+    битой, а inline-предпросмотр во вьюере файлов заблокирован тем же
+    правилом. image-блок остаётся только для kind='data'/'uuid': оба отдаются
+    через свой домен (data:-URL или GET /chat/files/{id}), CSP их пропускает.
     """
     file_id = entry["file_id"] if entry["kind"] in ("data", "http", "uuid") else ""
-    if entry["mime_type"].startswith("image/") and file_id:
+    if entry["kind"] != "http" and entry["mime_type"].startswith("image/") and file_id:
         return {"type": "image", "file_id": file_id, "alt": entry["filename"]}
     block = {
         "type": "file",

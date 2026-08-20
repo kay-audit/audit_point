@@ -259,11 +259,13 @@ class TestParseMediaItemsRobustness:
         assert items[0]["mime_type"].startswith("image/")  # взят из data-URL
 
     def test_file_size_none_and_str(self):
+        # file_size невалиден (None/строка) → коэрсится в 0, но kind='data' с
+        # size=0 доопределяет размер из самого data-URL (~3 байта для "QQ==").
         items = parse_media_items([
             {"file_id": "data:text/plain;base64,QQ==", "file_size": None},
             {"file_id": "data:text/plain;base64,QQ==", "file_size": "неизвестно"},
         ])
-        assert [i["file_size"] for i in items] == [0, 0] or all(isinstance(i["file_size"], int) for i in items)
+        assert [i["file_size"] for i in items] == [3, 3]
 
     def test_one_broken_item_does_not_drop_others(self):
         items = parse_media_items([object(), {"file_id": "data:text/plain;base64,QQ==", "filename": "ok.txt"}])
@@ -274,8 +276,10 @@ class TestParseMediaItemsRobustness:
         assert items[0]["kind"] == "data" and items[0]["mime_type"] == "image/png"
 
     def test_string_non_data_item_skipped_with_warning(self, caplog):
-        assert parse_media_items(["/home/agent/report.xlsx"]) == []
-        assert "media" in caplog.text.lower() or caplog.records
+        with caplog.at_level("WARNING"):
+            result = parse_media_items(["/home/agent/report.xlsx"])
+        assert result == []
+        assert any("media" in rec.message.lower() for rec in caplog.records)
 
     def test_http_and_local_path_and_uuid_classified(self):
         kinds = [parse_media_items([{"file_id": v}])[0]["kind"] for v in (
@@ -312,6 +316,20 @@ class TestMapAnswerToBlocksMediaKind:
         assert len(blocks) == 1
         assert blocks[0]["type"] == "file"
         assert blocks[0]["file_id"] == "https://example.org/report.xlsx"
+
+    def test_http_kind_image_mime_still_gives_file_block(self):
+        """kind='http' с mime image/* → всё равно file-блок (CSP ПРОМа блокирует inline img на внешний хост)."""
+        row = {
+            "id": "a9",
+            "content": None,
+            "metadata": {},
+            "buttons": None,
+            "media": [{"file_id": "https://example.org/photo.png", "filename": "photo.png", "mime_type": "image/png"}],
+        }
+        blocks = map_answer_to_blocks(row)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "file"
+        assert blocks[0]["file_id"] == "https://example.org/photo.png"
 
 
 # ── build_timeout_error_block ─────────────────────────────────────────────────

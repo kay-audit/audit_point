@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 
 import { ChatRenderer } from '../../static/js/shared/chat/chat-renderer.js';
 import { AppConfig } from '../../static/js/shared/app-config.js';
+import { AuthManager } from '../../static/js/shared/auth.js';
 
 AppConfig.api._baseUrlCache = 'http://test';
 
@@ -148,6 +149,51 @@ test('_openFileViewer: http(s)-ссылка агента (image) остаётс�
         filename: 'f.png',
     }));
     assert.equal(img.src, link);
+});
+
+// ---------------------------------------------------------------------
+// _openFileViewer — текстовая ветка: fetch с/без ?inline=true и auth-заголовков
+// (пин фикса утечки auth-заголовков на внешний http(s)-хост агента)
+// ---------------------------------------------------------------------
+
+/**
+ * Перехватывает вызов fetch внутри ChatRenderer._openFileViewer и подменяет
+ * AuthManager.getAuthHeaders на непустой маркер, чтобы отличить «заголовки
+ * присланы» от «заголовки не присланы».
+ *
+ * @param {Object} block — блок файла, передаётся в _openFileViewer
+ * @returns {{url: string, opts: Object}} — аргументы вызова fetch
+ */
+function withCapturedTextFetch(block) {
+    const origGetAuthHeaders = AuthManager.getAuthHeaders;
+    const origFetch = globalThis.fetch;
+    AuthManager.getAuthHeaders = () => ({ Authorization: 'Bearer test-token' });
+    let call = null;
+    globalThis.fetch = (url, opts) => {
+        call = { url, opts };
+        return Promise.resolve({ text: () => Promise.resolve('') });
+    };
+    try {
+        ChatRenderer._openFileViewer(block);
+        return call;
+    } finally {
+        globalThis.fetch = origFetch;
+        AuthManager.getAuthHeaders = origGetAuthHeaders;
+    }
+}
+
+test('_openFileViewer: текстовый файл (UUID) — fetch с ?inline=true и auth-заголовками', () => {
+    const uuid = '3fa85f64-5717-4562-b3fc-2c963f66afa6';
+    const call = withCapturedTextFetch({ file_id: uuid, mime_type: 'text/plain', filename: 'f.txt' });
+    assert.ok(call.url.endsWith('?inline=true'), call.url);
+    assert.deepEqual(call.opts.headers, { Authorization: 'Bearer test-token' });
+});
+
+test('_openFileViewer: текстовый файл (http(s)-passthrough) — fetch БЕЗ ?inline=true и БЕЗ auth-заголовков', () => {
+    const link = 'https://example.org/notes.txt';
+    const call = withCapturedTextFetch({ file_id: link, mime_type: 'text/plain', filename: 'notes.txt' });
+    assert.equal(call.url, link);
+    assert.equal(call.opts.headers, undefined);
 });
 
 // ---------------------------------------------------------------------
