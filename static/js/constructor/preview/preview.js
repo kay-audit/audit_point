@@ -491,11 +491,20 @@ export class PreviewManager {
 
     /**
      * Рендерит заголовок пункта
+     *
+     * Уровень тега (h2…h4) несёт СТРУКТУРУ документа, а не оформление: кегль и
+     * начертание у всех уровней одни (12pt bold, как Sizes.body_pt + run.bold в
+     * DOCX::_render_item), их задаёт класс `preview-heading`. Класс обязателен:
+     * allowlist санитайзера пропускает h1–h6 внутрь контента текстблока
+     * (shared/sanitize.js), а такие «чужие» заголовки Word печатает обычным
+     * текстом (_BLOCK_TAGS в docx/builders/inline.py — bold не выставляется).
+     * Правило по голому тегу задело бы и их.
      * @private
      */
     static _renderHeading(child, container, level) {
         const headingLevel = Math.min(level + 1, AppConfig.preview.maxHeadingLevel);
         const heading = document.createElement(`h${headingLevel}`);
+        heading.className = 'preview-heading';
         heading.textContent = child.number ? child.number + '. ' + child.label : child.label;
         container.appendChild(heading);
     }

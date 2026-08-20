@@ -516,3 +516,126 @@ test.describe('Кегль таблиц предпросмотра — по по�
       .toBeCloseTo(PROBE_UI_PX, 1);
   });
 });
+
+test.describe('Заголовки пунктов — печатный кегль, а не UI-шкала', () => {
+  /**
+   * Печатное тело акта: 12pt (Sizes.body_pt) = 16px. Заголовок пункта в Word
+   * идёт ровно этим кеглем и жирным на любой глубине
+   * (docx/formatter.py::_render_item), глубину несёт номер рубрикатора.
+   */
+  const DOC_BODY_PX = 16;
+
+  test('лист A4: все уровни одного печатного кегля и за UI-шкалой не идут', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-sheet').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#preview .preview-heading').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    const probe = () => page.evaluate(() => {
+      const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+      const heads = [...document.querySelectorAll('#preview .preview-heading')] as HTMLElement[];
+      const byTag = new Map<string, number>();
+      for (const h of heads) {
+        if (!byTag.has(h.tagName)) byTag.set(h.tagName, parseFloat(getComputedStyle(h).fontSize));
+      }
+      const first = heads[0];
+      return {
+        sizes: [...byTag.entries()],
+        body: parseFloat(getComputedStyle(sheet).fontSize),
+        weight: getComputedStyle(first).fontWeight,
+        color: getComputedStyle(first).color,
+      };
+    });
+
+    const before = await probe();
+    // Разные уровни вложенности — минимум два тега на сеяном акте, и все они
+    // обязаны дать ОДНО число: в Word ступеней кегля по глубине нет.
+    expect(before.sizes.length).toBeGreaterThan(1);
+    for (const [tag, px] of before.sizes) {
+      expect(px, `${tag} обязан идти печатным кеглем тела`).toBeCloseTo(DOC_BODY_PX, 1);
+    }
+    expect(before.body).toBeCloseTo(DOC_BODY_PX, 1);
+    // Жирный — как run.bold в DOCX; цвет чёрный, как весь лист (серого в акте нет).
+    expect(Number(before.weight)).toBeGreaterThanOrEqual(700);
+    expect(before.color).toBe('rgb(0, 0, 0)');
+
+    // Фальсификация: уводим ВСЮ UI-шкалу заголовков в чужое значение. Раньше
+    // .preview h2/h3/h4 стояли ровно на этих токенах и уехали бы вместе с ней.
+    await page.evaluate((px) => {
+      for (const t of ['xl', 'lg', 'base', 'sm', '2xl']) {
+        document.documentElement.style.setProperty(`--font-size-${t}`, px + 'px');
+      }
+    }, PROBE_UI_PX);
+
+    const after = await probe();
+    for (const [tag, px] of after.sizes) {
+      expect(px, `${tag} уехал вместе с плотностью интерфейса`).toBeCloseTo(DOC_BODY_PX, 1);
+    }
+  });
+
+  test('модалка предпросмотра рисует заголовки так же, как inline-панель', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-heading').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    await page.evaluate(() => (window as any).previewMenuManager.open());
+    await page.locator('#previewMenuBody .preview-heading').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    // Правила заголовков и абзацев были написаны дважды — в preview-typography.css
+    // для .preview и в preview-menu.css для .preview-menu-body — и разошлись
+    // молча (в модалке абзац шёл экранным интервалом 1.75 против печатного 1.15).
+    const m = await page.evaluate(() => {
+      const read = (sel: string) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { size: parseFloat(cs.fontSize), weight: Number(cs.fontWeight) };
+      };
+      return {
+        inline: read('#preview .preview-heading'),
+        modal: read('#previewMenuBody .preview-heading'),
+      };
+    });
+
+    expect(m.modal).not.toBeNull();
+    expect(m.modal!.size).toBeCloseTo(m.inline!.size, 1);
+    expect(m.modal!.size).toBeCloseTo(DOC_BODY_PX, 1);
+    expect(m.modal!.weight).toBe(m.inline!.weight);
+  });
+
+  test('заголовок из контента текстблока печатается плоским текстом', async ({ page }) => {
+    await openStep2(page);
+    await page.locator(EDITOR).evaluate((ed: HTMLElement) => {
+      ed.innerHTML = '<h2>Чужой заголовок</h2><div>Обычная строка</div>';
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+      (window as any).textBlockManager?.finalizeEdit?.(ed);
+      (window as any).Preview?.update?.();
+    });
+    await page.waitForTimeout(600);
+
+    const CONTENT = '#preview .preview-sheet .preview-textblock-content';
+    await page.locator(`${CONTENT} h2`).first().waitFor({ state: 'attached', timeout: 5000 });
+
+    // В DOCX h1–h6 входят в _BLOCK_TAGS (docx/builders/inline.py): тег режется в
+    // абзац базового кегля, bold не выставляется. Лист обязан показывать то же,
+    // а не UA-дефолт 1.5em bold — и не правило заголовка ПУНКТА, которое здесь
+    // не при чём (оно висит на классе .preview-heading).
+    const m = await page.evaluate((sel) => {
+      const box = document.querySelector(sel) as HTMLElement;
+      const h = box.querySelector('h2') as HTMLElement;
+      const px = (el: HTMLElement) => parseFloat(getComputedStyle(el).fontSize);
+      return {
+        heading: px(h),
+        body: px(box),
+        weight: Number(getComputedStyle(h).fontWeight),
+        classed: h.classList.contains('preview-heading'),
+      };
+    }, CONTENT);
+
+    expect(m.classed, 'чужой заголовок не должен получать класс пункта').toBe(false);
+    expect(m.heading).toBeCloseTo(m.body, 1);
+    expect(m.weight).toBeLessThan(700);
+  });
+});

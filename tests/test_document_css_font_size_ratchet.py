@@ -42,15 +42,6 @@ ZONE_FILES = (
     "constructor/preview/preview-cover.css",
 )
 
-# Общая причина для всех заголовков предпросмотра — вынесена, чтобы не
-# размножать один и тот же текст по пяти записям списка ниже.
-_HEADINGS_REASON = (
-    "Заголовки предпросмотра считаются от UI-шкалы и потому рендерятся "
-    "РАЗНО в конструкторе (корень 12px) и в диалоге версий (корень 13px). "
-    "Перевод на pt изменил бы одну из двух поверхностей, а требование — "
-    "ноль визуальной разницы. Известный долг, решение за владельцем."
-)
-
 # Разрешённые объявления `font-size: var(--font-size-*)` в документных зонах:
 # (файл, нормализованный селектор) -> ПОЧЕМУ здесь допустим интерфейсный токен.
 # Любая новая запись — это осознанное решение, а не «тест мешает».
@@ -77,14 +68,6 @@ ALLOWED_UI_TOKEN_FONT_SIZES = {
         "рендерами не создаётся ни на одной поверхности. Не удаляем — чужой "
         "мёртвый код, зафиксирован как известный."
     ),
-    ("constructor/preview/preview-typography.css", ".preview h1"): _HEADINGS_REASON,
-    ("constructor/preview/preview-typography.css", ".preview h2"): _HEADINGS_REASON,
-    ("constructor/preview/preview-typography.css", ".preview h3"): _HEADINGS_REASON,
-    ("constructor/preview/preview-typography.css", ".preview h4"): _HEADINGS_REASON,
-    (
-        "constructor/preview/preview-typography.css",
-        ".preview h5, .preview h6",
-    ): _HEADINGS_REASON,
     (
         "constructor/preview/preview-typography.css",
         ".preview pre",
@@ -202,4 +185,53 @@ def test_wrapper_tables_use_document_font_size() -> None:
         "Кегль таблиц общего рендера обязан приходить из "
         "--doc-font-size-small (Sizes.table_data_pt в DOCX), получено: "
         + decls[".preview-table-wrapper .preview-table"]
+    )
+
+
+def test_item_headings_use_document_font_size() -> None:
+    """Заголовок пункта печатается документным кеглем, а не UI-шкалой.
+
+    В Word пункт любой глубины идёт одним кеглем и жирным
+    (`docx/formatter.py::_render_item` — `Sizes.body_pt` + `run.bold`), глубину
+    несёт номер рубрикатора. Прицел — класс `preview-heading`, который вешает
+    `PreviewManager._renderHeading`, а не тег: `h1`–`h6` разрешены санитайзером
+    внутри контента текстблока, и правило по голому тегу задело бы ЧУЖИЕ
+    заголовки, которые Word печатает плоским текстом (`_BLOCK_TAGS` в
+    `docx/builders/inline.py`).
+    """
+    decls = dict(_declarations("constructor/preview/preview-typography.css"))
+    assert ".preview-heading" in decls, (
+        "Пропало правило `.preview-heading` — заголовки пунктов снова остались "
+        "на UI-шкале (--font-size-xl/lg/base), то есть на ПЛОТНОСТИ интерфейса: "
+        "на корне 12px это 11.25pt/10.1pt/9pt по уровням вместо печатных 12pt"
+    )
+    assert decls[".preview-heading"] == "var(--doc-font-size)", (
+        "Кегль заголовка пункта обязан приходить из --doc-font-size "
+        "(Sizes.body_pt в DOCX), получено: " + decls[".preview-heading"]
+    )
+
+
+def test_content_headings_are_flattened_to_body_text() -> None:
+    """Заголовки из контента наследуют кегль тела, как в Word.
+
+    `h1`–`h6` проходят allowlist санитайзера (`shared/sanitize.js`), но в DOCX
+    они входят в `_BLOCK_TAGS`: тег режется в абзац базового кегля, `bold` не
+    выставляется. Без явного правила лист рисовал бы UA-дефолт (1.5em bold) —
+    то, чего в выгруженном файле не будет.
+    """
+    flatten = [
+        (selector, value)
+        for selector, value in _declarations(
+            "constructor/preview/preview-typography.css"
+        )
+        if "h1" in selector and "h6" in selector
+    ]
+    assert flatten, (
+        "Пропало правило-сплющивание заголовков внутри контента "
+        "(.preview-textblock-content / .preview-violation): чужие h1–h6 вернулись "
+        "к UA-дефолту и рисуются крупнее и жирнее, чем напечатает Word"
+    )
+    assert all(value == "inherit" for _, value in flatten), (
+        "Заголовок из контента обязан наследовать кегль тела, получено: "
+        + "; ".join(f"{sel} -> {val}" for sel, val in flatten)
     )

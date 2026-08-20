@@ -95,32 +95,27 @@
 
 /* Название таблицы.
 
-   СПЕЦИФИЧНОСТЬ. Подпись — это <h4>, и её перебивали более специфичные
-   правила поверхностей: `.preview h4` (preview-typography.css) и
-   `.preview-menu-body h4` (preview-menu.css) — обе 0,1,1 против 0,1,0 у
-   голого класса. Из-за этого `font-weight: normal` НЕ применялся и подпись
-   рисовалась semibold. Лечим повышением специфичности самого правила
-   (0,2,1), а не `!important`: селектор перечислен для обеих поверхностей
-   предпросмотра — inline-панели (.preview) и модального меню
-   (.preview-menu-body).
-
    Кегль — документный (--doc-font-size, он же Sizes.body_pt в DOCX): подпись
-   печатается в акте наравне с основным текстом. Пока правило было задавлено,
-   интерфейсный --font-size-sm здесь ничего не решал и жил в списке допущений
-   ratchet'а (tests/test_document_css_font_size_ratchet.py); с починенной
-   специфичностью он стал бы настоящей протечкой UI-шкалы в документ.
+   печатается в акте наравне с основным текстом. Начертание обычное, а не
+   semibold: в DOCX (_add_table_title) run.bold не выставляется. Подчёркивание —
+   модификатор: единое правило проекта (static/js/constructor/table/
+   table-title.js::tableTitleUnderlined) даёт его только пресетным таблицам
+   разделов 1–4.
 
-   Подчёркивание — модификатор: единое правило проекта
-   (static/js/constructor/table/table-title.js::tableTitleUnderlined) даёт его
-   только пресетным таблицам разделов 1–4. */
-.preview h4.preview-table-title,
-.preview-menu-body h4.preview-table-title,
-h4.preview-table-title {
+   Цвет не задаём: его несёт лист (#000, preview-page.css) — подпись в Word
+   такая же чёрная, как и всё остальное.
+
+   Селектор — голый класс. Раньше он был поднят до 0,2,1 перечислением
+   поверхностей (.preview h4… / .preview-menu-body h4…): подпись — это <h4>, и
+   правила заголовков поверхностей (0,1,1) перебивали её font-weight. Тех
+   правил больше нет — заголовок пункта размечается собственным классом
+   (.preview-heading, preview-typography.css), и по голому тегу в
+   предпросмотре не бьёт уже никто. */
+.preview-table-title {
     font-weight: var(--font-weight-normal);
     text-align: left;
     margin-top: var(--spacing-lg);
     margin-bottom: var(--spacing);
-    color: var(--text-secondary);
     font-size: var(--doc-font-size);
 }
 

@@ -207,62 +207,12 @@
     background: var(--scrollbar-thumb-hover);
 }
 
-/* Типографика внутри меню (используем стили preview) */
-.preview-menu-body h1 {
-    text-align: center;
-    margin-top: 0;
-    margin-bottom: var(--spacing-xl);
-    font-size: var(--font-size-2xl);
-    color: var(--text-primary);
-    font-weight: var(--font-weight-bold);
-    line-height: var(--line-height-tight);
-    letter-spacing: var(--letter-spacing-tight);
-}
-
-.preview-menu-body h2 {
-    margin-top: var(--spacing-2xl);
-    margin-bottom: var(--spacing-md);
-    font-size: var(--font-size-xl);
-    color: var(--text-primary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
-    letter-spacing: var(--letter-spacing-tight);
-}
-
-.preview-menu-body h2:first-child {
-    margin-top: 0;
-}
-
-.preview-menu-body h3 {
-    margin-top: var(--spacing-xl);
-    margin-bottom: var(--spacing-sm);
-    font-size: var(--font-size-lg);
-    color: var(--text-primary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-normal);
-}
-
-.preview-menu-body h4 {
-    margin-top: var(--spacing-lg);
-    margin-bottom: var(--spacing-xs);
-    font-size: var(--font-size-base);
-    color: var(--text-secondary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-normal);
-}
-
-.preview-menu-body p {
-    margin-top: 0;
-    margin-bottom: var(--spacing);
-    line-height: var(--line-height-relaxed);
-    text-align: justify;
-    color: var(--text-primary);
-    hyphens: auto;
-}
-
-.preview-menu-body p:last-child {
-    margin-bottom: 0;
-}
+/* Типографики документа здесь НЕТ — она общая, по классу рендера
+   (.preview-heading) и по листу (.preview-sheet p), см. preview-typography.css.
+   Раньше блок заголовков и абзацев был переписан сюда копией с .preview: копии
+   разошлись молча (в модалке абзац шёл экранным интервалом 1.75 против
+   печатного 1.15 в панели), а сам кегль в обеих копиях считался от UI-шкалы,
+   а не от документных токенов. */
 
 /* Состояние загрузки */
 .preview-menu-body.loading {
