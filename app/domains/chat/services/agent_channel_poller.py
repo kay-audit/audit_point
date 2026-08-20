@@ -43,8 +43,10 @@ logger = logging.getLogger("audit_workstation.domains.chat.services.agent_channe
 # 'streaming' до рестарта. При backoff 2-10 сек порог ≈ 1-5 минут сбоев.
 _MAX_CONSECUTIVE_ENTRY_ERRORS = 30
 
-# Сколько раз возврат вопроса processing → pending (reclaim NanoBot при
-# истёкшем lease) считается признаком жизни и возвращает claim-окно.
+# Сколько ЭПИЗОДОВ возврата вопроса processing → pending (reclaim NanoBot при
+# истёкшем lease либо повторяемая ошибка после claim'а) считается признаком
+# жизни и возвращает claim-окно. Счёт именно по эпизодам, а не по тикам:
+# откат случается на смене статуса, а залипший статус кап не расходует.
 # = max_stuck_retries NanoBot; дальше фаза остаётся processing — защита от
 # бесконечного продления флаппингом чужой таблицы.
 _MAX_PENDING_REVERSIONS = 3
@@ -220,26 +222,32 @@ class AgentChannelPoller:
 
                 # ── Признаки жизни агента ──
                 alive = False
-                # Прямой переход pending → processing.
+                # Прямой переход pending → processing. 'error' наблюдением
+                # processing НЕ считается: в словаре NanoBot 2.3 это вопрос,
+                # выброшенный обратно в пул до следующего ретрая, то есть та же
+                # фаза ожидания claim'а, что и 'pending'. Считай его иначе —
+                # залипший 'error' поднимал бы фазу каждым тиком, обратный блок
+                # тут же опускал бы её, и кап эпизодов выгорал бы за три тика.
                 observed_processing = (
                     res["answer_exists"]
-                    or res["question_status"] not in (None, "pending")
+                    or res["question_status"] not in (None, "pending", "error")
                 )
                 if entry["phase"] == "pending" and observed_processing:
                     entry["phase"] = "processing"
                     alive = True
                 # Обратный переход processing → pending. Фаза больше НЕ
                 # монотонна: NanoBot при истёкшем lease возвращает вопрос в пул
-                # (status снова 'pending' либо 'error') и удаляет свою
-                # строку-ответ — это reclaim, признак жизни, а не тишина.
-                # Проверка идёт ПОСЛЕ прямого блока сознательно: сделай её до
-                # него — прямой блок в том же тике увидел бы уже
-                # откатившуюся фазу и при status='error' (observed_processing
-                # истинно) немедленно вернул бы processing, съев откат.
-                # Порядок «прямой → обратный» гарантирует, что тик
-                # заканчивается фазой, соответствующей наблюдаемому статусу.
-                # Откат ограничен _MAX_PENDING_REVERSIONS — иначе флаппинг
-                # чужой таблицы продлевал бы ожидание вечно.
+                # ('pending') либо фиксирует повторяемую ошибку уже после
+                # claim'а ('error'), в обоих случаях удаляя свою строку-ответ —
+                # это reclaim, признак жизни, а не тишина. Срабатывает РОВНО
+                # ОДИН РАЗ на эпизод: после отката фаза 'pending', и пока
+                # статус не сменится на рабочий, ни этот блок (фаза не
+                # processing), ни прямой (для 'pending'/'error' он молчит)
+                # больше не двигают её. Порядок «прямой → обратный» держит
+                # инвариант «тик заканчивается фазой, соответствующей
+                # наблюдаемому статусу». Число эпизодов ограничено
+                # _MAX_PENDING_REVERSIONS — иначе флаппинг чужой таблицы
+                # продлевал бы ожидание вечно.
                 if (
                     entry["phase"] == "processing"
                     and not res["answer_exists"]

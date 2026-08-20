@@ -607,6 +607,149 @@ class TestTick:
         assert entry["pending_reversions"] == _MAX_PENDING_REVERSIONS
         assert entry["last_activity"] == activity_before
 
+    async def test_error_after_claim_reverts_phase_once(self, settings, mock_conn):
+        """dispatch_error после claim'а: один тик со status='error' и без
+        строки-ответа откатывает фазу в pending, тратит единицу капа и
+        засчитывается признаком жизни."""
+        t = [0.0]
+
+        def fake_now():
+            val = t[0]
+            t[0] += 1.0
+            return val
+
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
+        poller.subscribe(assistant_message_id="m1", question_uid="Q1")
+
+        with (
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.poll_once",
+                new_callable=AsyncMock,
+            ) as mock_poll,
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.mark_timeout",
+                new_callable=AsyncMock,
+            ) as mock_mark,
+        ):
+            # Тик 1 (now=1): агент взял вопрос в работу.
+            mock_poll.return_value = _poll_res(
+                answer_exists=True, question_status="processing",
+            )
+            await poller._tick(mock_conn)
+            assert poller._subscriptions["Q1"]["phase"] == "processing"
+
+            # Тик 2 (now=2): сбой — агент снёс строку-ответ и поставил 'error'.
+            mock_poll.return_value = _poll_res(
+                answer_exists=False, question_status="error",
+            )
+            await poller._tick(mock_conn)
+
+        entry = poller._subscriptions["Q1"]
+        assert entry["phase"] == "pending"
+        assert entry["pending_reversions"] == 1
+        assert entry["last_activity"] == 2.0
+        mock_mark.assert_not_called()
+
+    async def test_error_status_repeat_ticks_do_not_burn_cap(self, settings, mock_conn):
+        """Залипший 'error' НЕ жжёт кап тиками (пин против ping-pong'а).
+
+        Регрессия: пока 'error' считался наблюдением processing, прямой блок
+        каждый тик поднимал фазу, обратный тут же опускал — весь кап из трёх
+        эпизодов выгорал за три тика (~6 секунд), и настоящие reclaim'ы 2-го и
+        3-го ретрая NanoBot окно уже не продлевали.
+        """
+        t = [0.0]
+
+        def fake_now():
+            val = t[0]
+            t[0] += 1.0
+            return val
+
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
+        poller.subscribe(assistant_message_id="m1", question_uid="Q1")
+
+        with (
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.poll_once",
+                new_callable=AsyncMock,
+            ) as mock_poll,
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.mark_timeout",
+                new_callable=AsyncMock,
+            ) as mock_mark,
+        ):
+            mock_poll.return_value = _poll_res(
+                answer_exists=True, question_status="processing",
+            )
+            await poller._tick(mock_conn)          # now=1: фаза processing
+
+            error_res = _poll_res(answer_exists=False, question_status="error")
+            mock_poll.return_value = error_res
+            await poller._tick(mock_conn)          # now=2: эпизод error, откат
+            assert poller._subscriptions["Q1"]["pending_reversions"] == 1
+
+            # Ещё три идентичных тика: статус не менялся, эпизод тот же.
+            for _ in range(3):
+                await poller._tick(mock_conn)
+
+        entry = poller._subscriptions["Q1"]
+        assert entry["phase"] == "pending"
+        assert entry["pending_reversions"] == 1
+        # Признаков жизни после отката не было — таймер стоит на моменте отката.
+        assert entry["last_activity"] == 2.0
+        mock_mark.assert_not_called()
+
+    async def test_reclaim_after_error_starts_new_episode(self, settings, mock_conn):
+        """Повторный claim агента поднимает фазу; следующий error — второй эпизод."""
+        t = [0.0]
+
+        def fake_now():
+            val = t[0]
+            t[0] += 1.0
+            return val
+
+        poller = _make_poller(settings, now=fake_now, executor=mock_conn)
+        poller.subscribe(assistant_message_id="m1", question_uid="Q1")
+
+        error_res = _poll_res(answer_exists=False, question_status="error")
+        # Re-claim: агент забрал вопрос, строку-ответ ещё не создал.
+        reclaim_res = _poll_res(answer_exists=False, question_status="processing")
+
+        with (
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.poll_once",
+                new_callable=AsyncMock,
+            ) as mock_poll,
+            patch(
+                "app.domains.chat.services.agent_channel.AgentChannelService.mark_timeout",
+                new_callable=AsyncMock,
+            ) as mock_mark,
+        ):
+            mock_poll.return_value = _poll_res(
+                answer_exists=True, question_status="processing",
+            )
+            await poller._tick(mock_conn)          # now=1: фаза processing
+
+            mock_poll.return_value = error_res
+            await poller._tick(mock_conn)          # now=2: эпизод 1
+            await poller._tick(mock_conn)          # now=3: тот же эпизод
+            assert poller._subscriptions["Q1"]["phase"] == "pending"
+            assert poller._subscriptions["Q1"]["pending_reversions"] == 1
+
+            mock_poll.return_value = reclaim_res
+            await poller._tick(mock_conn)          # now=4: агент забрал заново
+            assert poller._subscriptions["Q1"]["phase"] == "processing"
+            assert poller._subscriptions["Q1"]["last_activity"] == 4.0
+
+            mock_poll.return_value = error_res
+            await poller._tick(mock_conn)          # now=5: эпизод 2
+
+        entry = poller._subscriptions["Q1"]
+        assert entry["phase"] == "pending"
+        assert entry["pending_reversions"] == 2
+        assert entry["last_activity"] == 5.0
+        mock_mark.assert_not_called()
+
     async def test_tick_phase_rollback_beyond_cap_does_not_extend(self, settings, mock_conn):
         """Исчерпанный кап откатов: откат шины (ответ исчез / статус вернулся
         pending) больше НЕ откатывает phase processing → pending, НЕ обновляет
