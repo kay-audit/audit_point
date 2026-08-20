@@ -4,10 +4,11 @@
  * Функция агрегирует контентные/структурные замечания по всем таблицам без
  * DOM/AppState. Ключевое — критичность по типу:
  *   - 'error' (красный) — структурный дефект уровня сервера (hasStructuralDefect:
- *     не прямоугольная сетка / span за границей);
- *     контентные проверки для такой таблицы пропускаются;
- *   - 'warning' (оранжевый) — неполнота: нет шапки (E6), пустые заголовки,
- *     нет данных (E5).
+ *     не прямоугольная сетка / span за границей; контентные проверки для такой
+ *     таблицы пропускаются), а также проблемы шапки: нет шапки (E6) и пустые
+ *     заголовки — паритет с сервером, который отдаёт `table_no_header` /
+ *     `table_empty_header` с severity='error';
+ *   - 'warning' (оранжевый) — неполнота: нет данных (E5).
  * Важный инвариант: инертный устаревший spanOrigin (после legacy-операций с
  * колонками) НЕ считается структурным дефектом и не красит таблицу красным.
  */
@@ -15,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeCell } from './_setup.mjs';
 import { collectTableWarnings, hasStructuralDefect } from '../../static/js/constructor/validation/validation-table-core.js';
+import { groupTableWarnings } from '../../static/js/constructor/header/notifications-warnings-group.js';
 
 /**
  * Строит строку из ячеек с заданными content/isHeader.
@@ -64,10 +66,14 @@ test('collectTableWarnings: валидная шапка + данные → не�
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Неполнота (severity: 'warning')
+// Проблемы шапки (severity: 'error' — паритет с сервером)
 // ──────────────────────────────────────────────────────────────────────────
 
-test('collectTableWarnings: нет строки заголовка → одно warning «нет строки заголовка»', () => {
+test('collectTableWarnings: нет строки заголовка → одно error «нет строки заголовка»', () => {
+  // Сервер отдаёт `table_no_header` с severity='error' и красит по нему карточку
+  // акта; клиент — единственная поверхность, которая это замечание показывает
+  // (серверный источник колокольчика его подавляет), поэтому критичность обязана
+  // совпадать.
   const tables = {
     t1: {
       grid: [
@@ -78,9 +84,28 @@ test('collectTableWarnings: нет строки заголовка → одно 
   };
   const warnings = collectTableWarnings(tables, nameById);
   assert.equal(warnings.length, 1);
-  assert.equal(warnings[0].severity, 'warning');
+  assert.equal(warnings[0].severity, 'error');
   assert.equal(warnings[0].issue, 'нет строки заголовка');
 });
+
+test('collectTableWarnings: пустая ячейка шапки → error «не заполнены заголовки»', () => {
+  const tables = {
+    t1: {
+      grid: [
+        row([{ content: 'A', isHeader: true }, { content: '', isHeader: true }]),
+        row([{ content: '1' }, { content: '2' }]),
+      ],
+    },
+  };
+  const warnings = collectTableWarnings(tables, nameById);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].severity, 'error');
+  assert.equal(warnings[0].issue, 'не заполнены заголовки');
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Неполнота (severity: 'warning')
+// ──────────────────────────────────────────────────────────────────────────
 
 test('collectTableWarnings: шапка есть, данных нет → warning «нет данных»', () => {
   const tables = {
@@ -94,21 +119,6 @@ test('collectTableWarnings: шапка есть, данных нет → warning
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].severity, 'warning');
   assert.equal(warnings[0].issue, 'нет данных');
-});
-
-test('collectTableWarnings: пустая ячейка шапки → warning «не заполнены заголовки»', () => {
-  const tables = {
-    t1: {
-      grid: [
-        row([{ content: 'A', isHeader: true }, { content: '', isHeader: true }]),
-        row([{ content: '1' }, { content: '2' }]),
-      ],
-    },
-  };
-  const warnings = collectTableWarnings(tables, nameById);
-  assert.equal(warnings.length, 1);
-  assert.equal(warnings[0].severity, 'warning');
-  assert.equal(warnings[0].issue, 'не заполнены заголовки');
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -229,7 +239,7 @@ test('collectTableWarnings: несколько таблиц → плоский �
   assert.equal(warnings.length, 3);
 
   const byId = new Map(warnings.map((w) => [w.tableId, w]));
-  assert.equal(byId.get('noHeader').severity, 'warning');
+  assert.equal(byId.get('noHeader').severity, 'error');
   assert.equal(byId.get('noHeader').issue, 'нет строки заголовка');
   assert.equal(byId.get('noData').severity, 'warning');
   assert.equal(byId.get('noData').issue, 'нет данных');
@@ -297,11 +307,46 @@ test('collectTableWarnings: пустой заголовок И нет данны
   };
   const resolver = countingResolver();
   const warnings = collectTableWarnings(tables, resolver.fn);
-  // Два предупреждения: «не заполнены заголовки» и «нет данных».
+  // Два замечания: error «не заполнены заголовки» и warning «нет данных».
   assert.equal(warnings.length, 2);
-  const issues = new Set(warnings.map((w) => w.issue));
-  assert.equal(issues.has('не заполнены заголовки'), true);
-  assert.equal(issues.has('нет данных'), true);
+  const byIssue = new Map(warnings.map((w) => [w.issue, w]));
+  assert.equal(byIssue.get('не заполнены заголовки')?.severity, 'error');
+  assert.equal(byIssue.get('нет данных')?.severity, 'warning');
   // Резолвер вызван один раз, несмотря на два push-сайта.
   assert.equal(resolver.calls(), 1);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Свёртка в группы после смены критичности шапки на 'error'.
+// Ключ группы — «severity + текст замечания», поэтому смена severity меняет
+// раскладку групп: проверяем, что однотипные замечания по-прежнему сворачиваются
+// в одну строку и несут ту критичность, которую отдало ядро.
+// ──────────────────────────────────────────────────────────────────────────
+
+test('collectTableWarnings + groupTableWarnings: заголовочные группы красные, «нет данных» — жёлтая', () => {
+  const tables = {
+    // Две таблицы без шапки → одна error-группа на две таблицы.
+    a: { grid: [row([{ content: '1' }])] },
+    b: { grid: [row([{ content: '2' }])] },
+    // Пустая ячейка шапки + нет данных → error-группа и warning-группа.
+    c: { grid: [row([{ content: 'X', isHeader: true }, { content: '', isHeader: true }])] },
+    // Только нет данных → попадает в ту же warning-группу, что и «c».
+    d: { grid: [row([{ content: 'Y', isHeader: true }])] },
+  };
+
+  const groups = groupTableWarnings(collectTableWarnings(tables, nameById));
+  const byKey = new Map(groups.map((g) => [g.key, g]));
+
+  assert.equal(groups.length, 3, 'три вида замечаний → три группы');
+  assert.equal(byKey.get('error:нет строки заголовка').tables.length, 2);
+  assert.equal(byKey.get('error:нет строки заголовка').body, '2 таблицы');
+  assert.equal(byKey.get('error:не заполнены заголовки').tables.length, 1);
+  assert.deepEqual(
+    byKey.get('warning:нет данных').tables.map((t) => t.tableId),
+    ['c', 'd']
+  );
+  // Заголовочные замечания больше не сваливаются в один warning-«котёл» с
+  // «нет данных»: ключи различаются и критичностью, и текстом.
+  assert.equal(byKey.has('warning:нет строки заголовка'), false);
+  assert.equal(byKey.has('warning:не заполнены заголовки'), false);
 });

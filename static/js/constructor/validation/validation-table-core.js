@@ -189,9 +189,14 @@ export function hasStructuralDefect(grid, colWidths) {
  *
  * Тип определяет критичность:
  *   - 'error' (красный) — структурный дефект, который сервер отклонит при
- *     сохранении/экспорте (hasStructuralDefect). Контентные проверки пропускаем.
- *   - 'warning' (оранжевый) — неполнота: нет строки заголовка (E6),
- *     не заполнены заголовки, нет данных (E5).
+ *     сохранении/экспорте (hasStructuralDefect; контентные проверки для такой
+ *     таблицы пропускаем), а также проблемы шапки: нет строки заголовка (E6) и
+ *     не заполнены заголовки. Шапка красная не «на всякий случай», а по
+ *     паритету с сервером: `collect_validation_issues` отдаёт `table_no_header`
+ *     и `table_empty_header` с severity='error' и красит по ним карточку акта.
+ *     Эти замечания показывает только клиент (серверный источник их подавляет,
+ *     см. SUPPRESSED_CODES), поэтому расхождение критичности было бы видимым.
+ *   - 'warning' (оранжевый) — неполнота: нет данных (E5).
  *
  * @param {Object<string,{grid?:Object[][], colWidths?:number[]}>} tables Словарь таблиц (tableId → таблица).
  * @param {(tableId:string)=>string} getTableName Резолвер имени таблицы по id.
@@ -219,11 +224,11 @@ export function collectTableWarnings(tables, getTableName) {
     }
 
     if (countHeaderRows(grid) === 0) {
-      warnings.push({ tableId, tableName: nameOf(), issue: 'нет строки заголовка', severity: 'warning' });
+      warnings.push({ tableId, tableName: nameOf(), issue: 'нет строки заголовка', severity: 'error' });
       continue;
     }
     if (hasEmptyHeaders(grid)) {
-      warnings.push({ tableId, tableName: nameOf(), issue: 'не заполнены заголовки', severity: 'warning' });
+      warnings.push({ tableId, tableName: nameOf(), issue: 'не заполнены заголовки', severity: 'error' });
     }
     if (!hasDataRows(grid)) {
       warnings.push({ tableId, tableName: nameOf(), issue: 'нет данных', severity: 'warning' });
