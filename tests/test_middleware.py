@@ -40,7 +40,7 @@ def _make_rate_app(rate_limit: int, identify=None) -> FastAPI:
     from unittest.mock import MagicMock
 
     mock_settings = MagicMock()
-    mock_settings.security.max_tracked_ips = 100
+    mock_settings.security.max_tracked_clients = 100
     mock_settings.security.rate_limit_ttl = 120
 
     app = FastAPI()

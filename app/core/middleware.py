@@ -77,8 +77,9 @@ class RateLimitMiddleware:
 
     Заголовки прокси (``X-Forwarded-For``) сознательно НЕ читаются: без списка
     доверенных прокси это дало бы любому клиенту подделать ключ лимита одной
-    строкой. На SDP приложение открыто по IP:порту напрямую — см. §9
-    deploy-and-configuration.md.
+    строкой. На SDP приложение открыто по IP:порту напрямую — см. §9.5d
+    deploy-and-configuration.md (там же — что придётся доработать, если прокси
+    всё-таки появится).
     """
 
     def __init__(
@@ -99,7 +100,7 @@ class RateLimitMiddleware:
 
         # TTLCache автоматически удаляет старые записи.
         self.requests = TTLCache(
-            maxsize=settings.security.max_tracked_ips,
+            maxsize=settings.security.max_tracked_clients,
             ttl=settings.security.rate_limit_ttl
         )
 
@@ -108,7 +109,7 @@ class RateLimitMiddleware:
 
         logger.info(
             f"Rate limiting инициализирован: {rate_limit} запросов/минуту, "
-            f"max_ips={settings.security.max_tracked_ips}, "
+            f"max_clients={settings.security.max_tracked_clients}, "
             f"ttl={settings.security.rate_limit_ttl}s, "
             f"exempt={list(self.exempt_prefixes)}"
         )
