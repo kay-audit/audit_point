@@ -6,13 +6,13 @@
  *  - regenerateIds: регенерация id узлов/контента + remap ссылок и ключей словарей;
  *  - filterPinnedFromSubtree: pinned-таблицы (metrics/risk) отброшены (КП-3);
  *  - resetInvoices: invoice-привязки сброшены (КП-4);
- *  - estimateActImageBytes / checkImageLimits: лимит картинок (КП-5).
+ *  - collectImageBlocks / rehostSubtreeImages: перенос картинок в целевой акт (КП-5).
  *
  * Оркестрация (через AppState + официальные мутаторы):
  *  - copyNode/pasteInto round-trip: новый узел с новыми id, ссылки целы;
  *  - КП-3: pinned-дети пропущены, protected/pinned-корень не копируется;
  *  - КП-4: invoice не переносится;
- *  - КП-5: вставка отклонена при превышении лимита картинок;
+ *  - КП-5: картинки перезаливаются в целевой акт (внутри своего акта — нет);
  *  - КП-6: вставка под лист запрещена, глубина > maxDepth отклонена;
  *  - read-only: вставка запрещена, копирование разрешено.
  *
@@ -35,10 +35,10 @@ import {
     regenerateIds,
     filterPinnedFromSubtree,
     resetInvoices,
-    checkImageLimits,
+    collectImageBlocks,
+    rehostSubtreeImages,
 } from '../../static/js/constructor/clipboard/node-clipboard.js';
 import {
-    estimateActImageBytes,
     getStructureLimits,
     resetImageLimitsForTests,
 } from '../../static/js/constructor/violation/violation-image-validator.js';
@@ -333,30 +333,89 @@ test('resetInvoices: invoice удалён во всём поддереве', () 
     assert.equal(node.children[0].invoice, undefined);
 });
 
-// ── Чистое ядро: лимит картинок (КП-5) ─────────────────────────────────────────
+// ── Чистое ядро: перенос картинок фрагмента (КП-5) ────────────────────────────
 
-test('estimateActImageBytes суммирует только image-блоки', () => {
+test('collectImageBlocks: только image-блоки с непустым image_id, из ВСЕХ полей', () => {
     const violations = {
-        v1: { additionalContent: { blocks: [
-            { type: BLOCK_TYPES.IMAGE, url: 'data:image/png;base64,' + 'A'.repeat(400) },
-            { type: 'text', content: 'нет картинки' },
-        ] } },
+        v1: {
+            additionalContent: { blocks: [
+                { id: 'b1', type: BLOCK_TYPES.IMAGE, image_id: 'i1' },
+                { id: 'b2', type: 'text', content: 'нет картинки' },
+                { id: 'b3', type: BLOCK_TYPES.IMAGE, image_id: '' }, // черновик
+            ] },
+            codeMining: { blocks: [{ id: 'b4', type: BLOCK_TYPES.IMAGE, image_id: 'i2' }] },
+        },
+        v2: {},
     };
-    // 400 символов base64 ≈ 300 байт.
-    assert.equal(estimateActImageBytes(violations), 300);
-    assert.equal(estimateActImageBytes({}), 0);
+    // Порядок обхода — по реестру полей (VIOLATION_FIELD_KEYS), а не по
+    // порядку ключей объекта: сравниваем состав.
+    assert.deepEqual(collectImageBlocks(violations).map(b => b.id).sort(), ['b1', 'b4']);
+    assert.deepEqual(collectImageBlocks({}), []);
+    assert.deepEqual(collectImageBlocks(null), []);
 });
 
-test('checkImageLimits: впритык проходит, превышение отклоняется', () => {
-    assert.equal(checkImageLimits(10, 5, 15).ok, true);
-    const over = checkImageLimits(10, 6, 15);
-    assert.equal(over.ok, false);
-    assert.match(over.reason, /лимит/);
+test('rehostSubtreeImages: байты качаются из источника, грузятся в цель, id подменяется', async () => {
+    const violations = {
+        v1: { additionalContent: { blocks: [
+            { id: 'b1', type: BLOCK_TYPES.IMAGE, image_id: 'i1', filename: 'a.png' },
+            { id: 'b2', type: BLOCK_TYPES.IMAGE, image_id: 'i2', filename: 'b.png' },
+        ] } },
+    };
+    const fetched = [];
+    const uploaded = [];
+    const moved = await rehostSubtreeImages(violations, 1, 2, {
+        fetchBlob: async (act, id) => { fetched.push([act, id]); return `bytes:${id}`; },
+        upload: async (act, blob, name) => {
+            uploaded.push([act, blob, name]);
+            return { image_id: `new-${blob}` };
+        },
+    });
+
+    assert.equal(moved, 2);
+    assert.deepEqual(fetched, [[1, 'i1'], [1, 'i2']], 'качаем из акта-источника');
+    assert.deepEqual(uploaded, [[2, 'bytes:i1', 'a.png'], [2, 'bytes:i2', 'b.png']]);
+    assert.deepEqual(
+        violations.v1.additionalContent.blocks.map(b => b.image_id),
+        ['new-bytes:i1', 'new-bytes:i2'],
+    );
+});
+
+test('rehostSubtreeImages: повторный image_id гоняется по сети ОДИН раз', async () => {
+    const violations = {
+        v1: { additionalContent: { blocks: [
+            { id: 'b1', type: BLOCK_TYPES.IMAGE, image_id: 'same', filename: 'a.png' },
+            { id: 'b2', type: BLOCK_TYPES.IMAGE, image_id: 'same', filename: 'a.png' },
+        ] } },
+    };
+    let calls = 0;
+    await rehostSubtreeImages(violations, 1, 2, {
+        fetchBlob: async () => { calls += 1; return 'bytes'; },
+        upload: async () => ({ image_id: 'new' }),
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(
+        violations.v1.additionalContent.blocks.map(b => b.image_id), ['new', 'new']);
+});
+
+test('rehostSubtreeImages: отказ сервера пробрасывается наверх (вставка не состоится)', async () => {
+    const violations = {
+        v1: { additionalContent: { blocks: [
+            { id: 'b1', type: BLOCK_TYPES.IMAGE, image_id: 'i1', filename: 'a.png' },
+        ] } },
+    };
+    await assert.rejects(
+        () => rehostSubtreeImages(violations, 1, 2, {
+            fetchBlob: async () => 'bytes',
+            upload: async () => { throw new Error('Превышен суммарный размер картинок акта'); },
+        }),
+        /Превышен суммарный размер/,
+    );
 });
 
 // ── Оркестрация: copyNode / pasteInto round-trip ───────────────────────────────
 
-test('round-trip: копирование и вставка поддерева даёт новые id, ссылки целы', () => {
+test('round-trip: копирование и вставка поддерева даёт новые id, ссылки целы', async () => {
     AppState.initializeTree(true);
     const src = addItem('4', 'Источник');
     assert.ok(AppState.addTableToNode(src.id).valid);
@@ -373,7 +432,7 @@ test('round-trip: копирование и вставка поддерева д
     const dest = addItem('4', 'Назначение');
     AppState.generateNumbering();
 
-    assert.ok(NodeClipboard.pasteInto(dest.id), 'pasteInto');
+    assert.ok(await NodeClipboard.pasteInto(dest.id), 'pasteInto');
 
     const pasted = AppState.findNodeById(dest.id).children.at(-1);
     const pastedIds = collectIds(pasted);
@@ -423,7 +482,7 @@ test('КП-3: таблицу рисков (pinned) можно копироват
     assert.equal(notified.error.length, 0);
 });
 
-test('КП-3: pinned-дети поддерева пропускаются при вставке, юзер уведомлён', () => {
+test('КП-3: pinned-дети поддерева пропускаются при вставке, юзер уведомлён', async () => {
     AppState.initializeTree(true);
     // Источник под §5 с риск-таблицей внутри.
     const n51 = addItem('5', 'Пункт 5.1');
@@ -437,7 +496,7 @@ test('КП-3: pinned-дети поддерева пропускаются при
     // Вставляем в раздел 4 (вне §5) — риск-таблица должна быть отброшена.
     const dest = addItem('4', 'Назначение');
     AppState.generateNumbering();
-    assert.ok(NodeClipboard.pasteInto(dest.id));
+    assert.ok(await NodeClipboard.pasteInto(dest.id));
 
     const pasted = AppState.findNodeById(dest.id).children.at(-1);
     const hasRisk = (pasted.children || []).some(c => c.kind === 'regularRisk');
@@ -448,7 +507,7 @@ test('КП-3: pinned-дети поддерева пропускаются при
 
 // ── КП-4: invoice сбрасывается ─────────────────────────────────────────────────
 
-test('КП-4: invoice-привязка не переносится при вставке', () => {
+test('КП-4: invoice-привязка не переносится при вставке', async () => {
     AppState.initializeTree(true);
     const n51 = addItem('5', 'Пункт 5.1');
     AppState.generateNumbering();
@@ -458,106 +517,120 @@ test('КП-4: invoice-привязка не переносится при вст
     assert.ok(NodeClipboard.copyNode(n51.id));
     const dest = addItem('4', 'Назначение');
     AppState.generateNumbering();
-    assert.ok(NodeClipboard.pasteInto(dest.id));
+    assert.ok(await NodeClipboard.pasteInto(dest.id));
 
     const pasted = AppState.findNodeById(dest.id).children.at(-1);
     assert.equal(pasted.invoice, undefined, 'invoice сброшен');
 });
 
-// ── КП-5: лимит картинок отклоняет вставку ─────────────────────────────────────
+// ── КП-5: перенос картинок в целевой акт ──────────────────────────────────────
 
-test('КП-5: вставка отклонена при превышении лимита картинок акта', () => {
-    AppState.initializeTree(true);
-    const src = addItem('4', 'С картинкой');
+/** Стенд сети для перезаливки картинок: GET байтов + POST в целевой акт. */
+function installImageNetworkStub({ failUpload = false } = {}) {
+    const calls = { get: [], post: [] };
+    globalThis.location = { origin: 'http://test', pathname: '/' };
+    AppConfig.api._resetCache();
+    globalThis.fetch = async (url, opts) => {
+        if (!opts || opts.method !== 'POST') {
+            calls.get.push(url);
+            return { ok: true, blob: async () => new Blob([new Uint8Array([1, 2, 3])]) };
+        }
+        calls.post.push(url);
+        if (failUpload) {
+            return {
+                ok: false,
+                status: 409,
+                json: async () => ({ detail: 'Акт заблокирован другим пользователем' }),
+            };
+        }
+        return { ok: true, json: async () => ({ image_id: 'target-image' }) };
+    };
+    return calls;
+}
+
+/** Узел с нарушением, несущим одну картинку-ссылку. */
+function addNodeWithImage(parentId, label) {
+    const src = addItem(parentId, label);
     assert.ok(AppState.addViolationToNode(src.id).valid);
     const violationId = src.children.find(c => c.violationId)?.violationId;
-    // Картинка ~3 МБ (влезает в 5 МБ-лимит акта для ОДНОЙ; дубль при вставке → >5 МБ).
-    const bigUrl = 'data:image/png;base64,' + 'A'.repeat(4 * 1024 * 1024);
     AppState.violations[violationId].additionalContent = {
         enabled: true,
-        blocks: [{ id: 'img1', type: BLOCK_TYPES.IMAGE, url: bigUrl }],
+        blocks: [{
+            id: 'img1', type: BLOCK_TYPES.IMAGE, image_id: 'source-image',
+            caption: '', filename: 'shot.png', width: 0,
+        }],
     };
+    return src;
+}
 
+/** image_id первой картинки вставленного узла. */
+function pastedImageId(destId) {
+    const pasted = AppState.findNodeById(destId).children.at(-1);
+    const vid = pasted.violationId
+        || pasted.children?.find(c => c.violationId)?.violationId;
+    return AppState.violations[vid].additionalContent.blocks[0].image_id;
+}
+
+test('КП-5: вставка в ДРУГОЙ акт перезаливает картинку и подменяет image_id', async () => {
+    AppState.initializeTree(true);
+    window.currentActId = 1;
+    const src = addNodeWithImage('4', 'С картинкой');
     assert.ok(NodeClipboard.copyNode(src.id));
+
+    // Целевой акт — другой: картинка источника там недоступна.
+    window.currentActId = 2;
+    const calls = installImageNetworkStub();
+    const dest = addItem('4', 'Назначение');
+    AppState.generateNumbering();
+
+    assert.equal(await NodeClipboard.pasteInto(dest.id), true);
+    assert.deepEqual(calls.get, ['http://test/api/v1/acts/1/images/source-image']);
+    assert.deepEqual(calls.post, ['http://test/api/v1/acts/2/images']);
+    assert.equal(pastedImageId(dest.id), 'target-image', 'блок ссылается на картинку ЦЕЛЕВОГО акта');
+});
+
+test('КП-5: вставка внутри СВОЕГО акта в сеть не ходит — ссылка остаётся прежней', async () => {
+    AppState.initializeTree(true);
+    window.currentActId = 1;
+    const src = addNodeWithImage('4', 'С картинкой');
+    assert.ok(NodeClipboard.copyNode(src.id));
+
+    const calls = installImageNetworkStub();
+    const dest = addItem('4', 'Назначение');
+    AppState.generateNumbering();
+
+    assert.equal(await NodeClipboard.pasteInto(dest.id), true);
+    assert.deepEqual(calls.get, [], 'байты не качаются');
+    assert.deepEqual(calls.post, [], 'и не заливаются заново');
+    assert.equal(pastedImageId(dest.id), 'source-image');
+});
+
+test('КП-5: отказ переноса картинок отменяет вставку целиком', async () => {
+    AppState.initializeTree(true);
+    window.currentActId = 1;
+    const src = addNodeWithImage('4', 'С картинкой');
+    assert.ok(NodeClipboard.copyNode(src.id));
+
+    window.currentActId = 2;
+    installImageNetworkStub({ failUpload: true });
     const dest = addItem('4', 'Назначение');
     AppState.generateNumbering();
 
     const childrenBefore = AppState.findNodeById(dest.id).children?.length || 0;
-    assert.equal(NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена');
-    assert.equal(notified.error.filter(m => /картинок/i.test(m)).length, 1);
-    assert.equal(AppState.findNodeById(dest.id).children?.length || 0, childrenBefore, 'ничего не вставлено');
-});
-
-test('КП-5: copyNode отклоняет фрагмент с картинками сверх лимита акта (до setItem)', () => {
-    AppState.initializeTree(true);
-    const src = addItem('4', 'С большой картинкой');
-    assert.ok(AppState.addViolationToNode(src.id).valid);
-    const violationId = src.children.find(c => c.violationId)?.violationId;
-    // Лимит акта по умолчанию — 5 МБ. estimateDataUrlBytes ≈ длина*0.75,
-    // поэтому base64-payload 8 МБ символов ≈ 6 МБ байт > лимита.
-    const bigUrl = 'data:image/png;base64,' + 'A'.repeat(8 * 1024 * 1024);
-    AppState.violations[violationId].additionalContent = {
-        enabled: true,
-        blocks: [{ id: 'img1', type: BLOCK_TYPES.IMAGE, url: bigUrl }],
-    };
-
-    // Шпион за setItem: при отказе он не должен вызываться.
-    let setItemCalls = 0;
-    const realSetItem = localStorage.setItem;
-    localStorage.setItem = (k, v) => { setItemCalls += 1; realSetItem(k, v); };
-    try {
-        assert.equal(NodeClipboard.copyNode(src.id), false, 'копирование отклонено');
-    } finally {
-        localStorage.setItem = realSetItem;
-    }
-    assert.equal(setItemCalls, 0, 'setItem не вызывался');
-    assert.equal(localStorage.getItem(CLIPBOARD_STORAGE_KEY), null, 'буфер не записан');
+    assert.equal(await NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена');
     assert.equal(
-        notified.error.filter(m => /слишком большие для копирования.*лимит/i.test(m)).length,
-        1,
-        'точное сообщение про лимит картинок',
+        AppState.findNodeById(dest.id).children?.length || 0, childrenBefore,
+        'ничего не вставлено',
     );
-});
-
-test('copyNode: QuotaExceededError → сообщение про переполнение буфера, иначе общая ошибка', () => {
-    AppState.initializeTree(true);
-    const src = addItem('4', 'Маленький узел');
-
-    const realSetItem = localStorage.setItem;
-
-    // Квота-ошибка localStorage → специфичное сообщение. DOMException с именем
-    // QuotaExceededError уже имеет code === 22 (Object.assign code не годится —
-    // code read-only-геттер прототипа).
-    localStorage.setItem = () => {
-        throw new DOMException('quota', 'QuotaExceededError');
-    };
-    try {
-        assert.equal(NodeClipboard.copyNode(src.id), false, 'копирование отклонено при квоте');
-    } finally {
-        localStorage.setItem = realSetItem;
-    }
     assert.equal(
-        notified.error.filter(m => /не помещается в буфер/i.test(m)).length,
-        1,
-        'квота-специфичное сообщение',
+        notified.error.filter(m => /заблокирован/i.test(m)).length, 1,
+        'показан текст отказа сервера',
     );
-
-    // Прочая ошибка setItem → общее сообщение, не про лимит акта.
-    notified.error.length = 0;
-    localStorage.setItem = () => { throw new Error('boom'); };
-    try {
-        assert.equal(NodeClipboard.copyNode(src.id), false, 'копирование отклонено при прочей ошибке');
-    } finally {
-        localStorage.setItem = realSetItem;
-    }
-    assert.equal(notified.error.length, 1, 'ровно одно сообщение об ошибке');
-    assert.match(notified.error[0], /не удалось скопировать/i, 'общее сообщение');
-    assert.doesNotMatch(notified.error[0], /лимит|превыс/i, 'не намекает на превышенный лимит акта');
 });
 
 // ── КП-6: штатная валидация ────────────────────────────────────────────────────
 
-test('КП-6: вставка внутрь листового блока (таблицы) запрещена', () => {
+test('КП-6: вставка внутрь листового блока (таблицы) запрещена', async () => {
     AppState.initializeTree(true);
     const src = addItem('4');
     assert.ok(NodeClipboard.copyNode(src.id));
@@ -566,11 +639,11 @@ test('КП-6: вставка внутрь листового блока (таб�
     assert.ok(AppState.addTableToNode(holder.id).valid);
     const tableNode = holder.children.find(c => c.type === 'table');
 
-    assert.equal(NodeClipboard.pasteInto(tableNode.id), false);
+    assert.equal(await NodeClipboard.pasteInto(tableNode.id), false);
     assert.equal(notified.error.length, 1);
 });
 
-test('КП-6: вставка с превышением maxDepth отклонена', () => {
+test('КП-6: вставка с превышением maxDepth отклонена', async () => {
     AppState.initializeTree(true);
     // Источник глубиной 3 уровня (item→item→item).
     const a = addItem('4', 'A');
@@ -585,13 +658,13 @@ test('КП-6: вставка с превышением maxDepth отклонен
     const d3 = addItem(d2.id, 'd3');
     AppState.generateNumbering();
 
-    assert.equal(NodeClipboard.pasteInto(d3.id), false);
+    assert.equal(await NodeClipboard.pasteInto(d3.id), false);
     assert.equal(notified.error.filter(m => /вложенност/i.test(m)).length, 1);
 });
 
 // ── PERSIST-2: лимит текстблоков-на-узел при вставке (insertNodeAt) ────────────
 
-test('paste: узел-текстблок отклоняется, если цель уже на лимите текстблоков', () => {
+test('paste: узел-текстблок отклоняется, если цель уже на лимите текстблоков', async () => {
     AppState.initializeTree(true);
     getStructureLimits().textBlocksPerNode = 1;
 
@@ -604,12 +677,12 @@ test('paste: узел-текстблок отклоняется, если цел
     assert.ok(AppState.addTextBlockToNode(dest.id).valid); // уже 1 текстблок = лимит
 
     const childrenBefore = AppState.findNodeById(dest.id).children.length;
-    assert.equal(NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена — цель на лимите');
+    assert.equal(await NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена — цель на лимите');
     assert.equal(AppState.findNodeById(dest.id).children.length, childrenBefore, 'ничего не вставлено');
     assert.equal(notified.error.filter(m => /текстовых блоков/i.test(m)).length, 1, 'тост про лимит текстблоков');
 });
 
-test('paste: поддерево нарушает ТЕКУЩИЙ лимит текстблоков (лимит снижен после копирования) — отказ, дерево не меняется', () => {
+test('paste: поддерево нарушает ТЕКУЩИЙ лимит текстблоков (лимит снижен после копирования) — отказ, дерево не меняется', async () => {
     AppState.initializeTree(true);
     getStructureLimits().textBlocksPerNode = 5;
 
@@ -624,11 +697,11 @@ test('paste: поддерево нарушает ТЕКУЩИЙ лимит те�
 
     const dest = addItem('4', 'Назначение');
     const childrenBefore = AppState.findNodeById(dest.id).children?.length || 0;
-    assert.equal(NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена — поддерево нарушает текущий лимит');
+    assert.equal(await NodeClipboard.pasteInto(dest.id), false, 'вставка отклонена — поддерево нарушает текущий лимит');
     assert.equal(AppState.findNodeById(dest.id).children?.length || 0, childrenBefore, 'ничего не вставлено');
 });
 
-test('paste: текстблок в цель НЕ на лимите — проходит как раньше', () => {
+test('paste: текстблок в цель НЕ на лимите — проходит как раньше', async () => {
     AppState.initializeTree(true);
     getStructureLimits().textBlocksPerNode = 2;
 
@@ -638,12 +711,12 @@ test('paste: текстблок в цель НЕ на лимите — прох�
     assert.ok(NodeClipboard.copyNode(srcTextBlock.id));
 
     const dest = addItem('4', 'Назначение');
-    assert.equal(NodeClipboard.pasteInto(dest.id), true, 'вставка проходит — цель не на лимите');
+    assert.equal(await NodeClipboard.pasteInto(dest.id), true, 'вставка проходит — цель не на лимите');
 });
 
 // ── read-only ──────────────────────────────────────────────────────────────────
 
-test('read-only: вставка запрещена, копирование разрешено', () => {
+test('read-only: вставка запрещена, копирование разрешено', async () => {
     AppState.initializeTree(true);
     // Узлы готовим ДО включения read-only (структурные мутации в нём запрещены).
     const src = addItem('4');
@@ -654,7 +727,7 @@ test('read-only: вставка запрещена, копирование ра�
     // Копирование разрешено даже в read-only.
     assert.ok(NodeClipboard.copyNode(src.id), 'copyNode в read-only');
 
-    assert.equal(NodeClipboard.pasteInto(dest.id), false, 'pasteInto в read-only');
+    assert.equal(await NodeClipboard.pasteInto(dest.id), false, 'pasteInto в read-only');
     assert.equal(notified.warning.length >= 1, true);
 });
 
@@ -671,10 +744,10 @@ test('readClipboard: битый JSON → null', () => {
     assert.equal(NodeClipboard.readClipboard(), null);
 });
 
-test('pasteInto: пустой буфер → info, ничего не вставлено', () => {
+test('pasteInto: пустой буфер → info, ничего не вставлено', async () => {
     AppState.initializeTree(true);
     const dest = addItem('4');
-    assert.equal(NodeClipboard.pasteInto(dest.id), false);
+    assert.equal(await NodeClipboard.pasteInto(dest.id), false);
     assert.equal(notified.info.length, 1);
 });
 
@@ -762,27 +835,27 @@ function makeRiskUnder5() {
     return p;
 }
 
-test('paste: таблица рисков сохраняется при вставке в пункт раздела 5', () => {
+test('paste: таблица рисков сохраняется при вставке в пункт раздела 5', async () => {
     const p = makeRiskUnder5();
     const riskNode = AppState.findNodeById(p.id).children.find(c => c.kind);
     assert.ok(NodeClipboard.copyNode(riskNode.id));
     // второй пункт 5.2 — цель
     AppState.addNode('5', 'Пункт 2', true);
     const p2 = AppState.findNodeById('5').children.at(-1);
-    assert.equal(NodeClipboard.pasteInto(p2.id), true);
+    assert.equal(await NodeClipboard.pasteInto(p2.id), true);
     assert.ok(AppState.findNodeById(p2.id).children.some(c => c.kind && c.kind.endsWith('Risk')));
 });
 
-test('paste: таблица рисков отбрасывается при вставке вне раздела 5', () => {
+test('paste: таблица рисков отбрасывается при вставке вне раздела 5', async () => {
     const p = makeRiskUnder5();
     const riskNode = AppState.findNodeById(p.id).children.find(c => c.kind);
     assert.ok(NodeClipboard.copyNode(riskNode.id));
     // цель — раздел 4 (вне §5): risk-корень заблокирован явной проверкой (не пункт §5)
-    assert.equal(NodeClipboard.pasteInto('4'), false);
+    assert.equal(await NodeClipboard.pasteInto('4'), false);
     assert.equal(AppState.findNodeById('4').children.length, 0);
 });
 
-test('paste: вставка в §5 с конфликтом уровней рисков — отклоняется, дерево не меняется', () => {
+test('paste: вставка в §5 с конфликтом уровней рисков — отклоняется, дерево не меняется', async () => {
     AppState.initializeTree(true);
     // Источник: пункт с подпунктом, риск на уровне подпункта (5.x.y)
     AppState.addNode('5', 'Источник', true);
@@ -803,20 +876,20 @@ test('paste: вставка в §5 с конфликтом уровней рис
     AppState.generateNumbering();
     // Вставка буфера (подпунктовый риск) в §5 при наличии пунктового риска → конфликт уровней → блок
     const before = AppState.findNodeById('5').children.length;
-    assert.equal(NodeClipboard.pasteInto('5'), false);
+    assert.equal(await NodeClipboard.pasteInto('5'), false);
     assert.equal(AppState.findNodeById('5').children.length, before, 'дерево не изменилось');
 });
 
-test('paste: пункт с рисками в раздел 5 пересоздаёт сводную таблицу', () => {
+test('paste: пункт с рисками в раздел 5 пересоздаёт сводную таблицу', async () => {
     const p = makeRiskUnder5(); // p содержит риск на уровне пункта 5.1
     assert.ok(NodeClipboard.copyNode(p.id));
     // вставляем как новый пункт в корень §5
-    assert.equal(NodeClipboard.pasteInto('5'), true);
+    assert.equal(await NodeClipboard.pasteInto('5'), true);
     const node5 = AppState.findNodeById('5');
     assert.ok(node5.children.some(c => c.kind === 'mainMetrics'), 'общая сводная должна существовать');
 });
 
-test('paste: одиночный риск на уровень пункта при рисках на подпунктах — отклоняется', () => {
+test('paste: одиночный риск на уровень пункта при рисках на подпунктах — отклоняется', async () => {
     AppState.initializeTree(true);
     AppState.addNode('5', 'Пункт1', true);
     const p1 = AppState.findNodeById('5').children.at(-1);
@@ -831,11 +904,11 @@ test('paste: одиночный риск на уровень пункта при
     const p2 = AppState.findNodeById('5').children.at(-1);
     AppState.generateNumbering();
     const before = AppState.findNodeById(p2.id).children.length;
-    assert.equal(NodeClipboard.pasteInto(p2.id), false);
+    assert.equal(await NodeClipboard.pasteInto(p2.id), false);
     assert.equal(AppState.findNodeById(p2.id).children.length, before);
 });
 
-test('paste: второй риск того же типа на один пункт — отклоняется', () => {
+test('paste: второй риск того же типа на один пункт — отклоняется', async () => {
     AppState.initializeTree(true);
     AppState.addNode('5', 'Пункт', true);
     const p = AppState.findNodeById('5').children.at(-1);
@@ -845,11 +918,11 @@ test('paste: второй риск того же типа на один пунк
     const risk = AppState.findNodeById(p.id).children.find(c => c.kind && c.kind.endsWith('Risk'));
     assert.ok(NodeClipboard.copyNode(risk.id));
     const before = AppState.findNodeById(p.id).children.length;
-    assert.equal(NodeClipboard.pasteInto(p.id), false);
+    assert.equal(await NodeClipboard.pasteInto(p.id), false);
     assert.equal(AppState.findNodeById(p.id).children.length, before);
 });
 
-test('paste: одиночная таблица рисков встаёт в pinned-зону (вверху), а не в конец', () => {
+test('paste: одиночная таблица рисков встаёт в pinned-зону (вверху), а не в конец', async () => {
     AppState.initializeTree(true);
     // 5.1 — источник копирования риск-таблицы (риск на уровне пункта)
     AppState.addNode('5', 'Источник', true);
@@ -866,7 +939,7 @@ test('paste: одиночная таблица рисков встаёт в pinn
     assert.ok(AppState.addTextBlockToNode(dest.id).valid);
     AppState.generateNumbering();
 
-    assert.equal(NodeClipboard.pasteInto(dest.id), true);
+    assert.equal(await NodeClipboard.pasteInto(dest.id), true);
     const kids = AppState.findNodeById(dest.id).children;
     const riskIdx = kids.findIndex(c => c.kind && c.kind.endsWith('Risk'));
     const textIdx = kids.findIndex(c => c.type === 'textblock');
@@ -874,7 +947,7 @@ test('paste: одиночная таблица рисков встаёт в pinn
     assert.ok(riskIdx < textIdx, 'таблица рисков должна быть выше текстблока (pinned-инвариант)');
 });
 
-test('paste: обычный подпункт в пункт 5.X при рисках на уровне пунктов — отклоняется', () => {
+test('paste: обычный подпункт в пункт 5.X при рисках на уровне пунктов — отклоняется', async () => {
     AppState.initializeTree(true);
     // 5.1 с риском на уровне пункта
     AppState.addNode('5', 'Пункт1', true);
@@ -890,12 +963,12 @@ test('paste: обычный подпункт в пункт 5.X при риска
 
     // Вставка обычного подпункта в 5.X запрещена (паритет с «Добавить подпункт»)
     const before = AppState.findNodeById(p1.id).children.length;
-    assert.equal(NodeClipboard.pasteInto(p1.id), false);
+    assert.equal(await NodeClipboard.pasteInto(p1.id), false);
     assert.equal(AppState.findNodeById(p1.id).children.length, before, 'подпункт не добавлен');
     assert.equal(notified.error.filter(m => /подпункт/i.test(m)).length, 1);
 });
 
-test('paste: провал регенерации сводных таблиц откатывает вставку целиком', () => {
+test('paste: провал регенерации сводных таблиц откатывает вставку целиком', async () => {
     const p = makeRiskUnder5();
     const risk = AppState.findNodeById(p.id).children.find(c => c.kind);
     assert.ok(NodeClipboard.copyNode(risk.id));
@@ -910,7 +983,7 @@ test('paste: провал регенерации сводных таблиц о�
     const orig = MetricsRiskCoordinator.onSubtreeMoved;
     MetricsRiskCoordinator.onSubtreeMoved = () => false;
     try {
-        assert.equal(NodeClipboard.pasteInto(dest.id), false, 'вставка возвращает false при провале каскада');
+        assert.equal(await NodeClipboard.pasteInto(dest.id), false, 'вставка возвращает false при провале каскада');
     } finally {
         MetricsRiskCoordinator.onSubtreeMoved = orig;
     }

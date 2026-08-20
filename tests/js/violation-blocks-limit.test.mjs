@@ -33,6 +33,9 @@ let previewCalls = [];
 Notifications.warning = (msg) => warnings.push(msg);
 Notifications.success = (msg) => successes.push(msg);
 Notifications.error = (msg) => errors.push(msg);
+// Прогресс загрузки — sticky-тост через show/hide; в тестах он не интересен.
+Notifications.show = () => 'n1';
+Notifications.hide = () => {};
 PreviewManager.updateBlock = (type, id) => previewCalls.push({ type, id });
 
 const FIELD = 'additionalContent';
@@ -185,28 +188,31 @@ test('режим просмотра: вставка блока заблокир�
 
 // --- Батч-путь insertImageFilesInOrder: гейт не должен завышать addedCount ---
 
-/** Мини-стаб FileReader — возвращает детерминированный data-URL на файл. */
-class FakeFileReader {
-    readAsDataURL(file) {
-        Promise.resolve().then(() => {
-            if (this.onload) this.onload({ target: { result: `data:image/png;base64,${file.name}` } });
-        });
-    }
+/**
+ * Стенд загрузки: картинки уходят на сервер (POST /acts/{id}/images), в блок
+ * ложится image_id. Стабим fetch, акт-контекст и базовый URL.
+ */
+function installUploadStub() {
+    globalThis.location = { origin: 'http://test', pathname: '/' };
+    AppConfig.api._resetCache();
+    window.currentActId = 7;
+    globalThis.fetch = async (_url, opts) => ({
+        ok: true,
+        json: async () => ({ image_id: `img-${opts.body.get('file').name}` }),
+    });
 }
 
-/** Файл-стаб картинки с рабочим slice() (для magic-sniff #26). PNG → ресайз пропускается. */
-function imgFile(name, size = 100) {
-    return {
-        name,
-        type: 'image/png',
-        size,
-        slice: () => new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])]),
-    };
+/** Настоящий PNG-файл (сигнатура для magic-sniff #26). */
+function imgFile(name) {
+    const bytes = new Uint8Array([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    ]);
+    return new File([bytes], name, { type: 'image/png' });
 }
 
 test('insertImageFilesInOrder: гейт срабатывает в середине пачки — цикл останавливается, addedCount не завышен', async () => {
     reset(2); // лимит: максимум 2 блока в поле
-    globalThis.FileReader = FakeFileReader;
+    installUploadStub();
 
     const violation = makeViolation([existingBlock('b0')]); // уже 1 блок, лимит 2 → влезет ровно 1 картинка
     const vm = new ViolationManager();
@@ -228,12 +234,12 @@ test('insertImageFilesInOrder: гейт срабатывает в середин
     assert.match(warnings[0], /лимит/i);
     // №14: тот же текст, что и у остальных гейтов лимита (app-config.js).
     assert.equal(warnings[0], AppConfig.content.errors.contentItemsLimitReached(2));
-    assert.deepEqual(errors, [], 'ошибок чтения файлов не было');
+    assert.deepEqual(errors, [], 'ошибок загрузки не было');
 });
 
 test('insertImageFilesInOrder: лимит не достигнут — все файлы вставляются, addedCount корректен', async () => {
     reset(5);
-    globalThis.FileReader = FakeFileReader;
+    installUploadStub();
 
     const violation = makeViolation([]);
     const vm = new ViolationManager();

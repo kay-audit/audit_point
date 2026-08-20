@@ -6,7 +6,7 @@
  * additionalContent). Проверяем:
  *   - блоки трёх типов: added/removed/modified/reordered по стабильному id;
  *   - text — word-diff по видимому тексту + formattingOnly;
- *   - image — атрибуты (url только фактом смены, caption — word-diff);
+ *   - image — атрибуты (image_id только фактом смены, caption — word-diff);
  *   - table — плоский список изменённых ячеек, без LCS по содержимому;
  *   - enabled поля и fieldOrder — отдельные классы изменений;
  *   - перф-гвард: крупный контент не идёт через _wordDiff;
@@ -39,7 +39,7 @@ function textBlock(id, content) {
 }
 
 function imageBlock(id, over = {}) {
-    return { id, type: 'image', url: 'u', caption: '', filename: 'p.png', width: 0, ...over };
+    return { id, type: 'image', image_id: 'u', caption: '', filename: 'p.png', width: 0, ...over };
 }
 
 function tableBlock(id, grid, colWidths = []) {
@@ -165,14 +165,14 @@ test('image-блок: добавление/удаление по id', () => {
     assert.equal(removed.oldBlock.id, 'i1');
 });
 
-test('image-блок: смена url → фиксируется фактом, БЕЗ word-diff', () => {
-    const oldV = makeViol({ additionalContent: field(imageBlock('i1', { url: 'data:image/png;base64,AAAA' })) });
-    const newV = makeViol({ additionalContent: field(imageBlock('i1', { url: 'data:image/png;base64,BBBB' })) });
+test('image-блок: смена image_id → фиксируется фактом, БЕЗ word-diff', () => {
+    const oldV = makeViol({ additionalContent: field(imageBlock('i1', { image_id: 'aaaa' })) });
+    const newV = makeViol({ additionalContent: field(imageBlock('i1', { image_id: 'bbbb' })) });
     const entry = diffOne(oldV, newV).fields.additionalContent.blocks.entries[0];
     assert.equal(entry.status, 'modified');
-    assert.equal(entry.fields.url.old, 'data:image/png;base64,AAAA');
-    assert.equal(entry.fields.url.new, 'data:image/png;base64,BBBB');
-    assert.equal(entry.fields.url.wordDiff, undefined, 'url не должен нести word-diff');
+    assert.equal(entry.fields.image_id.old, 'aaaa');
+    assert.equal(entry.fields.image_id.new, 'bbbb');
+    assert.equal(entry.fields.image_id.wordDiff, undefined, 'ссылка не должна нести word-diff');
     assert.equal(entry.wordDiff, undefined, 'image-блок не несёт word-diff на верхнем уровне');
 });
 
@@ -182,7 +182,7 @@ test('image-блок: смена ширины и имени файла', () => {
     const entry = diffOne(oldV, newV).fields.additionalContent.blocks.entries[0];
     assert.equal(String(entry.fields.width.new), '60');
     assert.equal(entry.fields.filename.new, 'b.png');
-    assert.equal(entry.fields.url, undefined, 'url не менялся — поля нет');
+    assert.equal(entry.fields.image_id, undefined, 'картинка не менялась — поля нет');
 });
 
 test('image-блок: смена подписи → word-diff по видимому тексту + formattingOnly', () => {
@@ -345,25 +345,6 @@ test('перф-гвард: text-блок с 3 МБ base64-подобной ст�
         assert.equal(entry.oversized, true, 'крупный блок помечен oversized');
         assert.equal(entry.wordDiff, null);
         assert.ok(Date.now() - start < 1000, 'сравнение должно быть мгновенным');
-    } finally {
-        DiffEngine._wordDiff = orig;
-    }
-});
-
-test('перф-гвард: огромный base64-url картинки НЕ идёт через _wordDiff', () => {
-    const bigA = 'data:image/png;base64,' + 'A'.repeat(3_000_000);
-    const bigB = 'data:image/png;base64,' + 'B'.repeat(3_000_000);
-    const oldV = makeViol({ additionalContent: field(imageBlock('i1', { url: bigA })) });
-    const newV = makeViol({ additionalContent: field(imageBlock('i1', { url: bigB })) });
-
-    const orig = DiffEngine._wordDiff;
-    DiffEngine._wordDiff = () => { throw new Error('_wordDiff вызван на url картинки'); };
-    try {
-        const start = Date.now();
-        const entry = diffOne(oldV, newV).fields.additionalContent.blocks.entries[0];
-        assert.equal(entry.status, 'modified');
-        assert.ok(entry.fields.url, 'url помечен как изменённый');
-        assert.ok(Date.now() - start < 1000, 'сравнение url должно быть мгновенным');
     } finally {
         DiffEngine._wordDiff = orig;
     }

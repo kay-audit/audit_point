@@ -110,10 +110,10 @@ test('_renderDiffViolation: полный дифф (3 типа блоков + ena
                     entries: [
                         {
                             status: 'modified', reordered: false, type: 'image',
-                            oldBlock: { id: 'i1', type: 'image', url: 'a', caption: 'старая', filename: 'p.png', width: 0 },
-                            newBlock: { id: 'i1', type: 'image', url: 'b', caption: 'новая', filename: 'p.png', width: 50 },
+                            oldBlock: { id: 'i1', type: 'image', image_id: 'a', caption: 'старая', filename: 'p.png', width: 0 },
+                            newBlock: { id: 'i1', type: 'image', image_id: 'b', caption: 'новая', filename: 'p.png', width: 50 },
                             fields: {
-                                url: { old: 'a', new: 'b' },
+                                image_id: { old: 'a', new: 'b' },
                                 caption: {
                                     old: 'старая', new: 'новая', formattingOnly: false,
                                     wordDiff: [{ type: 'delete', text: 'старая' }, { type: 'insert', text: 'новая' }],
@@ -128,7 +128,7 @@ test('_renderDiffViolation: полный дифф (3 типа блоков + ena
                             cells: [{ row: 0, col: 0, old: 'a', new: 'b' }],
                         },
                         { status: 'added', reordered: false, type: 'text', newBlock: { id: 'b2', type: 'text', content: 'новый блок' } },
-                        { status: 'removed', reordered: false, type: 'image', oldBlock: { id: 'i2', type: 'image', url: '', caption: '', filename: 'q.png', width: 0 } },
+                        { status: 'removed', reordered: false, type: 'image', oldBlock: { id: 'i2', type: 'image', image_id: '', caption: '', filename: 'q.png', width: 0 } },
                     ],
                 },
             },
@@ -250,7 +250,7 @@ test('маркеры блока: (ДОБАВЛЕНО) / (УДАЛЕНО) / (по
     assert.ok(added.includes('Текст (ДОБАВЛЕНО): '));
 
     const removed = allText(renderViolation(violDiff('description', blocksField({
-        status: 'removed', reordered: false, type: 'image', oldBlock: { id: 'i1', type: 'image', url: '', filename: 'p.png' },
+        status: 'removed', reordered: false, type: 'image', oldBlock: { id: 'i1', type: 'image', image_id: '', filename: 'p.png' },
     }))));
     assert.ok(removed.includes('Картинка (УДАЛЕНО): '));
 
@@ -283,8 +283,8 @@ test('image-блок: caption с wordDiff → рендер зовёт _wordDiffT
     try {
         DiffRenderer._renderImageEntry({ appendChild() {} }, {
             status: 'modified', reordered: false, type: 'image',
-            oldBlock: { id: 'i1', type: 'image', url: 'u', caption: '<b>старая</b>', filename: 'p.png', width: 0 },
-            newBlock: { id: 'i1', type: 'image', url: 'u', caption: '<b>новая</b>', filename: 'p.png', width: 0 },
+            oldBlock: { id: 'i1', type: 'image', image_id: 'u', caption: '<b>старая</b>', filename: 'p.png', width: 0 },
+            newBlock: { id: 'i1', type: 'image', image_id: 'u', caption: '<b>новая</b>', filename: 'p.png', width: 0 },
             fields: { caption: { old: '<b>старая</b>', new: '<b>новая</b>', wordDiff, formattingOnly: false } },
         });
     } finally {
@@ -297,27 +297,27 @@ test('image-блок: caption с wordDiff → рендер зовёт _wordDiffT
 test('image-блок: caption formattingOnly=true → бейдж, false → без бейджа', () => {
     const withBadge = collecting(() => DiffRenderer._renderImageEntry({ appendChild() {} }, {
         status: 'modified', type: 'image',
-        oldBlock: { id: 'i1', type: 'image', url: 'u', caption: 'важно', filename: 'p.png' },
-        newBlock: { id: 'i1', type: 'image', url: 'u', caption: '<b>важно</b>', filename: 'p.png' },
+        oldBlock: { id: 'i1', type: 'image', image_id: 'u', caption: 'важно', filename: 'p.png' },
+        newBlock: { id: 'i1', type: 'image', image_id: 'u', caption: '<b>важно</b>', filename: 'p.png' },
         fields: { caption: { old: 'важно', new: '<b>важно</b>', wordDiff: [{ type: 'equal', text: 'важно' }], formattingOnly: true } },
     }));
     assert.ok(withBadge.els.some(el => el.className === 'diff-textblock-format-badge'));
 
     const noBadge = collecting(() => DiffRenderer._renderImageEntry({ appendChild() {} }, {
         status: 'modified', type: 'image',
-        oldBlock: { id: 'i1', type: 'image', url: 'u', caption: 'старая', filename: 'p.png' },
-        newBlock: { id: 'i1', type: 'image', url: 'u', caption: 'новая', filename: 'p.png' },
+        oldBlock: { id: 'i1', type: 'image', image_id: 'u', caption: 'старая', filename: 'p.png' },
+        newBlock: { id: 'i1', type: 'image', image_id: 'u', caption: 'новая', filename: 'p.png' },
         fields: { caption: { old: 'старая', new: 'новая', wordDiff: [{ type: 'delete', text: 'старая' }, { type: 'insert', text: 'новая' }], formattingOnly: false } },
     }));
     assert.ok(!noBadge.els.some(el => el.className === 'diff-textblock-format-badge'));
 });
 
-test('image-блок: смена url → два превью «Было/Стало»', () => {
+test('image-блок: смена картинки → два превью «Было/Стало»', () => {
     const collected = collecting(() => DiffRenderer._renderImageEntry({ appendChild() {} }, {
         status: 'modified', type: 'image',
-        oldBlock: { id: 'i1', type: 'image', url: '', caption: '', filename: 'a.png' },
-        newBlock: { id: 'i1', type: 'image', url: '', caption: '', filename: 'b.png' },
-        fields: { url: { old: 'data:a', new: 'data:b' } },
+        oldBlock: { id: 'i1', type: 'image', image_id: '', caption: '', filename: 'a.png' },
+        newBlock: { id: 'i1', type: 'image', image_id: '', caption: '', filename: 'b.png' },
+        fields: { image_id: { old: 'img-a', new: 'img-b' } },
     }));
     const texts = allText(collected);
     assert.ok(texts.includes('Было:'));
@@ -327,8 +327,8 @@ test('image-блок: смена url → два превью «Было/Стал
 test('image-блок: атрибуты подписаны (Подпись/Файл/Ширина)', () => {
     const texts = allText(collecting(() => DiffRenderer._renderImageEntry({ appendChild() {} }, {
         status: 'modified', type: 'image',
-        oldBlock: { id: 'i1', type: 'image', url: 'u', caption: '', filename: 'a.png', width: 0 },
-        newBlock: { id: 'i1', type: 'image', url: 'u', caption: '', filename: 'b.png', width: 60 },
+        oldBlock: { id: 'i1', type: 'image', image_id: 'u', caption: '', filename: 'a.png', width: 0 },
+        newBlock: { id: 'i1', type: 'image', image_id: 'u', caption: '', filename: 'b.png', width: 60 },
         fields: { filename: { old: 'a.png', new: 'b.png' }, width: { old: 0, new: 60 } },
     })));
     assert.ok(texts.includes('Файл: '));
@@ -338,7 +338,7 @@ test('image-блок: атрибуты подписаны (Подпись/Фай
 test('_appendImagePreview: подпись — видимый текст (_stripHtml), не сырой HTML', () => {
     const collected = collecting(() => DiffRenderer._appendImagePreview(
         { appendChild() {} },
-        { id: 'i1', type: 'image', url: '', caption: '<b>важно</b>', filename: 'p.png' },
+        { id: 'i1', type: 'image', image_id: '', caption: '<b>важно</b>', filename: 'p.png' },
     ));
     const cap = collected.els.find(el => el.className === 'diff-violation-caption');
     assert.ok(cap, 'подпись не создана');

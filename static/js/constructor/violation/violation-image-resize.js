@@ -1,33 +1,55 @@
 /**
- * Клиентский даунскейл картинок перед вставкой в акт (#25).
+ * Клиентский даунскейл картинок перед загрузкой в акт (#25).
  *
  * Фото с телефона (5-8 МБ JPEG) раздувают акт и упираются в суммарный лимит
- * (#2). Перед вставкой предлагаем пользователю режим сжатия (диалог качества,
- * Q3) и уменьшаем длинную сторону + перекодируем в JPEG на клиенте.
+ * (#2). Перед загрузкой предлагаем пользователю режим сжатия (диалог качества,
+ * Q3) и уменьшаем длинную сторону + перекодируем на клиенте. Результат —
+ * ГОТОВЫЕ К ОТПРАВКЕ БАЙТЫ (Blob), а не data-URL: картинка едет на сервер
+ * multipart'ом, в содержимом акта остаётся только image_id.
  *
- * Пережимаем JPEG и PNG. GIF (потеряет анимацию) в режимах сжатия отдаём как
- * есть. Непрозрачные PNG-скриншоты — самый массовый тип вложений в актах, и
- * раньше пропускались целиком наравне с прозрачными «на всякий случай»; теперь
- * прозрачность проверяется по факту декодированных пикселей — createImageBitmap
- * + canvas отдают честный альфа-канал даже для палитровых PNG с tRNS, так что
- * прежнее возражение про неточную детекцию снято. Полупрозрачные PNG остаются
- * оригиналом, непрозрачные перекодируются в JPEG наравне с фото. Защитный
- * размерный гейт (blob.size < file.size) не даёт перекодированному JPEG
- * проиграть исходнику по весу — актуально и для PNG со сплошным текстом/
- * линиями, и для обычного JPEG-пути.
+ * Целевой формат — WebP, не JPEG. Акты состоят из скриншотов банковских
+ * систем с мелким текстом, а блочный DCT + chroma subsampling JPEG дают вокруг
+ * букв ореолы; WebP на тех же 25-35% меньшем весе держит края символов и, в
+ * отличие от JPEG, умеет прозрачность. Пережимаем JPEG, PNG и WebP; GIF
+ * пропускаем целиком — canvas отдал бы только первый кадр и убил анимацию.
+ *
+ * Прозрачность больше НЕ повод отказаться от перекодирования: альфа переживает
+ * WebP. Проверка hasTransparentPixels осталась только в JPEG-фолбэке (браузер
+ * без WebP-энкодера) — там альфа действительно схлопнулась бы в чёрное.
+ *
+ * Размерный гейт (перекодированное принимаем, только если оно легче исходника)
+ * тоже сузился: он применяется, лишь когда РАЗМЕР В ПИКСЕЛЯХ не менялся. Если
+ * длинная сторона реально ужата, отдаём перекодированное даже при большем
+ * весе — иначе «Сжатие» тихо возвращало бы исходник в 5000 px, который потом
+ * всё равно масштабируется в превью и в Word.
  *
  * Чистая логика (resolveResizeMode / shouldDownscale / computeScaledSize /
- * hasTransparentPixels) и skip-ветки downscaleImage покрыты node-тестами; сам
- * canvas-конвейер (createImageBitmap / toBlob / getImageData) исполняется
- * только в браузере — LIVE.
+ * hasTransparentPixels / resolveActualFilename) и skip-ветки downscaleImage
+ * покрыты node-тестами; сам canvas-конвейер (createImageBitmap / toBlob /
+ * getImageData) исполняется только в браузере — LIVE.
  */
 
-import { readFileAsDataUrl } from './violation-file-reading.js';
-
-/** Пресеты режимов сжатия: длинная сторона (px) и качество JPEG (0..1). */
+/**
+ * Пресеты режимов сжатия: длинная сторона (px) и качество WebP (0..1).
+ *
+ * `high` держит длинную сторону 1920 px намеренно: типичный скриншот FullHD
+ * при этом не ресемплится ВООБЩЕ. Прежние 1600 давали дробный коэффициент
+ * 0.83, который размывает однопиксельные штрихи букв сильнее, чем любая
+ * перекодировка, — а вес отыгрывается качеством энкодера (WebP 0.9 ≈ JPEG 0.95
+ * по чёткости при заметно меньшем файле). `medium` — режим «полегче»: 1400 px
+ * и 0.8, там уже сознательный размен чёткости на вес.
+ */
 export const RESIZE_PRESETS = {
-    high: { maxDim: 1600, quality: 0.8 },   // «Сжатие» (по умолчанию)
-    medium: { maxDim: 1200, quality: 0.7 }, // «Среднее»
+    high: { maxDim: 1920, quality: 0.9 },   // «Сжатие» (по умолчанию)
+    medium: { maxDim: 1400, quality: 0.8 }, // «Среднее»
+};
+
+/** Расширение файла по MIME итоговых байтов. */
+const EXTENSION_BY_MIME = {
+    'image/webp': 'webp',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
 };
 
 /**
@@ -41,11 +63,7 @@ export function resolveResizeMode(mode) {
 }
 
 /**
- * Нужно ли пережимать файл: JPEG/PNG и только в режиме сжатия.
- *
- * Итоговое решение по PNG (сохранить прозрачный оригинал или перекодировать
- * непрозрачный в JPEG) принимается позже, в downscaleImage, по факту
- * декодированных пикселей — здесь только грубый фильтр по MIME-типу.
+ * Нужно ли пережимать файл: растр с одним кадром и только в режиме сжатия.
  *
  * @param {string} fileType - MIME-тип файла (file.type)
  * @param {string} mode - Выбранный режим качества
@@ -53,8 +71,10 @@ export function resolveResizeMode(mode) {
  */
 export function shouldDownscale(fileType, mode) {
     if (!resolveResizeMode(mode)) return false; // 'original' / неизвестный
-    // GIF — анимация: JPEG её убьёт, пропускаем целиком.
-    return fileType === 'image/jpeg' || fileType === 'image/png';
+    // GIF — анимация: canvas отдаст только первый кадр, пропускаем целиком.
+    return fileType === 'image/jpeg'
+        || fileType === 'image/png'
+        || fileType === 'image/webp';
 }
 
 /**
@@ -95,15 +115,42 @@ export function computeScaledSize(width, height, maxDim) {
 }
 
 /**
- * Читает файл в data-URL, при необходимости пережав его на canvas.
+ * Кодирует canvas в blob запрошенного типа. Браузер без энкодера этого формата
+ * молча отдаёт PNG — поэтому проверяем ФАКТИЧЕСКИЙ blob.type, а не аргумент.
  *
- * Для 'original' и GIF (см. shouldDownscale) возвращает оригинальные байты
- * через обычный readAsDataURL. Для JPEG/PNG в режиме сжатия — уменьшает
- * длинную сторону до maxDim; для PNG дополнительно проверяет альфа-канал
- * уменьшенного изображения (hasTransparentPixels) и при наличии прозрачности
- * отдаёт оригинал, не перекодируя. Непрозрачные PNG и JPEG перекодируются в
- * JPEG с заданным quality, но только если это реально выигрывает в размере
- * (blob.size < file.size) — иначе тоже оригинал. Любой сбой canvas/bitmap
+ * @param {HTMLCanvasElement} canvas
+ * @param {string} mimeType - Желаемый MIME
+ * @param {number} quality - Качество (0..1)
+ * @returns {Promise<Blob|null>} Blob нужного типа либо null
+ */
+async function encodeCanvas(canvas, mimeType, quality) {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
+    return blob && blob.type === mimeType ? blob : null;
+}
+
+/**
+ * Принимать ли перекодированные байты вместо исходных.
+ *
+ * Если пиксельный размер реально ужат — да, всегда (пользователь просил
+ * уменьшить картинку, а не только её вес). Если размер не менялся, смысл
+ * перекодировки только в весе: отдаём результат, лишь когда он легче.
+ *
+ * @param {Blob} blob - Перекодированные байты
+ * @param {File|Blob} file - Исходный файл
+ * @param {boolean} scaled - Менялся ли размер в пикселях
+ * @returns {Blob} blob либо исходный file
+ */
+function pickSmaller(blob, file, scaled) {
+    return (scaled || blob.size < file.size) ? blob : file;
+}
+
+/**
+ * Готовит байты картинки к загрузке, при необходимости пережав их на canvas.
+ *
+ * Для 'original' и GIF (см. shouldDownscale) возвращает исходный файл. Иначе
+ * уменьшает длинную сторону до maxDim и перекодирует в WebP; браузер без
+ * WebP-энкодера получает JPEG-фолбэк, а полупрозрачная картинка в этом фолбэке
+ * остаётся оригиналом (JPEG схлопнул бы альфу). Любой сбой canvas/bitmap
  * деградирует к оригиналу.
  *
  * @param {File|Blob} file - Исходный файл картинки
@@ -111,14 +158,13 @@ export function computeScaledSize(width, height, maxDim) {
  * @param {string} [options.mode='high'] - Режим качества
  * @param {number} [options.maxDim] - Явный предел (по умолчанию из режима)
  * @param {number} [options.quality] - Явное качество (по умолчанию из режима)
- * @param {(f: File|Blob) => Promise<string>} [options.readAsDataUrl] - Чтение (для тестов)
- * @returns {Promise<string>} data-URL (ужатый JPEG или оригинал)
+ * @returns {Promise<Blob>} Байты для отправки (перекодированные либо исходные)
  */
 export async function downscaleImage(file, options = {}) {
-    const { mode = 'high', readAsDataUrl = readFileAsDataUrl } = options;
+    const { mode = 'high' } = options;
 
     if (!shouldDownscale(file.type, mode)) {
-        return readAsDataUrl(file);
+        return file;
     }
 
     const preset = resolveResizeMode(mode);
@@ -134,20 +180,22 @@ export async function downscaleImage(file, options = {}) {
             canvas.height = height;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(bitmap, 0, 0, width, height);
+            const scaled = width !== bitmap.width || height !== bitmap.height;
 
-            if (file.type === 'image/png') {
-                // Альфа проверяется на уже уменьшенном canvas — дешевле, а
-                // интерполяция drawImage сохраняет полупрозрачность (полностью
-                // непрозрачный источник останется непрозрачным).
+            const webp = await encodeCanvas(canvas, 'image/webp', quality);
+            if (webp) return pickSmaller(webp, file, scaled);
+
+            // WebP-энкодера в браузере нет — падаем на JPEG. Альфа его не
+            // переживёт, поэтому полупрозрачное отдаём оригиналом. Проверяем
+            // уже уменьшенный canvas: интерполяция drawImage сохраняет
+            // полупрозрачность (непрозрачный источник останется непрозрачным).
+            if (file.type !== 'image/jpeg') {
                 const { data } = ctx.getImageData(0, 0, width, height);
-                if (hasTransparentPixels(data)) return readAsDataUrl(file);
+                if (hasTransparentPixels(data)) return file;
             }
 
-            const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
-            // Защитный гейт: перекодированный JPEG отдаём, только если он
-            // реально меньше исходника (актуально для PNG-скринов с текстом/
-            // линиями, где JPEG может проиграть; заодно прикрывает и JPEG-путь).
-            if (blob && blob.size < file.size) return readAsDataUrl(blob);
+            const jpeg = await encodeCanvas(canvas, 'image/jpeg', quality);
+            if (jpeg) return pickSmaller(jpeg, file, scaled);
         } finally {
             if (typeof bitmap.close === 'function') bitmap.close();
         }
@@ -155,33 +203,36 @@ export async function downscaleImage(file, options = {}) {
         // Canvas/bitmap недоступны или упали (в т.ч. getImageData на tainted
         // canvas) — отдаём оригинал, как и остальные сбои конвейера.
     }
-    return readAsDataUrl(file);
+    return file;
 }
 
 /**
- * Приводит имя файла к формату, реально записанному в итоговый data-URL (#12).
+ * Приводит имя файла к формату РЕАЛЬНО отправляемых байтов (#12).
  *
- * downscaleImage молча перекодирует непрозрачный PNG в JPEG (см. заголовок
- * модуля) — без синхронизации элемент дополнительного контента хранил бы имя
- * вида «screenshot.png» с телом, которое на самом деле JPEG. Расширение
- * меняется, только если реально произошёл PNG → JPEG (по факту MIME итогового
- * data-URL, а не по одному лишь исходному типу): прозрачный PNG, оставшийся
- * PNG, и JPEG/GIF без перекодирования — имя не трогаем. Уже-JPEG-имена
- * (.jpg/.jpeg) не переименовываются повторно.
+ * downscaleImage молча перекодирует картинку (обычно в WebP, в фолбэке — в
+ * JPEG) — без синхронизации блок хранил бы имя «screenshot.png» при webp-теле,
+ * и пользователь, скачавший файл из акта, получил бы неоткрываемое расширение.
+ * Имя меняем только по ФАКТУ смены MIME; если расширение уже соответствует
+ * итоговому типу, не трогаем.
  *
  * @param {File|Blob} file - Исходный файл (до пережатия): читает .type/.name
- * @param {string} resultUrl - data-URL, фактически возвращённый downscaleImage
+ * @param {Blob} result - Байты, фактически возвращённые downscaleImage
  * @returns {string} Имя файла с расширением, соответствующим факту
  */
-export function resolveActualFilename(file, resultUrl) {
-    const recompressedToJpeg = file.type === 'image/png'
-        && typeof resultUrl === 'string'
-        && resultUrl.startsWith('data:image/jpeg');
-    if (!recompressedToJpeg || /\.jpe?g$/i.test(file.name || '')) {
-        return file.name;
-    }
-    const base = (file.name || '').replace(/\.[^./\\]*$/, '');
-    return `${base || 'image'}.jpg`;
+export function resolveActualFilename(file, result) {
+    const name = file.name || '';
+    const mime = result && typeof result.type === 'string' ? result.type : '';
+    const ext = EXTENSION_BY_MIME[mime];
+    if (!ext || mime === file.type) return name;
+
+    // Имя уже несёт верное расширение (для JPEG годятся оба варианта).
+    const alreadyCorrect = mime === 'image/jpeg'
+        ? /\.jpe?g$/i.test(name)
+        : new RegExp(`\\.${ext}$`, 'i').test(name);
+    if (alreadyCorrect) return name;
+
+    const base = name.replace(/\.[^./\\]*$/, '');
+    return `${base || 'image'}.${ext}`;
 }
 
 // Window-global для inline-скриптов шаблонов (guarded — модуль тестируется в node).

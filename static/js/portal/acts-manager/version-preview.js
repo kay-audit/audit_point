@@ -5,6 +5,7 @@
 import { PreviewTableRenderer } from '../../constructor/preview/preview-table-renderer.js';
 import { PreviewTextBlockRenderer } from '../../constructor/preview/preview-textblock-renderer.js';
 import { PreviewViolationRenderer } from '../../constructor/preview/preview-violation-renderer.js';
+import { setImageActContext } from '../../constructor/violation/violation-image-api.js';
 import { tableTitleUnderlined } from '../../constructor/table/table-title.js';
 import { AuditLogDialog } from './dialog-audit-log.js';
 import { DiffEngine } from './diff-engine.js';
@@ -32,6 +33,10 @@ export class VersionPreviewOverlay extends DialogBase {
     static show(versionData, actName, actId) {
         this._versionData = versionData;
         this._actId = actId;
+        // Картинки нарушений адресуются парой (act_id, image_id), а на портале
+        // нет window.currentActId конструктора — объявляем акт явно, иначе
+        // превью и дифф версий отрисовали бы одни плейсхолдеры.
+        setImageActContext(actId);
         this._viewMode = 'ui';
         this._currentContent = null;
         this._diffResult = null;

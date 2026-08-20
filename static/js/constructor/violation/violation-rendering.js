@@ -14,6 +14,7 @@ import { ViolationManager } from './violation-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { BLOCK_TYPES, BLOCK_TYPE_META } from './violation-block-types.js';
 import { renderImageWithFallback } from './violation-image-render.js';
+import { resolveBlockImageSrc } from './violation-image-api.js';
 import { createTableElement } from '../table/table-render.js';
 import { makeEmbeddedTableId } from '../table/table-store.js';
 import { tableManager } from '../table/table-core.js';
@@ -168,8 +169,10 @@ Object.assign(ViolationManager.prototype, {
         imgContainer.className = 'image-preview-container';
 
         // #27: onerror ДО src + текст-плейсхолдер при битой картинке (зеркалит превью).
+        // src — ссылка на байты в act_images; пустой image_id (черновик) или
+        // висячий id дают тот же текстовый плейсхолдер, что и битый файл.
         renderImageWithFallback(imgContainer, {
-            src: block.url,
+            src: resolveBlockImageSrc(block),
             alt: block.caption || block.filename,
             imgClassName: 'image-preview',
             placeholderText: `Изображение: ${block.filename}`,
