@@ -24,10 +24,13 @@
     box-shadow: var(--shadow);
 }
 
-/* Контент пункта */
+/* Контент пункта — обычный абзац акта: в Word это отдельный w:p базового
+   кегля с Normal-спейсингом (formatter.py::_render_item), без собственных
+   полей. Прежний padding (7.5px со всех сторон) отодвигал текст от левого
+   края листа сильнее, чем это сделает Word, и подмешивал к печатному
+   интервалу ещё 15px UI-шкалы. */
 .preview-content {
-    margin-bottom: var(--spacing-lg);
-    padding: var(--spacing-sm);
+    margin-bottom: var(--doc-space-after);
     color: var(--text-primary);
 }
 

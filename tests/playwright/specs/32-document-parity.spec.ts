@@ -639,3 +639,121 @@ test.describe('Заголовки пунктов — печатный кегль
     expect(m.weight).toBeLessThan(700);
   });
 });
+
+test.describe('Вертикальный ритм листа — Normal-спейсинг Word, а не UI-шкала', () => {
+  /**
+   * В Word ритм акта задан ОДНИМ правилом стиля Normal: 0pt до абзаца и 3pt
+   * после (Spacing.before_pt / after_pt, docx/styles.py). Ступеней «чем выше
+   * уровень заголовка, тем больше воздуха» в документе нет. Единственный
+   * собственный воздух — пустая строка-распорка (add_blank_line): абзац без
+   * текста, высота = кегль его метки (Sizes.blank_line_pt) на одинарном
+   * интервале. Она стоит до и после плашки раздела и после каждой таблицы.
+   *
+   * Лист же стоял на --spacing-* — это rem, то есть ПЛОТНОСТЬ ИНТЕРФЕЙСА
+   * (корень 12px в конструкторе против 13px на портале, layout/density.css).
+   * Отсюда 15/18/24px над заголовками против печатных 0 и 10.5px под абзацем
+   * против печатных 4. Равенство токенов CSS ↔ Python сторожит
+   * tests/test_document_typography_tokens.py; здесь — вычисленный каскад.
+   */
+  const PX_PER_PT = 4 / 3;
+  /** Spacing.after_pt = 3pt. */
+  const SPACE_AFTER_PX = 3 * PX_PER_PT;
+  /** Распорка: Sizes.blank_line_pt (6pt) × одинарный интервал (1.15). */
+  const BLANK_LINE_PX = 6 * 1.15 * PX_PER_PT;
+  /** Над разделом: распорка ПЛЮС интервал предыдущего абзаца (CSS схлопывает по максимуму). */
+  const SECTION_TOP_PX = SPACE_AFTER_PX + BLANK_LINE_PX;
+
+  /** Снимает вертикальные margin'ы (и padding) всего, чем рисуется лист. */
+  const rhythm = (page: import('@playwright/test').Page) => page.evaluate(() => {
+    const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+    const box = (el: HTMLElement) => {
+      const cs = getComputedStyle(el);
+      return {
+        top: parseFloat(cs.marginTop),
+        bottom: parseFloat(cs.marginBottom),
+        padTop: parseFloat(cs.paddingTop),
+        padLeft: parseFloat(cs.paddingLeft),
+      };
+    };
+    /** Элемент есть на листе — меряем его; нет — подсовываем зонд того же класса.
+     *  Зонд обкладывается пустыми соседями: без них он становится :last-child,
+     *  а под этот псевдокласс в предпросмотре заведены правила обнуления
+     *  нижнего отступа — мерился бы не тот ритм. */
+    const probe = (selector: string, tag = 'div') => {
+      const live = sheet.querySelector(selector) as HTMLElement | null;
+      if (live) return box(live);
+      const el = document.createElement(tag);
+      el.className = selector.replace(/^[a-z0-9]*\./i, '').split('.').join(' ');
+      const head = document.createElement('span');
+      const tail = document.createElement('span');
+      sheet.append(head, el, tail);
+      const measured = box(el);
+      head.remove(); el.remove(); tail.remove();
+      return measured;
+    };
+    const heads = [...sheet.querySelectorAll('.preview-heading')] as HTMLElement[];
+    const byTag = new Map<string, ReturnType<typeof box>>();
+    for (const h of heads) if (!byTag.has(h.tagName)) byTag.set(h.tagName, box(h));
+    return {
+      headings: [...byTag.entries()],
+      content: probe('.preview-content'),
+      tableTitle: probe('h4.preview-table-title', 'h4'),
+      tableWrapper: probe('.preview-table-wrapper'),
+    };
+  });
+
+  test('лист A4: заголовки, абзацы и таблицы идут печатным ритмом', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-sheet').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#preview .preview-heading').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    const before = await rhythm(page);
+
+    // Заголовки: минимум два уровня на сеяном акте — и ни у одного из них нет
+    // собственных ступеней воздуха, кроме раздела верхнего уровня (h2).
+    expect(before.headings.length).toBeGreaterThan(1);
+    for (const [tag, m] of before.headings) {
+      if (tag === 'H2') {
+        expect(m.top, 'над разделом — распорка плюс интервал предыдущего абзаца').toBeCloseTo(SECTION_TOP_PX, 1);
+        expect(m.bottom, 'под разделом — распорка').toBeCloseTo(BLANK_LINE_PX, 1);
+      } else {
+        expect(m.top, `${tag}: интервала ДО абзаца в Word нет`).toBeCloseTo(0, 1);
+        expect(m.bottom, `${tag}: интервал после — Normal-спейсинг`).toBeCloseTo(SPACE_AFTER_PX, 1);
+      }
+    }
+
+    // Контент пункта — обычный абзац: ни собственных полей, ни своего ритма.
+    expect(before.content.bottom).toBeCloseTo(SPACE_AFTER_PX, 1);
+    expect(before.content.padTop, 'у абзаца акта нет своих полей').toBeCloseTo(0, 1);
+    expect(before.content.padLeft, 'у абзаца акта нет своих полей').toBeCloseTo(0, 1);
+
+    // Подпись таблицы — тоже обычный абзац; воздух над ней даёт предыдущий элемент.
+    expect(before.tableTitle.top).toBeCloseTo(0, 1);
+    expect(before.tableTitle.bottom).toBeCloseTo(SPACE_AFTER_PX, 1);
+
+    // Таблица: сверху ничего своего, снизу — распорка (add_blank_line после КАЖДОЙ таблицы).
+    expect(before.tableWrapper.top).toBeCloseTo(0, 1);
+    expect(before.tableWrapper.bottom).toBeCloseTo(BLANK_LINE_PX, 1);
+
+    // Фальсификация: уводим ВСЮ шкалу отступов интерфейса в чужое значение.
+    // Прежние правила листа стояли ровно на этих токенах и уехали бы вместе с ней.
+    await page.evaluate((px) => {
+      for (const t of ['xs', 'sm', '', 'md', 'lg', 'xl', '2xl']) {
+        document.documentElement.style.setProperty(`--spacing${t ? '-' + t : ''}`, px + 'px');
+      }
+    }, PROBE_UI_PX);
+
+    const after = await rhythm(page);
+    for (const [tag, m] of after.headings) {
+      if (tag === 'H2') continue;
+      expect(m.top, `${tag} уехал вместе с плотностью интерфейса`).toBeCloseTo(0, 1);
+      expect(m.bottom, `${tag} уехал вместе с плотностью интерфейса`).toBeCloseTo(SPACE_AFTER_PX, 1);
+    }
+    expect(after.content.bottom).toBeCloseTo(SPACE_AFTER_PX, 1);
+    expect(after.content.padLeft).toBeCloseTo(0, 1);
+    expect(after.tableTitle.bottom).toBeCloseTo(SPACE_AFTER_PX, 1);
+    expect(after.tableWrapper.bottom).toBeCloseTo(BLANK_LINE_PX, 1);
+  });
+});

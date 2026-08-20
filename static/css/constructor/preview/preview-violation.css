@@ -21,9 +21,11 @@
     color: inherit;
 }
 
-/* Абзац «Метка: текст». Justify + сохранение переносов textarea. */
+/* Абзац «Метка: текст». Justify + сохранение переносов textarea.
+   Интервал — общий Normal-спейсинг документа: строка нарушения в DOCX это
+   обычный w:p (_labeled_paragraph), никакого своего отступа у неё нет. */
 .preview-violation-line {
-    margin: 0 0 var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after) 0;
     text-align: justify;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -64,7 +66,7 @@
    высота ограничена долей листа (Б-1.6, значение приходит inline-стилем
    из preview-violation-renderer по image_max_height_percent). */
 .preview-violation-image-wrap {
-    margin: var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after);
     text-align: center;
 }
 
@@ -74,7 +76,7 @@
 
 /* Подпись картинки: 9pt курсив по центру (как в DOCX, Б-1.5). */
 .preview-violation-caption {
-    margin: 0 0 var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after) 0;
     text-align: center;
     font-style: italic;
     font-size: var(--doc-font-size-small);

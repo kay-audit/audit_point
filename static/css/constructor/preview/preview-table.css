@@ -114,8 +114,11 @@
 .preview-table-title {
     font-weight: var(--font-weight-normal);
     text-align: left;
-    margin-top: var(--spacing-lg);
-    margin-bottom: var(--spacing);
+    /* Ритм — Normal-спейсинг Word: подпись это обычный абзац (_add_table_title),
+       0 до / 3pt после. Воздух сверху приходит не отсюда, а от предыдущего
+       элемента (после таблицы в DOCX стоит пустая строка-распорка). */
+    margin-top: 0;
+    margin-bottom: var(--doc-space-after);
     font-size: var(--doc-font-size);
 }
 

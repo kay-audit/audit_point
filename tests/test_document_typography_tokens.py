@@ -123,6 +123,63 @@ def test_doc_list_indent_matches_docx_indent_step() -> None:
     )
 
 
+def test_doc_space_after_matches_docx_normal_spacing() -> None:
+    """--doc-space-after == Spacing.after_pt (интервал после ЛЮБОГО абзаца)."""
+    tokens = _read_tokens()
+    assert "--doc-space-after" in tokens, (
+        "токен --doc-space-after пропал из static/css/base/variables/typography.css"
+    )
+    assert _pt(tokens["--doc-space-after"]) == float(Spacing.after_pt), (
+        f"вертикальный ритм разъехался: CSS --doc-space-after = "
+        f"{tokens['--doc-space-after']}, DOCX Spacing.after_pt = "
+        f"{Spacing.after_pt}pt (app/domains/acts/formatters/docx/styles.py)"
+    )
+
+
+def test_docx_has_no_space_before_paragraphs() -> None:
+    """Интервал ДО абзаца в Word нулевой — поэтому у листа нет верхних margin'ов.
+
+    Правила предпросмотра выставляют `margin-top: 0` всему содержимому листа и
+    полагаются именно на это: воздух в акте создаёт только интервал ПОСЛЕ
+    предыдущего абзаца (плюс пустая строка-распорка, см. тест ниже). Если
+    эталон когда-нибудь заведёт ненулевой `space_before`, отдельного токена под
+    него в CSS не окажется, и лист начнёт врать про печать молча.
+    """
+    assert Spacing.before_pt == 0, (
+        "DOCX завёл ненулевой интервал ДО абзаца "
+        f"(Spacing.before_pt = {Spacing.before_pt}pt), а предпросмотр строится "
+        "на допущении «верхних отступов на листе нет». Нужен парный токен в "
+        "static/css/base/variables/typography.css и правила под него."
+    )
+
+
+def test_doc_blank_line_matches_docx_spacer_size() -> None:
+    """--doc-blank-line-size == Sizes.blank_line_pt (пустая строка-распорка).
+
+    Сама высота распорки — произведение кегля её метки на одинарный интервал,
+    поэтому в CSS она собирается `calc`-ом из двух уже сверенных токенов;
+    здесь сторожится множимое.
+    """
+    tokens = _read_tokens()
+    assert "--doc-blank-line-size" in tokens, (
+        "токен --doc-blank-line-size пропал из "
+        "static/css/base/variables/typography.css"
+    )
+    assert _pt(tokens["--doc-blank-line-size"]) == float(Sizes.blank_line_pt), (
+        f"высота распорки разъехалась: CSS --doc-blank-line-size = "
+        f"{tokens['--doc-blank-line-size']}, DOCX Sizes.blank_line_pt = "
+        f"{Sizes.blank_line_pt}pt (app/domains/acts/formatters/docx/styles.py)"
+    )
+    assert tokens.get("--doc-blank-line") == (
+        "calc(var(--doc-blank-line-size) * var(--doc-line-height))"
+    ), (
+        "--doc-blank-line обязан считаться из кегля метки и одинарного "
+        "интервала, а не быть отдельным числом: иначе правка любого из двух "
+        "множителей уводит распорку от Word. Получено: "
+        f"{tokens.get('--doc-blank-line')!r}"
+    )
+
+
 def test_doc_line_height_pinned_to_word_single() -> None:
     """--doc-line-height == 1.15 при «одинарном» интервале на стороне DOCX."""
     tokens = _read_tokens()

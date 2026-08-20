@@ -6,11 +6,17 @@
  * из app/domains/acts/formatters/docx/styles.py::Spacing/Sizes:
  *   - line_single (w:line=240, «одинарный» Word-интервал) ⇔ CSS line-height
  *     ~1.15 для Times New Roman 12pt;
- *   - after_pt = 3 (Normal-спейсинг после абзаца) ⇔ margin-bottom: 3pt после
- *     текстблока целиком (_render_textblock зануляет space_after у ВСЕХ
- *     промежуточных w:p, 3pt остаётся только у последнего сегмента);
- *   - blank_line_pt = 6 (add_blank_line после таблицы) ⇔ margin: 6pt у
- *     .preview-table-wrapper на листе.
+ *   - after_pt = 3 (Normal-спейсинг после абзаца) ⇔ токен --doc-space-after,
+ *     которым лист отбивает всё подряд — в том числе текстблок целиком
+ *     (_render_textblock зануляет space_after у ВСЕХ промежуточных w:p, 3pt
+ *     остаётся только у последнего сегмента);
+ *   - blank_line_pt = 6 (add_blank_line после таблицы) ⇔ токен
+ *     --doc-blank-line-size, из которого собирается высота распорки
+ *     (--doc-blank-line) под .preview-table-wrapper на листе.
+ *
+ * Числа живут в ОДНОМ месте — документных токенах typography.css; здесь
+ * пинится и само значение токена, и то, что потребитель читает токен, а не
+ * повторяет число у себя.
  *
  * Инвариант: превью текстблока рисует РОВНО то, что уйдёт в Word. С переходом
  * редактора на документную типографику (пункты + печатный интервал) поверхность
@@ -80,15 +86,32 @@ test('preview-typography.css: .preview-sheet .preview-textblock-content — line
     );
 });
 
-test('preview-typography.css: 3pt после текстблока целиком (Spacing.after_pt)', () => {
+test('typography.css: --doc-space-after — Normal-спейсинг Word (Spacing.after_pt)', () => {
+    const match = typographyCss.match(/--doc-space-after:\s*([\d.]+)pt/);
+    assert.ok(match, 'токен --doc-space-after не найден в base/variables/typography.css');
+    assert.equal(Number(match[1]), DOCX_SPACING_AFTER_PT);
+});
+
+test('typography.css: --doc-blank-line собирается из кегля распорки и одинарного интервала', () => {
+    const size = typographyCss.match(/--doc-blank-line-size:\s*([\d.]+)pt/);
+    assert.ok(size, 'токен --doc-blank-line-size не найден');
+    assert.equal(Number(size[1]), DOCX_BLANK_LINE_PT);
+    assert.match(
+        typographyCss,
+        /--doc-blank-line:\s*calc\(var\(--doc-blank-line-size\)\s*\*\s*var\(--doc-line-height\)\)/,
+        'высота распорки обязана считаться из двух сверенных токенов, а не быть отдельным числом',
+    );
+});
+
+test('preview-typography.css: после текстблока целиком — общий Normal-спейсинг (Spacing.after_pt)', () => {
     const rule = previewTypographyCss.match(
         /\.preview-sheet \.preview-textblock-content\s*\{([^}]*)\}/s,
     );
     assert.ok(rule, 'правило .preview-sheet .preview-textblock-content не найдено');
     assert.match(
         rule[1],
-        new RegExp(`margin-bottom:\\s*${DOCX_SPACING_AFTER_PT}pt`),
-        `margin-bottom текстблока ≠ ${DOCX_SPACING_AFTER_PT}pt: ${rule[1]}`,
+        /margin-bottom:\s*var\(--doc-space-after\)/,
+        `margin-bottom текстблока обязан читать общий токен ритма: ${rule[1]}`,
     );
 });
 
@@ -101,15 +124,19 @@ test('preview-typography.css: сегменты текстблока БЕЗ за�
     assert.match(rule[1], /margin-bottom:\s*0/);
 });
 
-test('preview-page.css: .preview-table-wrapper на листе — 6pt (add_blank_line после таблицы)', () => {
+test('preview-page.css: под таблицей на листе — распорка, над ней — ничего своего', () => {
+    // Ритм несимметричен, как в DOCX: add_blank_line стоит ПОСЛЕ каждой
+    // таблицы (formatter.py::on_table), а воздух над ней даёт предыдущий
+    // абзац своим Normal-спейсингом. Прежние симметричные 6pt сверху и снизу
+    // были сознательным приближением.
     const rule = previewPageCss.match(
         /\.preview-sheet \.preview-table-wrapper\s*\{([^}]*)\}/s,
     );
     assert.ok(rule, 'правило .preview-sheet .preview-table-wrapper не найдено');
     assert.match(
         rule[1],
-        new RegExp(`margin:\\s*${DOCX_BLANK_LINE_PT}pt`),
-        `margin таблицы ≠ ${DOCX_BLANK_LINE_PT}pt: ${rule[1]}`,
+        /margin:\s*0 0 var\(--doc-blank-line\)/,
+        `ритм таблицы на листе разъехался с add_blank_line: ${rule[1]}`,
     );
 });
 
