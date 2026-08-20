@@ -334,13 +334,13 @@ class TestAuditLogServiceRestore:
         assert saved.get("validation_issues")  # непустой список замечаний
 
     async def test_restore_valid_content_yields_ok_status(self):
-        """Восстановление валидной структуры (разделы 1–5) → статус 'ok'."""
+        """Восстановление валидной структуры (разделы 1–6, включая Process Mining) → статус 'ok'."""
         svc, guard, audit_repo, versions_repo = self._make_service()
         valid_tree = {
             "id": "root", "label": "Акт", "children": [
                 {"id": str(i), "label": f"Раздел {i}", "type": "item",
                  "protected": True, "deletable": False, "children": []}
-                for i in range(1, 6)
+                for i in range(1, 7)
             ],
         }
         versions_repo.get_version.return_value = {

@@ -110,17 +110,14 @@ export class TreeContextMenu {
             addViolationItem.classList.toggle('disabled', !!AppState._isUnderProcessMining(nodeId));
         }
 
-        // На 0 уровне «Добавить соседний пункт» превращается в «Добавить пункт: Process Mining».
+        // На 0 уровне «Добавить соседний пункт» скрыт целиком — состав верхнего
+        // уровня фиксирован (разделы 1-5 + Process Mining).
         const siblingItem = this.menu.querySelector('[data-action="add-sibling"]');
         if (siblingItem) {
             const parent = AppState.findParentNode(nodeId);
             const isLevelZero = parent?.id === 'root';
-            const pmExists = !!AppState.treeData?.children?.some(c => c.special === 'process_mining');
-            if (isLevelZero) {
-                siblingItem.innerHTML = '<span aria-hidden="true">➕</span> Добавить пункт: Process Mining';
-                siblingItem.classList.toggle('disabled', pmExists);
-            } else {
-                siblingItem.innerHTML = '<span aria-hidden="true">➕</span> Добавить соседний пункт';
+            siblingItem.style.display = isLevelZero ? 'none' : '';
+            if (!isLevelZero) {
                 // На уровне подпунктов 5.X.X соседний пункт запрещён, если в §5 есть
                 // риски на уровне пунктов (паритет с handleAddSibling).
                 const blocked = node.number?.match(/^5\.\d+\./) && this._hasRiskTablesAtLevel5x();
@@ -342,16 +339,8 @@ export class TreeContextMenu {
         }
     }
 
-    /** Добавляет соседний элемент (на 0 уровне — пункт Process Mining) */
+    /** Добавляет соседний элемент */
     handleAddSibling(node, nodeId) {
-        const parent = AppState.findParentNode(nodeId);
-
-        // На 0 уровне «соседний пункт» = опциональный пункт Process Mining.
-        if (parent?.id === 'root') {
-            this.handleAddProcessMining();
-            return;
-        }
-
         // Нельзя добавлять соседние подпункты на уровне 5.*.*, если где-либо на 5.* есть таблица рисков
         if (node.number?.match(/^5\.\d+\./)) {
             if (this._hasRiskTablesAtLevel5x()) {
@@ -366,16 +355,6 @@ export class TreeContextMenu {
             this.updateTreeViews(sibParent ? sibParent.id : undefined);
         } else {
             Notifications.error(result.message || 'Не удалось добавить элемент');
-        }
-    }
-
-    /** Добавляет опциональный пункт Process Mining (0 уровень). */
-    handleAddProcessMining() {
-        const result = AppState.addProcessMiningSection();
-        if (result.valid) {
-            this.updateTreeViews(); // полный рендер: добавлен пункт 0 уровня
-        } else {
-            Notifications.error(result.message || 'Не удалось добавить пункт');
         }
     }
 

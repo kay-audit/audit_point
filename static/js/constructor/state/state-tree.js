@@ -624,8 +624,8 @@ Object.assign(AppState, {
 
     /**
      * Запрещает перемещение любого узла на 0 уровень (в children root).
-     * Разделы 0 уровня защищены и не перетаскиваются; единственный добавляемый
-     * пункт 0 уровня — Process Mining (через меню).
+     * 0 уровень целиком фиксирован (разделы 1-5 и Process Mining) —
+     * новые пункты туда не добавляются и не перемещаются.
      */
     _checkFirstLevelConstraints(draggedNode, draggedParent, targetNode, targetNodeId, position) {
         if (position === 'child') return ValidationCore.success();
@@ -1032,40 +1032,6 @@ Object.assign(AppState, {
                 this._clearInvoiceRecursive(child);
             }
         }
-    },
-
-    /**
-     * Добавляет опциональный пункт «Process Mining» последним на 0 уровне.
-     * Создаёт и вставляет новый узел; по умолчанию §6 в дереве отсутствует.
-     * Идемпотентность: повторный вызов запрещён (проверяется по special).
-     * @returns {Object} Результат валидации
-     */
-    addProcessMiningSection() {
-        const guard = ValidationCore.requireWrite('cannotModifyTree');
-        if (guard) return guard;
-
-        const root = this.treeData;
-        if (!root?.children) {
-            return ValidationCore.failure(AppConfig.tree.validation.parentNotFound);
-        }
-        if (root.children.some(c => c.special === 'process_mining')) {
-            return ValidationCore.failure('Пункт «Process Mining» уже добавлен');
-        }
-        // Защита от дубликата id на старых актах, где раздел '6' ещё в дереве.
-        if (root.children.some(c => c.id === AppConfig.tree.processMiningSection.id)) {
-            return ValidationCore.failure('Пункт «Process Mining» уже добавлен');
-        }
-
-        const node = this._createProcessMiningSection();
-        root.children.push(node);
-        this._indexNodeAdded(node, root);
-        this.generateNumbering();
-
-        if (typeof ChangelogTracker !== 'undefined') {
-            ChangelogTracker.record('add_node', node.id, node.label, {parentId: 'root'});
-        }
-
-        return ValidationCore.success();
     },
 
     /**

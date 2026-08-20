@@ -26,10 +26,11 @@ export const ValidationAct = {
             return ValidationCore.failure('Добавьте хотя бы один раздел в акт');
         }
 
-        // Базовые секции 1-5 обязаны присутствовать и быть protected/неудаляемыми.
-        // Защищает от случаев, когда seed/миграция/DevTools-манипуляция оставила
-        // акт без корректной базовой структуры.
-        const expectedIds = ['1', '2', '3', '4', '5'];
+        // Базовые секции 1-6 (1-5 + обязательный пункт Process Mining) обязаны
+        // присутствовать и быть protected/неудаляемыми. Защищает от случаев,
+        // когда seed/миграция/DevTools-манипуляция оставила акт без корректной
+        // базовой структуры.
+        const expectedIds = ['1', '2', '3', '4', '5', '6'];
         const rootChildren = AppState.treeData.children;
         const missing = expectedIds.filter(
             id => !rootChildren.some(child => child.id === id)

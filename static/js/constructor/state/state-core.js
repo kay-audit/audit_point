@@ -62,6 +62,10 @@ export const AppState = {
             return this._createProtectedSection(section.id, section.label);
         });
 
+        // Process Mining — обязательная часть скелета, встаёт последним на
+        // 0 уровне вместе с разделами 1-5 (для обоих типов проверки).
+        sections.push(this._createProcessMiningSection());
+
         return {
             id: 'root',
             label: 'Акт',
@@ -88,9 +92,9 @@ export const AppState = {
     },
 
     /**
-     * Создаёт опциональный защищённый пункт «Process Mining».
-     * protected: нельзя перетаскивать/переименовывать; deletable: можно удалить;
-     * titleLocked: заголовок зафиксирован.
+     * Создаёт обязательный защищённый пункт «Process Mining» (наравне с
+     * разделами 1-5). protected+deletable:false: нельзя перетаскивать,
+     * переименовывать и удалять; titleLocked: заголовок зафиксирован.
      * @private
      * @returns {Object} Узел пункта Process Mining
      */
@@ -101,7 +105,7 @@ export const AppState = {
             label: cfg.label,
             special: cfg.special,
             protected: true,
-            deletable: true,
+            deletable: false,
             titleLocked: true,
             type: AppConfig.nodeTypes.ITEM,
             children: [],
