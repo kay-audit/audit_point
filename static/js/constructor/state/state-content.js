@@ -137,6 +137,45 @@ Object.assign(AppState, {
     },
 
     /**
+     * Добавляет в раздел 2 таблицу «Результаты оценки качества процесса».
+     *
+     * Таблица создаётся автоматически при инициализации процессного акта, но
+     * её можно удалить — этот мутатор возвращает её обратно (пункт
+     * контекстного меню на разделе 2).
+     * Идемпотентность: повторный вызов запрещён (проверяется по special).
+     *
+     * @returns {Object} Результат валидации
+     */
+    addQualityAssessmentTable() {
+        const guard = ValidationCore.requireWrite('cannotAddContent');
+        if (guard) return guard;
+
+        const node = this.findNodeById('2');
+        if (!node) {
+            return ValidationCore.failure(AppConfig.tree.validation.nodeNotFound);
+        }
+        if (node.children?.some(c => c.special === 'quality_assessment')) {
+            return ValidationCore.failure(
+                'Таблица «Результаты оценки качества процесса» уже добавлена',
+            );
+        }
+
+        const tableNode = this._createQualityAssessmentTable();
+        if (!tableNode) {
+            return ValidationCore.failure('Не удалось создать таблицу');
+        }
+
+        if (typeof ChangelogTracker !== 'undefined') {
+            ChangelogTracker.record(
+                'add_table', tableNode.tableId, tableNode.customLabel, {nodeId: '2'},
+            );
+        }
+        this.generateNumbering();
+
+        return ValidationCore.success();
+    },
+
+    /**
      * Создает узел контента (таблица, текстовый блок, нарушение)
      * @private
      * @param {string} parentId - ID родительского узла

@@ -1,4 +1,6 @@
-"""Регрессия: defaultSections содержит 5 разделов; Process Mining вынесен в опциональный пункт."""
+"""Регрессия: defaultSections содержит 5 разделов; Process Mining — отдельный
+обязательный пункт скелета (собирается вместе с defaultSections в
+_createRootStructure, не входит в сам массив из-за фиксированного label)."""
 import re
 from pathlib import Path
 
@@ -13,7 +15,7 @@ def test_default_sections_are_one_to_five():
     assert items == ["1", "2", "3", "4", "5"]
 
 
-def test_process_mining_label_present_as_optional_section():
+def test_process_mining_label_present_as_mandatory_section():
     text = CONFIG.read_text(encoding="utf-8")
     assert "processMiningSection" in text
     assert "Оценка процесса по результатам исследования методом Process Mining" in text

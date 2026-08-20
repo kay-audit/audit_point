@@ -5,6 +5,7 @@
 import { PreviewTableRenderer } from '../../constructor/preview/preview-table-renderer.js';
 import { PreviewTextBlockRenderer } from '../../constructor/preview/preview-textblock-renderer.js';
 import { PreviewViolationRenderer } from '../../constructor/preview/preview-violation-renderer.js';
+import { tableTitleUnderlined } from '../../constructor/table/table-title.js';
 import { AuditLogDialog } from './dialog-audit-log.js';
 import { DiffEngine } from './diff-engine.js';
 import { DiffRenderer } from './diff-renderer.js';
@@ -227,8 +228,11 @@ export class VersionPreviewOverlay extends DialogBase {
 
     /**
      * Рекурсивный рендер узла дерева
+     * @param {string|null} [rootSectionId=null] - ID раздела верхнего уровня,
+     *   в поддереве которого идёт рендер (null на корне). Нужен правилу
+     *   оформления подписи таблиц (table-title.js).
      */
-    static _renderNode(container, node, data, depth) {
+    static _renderNode(container, node, data, depth, rootSectionId = null) {
         if (!node) return;
 
         const type = node.type || 'item';
@@ -247,7 +251,13 @@ export class VersionPreviewOverlay extends DialogBase {
             const tableData = data.tables_data?.[node.tableId];
             if (tableData && typeof PreviewTableRenderer !== 'undefined') {
                 const label = document.createElement('div');
-                label.className = 'version-preview-label';
+                // Подпись таблицы подчиняется общему правилу оформления
+                // (table-title.js): обычное начертание, подчёркивание — только
+                // у пресетных таблиц разделов 1–4. Метки текстблока и
+                // нарушения ниже остаются интерфейсными, они не подписи таблиц.
+                label.className = tableTitleUnderlined(node, rootSectionId)
+                    ? 'version-preview-label version-preview-label--table version-preview-label--underline'
+                    : 'version-preview-label version-preview-label--table';
                 label.textContent = node.customLabel || node.number || node.label || 'Таблица';
                 container.appendChild(label);
                 container.appendChild(PreviewTableRenderer.create(tableData));
@@ -276,10 +286,13 @@ export class VersionPreviewOverlay extends DialogBase {
             }
         }
 
-        // Рекурсия по children
+        // Рекурсия по children. Дети корня — разделы верхнего уровня: каждый
+        // открывает свой раздел, который наследует всё его поддерево.
         if (node.children) {
             for (const child of node.children) {
-                this._renderNode(container, child, data, depth + 1);
+                this._renderNode(
+                    container, child, data, depth + 1, rootSectionId ?? child.id,
+                );
             }
         }
     }

@@ -10,8 +10,9 @@
  *     метка подчёркнута у полей с labeled=true, у CodeMining/ProcessMining/
  *     Дополнительного контента метки нет вовсе.
  *
- * Размер 9pt задаётся в pt напрямую — той же единицей, что и таблицы листа
- * (preview-page.css: .preview-table → 9pt). База листа .preview-sheet — 12pt,
+ * Размер 9pt приходит документным токеном --doc-font-size-small — тем же, что
+ * несут таблицы листа (preview-page.css) и таблицы общего рендера
+ * (preview-table.css). База листа .preview-sheet — --doc-font-size (12pt),
  * Word-эталон: тело 12pt → нарушения 9pt (Sizes.violation_pt в styles.py).
  */
 
@@ -20,9 +21,11 @@
     color: inherit;
 }
 
-/* Абзац «Метка: текст». Justify + сохранение переносов textarea. */
+/* Абзац «Метка: текст». Justify + сохранение переносов textarea.
+   Интервал — общий Normal-спейсинг документа: строка нарушения в DOCX это
+   обычный w:p (_labeled_paragraph), никакого своего отступа у неё нет. */
 .preview-violation-line {
-    margin: 0 0 var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after) 0;
     text-align: justify;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -30,7 +33,7 @@
 
 /* Поля нарушения 9pt-курсивом (группа small: Нарушено/Установлено). */
 .preview-violation-line--small {
-    font-size: 9pt;
+    font-size: var(--doc-font-size-small);
     font-style: italic;
 }
 
@@ -55,7 +58,7 @@
 
 /* Пункты списка из «малой» группы — те же 9pt курсивом. */
 .preview-violation-desclist--small {
-    font-size: 9pt;
+    font-size: var(--doc-font-size-small);
     font-style: italic;
 }
 
@@ -63,7 +66,7 @@
    высота ограничена долей листа (Б-1.6, значение приходит inline-стилем
    из preview-violation-renderer по image_max_height_percent). */
 .preview-violation-image-wrap {
-    margin: var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after);
     text-align: center;
 }
 
@@ -73,8 +76,8 @@
 
 /* Подпись картинки: 9pt курсив по центру (как в DOCX, Б-1.5). */
 .preview-violation-caption {
-    margin: 0 0 var(--spacing-xs) 0;
+    margin: 0 0 var(--doc-space-after) 0;
     text-align: center;
     font-style: italic;
-    font-size: 9pt;
+    font-size: var(--doc-font-size-small);
 }

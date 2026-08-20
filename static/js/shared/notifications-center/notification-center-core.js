@@ -17,6 +17,8 @@
  *     element_ref?: string,    // только у персистентных
  *     is_read?: boolean,       // только у персистентных
  *     onClick?: () => void,    // только у живых
+ *     count?: number,          // только у живых групп (размер группы)
+ *     children?: Array,        // только у живых групп (вложенные записи)
  *   }
  */
 
@@ -155,6 +157,11 @@ export function mergeFeed(liveItems, persistedItems) {
         onMarkRead: item.onMarkRead,
         onMarkUnread: item.onMarkUnread,
         onDelete: item.onDelete,
+        // Группа однотипных замечаний: `children` — вложенные записи со своими
+        // переходами, `count` — их число для счётчика в шапке группы. Источник
+        // без группировки этих полей не ставит, и запись остаётся обычной.
+        count: Number.isFinite(item.count) ? item.count : null,
+        children: Array.isArray(item.children) ? item.children : null,
       });
     }
   }

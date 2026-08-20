@@ -3,77 +3,122 @@
  * Стили текстовых элементов для имитации документа
  */
 
-/* Главный заголовок документа */
-.preview h1 {
-    text-align: center;
-    margin-top: 0;
-    margin-bottom: var(--spacing-xl);
-    font-size: var(--font-size-2xl);
-    color: var(--text-primary);
+/* ——— Заголовок пункта ———
+   В Word пункт любой глубины печатается ОДИНАКОВО: 12pt Times, жирный, чёрный
+   (docx/formatter.py::_render_item — Sizes.body_pt + run.bold). Глубину несёт
+   не кегль, а номер рубрикатора («1.» / «1.1» / «1.1.1»). Поэтому кегль здесь
+   один документный токен, а не ступени UI-шкалы: прежние .preview h1…h6 брали
+   --font-size-*, то есть ПЛОТНОСТЬ ИНТЕРФЕЙСА, и на корне 12px давали
+   11.25pt / 10.1pt / 9pt по уровням — заголовок третьего уровня выходил мельче
+   собственного текста (12pt), а правка плотности конструктора двигала бы его
+   независимо от Word. Долг был записан допущением в
+   tests/test_document_css_font_size_ratchet.py и закрыт этим правилом.
+
+   Прицел — КЛАСС, а не тег. Голое .preview-sheet h2 задело бы ЧУЖИЕ заголовки:
+   allowlist санитайзера пропускает h1–h6 внутрь контента текстблока, а их Word
+   печатает обычным текстом без жирного (_BLOCK_TAGS в docx/builders/inline.py) —
+   см. правило-сплющивание ниже. Класс же ещё и снимает дублирование: правила
+   заголовков были написаны дважды — здесь для inline-панели (.preview) и в
+   preview-menu.css для модалки (.preview-menu-body), — и расходились молча.
+
+   Цвет наследуется от листа (#000, preview-page.css): серого текста в акте нет.
+   Ритм — тоже документный и тоже единый: Normal-спейсинг Word (0 до / 3pt
+   после) одинаков для пункта любой глубины, ступеней «чем выше уровень, тем
+   больше воздуха» в акте не существует. Прежние ступени брались из --spacing-*,
+   то есть снова из ПЛОТНОСТИ ИНТЕРФЕЙСА (15/18/24px сверху по уровням против
+   печатных 0). */
+.preview-heading {
+    font-size: var(--doc-font-size);
     font-weight: var(--font-weight-bold);
-    line-height: var(--line-height-tight);
-    letter-spacing: var(--letter-spacing-tight);
+    line-height: var(--doc-line-height);
+    color: inherit;
+    letter-spacing: var(--letter-spacing-normal);
+    text-align: left;
+    margin: 0 0 var(--doc-space-after);
 }
 
-/* Заголовок второго уровня */
-.preview h2 {
-    margin-top: var(--spacing-2xl);
-    margin-bottom: var(--spacing-md);
-    font-size: var(--font-size-xl);
-    color: var(--text-primary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
-    letter-spacing: var(--letter-spacing-tight);
+/* Раздел верхнего уровня — единственное место акта с собственным воздухом:
+   в Word это плашка-рубрикатор, обрамлённая пустыми строками-распорками
+   (formatter.py::_DocxTreeVisitor.on_item_enter — add_blank_line до и после).
+   Сверху к распорке добавляется ещё и интервал предыдущего абзаца; соседние
+   margin'ы CSS схлопывает ПО МАКСИМУМУ, а не суммирует, поэтому сумма
+   выписана прямо в margin-top. Первый раздел не исключение: в DOCX распорка
+   ставится безусловно, в том числе сразу после шапки. */
+h2.preview-heading {
+    margin-top: calc(var(--doc-space-after) + var(--doc-blank-line));
+    margin-bottom: var(--doc-blank-line);
 }
 
-/* Первый h2 без верхнего отступа */
-.preview h2:first-child {
+/* ——— Плашка-рубрикатор раздела ———
+   В Word раздел верхнего уровня — не строка текста, а таблица 1×2 во всю
+   рабочую ширину (build_rubricator_plate): заливка DEEAF6, рамки 0.5pt на
+   каждой ячейке (отсюда линия между номером и названием), высота строки
+   «не меньше» 0.9см, обе ячейки по вертикали по центру, узкая левая — 0.8см.
+   Поля ячеек — тот же дефолт OOXML 5.4pt, что и у контентных таблиц.
+   Сетка, а не таблица: ширины фиксированные, содержимого ровно два узла —
+   разметка проще, а h2 остаётся заголовком раздела и держит документные
+   кегль/начертание/ритм из .preview-heading выше. */
+.preview-rubricator {
+    display: grid;
+    grid-template-columns: 0.8cm 1fr;
+    align-items: center;
+    min-height: 0.9cm;
+    box-sizing: border-box;
+    background: #DEEAF6;
+    border: 0.5pt solid #000;
+}
+
+.preview-rubricator-number,
+.preview-rubricator-title {
+    padding: 0 5.4pt;
+    box-sizing: border-box;
+}
+
+/* Номер прижат вправо, к названию, и печатается ОБЫЧНЫМ начертанием: жирность
+   метки абзаца в плашке не выставляется (в отличие от пункта, где её ставит
+   _set_mark_bold) — жирный там только заголовок. */
+.preview-rubricator-number {
+    text-align: right;
+    font-weight: var(--font-weight-normal);
+    border-right: 0.5pt solid #000;
+}
+
+/* ——— Заголовки, пришедшие С КОНТЕНТОМ ———
+   Сами редакторы h1–h6 не создают, но allowlist санитайзера их пропускает
+   (shared/sanitize.js::ACTS_TAGS_FALLBACK), и с восстановленной версией или из
+   API они на лист попадают. Word печатает их ПЛОСКИМ текстом: h1–h6 входят в
+   _BLOCK_TAGS (docx/builders/inline.py) — тег режется в отдельный абзац
+   базового кегля, bold не выставляется. Лист повторяет это буквально, иначе
+   UA-дефолт (1.5em bold + em-margin) рисовал бы то, чего в файле не будет.
+   Прицел — корни рендеров контента, поэтому правило достаёт и до листа A4, и до
+   диалога версий, который листа не строит (та же граница «документ vs
+   интерфейс», что у гарнитуры и кегля таблиц). */
+:is(.preview-textblock-content, .preview-violation) :is(h1, h2, h3, h4, h5, h6) {
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    color: inherit;
+    margin: 0;
+}
+
+/* Абзацы текста.
+
+   Прицел — ЛИСТ, а не поверхность. Правило было написано дважды: здесь на
+   .preview (класс висит только на inline-панели #preview) и в preview-menu.css
+   на .preview-menu-body — и вторая копия несла ЭКРАННЫЙ интервал
+   (--line-height-relaxed, 1.75) против печатного здесь. Прямое правило на `p`
+   бьёт наследование от .preview-sheet, поэтому абзац одного и того же
+   текстблока шёл в модалке шире, чем в панели, и шире, чем уйдёт в Word. Лист
+   же строится обоими предпросмотрами (renderDocumentInto), так что одна копия
+   на .preview-sheet закрывает обе поверхности.
+
+   Цвет не задаём: его несёт лист (#000, preview-page.css) — в акте не
+   печатается серого. */
+.preview-sheet p {
     margin-top: 0;
-}
-
-/* Заголовок третьего уровня */
-.preview h3 {
-    margin-top: var(--spacing-xl);
-    margin-bottom: var(--spacing-sm);
-    font-size: var(--font-size-lg);
-    color: var(--text-primary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-normal);
-}
-
-/* Заголовок четвертого уровня */
-.preview h4 {
-    margin-top: var(--spacing-lg);
-    margin-bottom: var(--spacing-xs);
-    font-size: var(--font-size-base);
-    color: var(--text-secondary);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-normal);
-}
-
-/* Заголовки пятого и шестого уровня */
-.preview h5,
-.preview h6 {
-    margin-top: var(--spacing);
-    margin-bottom: var(--spacing-xs);
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-    font-weight: var(--font-weight-medium);
-    line-height: var(--line-height-normal);
-}
-
-/* Абзацы текста */
-.preview p {
-    margin-top: 0;
-    margin-bottom: var(--spacing);
-    /* Печатный интервал, а не «экранный»: класс .preview висит на inline-панели
-       (#preview), внутри которой лежит тот же лист A4, что и в модальном меню, —
-       собственный line-height здесь перебивал бы наследуемый от .preview-sheet
-       и рисовал абзацы шире, чем они уйдут в Word (в меню класса .preview нет,
-       и абзацы там уже печатные — расхождение двух предпросмотров). */
+    margin-bottom: var(--doc-space-after);
     line-height: var(--doc-line-height);
     text-align: justify;
-    color: var(--text-primary);
     hyphens: auto;
 }
 
@@ -97,12 +142,12 @@
    редактор. Редактор (.textblock-editor, textblock-content.css) с тех пор
    пришёл к тому же печатному интервалу: --preview-print-line-height и
    --doc-line-height несут одно значение, разъехаться им больше нечем.
-   margin-bottom: 3pt — Normal-спейсинг DOCX (Spacing.after_pt=3) после
+   margin-bottom — общий Normal-спейсинг DOCX (--doc-space-after) после
    текстблока целиком; в _render_textblock он сохраняется только на
    ПОСЛЕДНЕМ сегменте (см. правило ниже про обнуление между сегментами). */
 .preview-sheet .preview-textblock-content {
     line-height: var(--preview-print-line-height, 1.15);
-    margin-bottom: 3pt;
+    margin-bottom: var(--doc-space-after);
     /* TB-1: дефолт выравнивания блока без явного text-align — «по ширине»
        (как в редакторе и теле акта); per-line text-align в content переопределяет. */
     text-align: justify;
@@ -119,17 +164,31 @@
     margin-bottom: 0;
 }
 
-/* Первый абзац после заголовка */
-.preview h1 + p,
-.preview h2 + p,
-.preview h3 + p,
-.preview h4 + p {
-    margin-top: 0;
-}
+/* Правила «первый абзац после заголовка» больше нет: она гасила верхний
+   margin, которого теперь ни у одного элемента листа нет — в Word интервал
+   ДО абзаца нулевой везде (Spacing.before_pt). */
 
 /* Последний абзац без нижнего отступа */
-.preview p:last-child {
+.preview-sheet p:last-child {
     margin-bottom: 0;
+}
+
+/* ——— Блок подписи в конце акта ———
+   Эталон — build_signature: пустой абзац-воздух, затем строка «Руководитель
+   аудиторской проверки» с правым tab-stop'ом на всю рабочую ширину, поэтому
+   ФИО стоит ровно у правого поля. flex + space-between повторяет таб.
+   Отступ сверху — высота того самого пустого абзаца (12pt на одинарном
+   интервале) плюс два Normal-интервала: свой у предыдущего абзаца и свой у
+   пустого. Соседние margin'ы CSS схлопывает по максимуму, поэтому сумма
+   выписана целиком. */
+.preview-signature {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--doc-space-after);
+    margin-top: calc(
+        var(--doc-font-size) * var(--doc-line-height) + var(--doc-space-after) * 2
+    );
 }
 
 /* ——— Гарнитура документа ———

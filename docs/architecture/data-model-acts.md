@@ -33,7 +33,7 @@
 
 ## 1. Введение
 
-**Что такое `tree_data`.** Это JSONB-документ с иерархической структурой акта. Хранится в таблице `act_tree` (одна запись на акт, см. `app/domains/acts/migrations/postgresql/schema.sql:137`). Корневой узел `{id: "root", label: "Акт", children: [...]}` — пять защищённых разделов (1–5), а в `children` — пункты, подпункты, таблицы, текстовые блоки и нарушения. Если запись отсутствует, репозиторий возвращает пустой каркас `{"id": "root", "label": "Акт", "children": []}` (`app/domains/acts/repositories/act_content.py:155`).
+**Что такое `tree_data`.** Это JSONB-документ с иерархической структурой акта. Хранится в таблице `act_tree` (одна запись на акт, см. `app/domains/acts/migrations/postgresql/schema.sql:137`). Корневой узел `{id: "root", label: "Акт", children: [...]}` — шесть защищённых разделов (1–5 плюс обязательный пункт «Process Mining», id `6`; см. §6), а в `children` — пункты, подпункты, таблицы, текстовые блоки и нарушения. Если запись отсутствует, репозиторий возвращает пустой каркас `{"id": "root", "label": "Акт", "children": []}` (`app/domains/acts/repositories/act_content.py:155`).
 
 **Где живёт всё остальное содержимое.** Дерево хранит только структуру и ссылки. Тяжёлые данные вынесены в отдельные таблицы:
 
@@ -65,7 +65,7 @@
 | **КМ-номер** | Номер контрольного мероприятия. Формат `КМ-XX-XXXXX`, CHECK `check_km_number_format`: `km_number ~ '^КМ-\d{2}-\d{5}$'` (`migrations/postgresql/schema.sql:55`). В БД хранится дважды: строкой `km_number VARCHAR(50)` и числом `km_number_digit INTEGER` — для поиска по цифровой части. Отдельный CHECK `check_km_number_digit_length` требует ровно 7 знаков в десятичной записи цифровой части |
 | **Служебная записка (СЗ)** | Номер документа для актов, отправленных на рассмотрение. Формат `Text/YYYY`, CHECK `check_service_note_format`: `service_note IS NULL OR service_note ~ '^.+/\d{4}$'`. NULL — пока акт не отправлен; парность с `service_note_date` держит CHECK `check_service_note_consistency` (оба NULL либо оба NOT NULL) |
 | **Часть акта** | Один акт может состоять из нескольких частей (`part_number`, `total_parts`, оба CHECK `> 0`). Уникальность — пара `(km_number_digit, part_number)`. **В PG она закреплена констрейнтом `UNIQUE(km_number_digit, part_number)`, в GP — только на уровне приложения** (`ActCrudService.create_act` → `ActCrudRepository.check_km_part_uniqueness`, при конфликте `KmConflictError` → HTTP 409). Причина — правило GP «`DISTRIBUTED BY` ⊆ каждого `UNIQUE`»: таблица `acts` распределена по `id`, добавить UNIQUE по другим колонкам нельзя |
-| **Тип проверки** | `is_process_based BOOLEAN`: `TRUE` — процессная, `FALSE` — непроцессная. Отличаются заголовком раздела 1 и наполнением раздела 2. Смена типа перестраивает разделы 1–2 (`ActCrudService.restructure_sections_for_type_change`: разделы очищаются, для процессной в раздел 2 добавляется таблица `qualityAssessment`; разделы 3–5 не затрагиваются). Тесты — `tests/domains/acts/test_restructure_tree.py` |
+| **Тип проверки** | `is_process_based BOOLEAN`: `TRUE` — процессная, `FALSE` — непроцессная. Отличаются заголовком раздела 1 и наполнением раздела 2. Смена типа перестраивает разделы 1–2 (`ActCrudService.restructure_sections_for_type_change`: разделы очищаются, для процессной в раздел 2 заново добавляется таблица «Результаты оценки качества процесса», `preset=qualityAssessment`, — независимо от того, была ли она перед этим удалена пользователем; разделы 3–5 не затрагиваются). Эта таблица — единственная предустановленная таблица, которую можно удалить вручную и вернуть через контекстное меню раздела 2 (маркер `special: 'quality_assessment'`, см. §6), но смена типа акта по-прежнему создаёт её заново, а не восстанавливает. Тесты — `tests/domains/acts/test_restructure_tree.py` |
 | **Предписания (поручения)** | Задачи на исправление/улучшение для подразделений. Таблица `act_directives` (`migrations/postgresql/schema.sql:113`), CHECK `check_point_number_format` ограничивает `point_number` пунктами раздела 5 (`^5\.([\d]+\.)*[\d]+$`). Валидатор — `app/domains/acts/utils/act_directives_validator.py`; право заводить поручения проверяет `AccessGuard.require_management_role` |
 | **Роли в акте** | `Куратор`, `Руководитель`, `Редактор`, `Участник`, `AppendixRef` — таблица `audit_team_members`, CHECK `check_audit_team_role_values` (`schema.sql:96`). Доступ проверяет `AccessGuard` (`services/access_guard.py`): `Участник` — только просмотр (`require_edit_permission` его отсекает), управленческие операции доступны только `Куратор`/`Руководитель` (`require_management_role`). `AppendixRef` — техническая запись-ссылка на приложение, не участник группы |
 | **audit_act_id** | `VARCHAR(36)` — идентификатор акта во внешнем audit-id-сервисе, для сопоставления с фактурами Hive/GP. Денормализован во все дочерние таблицы (`audit_team_members`, `act_directives`, `act_tables`, `act_textblocks`, `act_violations`, `act_invoices` — у каждой свой partial-индекс). Сейчас в коде — заглушка `AuditIdService` (`app/services/audit_id_service.py`); конечная точка задаётся полями `audit_id_service_url` / `audit_id_service_timeout` корневого `Settings` (`app/core/config.py:280`) |
@@ -150,12 +150,14 @@ Pydantic-описание узла дерева — `ActItemSchema` (`app/domain
 | `violationId`         | —                    | —                    | —                    | обяз.                | FK на `violations[id]`                                                                          |
 | `number`              | опц.                 | опц.                 | опц.                 | опц.                 | автогенерируется фронтом: для item — иерархия (`5.1.2`), для content — `"Таблица N"` и т.п. (`state-tree.js::generateNumbering`, `29`) |
 | `customLabel`         | опц.                 | опц.                 | опц.                 | опц.                 | пользовательское название (приоритет над автоматическим)                                        |
-| `protected`           | опц., default false  | опц., default false  | опц., default false  | опц., default false  | защита от перемещения и удаления (для разделов 1–5: `true`)                                     |
+| `protected`           | опц., default false  | опц., default false  | опц., default false  | опц., default false  | защита от перемещения и удаления (для разделов 1–5 и пункта Process Mining: `true`)              |
 | `deletable`           | опц., default true   | опц., default true   | опц., default true   | опц., default true   | разрешено ли удаление; работает независимо от `protected`                                       |
 | `kind`                | —                    | опц., default `'regular'` | —               | —                    | подвид таблицы (enum, см. §7): `regular`/`metrics`/`mainMetrics`/`regularRisk`/`operationalRisk`/`taxRisk`/`otherRisk`. Источник истины на узле; дублируется в `tables[tableId].kind` (`table-kind.js`) |
 | `tb`                  | опц., только под 5.* | —                    | —                    | —                    | массив аббревиатур территориальных банков (см. `AppConfig.territorialBanks`, `app-config.js:16-28`) |
 | `invoice`             | опц., только под 5.* | —                    | —                    | —                    | прикреплённая фактура (см. §8); НЕ сериализуется бэкендом, существует только во фронт-объекте  |
 | `auditPointId`        | опц.                 | опц.                 | опц.                 | опц.                 | UUID точки аудита, выданный внешним сервисом (`AuditIdService`, `services/id-generator.js`)    |
+| `special`             | опц.                 | опц.                 | опц.                 | опц.                 | маркер спец-узла: `'process_mining'` на пункте Process Mining, `'quality_assessment'` на таблице раздела 2 (§6); драйвит фронт-предикаты (`_isUnderProcessMining`, пункты контекстного меню), бэк только хранит |
+| `titleLocked`         | опц.                 | опц.                 | опц.                 | опц.                 | заголовок узла защищён от редактирования двойным кликом; сейчас проставляется только пункту Process Mining |
 | `parentId`            | runtime-only         | runtime-only         | runtime-only         | runtime-only         | техническое поле фронта; в сериализованный `tree_data` не попадает напрямую                     |
 
 Замечания:
@@ -163,6 +165,7 @@ Pydantic-описание узла дерева — `ActItemSchema` (`app/domain
 - Подвид таблицы кодируется единым enum-полем `kind` (а не набором boolean-флагов `is*Table` — те убраны в kind-рефакторе, `table-kind.js`). Источник истины — `kind` на узле-таблице; значение дублируется в `tables[tableId].kind` для денормализованной выгрузки в `act_tables` (колонка `kind VARCHAR(20)` + CHECK `check_table_kind_values`). Согласованность node↔table при загрузке поддерживает `reconcileTableKind`.
 - Проверка «закреплённости»: `isPinnedTable(node)` = `kind !== 'regular'`; «является ли risk-таблицей»: `isRiskTable(node)` = `kind ∈ {regularRisk, operationalRisk, taxRisk, otherRisk}` (`table-kind.js`).
 - В сохранённом дереве `_serializeTree` (`state-core.js:592`) форсирует `protected` и `deletable` к булевым значениям и взаимоисключает `content` ↔ `tableId/textBlockId/violationId` (content пишется только для item-узлов).
+- `special`/`titleLocked` объявлены в `ActItemSchema` наравне с остальными полями узла (`app/domains/acts/schemas/act_content.py`). До этого политика `extra='ignore'` молча отбрасывала их при сохранении вместе с любыми незадекларированными полями — после перезагрузки акта пункт Process Mining терял и защиту от нарушений/рисков (`special`), и фиксацию заголовка (`titleLocked`). Регрессия — `tests/test_schemas.py`.
 - **Глубина дерева ограничена с двух сторон разными числами**: бэк — `ACTS__RESOURCE__MAX_TREE_DEPTH=50` (жёсткая проверка при сохранении, `settings.py::ResourceSettings.max_tree_depth`), фронт — `AppConfig.tree.maxDepth = 4` (гейт drag-and-drop и создания узлов, см. §9). Бэковый лимит — защита от bomb-нагрузки, фронтовый — продуктовое ограничение вложенности.
 
 ### 4.1. Подсхемы вложенных сущностей
@@ -274,9 +277,9 @@ isPinnedTable(node) {
 **Правила сортировки.** Метод `AppState._getFirstNonPinnedIndex(parent)` (`state-tree.js:821`) ищет первый незакреплённый индекс в `children` родителя — это «нижняя граница» pinned-зоны. Используется в двух местах:
 
 - При drag-and-drop: если `position === 'before'/'after'` указывает в pinned-зону, эффективный индекс прижимается вниз (`_performMove`, `state-tree.js:784`). Дополнительно `_calculateDropPosition` (`tree-drag-drop.js:203`) запрещает `'before'` на pinned-узле и блокирует `'after'` между двумя соседними pinned-таблицами.
-- При создании risk-таблицы: вставляется по индексу `_getFirstNonPinnedIndex` (`state-content.js:523`, `562`, `700`, `788` — `_createRegularRiskTable`/`_createOperationalRiskTable`/`_createTaxRiskTable`/`_createOtherRiskTable`).
+- При создании risk-таблицы: вставляется по индексу `_getFirstNonPinnedIndex` (`state-content.js:562`, `601`, `739`, `827` — `_createRegularRiskTable`/`_createOperationalRiskTable`/`_createTaxRiskTable`/`_createOtherRiskTable`).
 
-Метрик-таблицы (`kind='metrics'`, `kind='mainMetrics'`) создаются через `node.children.unshift(tableNode)` (`state-content.js:230`, `state-content.js:384`) — то есть всегда первыми. Если в `children` уже есть pinned-таблицы, новая всё равно встаёт нулевой; порядок между metrics и risk на одном уровне определяется временем создания.
+Метрик-таблицы (`kind='metrics'`, `kind='mainMetrics'`) создаются через `node.children.unshift(tableNode)` (`state-content.js:269`, `state-content.js:423`) — то есть всегда первыми. Если в `children` уже есть pinned-таблицы, новая всё равно встаёт нулевой; порядок между metrics и risk на одном уровне определяется временем создания.
 
 ---
 
@@ -296,19 +299,19 @@ isPinnedTable(node) {
 }
 ```
 
-Список разделов — `AppConfig.tree.defaultSections` (`app-config.js:331-337`): `1` «Информация о процессе, клиентском пути» (для непроцессной проверки — «Характеристика проверяемого направления», подставляется в `state-core.js::_createRootStructure`), `2` «Оценка качества…», `3` «Примененные технологии», `4` «Основные выводы», `5` «Результаты проверки».
+Список разделов — `AppConfig.tree.defaultSections` (`app-config.js:331-337`): `1` «Информация о процессе, клиентском пути» (для непроцессной проверки — «Характеристика проверяемого направления», подставляется в `state-core.js::_createRootStructure`), `2` «Оценка качества…», `3` «Примененные технологии», `4` «Основные выводы», `5` «Результаты проверки». Шестым на 0 уровне для ОБОИХ типов проверки встаёт обязательный пункт «Process Mining» — он не входит в `defaultSections` (фиксированный `label`, `special: 'process_mining'`, `titleLocked: true` отличают его от пяти разделов), а описан отдельным дескриптором `AppConfig.tree.processMiningSection` (`app-config.js:343`) и создаётся `_createProcessMiningSection` (`state-core.js:101`), которую `_createRootStructure` зовёт последней (`state-core.js:67`).
 
-Помимо разделов, `protected: true` ставится фронт-кодом всем спец-таблицам (metrics, main metrics, regular risk, operational risk) и предустановленным таблицам разделов 2 и 3 (`state-core.js:100`, `state-content.js:241`, `state-content.js:395`, `state-content.js:534`, `state-content.js:573`, `state-content.js:711`, `state-content.js:801`).
+Помимо разделов, `protected: true` ставится фронт-кодом всем спец-таблицам (metrics, main metrics, regular risk, operational risk — `state-content.js:280,434,573,612,750,840`) и предустановленным таблицам разделов 2 и 3 через общий `_createTableFromPreset`/`_createSimpleTable` (`state-core.js:184`; вызовы — `_createQualityAssessmentTable` для раздела 2, `state-core.js:166`, и `_createInitialTables` для раздела 3, `state-core.js:139-141`).
 
 **Что нельзя делать с protected-узлами:**
 
 | Действие                  | Ограничение                                                                                     |
 |---------------------------|--------------------------------------------------------------------------------------------------|
-| Удаление                  | Если `deletable === false` — невозможно ни через UI, ни через `deleteNode` (`state-tree.js`). Разделы 1–5 имеют `deletable: false`. |
+| Удаление                  | Если `deletable === false` — невозможно ни через UI, ни через `deleteNode` (`state-tree.js`). Разделы 1–5 и пункт Process Mining имеют `deletable: false`. |
 | Перемещение               | Drag запрещён в `_validateMove` (`state-tree.js:507`) и при `dragstart` (`tree-drag-drop.js:109`). |
 | Изменение структуры таблицы | Для `protected: true` таблиц добавление/удаление строк и колонок блокируется в `table-cells-operations.js` (см. строки 398, 480, 653, 979, 1064). |
 
-`deletable` работает независимо: можно иметь `protected: true, deletable: true` (защищена от перемещения, но удалить можно) — такая комбинация встречается у спец-таблиц.
+`deletable` работает независимо: можно иметь `protected: true, deletable: true` (защищена от перемещения, но удалить можно) — такая комбинация встречается у спец-таблиц и у таблицы раздела 2 «Результаты оценки качества процесса» (`special: 'quality_assessment'`): та тоже `protected: true`, но, в отличие от разделов и предустановленных таблиц раздела 3, `deletable: true` — её можно удалить и вернуть пунктом контекстного меню (§9), при этом `kind` у неё остаётся `'regular'` — она сознательно не спец-таблица в смысле §7 и не попадает под pinned-правила.
 
 ---
 
@@ -320,7 +323,7 @@ isPinnedTable(node) {
 
 **Подтипы.**
 
-- `kind='metrics'` — таблица метрик одного пункта `5.X`. Создаётся, когда в потомках узла `5.X` (т.е. на уровне `5.X.X+`) появляется хотя бы одна risk-таблица (`_updateMetricsTablesAfterRiskTableCreated`, `state-content.js:423`). Удаляется автоматически, когда последняя глубокая risk-таблица исчезает (`_cleanupMetricsTablesAfterRiskTableDeleted`, `state-content.js:459`).
+- `kind='metrics'` — таблица метрик одного пункта `5.X`. Создаётся, когда в потомках узла `5.X` (т.е. на уровне `5.X.X+`) появляется хотя бы одна risk-таблица (`_updateMetricsTablesAfterRiskTableCreated`, `state-content.js:462`). Удаляется автоматически, когда последняя глубокая risk-таблица исчезает (`_cleanupMetricsTablesAfterRiskTableDeleted`, `state-content.js:498`).
 - `kind='mainMetrics'` — главная сводная для всего раздела 5. Создаётся при появлении ЛЮБОЙ risk-таблицы в дереве 5, удаляется при их полном отсутствии (та же функция).
 
 **Структура `grid`.** Сетка 4×7 с двумя строками заголовков и двумя строками данных. Заголовки используют объединения (`colSpan`/`rowSpan`/`isSpanned`/`spanOrigin`) для группировки «Количество клиентов / элементов» (ФЛ/ЮЛ под общей шапкой) и «Сумма, руб.» / «Код БП» / «Пункт акта». Полный шаблон — `_createMetricsHeaderGrid` (`state-content.js`).
@@ -355,9 +358,9 @@ isPinnedTable(node) {
 
 **Подтипы.**
 
-- `kind='regularRisk'` — регулярные риски. Шаблон в `AppConfig.content.tablePresets.regularRisk` (см. `app-config.js`), создаётся через `_createRegularRiskTable` (`state-content.js:510`).
-- `kind='operationalRisk'` — операционные риски. Шаблон 4×6, заголовки с объединениями, создаётся через `_createOperationalRiskTable` (`state-content.js:549`), сетка — `_createOperationalRiskGrid` (`state-content.js:587`).
-- Дополнительно схема допускает `kind='taxRisk'`/`'otherRisk'` (полный набор из 7 подвидов) — `_createTaxRiskTable`/`_createTaxRiskGrid` (`state-content.js:688`/`728`), `_createOtherRiskTable` (`state-content.js:775`).
+- `kind='regularRisk'` — регулярные риски. Шаблон в `AppConfig.content.tablePresets.regularRisk` (см. `app-config.js`), создаётся через `_createRegularRiskTable` (`state-content.js:549`).
+- `kind='operationalRisk'` — операционные риски. Шаблон 4×6, заголовки с объединениями, создаётся через `_createOperationalRiskTable` (`state-content.js:588`), сетка — `_createOperationalRiskGrid` (`state-content.js:626`).
+- Дополнительно схема допускает `kind='taxRisk'`/`'otherRisk'` (полный набор из 7 подвидов) — `_createTaxRiskTable`/`_createTaxRiskGrid` (`state-content.js:727`/`767`), `_createOtherRiskTable` (`state-content.js:814`).
 
 Подвид `kind` хранится на узле-таблице (источник истины) и дублируется в `tables[tableId].kind`. Проверка «узел — risk-таблица»: `isRiskTable(node)` (`table-kind.js`; `TreeUtils.isPinnedTable`/`isRiskTable` делегируют туда).
 
@@ -368,6 +371,45 @@ isPinnedTable(node) {
 - Pinned: вставляются через `splice` после всех остальных pinned-таблиц.
 - Создание risk-таблицы триггерит ревизию metrics-таблиц (см. §7.1).
 - Risk-таблицы **нельзя перетаскивать** — `dragstart` блокирует любую попытку, см. `_hasRiskTablesInSubtree` (`tree-drag-drop.js:143`). Это касается и перетаскивания узла-носителя, и перетаскивания пункта, содержащего risk-таблицу в любой ветке поддерева (исключение — перемещение в пределах раздела 5).
+
+### 7.3. Оформление подписи таблицы (table title)
+
+Единое правило владельца, действующее одинаково во ВСЕХ контурах — редакторе заполнения, обоих поверхностях предпросмотра (inline-панель и модальное меню), вкладке «Просмотр» диалога истории версий и трёх экспортных форматтерах (DOCX/MD/TXT):
+
+- **Начертание всегда обычное, `font-weight: normal`** — ни жирного, ни полужирного нет ни в одном контуре. До правки жирной (`run.bold = True` безусловно) была подпись в DOCX; в превью, из-за независимого CSS-бага со специфичностью, подпись рисовалась semibold (см. «CSS-механика превью» ниже) при формально «нормальном» правиле. Подчёркивание до правки было не единым: в редакторе, превью и TXT ставилось БЕЗУСЛОВНО всем подписям без разбора раздела/типа, а в DOCX и диалоге версий подчёркивания не было вовсе — теперь везде одно правило.
+- **Подчёркнута** только подпись **пресетной** (автоматически созданной) таблицы **разделов 1–4**.
+- Раздел 5 (в т.ч. metrics/risk-таблицы) и пользовательские таблицы — обычным начертанием, БЕЗ подчёркивания.
+- Таблица внутри блока нарушения (`ViolationTableBlockSchema`, §4.1) подписи не имеет вовсе — у схемы нет поля `caption`/`label` (в отличие от `ViolationImageBlockSchema.caption`), правило к ней неприменимо структурно, а не по значению предиката.
+
+**Предикат «пресетная таблица».** Признака «создана автоматически» в модели узла нет — дискриминатор различает по составу уже существующих полей: `protected === true` И `kind` отсутствует либо равен `'regular'` (`isPresetTable`/`is_preset_table`). Пользовательские таблицы имеют `protected: false`; spec-таблицы (§7.1/§7.2) отличаются `kind !== 'regular'`; таблица раздела 2 «Результаты оценки качества процесса» (§6) — `protected: true` и `kind: 'regular'`, то есть остаётся пресетной для целей этого правила несмотря на удаляемость и `special`.
+
+**Единая точка правила — две зеркальные реализации**, не связанные импортом (фронт не может импортировать Python):
+
+- Python — `table_title_underlined(node, root_section_id)` в `app/domains/acts/formatters/table_title.py`, звана всеми тремя форматтерами.
+- JS — `tableTitleUnderlined(node, rootSectionId)` в `static/js/constructor/table/table-title.js` (модуль без DOM-зависимостей, там же живёт `isPresetTable` и предикат показа подписи `shouldShowTableTitle`/`tableTitleText`).
+- Синхронность держит `tests/domains/acts/formatters/test_table_title_rule.py` — одна матрица случаев (protected/kind/root_section_id → ожидание) прогоняется через обе реализации.
+
+`root_section_id` — id раздела верхнего уровня, в поддереве которого лежит узел; `null`/`None`, если он неизвестен (правило тогда трактует подпись как неподчёркнутую). На бэке его несёт `WalkContext.root_section_id` (`formatters/tree_walker.py`): `walk()` открывает новый `root_section_id` для каждого ребёнка корня и передаёт его вниз по всему поддереву без изменений — так одно поле обслуживает все три форматтера без отдельного прохода. На фронте раздел не передаётся параметром рендера напрямую — его вычисляет каждый вызывающий код своим способом: `ItemsRenderer._createTableTitle` — через `TreeUtils.getNodePath(node.id)[1]` (путь от корня дерева, элемент с индексом 1 — раздел); `PreviewManager.renderNode`/`_renderTableNode` — рекурсивным параметром `rootSectionId`, который каждый ребёнок корня открывает своим `id`; `VersionPreviewOverlay._renderNode` — тем же приёмом для диалога истории версий.
+
+Матрица «класс таблицы × контур → оформление» (раздел 1–4, пресетная):
+
+| Контур | Подчёркивание | Класс/атрибут |
+|---|---|---|
+| DOCX | `run.underline = True` | `DocxFormatter._add_table_title(..., underlined=True)` |
+| TXT | строка дефисов под подписью (ASCII-аналог подчёркивания) | `text_formatter.py::_TextTreeVisitor.on_table` |
+| MD | не поддерживается принципиально (см. ниже) | — |
+| Редактор заполнения | подчёркнута | `.table-title.table-title--underline` (`table-base.css`) |
+| Предпросмотр (inline-панель и модальное меню) | подчёркнута | `.preview-table-title.preview-table-title--underline` (`preview-table.css`) |
+| Диалог версий, вкладка «Просмотр» | подчёркнута | `.version-preview-label.version-preview-label--table.version-preview-label--underline` (`version-preview.css`) |
+| Диалог версий, вкладка «Сравнение» | не поддерживается — интерфейсная поверхность | `diff-renderer.js::_renderDiffTable` рисует голую `<table>` и подпись `.version-preview-label` без модификаторов `--table`/`--underline`, тем же сознательным решением, что и для гарнитуры/кегля (§13 [`textblock-editor-architecture.md`](textblock-editor-architecture.md)) |
+
+Для остальных классов (раздел 5, пользовательская, spec-таблица) все контуры дают «обычное начертание, без эффектов» — модификаторные классы просто не проставляются, DOCX не ставит `underline`, TXT не печатает строку дефисов.
+
+**MD принципиально не поддерживает эффект и правки не потребовал** — подпись там всегда плоская строка текста (`markdown_formatter.py::on_table`). Подчёркивания в Markdown нет как понятия; строка дефисов под текстом дала бы setext-заголовок H2 — подпись превратилась бы в заголовок раздела документа. Зафиксировано тестами как осознанное поведение, а не недоделка (`tests/domains/acts/formatters/test_table_title_txt_md.py`).
+
+**CSS-механика превью.** Модификатор — отдельный класс (`*--underline`), а не безусловный инлайн-стиль: раньше `ItemsRenderer._createTableTitle` ставил `Object.assign(tableTitle.style, {textDecoration: 'underline'})` каждой подписи без разбора. У подписи в предпросмотре была отдельная ловушка специфичности: `.preview-table-title` — голый класс (специфичность 0,1,0), а её перебивали более специфичные `.preview h4`/`.preview-menu-body h4` (0,1,1) из типографики поверхностей, из-за чего `font-weight: normal` не применялся и подпись рисовалась semibold независимо от правила. Лечили повышением специфичности самого правила; сейчас лечение снято за ненадобностью — заголовок пункта размечается собственным классом (`.preview-heading`), правил по голому `h4` в предпросмотре не осталось, и селектор снова голый класс. Кегль подписи — документный `--doc-font-size` (12pt), подпись печатается в акте наравне с телом; цвет не задаётся и наследуется от листа (`#000`) — серого текста в акте нет. Ритм — тоже документный: `0 / --doc-space-after` (в DOCX подпись это обычный абзац, `_add_table_title`), воздух над ней даёт предыдущий элемент — после таблицы в акте стоит пустая строка-распорка (`--doc-blank-line`). Ratchet, сторожащий протечки UI-шкалы в документные зоны — `tests/test_document_css_font_size_ratchet.py` (детали токенов — §13.4 [`frontend-architecture.md`](frontend-architecture.md)).
+
+Тесты: `tests/domains/acts/formatters/test_table_title_rule.py` (матрица предиката Python↔JS), `tests/domains/acts/formatters/docx/test_table_title.py`, `tests/domains/acts/formatters/test_table_title_txt_md.py`, `tests/js/table-title-underline-rule.test.mjs`.
 
 ---
 
@@ -430,7 +472,7 @@ isPinnedTable(node) {
 | Запрет drop'а в собственного потомка                                                              | `handleDragOver` через `TreeUtils.isDescendant` (`tree-drag-drop.js:184`) |
 | Запрет drop'а `'before'` на pinned-узле; `'after'` блокируется, если следом ещё одна pinned       | `_calculateDropPosition` (`tree-drag-drop.js:203`)                |
 | Превышение `AppConfig.tree.maxDepth` (= 4) запрещено                                              | `_checkDepthConstraints` (`state-tree.js:589`)                    |
-| Перенос узла на первый уровень (`root.children`) запрещён (пункт «Process Mining» добавляется только через меню) | `_checkFirstLevelConstraints` (`state-tree.js:630`)      |
+| Перенос узла на первый уровень (`root.children`) запрещён — состав 0 уровня фиксирован (разделы 1–5 + Process Mining) | `_checkFirstLevelConstraints` (`state-tree.js:630`)      |
 | В разделе 5: risk-таблицы должны быть на одном уровне глубины                                    | `_checkSection5RiskConstraints` (`state-tree.js:706`)             |
 | В разделе 5: нельзя создавать подпункты `5.X.X+`, если risk-таблицы стоят на уровне пунктов     | то же                                                              |
 | Перемещение metrics-таблицы за пределы раздела 5: требуется подтверждение пользователя (диалог) и она удаляется | `_checkMetricsTableDeletion` (`state-tree.js:537`)       |
@@ -438,6 +480,13 @@ isPinnedTable(node) {
 | Эффективный индекс drop'а прижимается ниже pinned-зоны, даже если drop был «выше»                | `_performMove` (`state-tree.js:784`)                              |
 
 Дополнительный side-effect перемещения: пересчёт metrics-таблиц через `_reconcileMetricsTablesAfterMove` (`state-tree.js:895`) и очистка `tb`/`invoice` у поддерева, ушедшего из раздела 5 (`state-tree.js:453-465`).
+
+**Контекстное меню дерева** (`TreeContextMenu`, `static/js/constructor/context-menu/context-menu-tree.js`) следует тем же ограничениям состава уровней, что и DnD, но показывает/скрывает пункты меню, а не просто отбивает действие:
+
+- «Добавить соседний пункт» (`add-sibling`) скрыт целиком на 0 уровне (`node.id` — дитя `root`) — состав уровня фиксирован, добавить туда ничего нельзя (`context-menu-tree.js:118-119`). Глубже 0 уровня пункт виден всегда, но может быть задизейблен тем же правилом «риски на уровне 5.X.X+», что и `_checkSection5RiskConstraints` (`context-menu-tree.js:120-124`).
+- «Добавить дочерний пункт» (`add-child`) не имеет специальной логики уровня — доступен везде, где не превышен `AppConfig.tree.maxDepth` (гейт — `ValidationTree.canAddChild`, а не пункт меню).
+- «Добавить таблицу: Результаты оценки качества процесса» (`add-quality-assessment-table`) — пункт виден ТОЛЬКО на узле раздела `2` процессного акта (`window.actMetadata?.is_process_based !== false`) и задизейблен, если у раздела 2 уже есть ребёнок с `special === 'quality_assessment'` (`context-menu-tree.js:76-82`); для непроцессного акта и любого другого узла пункт скрыт. Обработчик `handleAddQualityAssessmentTable` зовёт `AppState.addQualityAssessmentTable()` (`context-menu-tree.js:362`).
+- Пункт «Добавить пункт: Process Mining», раньше подменявший собой «Добавить соседний пункт» на 0 уровне, из меню убран целиком (коммит `826dc503`) — Process Mining создаётся вместе со скелетом акта и добавлять его вручную больше не нужно.
 
 ---
 
@@ -498,7 +547,7 @@ API истории и восстановления — роутер `app/domains
 
 Отдельная от блокировки и от верификации фактур система-сигнал «в акте есть что проверить». Колонки `acts.validation_status` (`ok`/`warning`/`error`, CHECK `check_acts_validation_status_values`) + `acts.validation_issues` (JSONB) — см. `migrations/postgresql/schema.sql:39-42` и §6.1 в [`../guides/database.md`](../guides/database.md).
 
-- **Источник истины — бэк.** `services/content_validation.py::collect_validation_issues(data)` — **чистая, не бросающая** функция, зеркалит фронт-правила (структура разделов 1–5, заголовки/данные таблиц, пустые поля нарушений) и возвращает список замечаний (`code`/`severity`/`message`/`ref`). `status_from_issues(...)` даёт **три уровня**: **`error`** при любом замечании `severity='error'` (сломанная структура, таблица без заголовка), иначе **`warning`** при только «мягких» замечаниях (`severity='warning'`, напр. пустая таблица), иначе **`ok`**. Жёсткие проверки (`_validate_tree`) по-прежнему **бросают** (их сохранить нельзя) — нет корня / превышена глубина дерева / узел содержит слишком много текстблоков, нарушений или таблиц; это **один DFS-обход**, считающий глубину и первое превышение лимита каждого типа одновременно (порядок ошибок при нескольких нарушениях сразу: глубина → root-id → textblocks → violations → tables). Проверка текстблоков на бэк **не** портирована (зависит от фронтовой нумерации `node.number`, не гарантированной в хранимом дереве).
+- **Источник истины — бэк.** `services/content_validation.py::collect_validation_issues(data)` — **чистая, не бросающая** функция, зеркалит фронт-правила (структура базовых разделов 1–6 — `_BASE_SECTION_IDS`, включая обязательный Process Mining — заголовки/данные таблиц, пустые поля нарушений) и возвращает список замечаний (`code`/`severity`/`message`/`ref`). `status_from_issues(...)` даёт **три уровня**: **`error`** при любом замечании `severity='error'` (сломанная структура, таблица без заголовка), иначе **`warning`** при только «мягких» замечаниях (`severity='warning'`, напр. пустая таблица), иначе **`ok`**. Жёсткие проверки (`_validate_tree`) по-прежнему **бросают** (их сохранить нельзя) — нет корня / превышена глубина дерева / узел содержит слишком много текстблоков, нарушений или таблиц; это **один DFS-обход**, считающий глубину и первое превышение лимита каждого типа одновременно (порядок ошибок при нескольких нарушениях сразу: глубина → root-id → textblocks → violations → tables). Проверка текстблоков на бэк **не** портирована (зависит от фронтовой нумерации `node.number`, не гарантированной в хранимом дереве).
 - **Вычисляется на сохранении** (любой `saveType`), персистится в `acts`, возвращается в `SaveContentResponse` (`validation_status`/`validation_issues`) и в `ActListItem`/`ActResponse`. **Restore версии** тоже пересчитывает статус из восстановленного содержимого (`audit_log_service.restore_version` → `collect_validation_issues`/`status_from_issues`), а не сбрасывает в `ok`.
 - **WIP не блокируется.** Фронт-гейт сохранения «только в БД» снят (`navigation-manager.js`): структурно невалидный черновик **сохраняется как есть**. Гейт остался **только на экспорт в файл** (error-level, отдельный клиентский контур `ValidationAct`, не поле `validation_status`) — битый документ хуже отказа.
 - **Поверхности уведомлений зависят от уровня** (решение: warning не должен шуметь, error приравнен к фактуре):
@@ -507,6 +556,8 @@ API истории и восстановления — роутер `app/domains
   - **Лендинг-колокольчик берёт данные из серверной сводки** `GET /api/v1/acts/attention-summary` (`ActCrudService.get_attention_summary` → `ActCrudRepository.get_user_acts_needing_attention`, `act_crud.py:562`) — ВСЕ акты пользователя с незакрытыми требованиями (`needs_*`) ИЛИ `validation_status <> 'ok'`, посчитанные на сервере (не клиентский пересчёт по загруженной странице). Источник `static/js/portal/acts-manager/notifications-source-acts.js` тянет её сам: при загрузке страницы, по таймеру (5 мин — `needs_invoice_check` меняется на стороне ETL, чаще нет смысла) и при возврате на вкладку. Форматтер `buildActsNotificationItems` (чистая функция, переиспользует node-тесты) превращает сводку в элементы колокольчика.
   - **Чтение/удаление warning-замечаний на лендинге — клиентское** (localStorage `notif:acts:state`, чистые `actItemSignature`/`reconcileActsItemsState`): ключ = акт + сигнатура замечания; состояние автоматически сбрасывается, когда акт исправлен (выпал из сводки) или замечание изменилось. error-элементы состояние игнорируют (горят всегда). Бейдж считает только непрочитанные.
   - **Полный список замечаний обоих уровней** виден внутри акта в колокольчике конструктора (`static/js/constructor/header/notifications-source-validation.js`, читает `validation_issues` последнего сохранения). Внутри акта живые замечания **read/delete не поддерживают** (всегда напоминают) — контекстное меню записи пустое («Нет доступных действий»).
+  - **Замечания по таблицам группируются по виду проблемы.** `collectTableWarnings` отдаёт по одному замечанию на пару «таблица × проблема», поэтому десяток недозаполненных таблиц давал десяток одинаковых строк. Чистая свёртка — `notifications-warnings-group.js` (`groupTableWarnings`: ключ «severity + текст замечания», порядок по первому появлению; `formatTablesCount` — склонение). Источник отдаёт группу с полями `count`/`children` (их протаскивает `mergeFeed`), центр рисует её раскрывающейся строкой; группа из одной таблицы разворачивается обратно в обычную запись. **Бейдж после этого считает группы**, а не исходные замечания — он и так считает то, что вернул источник. Раскрытые группы центр помнит в `Set` по id: живой рефреш идёт на каждое изменение документа и перерисовывает список целиком.
+  - **Рамка недозаполненной таблицы на листе — пастельная** (`--warning-light`, 1px): неполнота не ошибка. Яркой осталась только рамка структурного дефекта (`--error`) — его причина ломает экспорт.
 
 ---
 
@@ -656,7 +707,8 @@ Deep-dive — [`frontend-architecture.md`](frontend-architecture.md):
       { "id": "2", "label": "Оценка качества …", "type": "item", "protected": true, "deletable": false, "content": "", "children": [] },
       { "id": "3", "label": "Примененные технологии", "type": "item", "protected": true, "deletable": false, "content": "", "children": [] },
       { "id": "4", "label": "Основные выводы", "type": "item", "protected": true, "deletable": false, "content": "", "children": [] },
-      { "id": "5", "label": "Результаты проверки", "type": "item", "protected": true, "deletable": false, "content": "", "children": [] }
+      { "id": "5", "label": "Результаты проверки", "type": "item", "protected": true, "deletable": false, "content": "", "children": [] },
+      { "id": "6", "label": "Оценка процесса по результатам исследования методом Process Mining", "type": "item", "special": "process_mining", "protected": true, "deletable": false, "titleLocked": true, "content": "", "children": [] }
     ]
   },
   "tables": {},

@@ -33,7 +33,8 @@ SEED_ACT_IDS = [999001, 999002, 999003]
 
 
 def _build_default_tree(label: str) -> dict:
-    """5 защищённых секций — копия логики `StateCore._createProtectedSection`."""
+    """5 защищённых секций + обязательный пункт Process Mining — копия логики
+    `StateCore._createProtectedSection` / `_createProcessMiningSection`."""
     sections = [
         {"id": "1", "label": "Информация о процессе, клиентском пути"},
         {"id": "2", "label": "Оценка качества проверенного процесса / сценария процесса / потока работ"},
@@ -51,6 +52,15 @@ def _build_default_tree(label: str) -> dict:
         }
         for s in sections
     ]
+    children.append({
+        "id": "6",
+        "label": "Оценка процесса по результатам исследования методом Process Mining",
+        "special": "process_mining",
+        "protected": True,
+        "deletable": False,
+        "titleLocked": True,
+        "children": [],
+    })
     return {"id": "root", "label": label, "children": children}
 
 

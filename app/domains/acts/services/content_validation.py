@@ -21,8 +21,9 @@ from app.domains.acts.formatters.utils.html_utils import HTMLUtils
 from app.domains.acts.schemas.act_content import ActDataSchema
 from app.domains.acts.violation_fields import VIOLATION_FIELDS
 
-# Базовые разделы 1–5 (по id, как ValidationAct.validateStructure на фронте).
-_BASE_SECTION_IDS = ("1", "2", "3", "4", "5")
+# Базовые разделы 1–6 (1–5 + обязательный пункт Process Mining), по id,
+# как ValidationAct.validateStructure на фронте.
+_BASE_SECTION_IDS = ("1", "2", "3", "4", "5", "6")
 
 
 def _table_node_labels(tree: dict | None) -> dict[str, str]:

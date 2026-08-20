@@ -605,6 +605,9 @@ class ActItemSchema(BaseModel):
         customLabel: Пользовательская метка узла
         number: Номер узла в иерархии
         kind: Подвид таблицы узла-таблицы (TABLE_KINDS); 'regular' — обычная
+        special: Маркер спец-узла (например 'process_mining'); влияет на
+            запреты добавления нарушений/рисков под ним
+        titleLocked: Заголовок узла защищён от редактирования двойным кликом
     """
     # M.21: политика extra='ignore' задана ЯВНО и сознательно (не forbid):
     # незадекларированные поля узла отбрасываются нормализацией
@@ -636,6 +639,11 @@ class ActItemSchema(BaseModel):
     kind: TableKind = "regular"
     tb: list[str] | None = None
     auditPointId: str | None = None
+    # Маркер спец-узла (см. _isUnderProcessMining на фронте); значение
+    # 'process_mining' блокирует добавление нарушений/рисков под узлом.
+    special: str | None = None
+    # Заголовок узла зафиксирован — двойной клик не открывает редактирование.
+    titleLocked: bool | None = None
 
 
 class ActDataSchema(BaseModel):

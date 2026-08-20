@@ -38,11 +38,14 @@
 }
 
 /* Безрамочная сетка 2 колонок: метка (по содержимому) / значение (остаток). */
+/* Шаг между строками — Normal-спейсинг Word: ячейки шапки заполняются
+   обычными абзацами (_fill_label_cell / _fill_value_cell), собственных
+   интервалов им не задают. */
 .preview-cover-table {
     display: grid;
     grid-template-columns: auto 1fr;
     column-gap: 8pt;
-    row-gap: 2pt;
+    row-gap: var(--doc-space-after);
     align-items: start;
 }
 
@@ -51,8 +54,13 @@
     font-weight: bold;
 }
 
-/* Значения — обычный текст; многострочные (состав группы) переносятся по <br>. */
+/* Значения — обычный текст. Многострочное значение (состав группы) в эталоне
+   раскладывается по ОТДЕЛЬНЫМ абзацам ячейки (_fill_value_cell), поэтому между
+   строками стоит тот же Normal-интервал, что и между строками акта, а не
+   нулевой зазор мягкого переноса. */
 .preview-cover-value {
+    display: grid;
+    row-gap: var(--doc-space-after);
     word-wrap: break-word;
     overflow-wrap: break-word;
 }

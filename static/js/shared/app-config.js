@@ -336,8 +336,10 @@ export class AppConfig {
             {id: '5', label: 'Результаты проверки'}
         ],
 
-        // Опциональный пункт «Process Mining» (добавляется по требованию,
-        // по умолчанию в дереве отсутствует). Название фиксировано.
+        // Пункт «Process Mining» — обязательная часть скелета акта, встаёт
+        // последним на 0 уровне вместе с разделами 1-5 (не входит в
+        // defaultSections: фиксированный label, special и titleLocked
+        // отличают его от остальных пяти). Название фиксировано.
         processMiningSection: {
             id: '6',
             special: 'process_mining',
@@ -405,7 +407,7 @@ export class AppConfig {
         validation: {
             maxDepthExceeded: (depth) => `Достигнута максимальная вложенность (${depth} уровней: ${'.'.repeat(depth - 1)}*)`,
             cannotMoveToFirstLevel: 'Нельзя переносить пункты на верхний уровень',
-            cannotAddFirstLevelSibling: 'На верхнем уровне можно добавить только пункт Process Mining',
+            cannotAddFirstLevelSibling: 'На верхнем уровне добавлять пункты нельзя',
             cannotMoveToSelf: 'Нельзя переместить узел в самого себя',
             cannotMoveProtected: 'Нельзя перемещать защищенный элемент',
             cannotMoveToDescendant: 'Нельзя переместить узел внутрь своего потомка',
@@ -482,7 +484,8 @@ export class AppConfig {
                     'Общее количество отклонений, шт',
                     'Уровень отклонений, %'
                 ],
-                colWidths: [150, 200, 150, 100]
+                colWidths: [150, 200, 150, 100],
+                label: 'Результаты оценки качества процесса'
             },
 
             dataTools: {

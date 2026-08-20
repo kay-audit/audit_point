@@ -22,6 +22,7 @@ import {
   computeBadge,
   formatBadgeCount,
   mergeFeed,
+  normalizeSeverity,
   countPersistedUnread,
   countUnreadLive,
   resolvePollIntervalMs,
@@ -79,6 +80,11 @@ export class NotificationCenter {
 
     /** @type {Map<string, {collect: Function}>} */
     this._sources = new Map();
+    // id раскрытых групп однотипных замечаний. Живые источники рефрешатся на
+    // каждое изменение документа и список перерисовывается целиком — без этой
+    // памяти открытая группа схлопывалась бы под курсором при каждой правке.
+    /** @type {Set<string>} */
+    this._expandedGroups = new Set();
     /** Последний снимок персистентных уведомлений (форма NotificationOut). */
     this._persisted = [];
     // Точное число непрочитанных персистентных с сервера (GET .../unread-count).
@@ -673,9 +679,84 @@ export class NotificationCenter {
       return;
     }
 
-    for (const item of feed) {
-      this.body.appendChild(this._buildItem(item));
+    // Раскрытые группы, которых в свежем снимке уже нет (таблицы поправили),
+    // из памяти выпадают — иначе Set копил бы мёртвые id за сессию.
+    const groupIds = new Set(feed.filter((it) => it.children).map((it) => it.id));
+    for (const id of this._expandedGroups) {
+      if (!groupIds.has(id)) this._expandedGroups.delete(id);
     }
+
+    for (const item of feed) {
+      this.body.appendChild(item.children ? this._buildGroup(item) : this._buildItem(item));
+    }
+  }
+
+  /**
+   * Строит DOM группы однотипных замечаний: строка-шапка + скрытый список
+   * вложенных записей.
+   *
+   * Шапка — обычная запись со счётчиком и стрелкой; клик по ней разворачивает
+   * группу, а не уводит на лист (см. _handleItemClick). Вложенные записи
+   * приходят из источника «как есть» (kind им не проставлен — это не элементы
+   * ленты) и ведут себя как одиночные живые замечания.
+   *
+   * @private
+   * @param {Object} group Нормализованный элемент с полем children.
+   * @returns {HTMLElement}
+   */
+  _buildGroup(group) {
+    const wrap = document.createElement('div');
+    wrap.className = 'notification-group';
+
+    const expanded = this._expandedGroups.has(group.id);
+
+    const head = this._buildItem(group);
+    head.classList.add('notification-item--group');
+    head.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    wrap.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'notification-group-children';
+    if (!expanded) list.classList.add('hidden');
+    for (const child of group.children) {
+      if (!child) continue;
+      const row = this._buildItem({
+        ...child,
+        kind: 'live',
+        severity: normalizeSeverity(child.severity),
+      });
+      row.classList.add('notification-item--child');
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+
+    return wrap;
+  }
+
+  /**
+   * Разворачивает/сворачивает группу.
+   *
+   * Меняет DOM точечно, а НЕ перерисовывает список: полная перерисовка внутри
+   * обработчика клика выдёргивает `event.target` из документа, и всплывший до
+   * document клик обработчик «клик мимо меню» считает внешним (menu.contains()
+   * по оторванному узлу — false), после чего меню закрывается прямо на глазах.
+   * Память о раскрытии всё равно живёт в `_expandedGroups` — её читает
+   * следующий полноценный рендер списка.
+   *
+   * @private
+   * @param {string} id id группы.
+   * @param {HTMLElement} head Строка-шапка группы (по ней ищем список детей).
+   */
+  _toggleGroup(id, head) {
+    const expanded = !this._expandedGroups.has(id);
+    if (expanded) this._expandedGroups.add(id);
+    else this._expandedGroups.delete(id);
+
+    if (!head) return;
+    head.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const list = head.parentElement
+      && head.parentElement.querySelector('.notification-group-children');
+    if (list) list.classList.toggle('hidden', !expanded);
   }
 
   /**
@@ -703,6 +784,13 @@ export class NotificationCenter {
     const title = document.createElement('span');
     title.className = 'notification-item-title';
     title.textContent = item.title || (item.kind === 'live' ? 'Замечание' : 'Уведомление');
+    // У группы к заголовку прирастает счётчик: сколько замечаний свёрнуто.
+    if (Array.isArray(item.children)) {
+      const count = document.createElement('span');
+      count.className = 'notification-item-count';
+      count.textContent = String(item.count || item.children.length);
+      title.appendChild(count);
+    }
     textWrap.appendChild(title);
 
     if (item.body) {
@@ -712,6 +800,15 @@ export class NotificationCenter {
       textWrap.appendChild(body);
     }
     row.appendChild(textWrap);
+
+    // Стрелка-раскрывашка группы. Поворот — в CSS по aria-expanded шапки.
+    if (Array.isArray(item.children)) {
+      const chevron = document.createElement('span');
+      chevron.className = 'notification-item-chevron';
+      chevron.setAttribute('aria-hidden', 'true');
+      chevron.textContent = '▾';
+      row.appendChild(chevron);
+    }
 
     // Кнопка «⋮» открывает контекстное меню записи (Прочитать/Непрочитанным/
     // Удалить) — заменяет прежний крестик dismiss. Меню одно для всех видов;
@@ -734,7 +831,7 @@ export class NotificationCenter {
       this._openContextMenu(item, e.clientX, e.clientY);
     });
 
-    row.addEventListener('click', () => this._handleItemClick(item));
+    row.addEventListener('click', (e) => this._handleItemClick(item, e.currentTarget));
     return row;
   }
 
@@ -745,10 +842,18 @@ export class NotificationCenter {
    * прочитано — независимо от того, есть переход или нет. Затем выполняется
    * навигация: у живых — их onClick (переход к таблице/акту), у персистентных —
    * переход по link. «Вечно горящие» живые (без onMarkRead) клик не гасит.
+   * Исключение — шапка группы однотипных замечаний: она только раскрывается.
    * @private
    * @param {Object} item
+   * @param {HTMLElement} [row] Строка, по которой кликнули (нужна группе).
    */
-  _handleItemClick(item) {
+  _handleItemClick(item, row) {
+    // Шапка группы никуда не ведёт — она открывает и закрывает свой список.
+    if (Array.isArray(item.children)) {
+      this._toggleGroup(item.id, row);
+      return;
+    }
+
     const canRead = item.kind === 'persisted' || typeof item.onMarkRead === 'function';
     if (canRead && !item.is_read) {
       this._setItemRead(item, true);

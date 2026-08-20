@@ -16,14 +16,21 @@
  * раньше установки глобалов).
  */
 
-function makeStubElement() {
+function makeStubElement(tag) {
   return {
+    // Тег заглушка помнит: часть рендеров выбирает его по данным (уровень
+    // заголовка пункта в PreviewManager._renderHeading), и проверить это
+    // иначе нечем.
+    tagName: String(tag || '').toUpperCase(),
     style: {},
     dataset: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     addEventListener() {},
     removeEventListener() {},
-    appendChild() {},
+    // Дети запоминаются: составные элементы (плашка-рубрикатор, блок подписи)
+    // складываются из нескольких узлов, и проверить их состав иначе нечем.
+    children: [],
+    appendChild(child) { this.children.push(child); return child; },
     removeChild() {},
     remove() {},
     setAttribute() {},
@@ -36,7 +43,7 @@ function makeStubElement() {
 
 globalThis.window = globalThis;
 globalThis.document = {
-  createElement: () => makeStubElement(),
+  createElement: (tag) => makeStubElement(tag),
   createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
   addEventListener() {},
   removeEventListener() {},

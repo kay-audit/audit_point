@@ -7,7 +7,8 @@
  *   - pickBadgeSeverityWithServer — цвет = max(живые, серверная severity);
  *     локальный снимок персистентных в расчёте не участвует, null/пусто не влияют.
  *   - computeBadge — скрытие при сумме 0, суммирование непрочитанных + живых.
- *   - mergeFeed — порядок (живые сверху), нормализация формы и kind.
+ *   - mergeFeed — порядок (живые сверху), нормализация формы и kind, проброс
+ *     children/count у живых групп однотипных замечаний.
  *   - countPersistedUnread — подсчёт непрочитанных.
  *   - resolvePollIntervalMs — секунды→мс, фолбэк и нижняя граница.
  *   - formatBadgeCount — клампинг к "max+" и нормализация мусора к "0".
@@ -177,6 +178,33 @@ test('mergeFeed: живой с is_read=true и обработчиками дей
   assert.equal(feed[0].is_read, true);
   assert.equal(feed[0].onMarkRead, onMarkRead);
   assert.equal(feed[0].onDelete, onDelete);
+});
+
+test('mergeFeed: живая группа доносит children и count до рендера', () => {
+  const children = [{ id: 'c1' }, { id: 'c2' }];
+  const feed = mergeFeed([{ id: 'G1', severity: 'warning', count: 2, children }], []);
+
+  // Ядро пересобирает элемент по явному списку полей — без этого проброса
+  // группа доехала бы до _buildItem обычной строкой без вложенных записей.
+  assert.equal(feed[0].count, 2);
+  assert.equal(feed[0].children, children);
+});
+
+test('mergeFeed: обычная живая запись получает children/count = null', () => {
+  const feed = mergeFeed([{ id: 'L1' }], [{ id: 'P1' }]);
+
+  // Рендер решает «группа или нет» по Array.isArray(children) — не-массив
+  // обязан оставаться не-массивом, иначе одиночная запись станет пустой группой.
+  assert.equal(feed[0].children, null);
+  assert.equal(feed[0].count, null);
+  // Персистентные групп не образуют — полей нет вовсе.
+  assert.equal('children' in feed[1], false);
+});
+
+test('mergeFeed: мусор в count/children группой запись не делает', () => {
+  const feed = mergeFeed([{ id: 'L1', count: '5', children: { length: 2 } }], []);
+  assert.equal(feed[0].count, null);
+  assert.equal(feed[0].children, null);
 });
 
 // ── countUnreadLive ─────────────────────────────────────────────────────────

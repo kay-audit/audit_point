@@ -5,6 +5,10 @@
  * контентные/структурные замечания по таблицам (ValidationTable.collectContentWarnings()).
  * Замечания НЕ персистятся — это снимок текущего состояния документа.
  *
+ * Однотипные замечания сворачиваются в одну раскрывающуюся группу
+ * (см. `notifications-warnings-group.js`), чтобы десяток недозаполненных таблиц
+ * не превращался в десяток одинаковых строк.
+ *
  * Клик по замечанию переводит к проблемной таблице в предпросмотре (inline-панель
  * #preview или модальное меню previewMenuManager) и кратко подсвечивает её рамкой.
  *
@@ -12,6 +16,7 @@
  */
 import { ValidationTable } from '../validation/validation-table.js';
 import { makeWarningsCache } from './notifications-warnings-cache.js';
+import { groupTableWarnings } from './notifications-warnings-group.js';
 
 /** Модульный кеш замечаний по таблицам (один на конструктор). */
 const _warningsCache = makeWarningsCache(() => ValidationTable.collectContentWarnings());
@@ -77,26 +82,66 @@ function navigateToTable(tableId, center) {
 }
 
 /**
+ * Строит запись перехода к одной таблице.
+ *
+ * Одна и та же форма служит и самостоятельной записью (когда замечание такого
+ * вида ровно одно), и подстрокой раскрытой группы. Различие — тело: у
+ * самостоятельной это текст замечания, у подстроки оно пустое, потому что
+ * замечание уже написано в шапке группы и под каждой таблицей повторялось бы
+ * слово в слово.
+ *
+ * @param {{tableId:*, tableName:string}} table
+ * @param {string} issue Текст замечания (идёт в id записи).
+ * @param {string} severity
+ * @param {string} body Тело записи ('' — без тела).
+ * @param {NotificationCenter} center
+ * @returns {{id:string,title:string,body:string,severity:string,onClick:Function}}
+ */
+function makeTableItem(table, issue, severity, body, center) {
+  return {
+    id: `tables:${table.tableId}:${issue}`,
+    title: table.tableName,
+    body,
+    severity,
+    onClick: () => navigateToTable(table.tableId, center),
+  };
+}
+
+/**
  * Собирает живые замечания по таблицам в нормализованной форме источника.
  *
- * Форма элемента: {id, title, body, severity, onClick}. title — имя таблицы,
- * body — текст замечания. id уникален в пределах снимка (привязан к tableId+issue).
+ * Однотипные замечания сворачиваются в одну строку-группу: «Не заполнены
+ * заголовки — 7 таблиц» вместо семи почти одинаковых записей. Группа несёт
+ * `children` (переходы к каждой таблице) и `count`; центр рисует её
+ * раскрывающейся. Группа из одной таблицы разворачивается обратно в обычную
+ * запись — «×1» ничего не сообщает, а лишний клик мешает.
+ *
+ * Бейдж колокольчика считает элементы, которые вернул источник, поэтому после
+ * группировки он показывает число групп — ровно то, что видно в списке.
  *
  * @param {NotificationCenter} center
- * @returns {Array<{id:string,title:string,body:string,severity:string,onClick:Function}>}
+ * @returns {Array<Object>}
  */
 function collectTableItems(center) {
   // Тот же снимок, что и рамки таблиц в предпросмотре — без повторного обхода
   // дерева (кеш инвалидируется предпросмотром в начале тика обновления).
-  const warnings = getCachedTableWarnings();
+  const groups = groupTableWarnings(getCachedTableWarnings());
 
-  return warnings.map((w, i) => ({
-    id: `tables:${w.tableId}:${i}`,
-    title: w.tableName,
-    body: w.issue,
-    severity: w.severity,
-    onClick: () => navigateToTable(w.tableId, center),
-  }));
+  return groups.map((group) => {
+    if (group.tables.length === 1) {
+      return makeTableItem(group.tables[0], group.issue, group.severity, group.issue, center);
+    }
+    return {
+      id: `tables:group:${group.key}`,
+      title: group.title,
+      body: group.body,
+      severity: group.severity,
+      count: group.tables.length,
+      children: group.tables.map(
+        (t) => makeTableItem(t, group.issue, group.severity, '', center)
+      ),
+    };
+  });
 }
 
 /**

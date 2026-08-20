@@ -14,7 +14,7 @@ import { getBlockType, isLeafBlockType } from '../block-types.js';
 import { ChatEventBus } from '../../shared/chat/chat-event-bus.js';
 import { Notifications } from '../../shared/notifications.js';
 import { createTableElement } from '../table/table-render.js';
-import { shouldShowTableTitle, tableTitleText } from '../table/table-title.js';
+import { shouldShowTableTitle, tableTitleText, tableTitleUnderlined } from '../table/table-title.js';
 import { tableManager } from '../table/table-core.js';
 import { textBlockManager } from '../textblock/textblock-core.js';
 import { violationManager } from '../violation/violation-init.js';
@@ -624,15 +624,19 @@ export class ItemsRenderer {
      */
     static _createTableTitle(table, node) {
         const tableTitle = document.createElement('h4');
-        tableTitle.className = 'table-title';
+        // Оформление подписи — единое правило проекта (table-title.js), живёт
+        // в CSS: базовый класс задаёт обычное начертание, модификатор —
+        // подчёркивание пресетных таблиц разделов 1–4.
+        const underlined = tableTitleUnderlined(node, this._rootSectionId(node));
+        tableTitle.className = underlined
+            ? 'table-title table-title--underline'
+            : 'table-title';
         tableTitle.contentEditable = false;
         tableTitle.textContent = tableTitleText(node);
 
-        // Применяем стили
+        // Инлайном — только интерактивность и отбивка, типографика в CSS.
         Object.assign(tableTitle.style, {
             marginBottom: '10px',
-            fontWeight: 'normal',
-            textDecoration: 'underline',
             cursor: table.protected ? 'default' : 'pointer'
         });
 
@@ -646,6 +650,20 @@ export class ItemsRenderer {
         }
 
         return tableTitle;
+    }
+
+    /**
+     * ID раздела верхнего уровня, под которым лежит узел.
+     * Путь считается от корня дерева: path[0] — корень, path[1] — раздел.
+     * Раздел не передаётся параметром рендера: renderTable/renderItem зовут и
+     * на точечной перерисовке одного узла, где контекст обхода уже потерян.
+     * @param {Object} node - Узел дерева
+     * @returns {string|null} ID раздела или null, если узла нет в дереве
+     * @private
+     */
+    static _rootSectionId(node) {
+        const path = TreeUtils.getNodePath(node.id);
+        return path[1]?.id ?? null;
     }
 
     /**

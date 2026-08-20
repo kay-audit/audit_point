@@ -5,7 +5,7 @@
  *  - canAddChild по неизвестному родителю — отказ (раньше getNodeDepth давал -1,
  *    что проходило проверку maxDepth и давало ложный success);
  *  - _checkFirstLevelConstraints запрещает before/after на 0 уровне;
- *  - canAddSibling запрещает обычного соседа на 0 уровне (только Process Mining).
+ *  - canAddSibling запрещает соседа на 0 уровне (состав фиксирован: 1-5 + Process Mining).
  */
 import './_browser-stub.mjs';
 import { test, beforeEach } from 'node:test';
@@ -61,9 +61,9 @@ test('_checkFirstLevelConstraints запрещает before/after на 0 уро�
     assert.equal(res.valid, false);
 });
 
-test('canAddSibling запрещает обычного соседа на 0 уровне, разрешает глубже', () => {
+test('canAddSibling запрещает соседа на 0 уровне, разрешает глубже', () => {
     AppState.initializeTree(true);
-    // 0 уровень (родитель root): обычный сосед запрещён — только Process Mining через меню.
+    // 0 уровень (родитель root): состав фиксирован (1-5 + Process Mining), сосед запрещён.
     assert.equal(ValidationTree.canAddSibling('5').valid, false);
     // Глубже 0 уровня — сосед разрешён.
     assert.ok(AppState.addNode('5', 'Подпункт', true).valid);

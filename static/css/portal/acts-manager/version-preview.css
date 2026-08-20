@@ -142,6 +142,19 @@ h5.version-preview-heading { font-size: var(--font-size-base); }
     border-left: 3px solid var(--primary);
 }
 
+/* Подпись таблицы — четвёртый контур того же правила оформления
+   (static/js/constructor/table/table-title.js::tableTitleUnderlined):
+   начертание обычное, подчёркивание только у пресетных таблиц разделов 1–4.
+   Модификатор нужен именно таблицам: базовым классом размечены ещё метки
+   текстблока и нарушения, а они подписями таблиц не являются. */
+.version-preview-label--table {
+    font-weight: var(--font-weight-normal);
+}
+
+.version-preview-label--underline {
+    text-decoration: underline;
+}
+
 /* Diff controls */
 .diff-controls {
     display: flex;

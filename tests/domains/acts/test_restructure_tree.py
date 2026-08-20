@@ -303,9 +303,12 @@ class TestNonProcessToProcess:
         qa_node = section_2["children"][0]
         assert qa_node["type"] == "table"
         assert qa_node["protected"] is True
-        assert qa_node["deletable"] is False
+        # Таблицу разрешено удалить вручную и пересоздать из контекстного меню
+        assert qa_node["deletable"] is True
         assert qa_node["parentId"] == "2"
-        assert qa_node["label"] == "Таблица"
+        assert qa_node["label"] == "Результаты оценки качества процесса"
+        assert qa_node["customLabel"] == "Результаты оценки качества процесса"
+        assert qa_node["special"] == "quality_assessment"
 
     def test_quality_assessment_table_data_created(self, non_process_tree):
         """Создаются данные таблицы qualityAssessment с правильной структурой grid."""

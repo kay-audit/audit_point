@@ -8,11 +8,11 @@ from app.domains.acts.services.content_validation import (
 
 
 def _base_sections():
-    """Защищённые разделы 1–5 (валидная базовая структура)."""
+    """Защищённые разделы 1–6 (1-5 + Process Mining) — валидная базовая структура."""
     return [
         {"id": str(i), "label": f"Раздел {i}", "type": "item",
          "protected": True, "deletable": False, "children": []}
-        for i in range(1, 6)
+        for i in range(1, 7)
     ]
 
 

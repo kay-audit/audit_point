@@ -211,6 +211,48 @@
     word-break: break-word;
 }
 
+/* ----------------------------------------------------------------------------
+ * Группа однотипных замечаний: строка-шапка со счётчиком + раскрывающийся
+ * список вложенных записей. Живые источники отдают группу, когда одинаковое
+ * замечание пришло по нескольким объектам (например, недозаполненные таблицы).
+ * -------------------------------------------------------------------------- */
+
+/* Счётчик свёрнутых замечаний рядом с заголовком группы. */
+.notification-item-count {
+    display: inline-block;
+    margin-left: var(--spacing-xs);
+    padding: 0 6px;
+    border-radius: var(--radius-full);
+    background: var(--gray-100);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-normal, 400);
+    vertical-align: baseline;
+}
+
+/* Стрелка-раскрывашка: вниз у закрытой группы, вверх у открытой. */
+.notification-item-chevron {
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1;
+    margin-top: 4px;
+    transition: transform var(--transition-fast);
+}
+
+.notification-item--group[aria-expanded="true"] .notification-item-chevron {
+    transform: rotate(180deg);
+}
+
+/* Вложенные записи — с отступом под точкой критичности шапки. */
+.notification-group-children {
+    padding-left: var(--spacing-lg);
+}
+
+.notification-group-children.hidden {
+    display: none;
+}
+
 /* Кнопка «⋮» — открывает контекстное меню записи (заменила крестик dismiss) */
 .notification-item-menu-btn {
     background: none;

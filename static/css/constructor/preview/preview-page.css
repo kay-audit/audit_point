@@ -74,7 +74,7 @@
     outline: 1px dashed rgba(0, 0, 0, 0.30);
     outline-offset: -1px;
     font-family: var(--doc-font-family);
-    font-size: 12pt;
+    font-size: var(--doc-font-size);
     /* Task C: одинарный Word-интервал (DOCX app/domains/acts/formatters/docx/
        styles.py::Spacing, line_single = w:line 240/lineRule auto). Токен
        переиспользуется текстблоком в preview-typography.css (супersedes
@@ -116,55 +116,57 @@
     table-layout: fixed;
     border: 0.5pt solid #000;
     background: #fff;
-    font-size: 9pt;
+    font-size: var(--doc-font-size-small);
     color: #000;
 }
 
+/* Поля, выравнивание по обеим осям и кегль ячейки задаются НЕ здесь, а по
+   корню рендера (.preview-table-wrapper, preview-table.css) — так одно правило
+   достаёт и до листа, и до диалога версий, который листа не строит. Здесь
+   остаётся то, что действительно про лист: печатные рамки и цвет. */
 .preview-sheet .preview-table th,
 .preview-sheet .preview-table td {
     border: 0.5pt solid #000;
-    padding: 2pt 4pt;
-    text-align: left;
-    vertical-align: middle;
     /* Высота строки — авто, по содержимому (как auto-height в Word). */
     /* Сохраняем \n из ячеек: переносы строк рендерятся как есть (F4). */
     white-space: pre-wrap;
     word-wrap: break-word;
     overflow-wrap: break-word;
     font-family: var(--doc-font-family);
-    font-size: 9pt;
+    font-size: var(--doc-font-size-small);
     color: #000;
 }
 
-/* Заголовочные ячейки — серая заливка эталона + жирный шрифт */
+/* Заголовочные ячейки — серая заливка эталона + жирный шрифт. Выравнивание
+   не задаём: оно общее для шапки и данных и живёт на корне рендера. */
 .preview-sheet .preview-table-header,
 .preview-sheet .preview-table th {
     background: #D9D9D9;
     font-weight: bold;
     color: #000;
-    text-align: center;
-}
-
-/* Объединённые шапки, прижатые влево (совпадение с .docx) — выше специфичность,
-   чем у центрирующего правила выше, поэтому left побеждает и на листе. */
-.preview-sheet .preview-table th.preview-th-left {
-    text-align: left;
 }
 
 /* Обёртка таблицы на листе не скроллится: таблица всегда влезает в колонку.
-   Task C: margin 6pt уже соответствует DOCX add_blank_line() после таблицы
-   (styles.py::Sizes.blank_line_pt=6) — этот же отступ стоит и ДО таблицы
-   (в DOCX «до» — обычно 3pt от Normal-спейсинга предыдущего абзаца, не 6pt);
-   сознательное приближение ради симметрии сверху/снизу, отдельно не правим. */
+   Ритм несимметричен — как в DOCX. Снизу пустая строка-распорка
+   (add_blank_line после КАЖДОЙ таблицы, formatter.py::on_table): её высота —
+   кегль метки 6pt на одинарном интервале, то есть --doc-blank-line. Сверху
+   собственного отступа у таблицы нет вовсе: воздух над ней даёт предыдущий
+   абзац своим Normal-спейсингом (3pt — обычно это подпись таблицы). Прежние
+   симметричные 6pt сверху и снизу были сознательным приближением; теперь
+   значение приходит из общего токена, а не литералом. */
 .preview-sheet .preview-table-wrapper {
     overflow-x: visible;
-    margin: 6pt 0;
+    margin: 0 0 var(--doc-blank-line);
     border-radius: 0;
 }
 
-/* Рамки проблемных таблиц (источник — колокольчик «Замечания»). */
+/* Рамки проблемных таблиц (источник — колокольчик «Замечания»).
+   Незаполненность — не ошибка, а «сюда ещё вернуться»: тонкая пастельная рамка
+   из палитры (--warning-light), а не ярко-оранжевая двойка. Лист остаётся
+   похожим на печатный документ, а не на форму с валидацией. Рамка структурного
+   дефекта (--error) намеренно осталась заметной: её причина ломает экспорт. */
 .preview-sheet .preview-table-wrapper--warning {
-    outline: 2px solid #e6a700;
+    outline: 1px solid var(--warning-light);
     outline-offset: 2px;
     border-radius: 2px;
 }

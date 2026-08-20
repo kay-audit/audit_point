@@ -70,6 +70,18 @@ export class TreeContextMenu {
             item.classList.toggle('disabled', !allowed);
         }
 
+        // Таблицу «Результаты оценки качества процесса» показываем только на
+        // разделе 2 процессного акта — в непроцессном её не должно быть вовсе.
+        // Уже созданную не даём создать повторно (маркер special на узле).
+        const qaItem = this.menu.querySelector('[data-action="add-quality-assessment-table"]');
+        if (qaItem) {
+            const showQa = node.id === '2'
+                && window.actMetadata?.is_process_based !== false;
+            qaItem.style.display = showQa ? '' : 'none';
+            const qaExists = node.children?.some(c => c.special === 'quality_assessment');
+            qaItem.classList.toggle('disabled', !!qaExists);
+        }
+
         // Показываем "Приложить фактуру" только для leaf-узлов раздела 5
         const attachInvoiceItem = this.menu.querySelector('[data-action="attach-invoice"]');
         const attachInvoiceSeparator = this.menu.querySelector('[data-action="attach-invoice-separator"]');
@@ -98,17 +110,14 @@ export class TreeContextMenu {
             addViolationItem.classList.toggle('disabled', !!AppState._isUnderProcessMining(nodeId));
         }
 
-        // На 0 уровне «Добавить соседний пункт» превращается в «Добавить пункт: Process Mining».
+        // На 0 уровне «Добавить соседний пункт» скрыт целиком — состав верхнего
+        // уровня фиксирован (разделы 1-5 + Process Mining).
         const siblingItem = this.menu.querySelector('[data-action="add-sibling"]');
         if (siblingItem) {
             const parent = AppState.findParentNode(nodeId);
             const isLevelZero = parent?.id === 'root';
-            const pmExists = !!AppState.treeData?.children?.some(c => c.special === 'process_mining');
-            if (isLevelZero) {
-                siblingItem.innerHTML = '<span aria-hidden="true">➕</span> Добавить пункт: Process Mining';
-                siblingItem.classList.toggle('disabled', pmExists);
-            } else {
-                siblingItem.innerHTML = '<span aria-hidden="true">➕</span> Добавить соседний пункт';
+            siblingItem.style.display = isLevelZero ? 'none' : '';
+            if (!isLevelZero) {
                 // На уровне подпунктов 5.X.X соседний пункт запрещён, если в §5 есть
                 // риски на уровне пунктов (паритет с handleAddSibling).
                 const blocked = node.number?.match(/^5\.\d+\./) && this._hasRiskTablesAtLevel5x();
@@ -271,6 +280,9 @@ export class TreeContextMenu {
             case 'add-regular-table':
                 this.handleAddTable(node, nodeId, 'regular');
                 break;
+            case 'add-quality-assessment-table':
+                this.handleAddQualityAssessmentTable();
+                break;
             case 'add-regular-risk-table':
                 return this._handleRiskTableAction(node, nodeId, 'regular', 'regular-risk');
             case 'add-operational-risk-table':
@@ -327,16 +339,8 @@ export class TreeContextMenu {
         }
     }
 
-    /** Добавляет соседний элемент (на 0 уровне — пункт Process Mining) */
+    /** Добавляет соседний элемент */
     handleAddSibling(node, nodeId) {
-        const parent = AppState.findParentNode(nodeId);
-
-        // На 0 уровне «соседний пункт» = опциональный пункт Process Mining.
-        if (parent?.id === 'root') {
-            this.handleAddProcessMining();
-            return;
-        }
-
         // Нельзя добавлять соседние подпункты на уровне 5.*.*, если где-либо на 5.* есть таблица рисков
         if (node.number?.match(/^5\.\d+\./)) {
             if (this._hasRiskTablesAtLevel5x()) {
@@ -354,13 +358,13 @@ export class TreeContextMenu {
         }
     }
 
-    /** Добавляет опциональный пункт Process Mining (0 уровень). */
-    handleAddProcessMining() {
-        const result = AppState.addProcessMiningSection();
+    /** Добавляет в раздел 2 таблицу «Результаты оценки качества процесса». */
+    handleAddQualityAssessmentTable() {
+        const result = AppState.addQualityAssessmentTable();
         if (result.valid) {
-            this.updateTreeViews(); // полный рендер: добавлен пункт 0 уровня
+            this.updateTreeViews('2');
         } else {
-            Notifications.error(result.message || 'Не удалось добавить пункт');
+            Notifications.error(result.message || 'Не удалось добавить таблицу');
         }
     }
 
