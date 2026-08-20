@@ -21,11 +21,13 @@
 
 - `reply_to` UUID — **проставляется агентом на строке-ответе**, ссылается на
   id строки-вопроса. Поллер обнаруживает ответ именно по этому полю.
-- `status` — `pending`/`processing`/`completed`/`failed` (подтверждённая спека
-  CHECK владельца). **`in_progress` — legacy-синоним `processing`**: репозиторий
-  `AgentMessageRepository.count_active_for_user` принимает оба значения
-  (`WHERE status IN ('processing', 'in_progress')`). Новые агенты должны
-  использовать `processing`.
+- `status` — `pending`/`processing`/`completed`/`failed`/`error` (подтверждённая
+  спека CHECK владельца, NanoBot 2.3). **`in_progress` — legacy-синоним
+  `processing`**: репозиторий `AgentMessageRepository.count_active_for_user`
+  принимает оба значения (`WHERE status IN ('processing', 'in_progress')`).
+  Новые агенты должны использовать `processing`. `error` — **повторяемая**
+  ошибка (агент вернёт вопрос в пул и переобработает его, удалив свою
+  строку-ответ); терминален только `failed`. Подробнее — §3.
 - `metadata.reasoning` — стримящиеся рассуждения агента (legacy: `metadata.thinking`).
 - GP-имитация: без PK, `DISTRIBUTED BY (chat_id)`.
 
@@ -105,7 +107,7 @@ sequenceDiagram
 - **Поллер — единственный writer** в `chat_messages` для draft'а: `create_streaming`
   на старте, `finalize`/`mark_failed` по результату `poll_once`. Фронт лишь
   опрашивает готовность.
-- **Таймаут**: двухфазный — `CLAIM_TIMEOUT_SEC` (1800) пока `pending`, `ANSWER_TIMEOUT_SEC` (600) пока `processing`. Поллер вызывает
+- **Таймаут**: двухфазный — `CLAIM_TIMEOUT_SEC` (1800) пока `pending`, `ANSWER_TIMEOUT_SEC` (1800) пока `processing`. Поллер вызывает
   `mark_timeout(reason='claim'|'answer')` → draft → `failed` с error-блоком (`build_timeout_error_block`);
   вопрос в шине best-effort закрывается `status='failed'` (если CHECK владельца
   отклонит — строка останется, слот лимита освобождает двойная отсечка
@@ -165,24 +167,35 @@ sequenceDiagram
 
 ## 3. Маппинг ответа агента в блоки сообщения
 
-`map_answer_to_blocks(row, max_block_text_size)` (`agent_channel.py:95`, **модульная
-функция**, не метод сервиса) собирает список блоков из строки-ответа в порядке:
+`map_answer_to_blocks(row, max_block_text_size, media_blocks)` (**модульная
+функция** в `agent_channel.py`, не метод сервиса) собирает список блоков из
+строки-ответа в порядке:
 
 1. **reasoning** — из `metadata.reasoning`, legacy `metadata.thinking` (если есть),
    `block_id` шаблоном `{id}:reasoning:0`;
 2. **text** — `content` (обрезается до `MAX_BLOCK_TEXT_SIZE` = 262144);
 3. **buttons** — из `buttons` JSONB, `block_id` шаблоном `{id}:btn:0`;
    `_normalize_button` проставляет дефолты (`action_id` → `btn_<i>`, `label`, `params`);
-4. **media** — `image` (mime `image/*`) / `file` из `media` JSONB; одиночный объект
-   оборачивается в список.
+4. **media** — готовые блоки `image`/`file`, переданные параметром `media_blocks`
+   (при `None` — best-effort passthrough из `row["media"]` через `parse_media_items` +
+   `_entry_to_block`, без материализации).
+
+На реальном пути (`poll_once`) `media_blocks` **не** строится из сырого
+`row["media"]` — узкая проекция `get_answer_for_question` его не содержит.
+Вместо этого `poll_once` разово читает `AgentMessageRepository.get_media_by_uid`
+и прогоняет результат через `materialize_media_entries`: data-URL вложения
+сохраняются в `chat_files` (UUID вместо инлайн-base64), а `image`-блок отдаётся
+строго `{"type":"image","file_id":...,"alt":...}` — без лишних `mime_type`/
+`filename`, которых `ImageBlock` не знает. Детали — §6.3/§6.3.1
+[`chat-files-data-requirements.md`](../guides/chat-files-data-requirements.md).
 
 **Error-блока эта функция не производит.** Ошибочные исходы закрывает
 `poll_once`: `MessageRepository.mark_failed` с отдельно собранным блоком
 (`{"type": "error", "code": "agent_error", …}`), а таймауты —
-`build_timeout_error_block(reason)` (`agent_channel.py:192`).
+`build_timeout_error_block(reason)`.
 
 **Трансляция кнопок** идёт ДО маппинга: `poll_once` вызывает
-`button_translator.translate_buttons(answer["buttons"])` (`agent_channel.py:547`),
+`button_translator.translate_buttons(answer["buttons"])`,
 которая ресолвит `action_id` через реестр ChatTool и подменяет его на
 client-action (`open_url`).
 
@@ -209,10 +222,21 @@ processing` не является наблюдением работы (`observed
 Если активных запросов пользователя `>= max_parallel_streams_per_user`
 (`CHAT__MAX_PARALLEL_STREAMS_PER_USER`, default 3) — бросается `ChatLimitError`
 → HTTP 422 с дружелюбным сообщением, ни вопрос, ни draft не создаются.
-Счёт идёт с двойной отсечкой: `pending`-строки — по `created_at` (окно `CLAIM_TIMEOUT_SEC`),
-`processing`-строки — по `updated_at` (окно `ANSWER_TIMEOUT_SEC`): вопрос,
-которому не удалось записать терминальный статус (CHECK владельца шины),
-не занимает слот навсегда.
+Счёт идёт с двойной отсечкой:
+
+```sql
+WHERE user_id = $1 AND role = 'user' AND (
+    (status = 'pending' AND created_at > $2)
+    OR (status IN ('processing', 'in_progress', 'error') AND updated_at > $3)
+)
+```
+
+`pending`-строки — по `created_at` (окно `CLAIM_TIMEOUT_SEC`), `processing`
+(и legacy-синоним `in_progress`) — по `updated_at` (окно `ANSWER_TIMEOUT_SEC`).
+**`error` занимает слот наравне с `processing`** и по той же отсечке: в
+словаре NanoBot 2.3 это повторяемая ошибка — вопрос вернётся в пул и будет
+переобработан, подписка AW жива. Вопрос, которому не удалось записать
+терминальный статус (CHECK владельца шины), не занимает слот навсегда.
 
 ---
 
@@ -237,22 +261,23 @@ processing` не является наблюдением работы (`observed
 
 - POST/GET messages — `app/domains/chat/api/messages.py` (`send_message`, `get_message`)
 - AgentChannelService — `app/domains/chat/services/agent_channel.py`
-  (методы класса: `submit` `:254`, `mark_timeout` `:330`, `get_queue_details` `:403`,
-  `poll_once` `:423`; модульные функции: `map_answer_to_blocks` `:95`,
-  `build_timeout_error_block` `:192`)
+  (методы класса: `submit`, `mark_timeout`, `get_queue_details`, `poll_once`;
+  модульные функции: `map_answer_to_blocks`, `build_timeout_error_block`,
+  `materialize_media_entries`, `parse_media_items`)
 - AgentChannelPoller — `app/domains/chat/services/agent_channel_poller.py`
-  (`subscribe` `:104` / `unsubscribe` `:148` / `_tick` `:154` / `_abandon_subscription` `:280` /
-  `reconcile` `:311` / `_run` `:349` adaptive-backoff, `start` `:388` / `stop` `:398` / `get_status` `:81`)
+  (`subscribe` / `unsubscribe` / `_tick` / `_abandon_subscription` /
+  `reconcile` / `_run` adaptive-backoff, `start` / `stop` / `get_status`)
 - button_translator — `app/domains/chat/services/button_translator.py` (`translate_buttons`)
 - forward-tool (adaptive) — `app/domains/chat/services/forward_tool_factory.py`
-- bus-репозиторий — `app/domains/chat/repositories/agent_message_repository.py` (`count_active_for_user`, `get_by_uid`, `get_answer_for_question`)
+- bus-репозиторий — `app/domains/chat/repositories/agent_message_repository.py` (`count_active_for_user`, `get_by_uid`, `get_answer_for_question`, `get_media_by_uid`, `get_status_by_uid`)
 - chat_messages streaming-методы — `app/domains/chat/repositories/message_repository.py`
   (`create_streaming`/`finalize`/`mark_failed`/`get_streaming_drafts`)
-- настройки — `AgentChannelSettings` (`app/domains/chat/settings.py:22`),
+- настройки — `AgentChannelSettings` (`app/domains/chat/settings.py`),
   env-префикс `CHAT__AGENT_CHANNEL__`: `TABLE_NAME=chat_agent_messages_bus`,
   `SCHEMA_NAME=""` (пусто → схема домена чата, затем основная схема адаптера),
   `POLL_MIN_INTERVAL_SEC=2.0`, `POLL_MAX_INTERVAL_SEC=10.0`,
   `POLL_BACKOFF_MULTIPLIER=1.5`, `CLAIM_TIMEOUT_SEC=1800`, `ANSWER_TIMEOUT_SEC=1800`,
-  `MAX_BLOCK_TEXT_SIZE=262144`
+  `MAX_BLOCK_TEXT_SIZE=262144`, `MAX_MEDIA_FILE_SIZE=536870912` (512 МБ, лимит
+  материализации входящих вложений — см. §3 и `chat-files-data-requirements.md §6.3.1`)
 - фоновый хук — `chat.agent_channel_poller`
 - Frontend — `static/js/shared/chat/chat-stream.js`, `chat-messages.js`

@@ -122,7 +122,7 @@ SQL-операцию (SELECT шины, финализирующая транза
 | `TABLE_NAME` | `chat_agent_messages_bus` | Имя bus-таблицы целиком, без app-префикса (в `.env.prod` — `agent_conversation_messages`) |
 | `SCHEMA_NAME` | `""` | Схема bus-таблицы; пусто → схема чата → основная схема адаптера |
 | `CLAIM_TIMEOUT_SEC` | 1800 (30 мин) | Сколько ждать, пока агент возьмёт вопрос в работу (фаза `pending` → `processing`). После — `mark_timeout(reason='claim')` |
-| `ANSWER_TIMEOUT_SEC` | 600 (10 мин) | Сколько ждать ответ агента (фаза `processing`). После — `mark_timeout(reason='answer')`, черновик финализируется error-блоком |
+| `ANSWER_TIMEOUT_SEC` | 1800 (30 мин) | Сколько ждать ответ агента (фаза `processing`). После — `mark_timeout(reason='answer')`, черновик финализируется error-блоком |
 | `POLL_MIN_INTERVAL_SEC` | 2.0 | Минимум между SELECT'ами поллера (старт adaptive backoff) |
 | `POLL_MAX_INTERVAL_SEC` | 10.0 | Максимум после backoff'а на пустых тиках |
 | `POLL_BACKOFF_MULTIPLIER` | 1.5 | Множитель backoff'а |
@@ -151,7 +151,7 @@ Worst case: 10 минут от форварда до timeout. На практи�
 | `chat_tool_metrics` | Latency / status / username вызовов ChatTool — медленные tools, спайки validation_error |
 | `admin_http_metrics` | Latency / status HTTP-запросов — медленные эндпоинты, спайки 5xx |
 | `chat_audit_log` | Жизненный цикл бесед: created / deleted / message_sent и т.п. |
-| `chat_agent_messages_bus.status` | Распределение `pending`/`processing`/`completed`/`failed` — алёрт на залипшие |
+| `chat_agent_messages_bus.status` | Распределение `pending`/`processing`/`completed`/`failed`/`error` — алёрт на залипшие |
 
 ### 3.2. Алерты (рекомендации)
 

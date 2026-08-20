@@ -35,7 +35,7 @@
    CHAT__AGENT_CHANNEL__POLL_MIN_INTERVAL_SEC=2.0
    CHAT__AGENT_CHANNEL__POLL_MAX_INTERVAL_SEC=10.0
    CHAT__AGENT_CHANNEL__POLL_BACKOFF_MULTIPLIER=1.5
-   CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600
+   CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800
    CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800
    CHAT__AGENT_CHANNEL__MAX_BLOCK_TEXT_SIZE=262144
    ```
@@ -79,7 +79,7 @@
 Отсчёт в обеих фазах идёт от последнего **признака жизни** агента (переход `pending`→`processing`, рост `metadata.reasoning`, изменение `updated_at` строки-ответа, уменьшение числа pending-вопросов впереди), а не от создания вопроса.
 
 - **Claim-таймаут** (вопрос так и не взяли в работу): форварднуть вопрос и не трогать строку-вопрос дольше `CLAIM_TIMEOUT_SEC` (по умолчанию 1800с). Ожидаемо: error-блок «Внешний агент не взял вопрос в работу за отведённое время. Попробуйте позже.» (`build_timeout_error_block(reason='claim')`).
-- **Answer-таймаут** (взяли, но не ответили): перевести вопрос в `processing` (сценарий §5 или §9 имитации) и дальше ничего не делать дольше `ANSWER_TIMEOUT_SEC` (по умолчанию 600с). Ожидаемо: error-блок «Внешний агент не ответил вовремя. Попробуйте позже.» (`reason='answer'`).
+- **Answer-таймаут** (взяли, но не ответили): перевести вопрос в `processing` (сценарий §5 или §9 имитации) и дальше ничего не делать дольше `ANSWER_TIMEOUT_SEC` (по умолчанию 1800с). Ожидаемо: error-блок «Внешний агент не ответил вовремя. Попробуйте позже.» (`reason='answer'`).
 - В обоих случаях: черновик `chat_messages` финализируется error-блоком, `AgentChannelService.mark_timeout` best-effort ставит строке-вопросу `status='failed'`, подписка снимается.
 - Для быстрой проверки таймауты удобно временно уменьшить в `.env` (например, до 60/30 сек) — иначе ждать полчаса.
 

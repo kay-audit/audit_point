@@ -189,9 +189,9 @@ email-сервису соединение БД не нужно, а отправ�
 | **Что сломается, если изменить формат** | Фронт перестанет распознавать «уже исполненный» при reload вкладки → бесконечный redirect-цикл (action `open_url` будет каждый раз заново переходить по URL). Подробнее — [`ai-assistant.md §7.9`](../guides/ai-assistant.md#79-action-handlers-и-clientactionblock) |
 
 **`block_id` блоков из ответа внешнего агента** (форвард через шину `chat_agent_messages_bus`):
-- Формат задаётся в `map_answer_to_blocks` (`agent_channel.py:95`, модульная функция, не метод сервиса): кнопки — `f"{row['id']}:btn:0"`, reasoning — `f"{row['id']}:reasoning:0"`, где `row['id']` — uid строки-ответа в шине.
-- `map_answer_to_blocks` мапит ответ агента в блоки в порядке: reasoning (из `metadata.reasoning`, legacy `thinking`) → text → buttons → media (image/file). Error-блока эта функция **не** производит: ошибочные исходы закрывает `poll_once` через `MessageRepository.mark_failed` с отдельно собранным error-блоком.
-- Клиентские действия в этом пути не эмитятся напрямую: `action_id` кнопок транслируются в `open_url` через `button_translator.translate_buttons` (вызов — `agent_channel.py:547`, до маппинга в блоки).
+- Формат задаётся в `map_answer_to_blocks` (модульная функция в `agent_channel.py`, не метод сервиса): кнопки — `f"{row['id']}:btn:0"`, reasoning — `f"{row['id']}:reasoning:0"`, где `row['id']` — uid строки-ответа в шине.
+- `map_answer_to_blocks` мапит ответ агента в блоки в порядке: reasoning (из `metadata.reasoning`, legacy `thinking`) → text → buttons → media (image/file; готовые блоки от `materialize_media_entries`, собранные `poll_once` на финализации — см. `chat-files-data-requirements.md §6.3.1`). Error-блока эта функция **не** производит: ошибочные исходы закрывает `poll_once` через `MessageRepository.mark_failed` с отдельно собранным error-блоком.
+- Клиентские действия в этом пути не эмитятся напрямую: `action_id` кнопок транслируются в `open_url` через `button_translator.translate_buttons` (вызов — в `AgentChannelService.poll_once`, до маппинга в блоки).
 - Используется: `ClientActionsRegistry.executeBlock` дедупит исполнённые client-action по `block_id` (см. §5 выше). Стабильность формата важна, чтобы повторный поллинг GET /messages не создавал дублей кнопок.
 
 ---
@@ -290,11 +290,11 @@ SSE в чате нет. Транспорт единый для всех режи
 | `id` | UUID | uid одного сообщения шины (его же хранит `chat_messages.agent_ref`) |
 | `chat_id` | TEXT | uid треда (= `chat_messages.conversation_id`); отдельной `conversation_id` в шине НЕТ |
 | `user_id` | TEXT | автор |
-| `role` | TEXT | `user`/`assistant`/`system` (CHECK владельца); `system` приложением не обрабатывается |
+| `role` | TEXT | `user`/`assistant`/`system`/`tool` (CHECK владельца); `system`/`tool` приложением не обрабатываются (`tool` — служебные сообщения цикла агента) |
 | `content` | TEXT | текст (NOT NULL) |
 | `media`, `metadata`, `buttons` | JSONB | вложения, служебные данные (`metadata.reasoning` → reasoning, legacy `thinking`), кнопки |
 | `reply_to` | UUID | ссылка на id вопроса; агент проставляет его **на строке-ответе** — сигнал «ответ готов» |
-| `status` | TEXT | `pending`/`processing`/`completed`/`failed` (CHECK владельца, подтверждённая спека) — записи статуса от AW best-effort |
+| `status` | TEXT | `pending`/`processing`/`completed`/`failed`/`error` (CHECK владельца, NanoBot 2.3) — записи статуса от AW best-effort. `error` — повторяемая ошибка (агент переобрабатывает вопрос, удалив строку-ответ); терминален только `failed` |
 | `created_at`, `updated_at` | TIMESTAMPTZ | NOT NULL; у владельца есть DEFAULT'ы, но AW не полагается и передаёт явно |
 
 **GP**: без PK (у владельца `id` nullable), `WITH (appendonly=false) DISTRIBUTED BY (chat_id)`

@@ -41,7 +41,10 @@
 --    • media           = JSONB: [{file_id, filename, mime_type, file_size}];
 --                        file_id — либо id строки в chat_files, либо инлайн
 --                        data-URL `data:<mime>;base64,<...>` (так отдаёт
---                        nanobot); filename необязателен, см. сценарий 3
+--                        nanobot); data-URL AW материализует в chat_files на
+--                        финализации ответа (лимит
+--                        CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE, дефолт
+--                        512 МБ); filename рекомендован явным — см. сценарий 3
 --    • status          = pending | processing | completed | error | failed
 --                        (словарь NanoBot 2.3; 'timeout' ЗАПРЕЩЁН — записи
 --                        статуса от AW best-effort). 'error' — ПОВТОРЯЕМАЯ
@@ -256,22 +259,17 @@ END$$;
 --      иначе GET /api/v1/chat/files/{file_id} вернёт 404. Вариант для файлов,
 --      которые агент действительно кладёт в хранилище (блок ниже).
 --   Б. инлайн data-URL `data:<mime>;base64,<payload>` — так отдаёт файлы
---      nanobot. В chat_files ничего не пишется, AW подставляет data-URL в
---      href/src напрямую и в files-эндпоинт не ходит (вариант 3Б в конце
+--      nanobot. AW материализует его в chat_files на финализации ответа
+--      (см. materialize_media_entries): в блок чата уходит UUID из chat_files,
+--      история беседы data-URL'ами не раздувается (вариант 3Б в конце
 --      раздела).
 --
--- filename НЕобязателен. Если его нет, AW восстанавливает имя по цепочке:
--- имя файла, упомянутое в тексте ответа (сопоставление с media по порядку
--- следования) → mime_type → mime из самого data-URL → «Файл» без расширения.
---
--- ВНИМАНИЕ, два ограничения распознавания имени из текста:
---   • только ЛАТИНИЦА и цифры — регулярка построена на \w без флага `u`,
---     кириллическое «отчёт.txt» в тексте НЕ распознаётся;
---   • работает только для истории (перезагрузка страницы). В живом ответе
---     блоки печатаются через typeOutBlocks/typeOutSingleBlock, куда подсказка
---     имени не передаётся — там имя берётся сразу из mime_type.
--- Практический вывод для агента: если имя важно (особенно кириллическое) —
--- передавай filename в media явно, не рассчитывай на текст.
+-- filename рекомендован явным. Если его нет/пустой/"."/".." — AW синтезирует
+-- «file_<idx><ext>», где ext подобран по mime_type (mimetypes.guess_extension);
+-- никакого распознавания имени из текста ответа не происходит — это
+-- единственный фолбэк. MIME входящих файлов агента whitelist'ом не
+-- ограничивается (в отличие от аплоада через UI): скачивание в любом случае
+-- отдаётся как application/octet-stream + X-Content-Type-Options: nosniff.
 --
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 -- Блок сам заливает реально скачиваемый TXT-файл в chat_files и связывает его
@@ -332,10 +330,12 @@ END$$;
 
 -- ── 3Б. Тот же сценарий, но файл инлайном в data-URL (формат nanobot) ───────
 --
--- Ничего не пишется в chat_files: содержимое едет прямо в file_id. Здесь же
--- проверяется восстановление имени — filename в media НЕ передан, имя
--- «report.txt» AW возьмёт из текста ответа. Имя латиницей намеренно: см.
--- ограничения распознавания выше.
+-- Содержимое едет прямо в file_id (data-URL). AW материализует его в
+-- chat_files на финализации ответа (materialize_media_entries) —
+-- content-блок уходит в БД уже с UUID, а не с инлайн-base64. filename
+-- передан явно ('report.txt') — рекомендуемый способ; без него AW
+-- синтезировал бы «file_0.txt» по mime_type (никакого распознавания имени
+-- из текста ответа не происходит, см. пояснение к сценарию 3 выше).
 -- Замени ТОЛЬКО <QUESTION_ID>.
 
 DO $$
@@ -344,9 +344,10 @@ DECLARE
     a_id     uuid := md5(random()::text || clock_timestamp()::text)::uuid;
     -- Без пробела после ';' — data-URL не допускает пробелов в заголовке.
     f_mime   text := 'text/plain;charset=utf-8';
+    f_name   text := 'report.txt';
     f_body   bytea := convert_to(
                   'Сводный отчёт по КМ-12-32141.' || E'\n' ||
-                  'Файл доставлен инлайном, без chat_files.', 'UTF8');
+                  'Файл доставлен инлайном, материализуется в chat_files при финализации.', 'UTF8');
     v_chat   text;
     v_user   text;
 BEGIN
@@ -358,13 +359,14 @@ BEGIN
         (id, chat_id, user_id, role,
          content, media, reply_to, status, created_at, updated_at)
     VALUES (a_id, v_chat, v_user, 'assistant',
-            'Сформировал отчёт, прикладываю report.txt:',
+            'Сформировал отчёт, прикладываю ' || f_name || ':',
             jsonb_build_array(
                 jsonb_build_object(
                     -- replace(): encode() в PG переносит строку каждые 76
                     -- символов, в data-URL переносы не нужны
                     'file_id',   'data:' || f_mime || ';base64,'
                                  || replace(encode(f_body, 'base64'), E'\n', ''),
+                    'filename',  f_name,
                     'mime_type', f_mime,
                     'file_size', octet_length(f_body)
                 )
@@ -377,9 +379,11 @@ BEGIN
     WHERE id = q_id;
 END$$;
 
--- Проверка в UI: иконка текстового документа, «Скачать» отдаёт файл без
--- обращения к /api/v1/chat/files/. Имя карточки: в живом ответе «file.txt»
--- (из mime_type), после перезагрузки страницы — «report.txt» (из текста).
+-- Проверка в UI: иконка текстового документа, имя «report.txt», «Скачать»
+-- уходит через GET /api/v1/chat/files/{file_id} — на finalize AW уже
+-- материализовал data-URL в chat_files.
+-- SELECT filename, mime_type, file_size FROM t_db_oarb_audit_act_chat_files
+-- ORDER BY created_at DESC LIMIT 1;  -- проверить материализованную запись
 
 
 -- ────────────────────────────────────────────────────────────────────────────

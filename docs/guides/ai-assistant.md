@@ -639,7 +639,7 @@ chat-modal.js (portal) / chat-popup.js (constructor)
 3. POST отдаёт `{message_id}`. Фронт поллит `GET /messages/{message_id}` до терминального статуса.
 4. Фоновый `AgentChannelPoller` поллит шину; на каждый тик вызывает `AgentChannelService.poll_once(*, assistant_message_id, question_uid, last_reasoning_len, want_queue_position)` → `dict {outcome, question_status, answer_exists, reasoning_len, queue_ahead, answer_updated_at}`. При росте `metadata.reasoning` без финального ответа — `poll_once` делает `upsert_block` (replace-семантика, block_id `{answer_id}:reasoning:0`) для инкрементального дозаполнения черновика. При наличии финального ответа агента — `map_answer_to_blocks`, финализация черновика (`status='complete'`), best-effort закрытие вопроса в шине (`_set_status_safe(..., 'completed'|'failed')` — словарь владельца; CheckViolation глотается с warning'ом). По истечении idle-таймаута (claim или answer) — `mark_timeout(reason='claim'|'answer')` (draft → `failed`; error-блок с кодом `agent_claim_timeout` или `agent_timeout`).
 
-**Bus-таблица `chat_agent_messages_bus`** — структуру задаёт и таблицей владеет сторона внешнего агента. Отдельной колонки `conversation_id` в шине НЕТ; связь: `chat_id = chat_messages.conversation_id`. `role` CHECK: `user`/`assistant`/`system` (не `tool`). `status` CHECK: `pending`/`processing`/`completed`/`failed` (не `in_progress`/`complete`/`error`/`timeout`). Полная структура и детали транспорта — **§11.5–§11.7**.
+**Bus-таблица `chat_agent_messages_bus`** — структуру задаёт и таблицей владеет сторона внешнего агента. Отдельной колонки `conversation_id` в шине НЕТ; связь: `chat_id = chat_messages.conversation_id`. `role` CHECK: `user`/`assistant`/`system`/`tool` (`tool` — служебные сообщения цикла агента, приложением не обрабатывается). `status` CHECK: `pending`/`processing`/`completed`/`failed`/`error` (не `in_progress`/`complete`/`timeout`; `error` — повторяемая ошибка NanoBot 2.3, терминален только `failed`). Полная структура и детали транспорта — **§11.5–§11.7**.
 
 **Архитектурные ограничения:**
 
@@ -650,7 +650,7 @@ chat-modal.js (portal) / chat-popup.js (constructor)
 - **Retention** — задача администратора (в приложении НЕ реализован).
 
 **Ключевые модули:**
-- `app/domains/chat/services/agent_channel.py` — `AgentChannelService` (`submit`, `poll_once`, `mark_timeout`, `get_queue_details`); `map_answer_to_blocks` (порядок: reasoning из `metadata.reasoning` (legacy `thinking`) → text → buttons (block_id `{id}:btn:0`) → media image/file), `build_timeout_error_block`.
+- `app/domains/chat/services/agent_channel.py` — `AgentChannelService` (`submit`, `poll_once`, `mark_timeout`, `get_queue_details`); `map_answer_to_blocks` (порядок: reasoning из `metadata.reasoning` (legacy `thinking`) → text → buttons (block_id `{id}:btn:0`) → media image/file), `build_timeout_error_block`, `materialize_media_entries`/`parse_media_items` (входящие data-URL вложения → `chat_files`, разово на финализации — §6.3.1 `chat-files-data-requirements.md`).
 - `app/domains/chat/services/agent_channel_poller.py` — `AgentChannelPoller` (`subscribe`/`unsubscribe`/`_tick`/`_run` с adaptive-backoff без удержания conn/`reconcile`/`start`/`stop`/`get_status`).
 - `app/domains/chat/services/button_translator.py` — `translate_buttons`: кнопка с `action_id` зарегистрированного `ChatTool` → client-action `open_url`.
 - `app/domains/chat/services/forward_tool_factory.py` — `build_forward_tool_descriptor()`: статический ChatTool `chat.forward_to_knowledge_agent` для режима `adaptive` (LLM может его вызвать).
@@ -666,7 +666,7 @@ chat-modal.js (portal) / chat-popup.js (constructor)
 
 - В чате тишина после вопроса → нет вопроса в `chat_agent_messages_bus` ⇒ форвард не произошёл (тумблер «База знаний ОАРБ» = Выключен, либо `adaptive` и LLM не вызвал forward-tool, либо tool не зарегистрирован для домена).
 - Ответ не появляется → проверь, что `AgentChannelPoller` стартовал (`chat.agent_channel_poller` hook в логах startup) и подписка прошла. Параметры цикла — `CHAT__AGENT_CHANNEL__POLL_MIN_INTERVAL_SEC` / `POLL_MAX_INTERVAL_SEC` / `POLL_BACKOFF_MULTIPLIER`.
-- Сообщение «зависло» в статусе `streaming` — idle-таймауты двухфазные: `CLAIM_TIMEOUT_SEC` (1800 с) пока агент не взял вопрос (`pending`), затем `ANSWER_TIMEOUT_SEC` (600 с) пока не пришёл ответ (`processing`); по истечении `mark_timeout` переведёт в `failed` с error-блоком.
+- Сообщение «зависло» в статусе `streaming` — idle-таймауты двухфазные: `CLAIM_TIMEOUT_SEC` (1800 с) пока агент не взял вопрос (`pending`), затем `ANSWER_TIMEOUT_SEC` (1800 с) пока не пришёл ответ (`processing`); по истечении `mark_timeout` переведёт в `failed` с error-блоком.
 - HTTP 422 при отправке → достигнут `CHAT__MAX_PARALLEL_STREAMS_PER_USER` активных запросов пользователя.
 
 #### 7.8a Button Translator
@@ -957,13 +957,13 @@ class ToolCallAccumulator:
 | `id` | UUID | uid одного сообщения шины (его же хранит `chat_messages.agent_ref`). PK в имитации нет **ни на PG, ни на GP** — только `CREATE INDEX idx_{BUS_TABLE}_id`; на GP дополнительно `DISTRIBUTED BY (chat_id)` |
 | `chat_id` | TEXT | uid треда (= `chat_messages.conversation_id`) |
 | `user_id` | TEXT | автор |
-| `role` | TEXT | `user` / `assistant` / `system` (CHECK владельца). Роль `system` приложением не обрабатывается |
+| `role` | TEXT | `user` / `assistant` / `system` / `tool` (CHECK владельца). Роли `system`/`tool` приложением не обрабатываются (`tool` — служебные сообщения цикла агента) |
 | `content` | TEXT | текст сообщения (NOT NULL) |
 | `media` | JSONB | вложения (image/file) |
 | `metadata` | JSONB | служебные поля; `metadata.reasoning` → reasoning-блок (агент стримит туда дельты; legacy-ключ `thinking` тоже понимается) |
 | `reply_to` | UUID | ссылка на id вопроса; агент проставляет его **на строке-ответе** — наличие ответа с `reply_to=<id вопроса>` и есть сигнал «ответ готов» |
 | `buttons` | JSONB | кнопки (`action_id` → client-action) |
-| `status` | TEXT | `pending` / `processing` / `completed` / `failed` (CHECK владельца, подтверждённая спека; `timeout`/`error`/`complete` запрещены) |
+| `status` | TEXT | `pending` / `processing` / `completed` / `failed` / `error` (CHECK владельца, NanoBot 2.3; `timeout`/`complete` запрещены). `error` — повторяемая ошибка (агент удаляет строку-ответ и переобрабатывает вопрос); терминален только `failed` |
 | `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL; DEFAULT'ов нет — AW передаёт явно в INSERT/UPDATE |
 
 Связь чат → шина: ассистент-черновик в `chat_messages` хранит колонку `agent_ref VARCHAR(36)` — id вопроса в `chat_agent_messages_bus`. По нему `AgentChannelPoller`/`poll_once` находят ответ (обратный lookup `get_answer_for_question`: `reply_to = <id вопроса> AND role='assistant'`) и финализируют черновик. `AgentMessageRepository._parse_row` нормализует uuid-значения `id`/`reply_to` в `str` — остальной код работает со строками.
@@ -973,9 +973,9 @@ class ToolCallAccumulator:
 1. `reasoning` — из `metadata.reasoning`, legacy `metadata.thinking` (block_id `f"{id}:reasoning:0"`);
 2. `text` — из `content`;
 3. `buttons` — из `buttons` (block_id `f"{id}:btn:0"`, у каждой кнопки проставляются дефолты `action_id`/`label`/`params`);
-4. `media` — image/file из `media` (одиночный объект оборачивается в список; `mime_type` с `image/` → `image`-блок, остальное → `file`).
+4. `media` — готовые блоки `image`/`file`, переданные параметром `media_blocks` (best-effort passthrough из `media` через `parse_media_items`, если `media_blocks is None`). На реальном пути `poll_once` строит `media_blocks` сам: разово читает `media` через `AgentMessageRepository.get_media_by_uid` (узкая проекция `get_answer_for_question` эту колонку не содержит) и прогоняет через `materialize_media_entries` — data-URL вложения сохраняются в `chat_files` (UUID вместо инлайн-base64), `image`-блок отдаётся строго `{"type":"image","file_id":...,"alt":...}` без лишних полей. Подробности — `chat-files-data-requirements.md §6.3/§6.3.1`.
 
-Ветки «ошибка» внутри `map_answer_to_blocks` нет: error-блоки дописывает `poll_once` (`code="agent_error"` — агент закрыл вопрос/ответ статусом `failed`) и `mark_timeout` (`agent_claim_timeout` / `agent_timeout`).
+Ветки «ошибка» внутри `map_answer_to_blocks` нет: error-блоки дописывает `poll_once` (`code="agent_error"` — агент закрыл вопрос/ответ статусом `failed`) и `mark_timeout` (`agent_claim_timeout` / `agent_timeout`). Статус `error` (повторяемая ошибка, не терминальная) `map_answer_to_blocks` не касается — `poll_once` при отсутствии строки-ответа и `status='error'` просто ждёт следующего тика.
 
 Текст блока `reasoning`/`text` обрезается до `CHAT__AGENT_CHANNEL__MAX_BLOCK_TEXT_SIZE` UTF-8 байт (default 262144 = 256 KB, срез по границе code-point) с маркером `…[обрезано]` и WARNING-логом — защита от malicious / broken агента.
 
@@ -1002,7 +1002,7 @@ class ToolCallAccumulator:
 | Фаза | Признаки жизни (обновляют `last_activity`) | Idle-лимит |
 |---|---|---|
 | `pending` | переход в `processing`, уменьшение `queue_ahead`, рост `reasoning_len`, изменение `answer_updated_at` | `CLAIM_TIMEOUT_SEC` (1800 сек) |
-| `processing` | рост `reasoning_len`, изменение `answer_updated_at` | `ANSWER_TIMEOUT_SEC` (600 сек) |
+| `processing` | рост `reasoning_len`, изменение `answer_updated_at`, reclaim в `pending` (не более 3 эпизодов подряд) | `ANSWER_TIMEOUT_SEC` (1800 сек) |
 
 Первое наблюдение `answer_updated_at` ставится как baseline (без продления активности). Откат строки шины назад (агент сбросил `updated_at`) **не** продлевает таймаут — смена только вперёд.
 

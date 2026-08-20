@@ -40,7 +40,7 @@ PK `(message_id, user_id)`, `conversation_id`, `rating` (`up`/`down`), `reasons`
 `id`, `tool_name` (каноническое имя, с точкой), `status` (`success`/`error`/`validation_error`), `latency_ms`, `username`, `conversation_id`, `error_message`, `created_at`.
 
 **`agent_conversation_messages`** (шина) — обмен с внешним агентом:
-`id` (uid сообщения), `chat_id` (тред), `user_id`, `role`, `content`, `media`/`buttons`/`metadata` (JSONB), `reply_to` (на ответе → id вопроса), `status` (`pending`/`processing`/`completed`/`failed`), `created_at`, `updated_at`.
+`id` (uid сообщения), `chat_id` (тред), `user_id`, `role`, `content`, `media`/`buttons`/`metadata` (JSONB), `reply_to` (на ответе → id вопроса), `status` (`pending`/`processing`/`completed`/`failed`/`error`), `created_at`, `updated_at`.
 
 **Как связать:**
 - Ответ → его оценки: `chat_message_feedback.message_id = chat_messages.id`.
