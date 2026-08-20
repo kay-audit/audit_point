@@ -127,7 +127,7 @@ export const AppState = {
 
         // Таблица для раздела 2 создается ТОЛЬКО для процессной проверки
         if (node2 && isProcessBased) {
-            this._createTableFromPreset('2', presets.qualityAssessment, '', true, false);
+            this._createQualityAssessmentTable();
         }
 
         if (node3) {
@@ -136,6 +136,41 @@ export const AppState = {
             this._createTableFromPreset('3', presets.dataSources, presets.dataSources.label, true, false);
             this._createTableFromPreset('3', presets.repositories, presets.repositories.label, true, false);
         }
+    },
+
+    /**
+     * Создаёт в разделе 2 таблицу «Результаты оценки качества процесса».
+     *
+     * Общий код для автосоздания при инициализации процессного акта и для
+     * пункта контекстного меню (AppState.addQualityAssessmentTable).
+     * Таблица protected (нельзя таскать/переименовывать), но deletable —
+     * ЯВНО true, иначе гейт state-tree.js::deleteNode отобьёт удаление.
+     * Маркер special отличает её от произвольной пользовательской таблицы;
+     * kind не заводится сознательно — любой kind !== 'regular' закрепил бы
+     * таблицу вверху children со всеми правилами pinned-таблиц.
+     *
+     * @private
+     * @returns {Object|null} Созданный узел таблицы или null, если создать не удалось
+     */
+    _createQualityAssessmentTable() {
+        const preset = AppConfig?.content?.tablePresets?.qualityAssessment;
+        const node2 = this.findNodeById('2');
+        if (!preset || !node2) {
+            return null;
+        }
+
+        const result = this._createTableFromPreset('2', preset, preset.label, true, true);
+        if (!result.valid) {
+            return null;
+        }
+
+        // _createSimpleTable добавляет узел в конец children; переносим в начало —
+        // таблица задумана как вводная для раздела 2.
+        const tableNode = node2.children.pop();
+        tableNode.special = 'quality_assessment';
+        node2.children.unshift(tableNode);
+
+        return tableNode;
     },
 
     /**

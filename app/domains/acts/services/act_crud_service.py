@@ -82,6 +82,7 @@ class ActCrudService:
         "rows": 2,
         "cols": 4,
         "col_widths": [150, 200, 150, 100],
+        "label": "Результаты оценки качества процесса",
     }
 
     # -------------------------------------------------------------------------
@@ -182,16 +183,20 @@ class ActCrudService:
         table_id = f"table_{uuid.uuid4().hex[:12]}"
         node_id = f"{parent_id}_qa_{table_id}"
 
-        # Узел дерева (формат совпадает с state-core.js _createTableNode)
+        # Узел дерева (формат совпадает с state-core.js _createTableNode).
+        # protected — нельзя таскать/переименовывать; deletable ЯВНО True —
+        # таблицу разрешено удалить вручную и пересоздать из контекстного меню.
+        # special отличает её от произвольной пользовательской таблицы.
         tree_node = {
             "id": node_id,
-            "label": "Таблица",
+            "label": preset["label"],
             "type": "table",
             "tableId": table_id,
             "parentId": parent_id,
             "protected": True,
-            "deletable": False,
-            "customLabel": "",
+            "deletable": True,
+            "customLabel": preset["label"],
+            "special": "quality_assessment",
         }
 
         # Grid: 2D массив ячеек (формат совпадает с state-core.js _createTableGrid)
@@ -223,7 +228,7 @@ class ActCrudService:
             "grid": grid,
             "col_widths": preset["col_widths"],
             "protected": True,
-            "deletable": False,
+            "deletable": True,
         }
 
         return tree_node, table_data

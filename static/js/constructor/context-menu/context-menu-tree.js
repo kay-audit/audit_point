@@ -70,6 +70,18 @@ export class TreeContextMenu {
             item.classList.toggle('disabled', !allowed);
         }
 
+        // Таблицу «Результаты оценки качества процесса» показываем только на
+        // разделе 2 процессного акта — в непроцессном её не должно быть вовсе.
+        // Уже созданную не даём создать повторно (маркер special на узле).
+        const qaItem = this.menu.querySelector('[data-action="add-quality-assessment-table"]');
+        if (qaItem) {
+            const showQa = node.id === '2'
+                && window.actMetadata?.is_process_based !== false;
+            qaItem.style.display = showQa ? '' : 'none';
+            const qaExists = node.children?.some(c => c.special === 'quality_assessment');
+            qaItem.classList.toggle('disabled', !!qaExists);
+        }
+
         // Показываем "Приложить фактуру" только для leaf-узлов раздела 5
         const attachInvoiceItem = this.menu.querySelector('[data-action="attach-invoice"]');
         const attachInvoiceSeparator = this.menu.querySelector('[data-action="attach-invoice-separator"]');
@@ -271,6 +283,9 @@ export class TreeContextMenu {
             case 'add-regular-table':
                 this.handleAddTable(node, nodeId, 'regular');
                 break;
+            case 'add-quality-assessment-table':
+                this.handleAddQualityAssessmentTable();
+                break;
             case 'add-regular-risk-table':
                 return this._handleRiskTableAction(node, nodeId, 'regular', 'regular-risk');
             case 'add-operational-risk-table':
@@ -361,6 +376,16 @@ export class TreeContextMenu {
             this.updateTreeViews(); // полный рендер: добавлен пункт 0 уровня
         } else {
             Notifications.error(result.message || 'Не удалось добавить пункт');
+        }
+    }
+
+    /** Добавляет в раздел 2 таблицу «Результаты оценки качества процесса». */
+    handleAddQualityAssessmentTable() {
+        const result = AppState.addQualityAssessmentTable();
+        if (result.valid) {
+            this.updateTreeViews('2');
+        } else {
+            Notifications.error(result.message || 'Не удалось добавить таблицу');
         }
     }
 
