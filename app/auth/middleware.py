@@ -20,6 +20,40 @@ ACCESS_TOKEN_COOKIE = "access_token"
 REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
+def resolve_scope_username(scope) -> str | None:
+    """Достаёт username из JWT-cookie ASGI-запроса, не пропуская его через Auth.
+
+    Нужна тем middleware, что стоят СНАРУЖИ ``AuthMiddleware`` и потому не
+    видят ``scope["state"]["user"]`` — сейчас это лимитер частоты запросов.
+    Возвращает ``None`` для анонима, для битых/просроченных токенов и когда
+    авторизация выключена (``AUTH__ENABLED=false``): вызывающий сам решает,
+    на что откатиться.
+
+    Проверяется и refresh-токен: ``AuthMiddleware`` умеет прозрачно ротировать
+    пару, так что пользователь с живым refresh — не аноним, и терять его
+    идентичность на этом шаге нельзя.
+
+    Подпись токена проверяется полностью (``decode_token``): доверять
+    неверифицированному payload нельзя — иначе ключ лимита подделывается
+    подстановкой произвольной cookie.
+    """
+    cookies = Request(scope).cookies
+
+    access_token = cookies.get(ACCESS_TOKEN_COOKIE)
+    if access_token:
+        payload = JWTTokenHandler.decode_token(access_token)
+        if payload and payload.token_type == "access":
+            return payload.sub
+
+    refresh_token = cookies.get(REFRESH_TOKEN_COOKIE)
+    if refresh_token:
+        payload = JWTTokenHandler.decode_token(refresh_token)
+        if payload and payload.token_type == "refresh":
+            return payload.sub
+
+    return None
+
+
 def set_auth_cookies(
     response: Response,
     access_token: str,
