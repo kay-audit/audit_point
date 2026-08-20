@@ -14,7 +14,7 @@ import { AppState, _unwrap } from '../state/state-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { invalidateTableWarningsCache, getCachedTableWarnings } from '../header/notifications-source-tables.js';
 import { PreviewFitScaler } from './preview-fit.js';
-import { shouldShowTableTitle, tableTitleText } from '../table/table-title.js';
+import { shouldShowTableTitle, tableTitleText, tableTitleUnderlined } from '../table/table-title.js';
 
 export class PreviewManager {
     /**
@@ -390,13 +390,18 @@ export class PreviewManager {
      * @param {Object} node - Узел дерева для рендеринга
      * @param {HTMLElement} container - Контейнер для вставки элементов
      * @param {number} level - Уровень вложенности для размера заголовков
+     * @param {string|null} [rootSectionId=null] - ID раздела верхнего уровня,
+     *   в поддереве которого идёт рендер (null на корне — раздел открывает
+     *   сам ребёнок). Нужен правилу оформления подписи таблиц.
      */
-    static renderNode(node, container, level) {
+    static renderNode(node, container, level, rootSectionId = null) {
         if (!node.children) return;
 
         node.children.forEach(child => {
             const renderer = this._getRenderer(child.type);
-            renderer.call(this, child, container, level);
+            // Дети корня — разделы верхнего уровня: каждый открывает свой
+            // раздел, который наследует всё его поддерево.
+            renderer.call(this, child, container, level, rootSectionId ?? child.id);
         });
     }
 
@@ -420,12 +425,16 @@ export class PreviewManager {
      * Рендерит узел таблицы
      * @private
      */
-    static _renderTableNode(child, container, level) {
+    static _renderTableNode(child, container, level, rootSectionId = null) {
         // Единый с DOM-рендерером и DOCX предикат показа заголовка (render-8).
         if (shouldShowTableTitle(child)) {
             const tableTitle = document.createElement('h4');
             tableTitle.textContent = tableTitleText(child);
-            tableTitle.className = 'preview-table-title';
+            // Оформление — единое правило проекта (table-title.js), само
+            // оформление в CSS: модификатор включает подчёркивание.
+            tableTitle.className = tableTitleUnderlined(child, rootSectionId)
+                ? 'preview-table-title preview-table-title--underline'
+                : 'preview-table-title';
             container.appendChild(tableTitle);
         }
 
@@ -470,13 +479,13 @@ export class PreviewManager {
      * Рендерит обычный узел-пункт
      * @private
      */
-    static _renderItemNode(child, container, level) {
+    static _renderItemNode(child, container, level, rootSectionId = null) {
         this._renderHeading(child, container, level);
         this._renderContent(child, container);
 
         // Рекурсивная обработка дочерних элементов
         if (child.children?.length > 0) {
-            this.renderNode(child, container, level + 1);
+            this.renderNode(child, container, level + 1, rootSectionId);
         }
     }
 

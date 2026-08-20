@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.domains.acts.block_types import NODE_TYPE_TABLE
 from app.domains.acts.settings import ActsSettings
 from .base_formatter import BaseFormatter
+from .table_title import table_title_underlined
 from .tree_walker import WalkContext, collect_blocks, walk
 from .utils import HTMLUtils, TableUtils
 from .violation_render import format_violation, wrap_plain
@@ -245,12 +246,16 @@ class _TextTreeVisitor:
     def on_table(self, node: dict, schema: dict | None, ctx: WalkContext) -> None:
         indent = self._indent(ctx.depth)
         if node.get('type') == NODE_TYPE_TABLE:
-            # Заголовок узла-таблицы с подчёркиванием (выводится и без данных);
-            # прикреплённой к пункту таблице заголовком служит сам пункт.
+            # Заголовок узла-таблицы (выводится и без данных); прикреплённой к
+            # пункту таблице заголовком служит сам пункт. Строка дефисов —
+            # ASCII-аналог подчёркивания, поэтому появляется ровно по общему
+            # правилу оформления подписи (table_title.py): только у пресетной
+            # таблицы разделов 1–4.
             title = node.get('customLabel') or node.get('number') or node.get('label', '')
             if title:
                 self.lines.append(f"{indent}{title}")
-                self.lines.append(f"{indent}{'-' * len(title)}")
+                if table_title_underlined(node, ctx.root_section_id):
+                    self.lines.append(f"{indent}{'-' * len(title)}")
         if schema is not None:
             self.lines.append(self._fmt._format_table(schema, ctx.depth))
             self.lines.append("")

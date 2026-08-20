@@ -57,10 +57,19 @@ def _resolve_max_depth() -> int:
 
 @dataclass(frozen=True)
 class WalkContext:
-    """Контекст текущего узла: глубина (0 — дети корня) и родитель."""
+    """Контекст текущего узла: глубина (0 — дети корня), родитель и раздел.
+
+    ``root_section_id`` — id раздела верхнего уровня, в поддереве которого
+    лежит узел (у самого раздела — его собственный id). Нужен правилам,
+    сформулированным по разделам (оформление подписи таблицы, см.
+    ``table_title.py``): одно поле обслуживает все три форматтера. Дефолт
+    None — «раздел неизвестен», чтобы существующие конструкции WalkContext
+    оставались валидными.
+    """
 
     depth: int
     parent: Mapping[str, Any] | None
+    root_section_id: str | None = None
 
 
 class TreeVisitor(Protocol):
@@ -125,7 +134,13 @@ def walk(
     if max_depth is None:
         max_depth = _resolve_max_depth()
     for child in (tree or {}).get("children", []):
-        _walk_node(child, visitor, blocks, depth=0, parent=tree, max_depth=max_depth)
+        # Дети корня — разделы верхнего уровня: каждый открывает свой
+        # root_section_id, который наследует всё его поддерево.
+        _walk_node(
+            child, visitor, blocks,
+            depth=0, parent=tree, max_depth=max_depth,
+            root_section_id=child.get("id"),
+        )
 
 
 def _walk_node(
@@ -136,6 +151,7 @@ def _walk_node(
     depth: int,
     parent: Mapping[str, Any],
     max_depth: int,
+    root_section_id: str | None = None,
 ) -> None:
     """Посещает узел, диспетчит его по типу и рекурсивно обходит детей."""
     if depth > max_depth:
@@ -145,7 +161,7 @@ def _walk_node(
         )
         return
     node_type = node.get("type", "item")
-    ctx = WalkContext(depth=depth, parent=parent)
+    ctx = WalkContext(depth=depth, parent=parent, root_section_id=root_section_id)
     is_leaf_block = node_type in LEAF_BLOCK_REFS
 
     if is_leaf_block:
@@ -166,7 +182,11 @@ def _walk_node(
                 visitor.on_table(node, attached, ctx)
 
     for child in node.get("children", []):
-        _walk_node(child, visitor, blocks, depth=depth + 1, parent=node, max_depth=max_depth)
+        _walk_node(
+            child, visitor, blocks,
+            depth=depth + 1, parent=node, max_depth=max_depth,
+            root_section_id=root_section_id,
+        )
 
     if not is_leaf_block:
         visitor.on_item_exit(node, ctx)

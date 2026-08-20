@@ -71,16 +71,6 @@ ALLOWED_UI_TOKEN_FONT_SIZES = {
     ),
     (
         "constructor/preview/preview-table.css",
-        ".preview-table-title",
-    ): (
-        "Название таблицы. На inline-панели правило задавлено более специфичным "
-        "`.preview h4` (preview-typography.css), в диалоге версий класс вообще "
-        "не используется — живым остаётся только модальное меню предпросмотра "
-        "(#previewMenuBody, класса .preview у него нет). Подписи "
-        "таблиц/картинок разбираются отдельным пакетом работ."
-    ),
-    (
-        "constructor/preview/preview-table.css",
         ".preview-table-caption",
     ): (
         "Мёртвое правило: элемент <caption class=\"preview-table-caption\"> "

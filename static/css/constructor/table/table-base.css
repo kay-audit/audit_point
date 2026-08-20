@@ -26,6 +26,21 @@
     line-height: var(--line-height-tight);
 }
 
+/* Подпись таблицы в области заполнения (<h4 class="table-title">).
+   Оформление — единое правило проекта (static/js/constructor/table/
+   table-title.js::tableTitleUnderlined): начертание всегда обычное (h4 по
+   умолчанию жирный, поэтому вес задан явно), подчёркивание — только у
+   пресетных таблиц разделов 1–4, его включает модификатор. Раньше и то и
+   другое ставилось инлайн-стилем из JS безусловно, из-за чего подчёркнутыми
+   были все подписи. */
+.table-title {
+    font-weight: var(--font-weight-normal);
+}
+
+.table-title--underline {
+    text-decoration: underline;
+}
+
 /* Основная таблица с фиксированной разметкой */
 .editable-table {
     width: 100%;

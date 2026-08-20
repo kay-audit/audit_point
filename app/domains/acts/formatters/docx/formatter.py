@@ -19,6 +19,7 @@ from app.domains.acts.formatters.docx.builders.tables import build_table
 from app.domains.acts.formatters.docx.builders.violation import build_violation
 from app.domains.acts.formatters.docx.context import ExportContext
 from app.domains.acts.formatters.docx.numbering import apply_numbering, ensure_rubricator
+from app.domains.acts.formatters.table_title import table_title_underlined
 from app.domains.acts.formatters.tree_walker import WalkContext, collect_blocks, walk
 from app.domains.acts.formatters.docx.styles import (
     Fonts,
@@ -120,8 +121,12 @@ class DocxFormatter:
             default_alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
         )
 
-    def _add_table_title(self, doc, node) -> None:
-        """Заголовок таблицы: жирная подпись без нумерации (таблица — не пункт)."""
+    def _add_table_title(self, doc, node, *, underlined: bool = False) -> None:
+        """Заголовок таблицы: подпись без нумерации (таблица — не пункт).
+
+        Оформление — единое правило проекта (``table_title.py``): начертание
+        всегда обычное, подчёркивание только у пресетных таблиц разделов 1–4.
+        """
         title = node.get("customLabel") or node.get("label", "")
         if not title:
             return
@@ -134,7 +139,8 @@ class DocxFormatter:
         run = para.add_run(title)
         run.font.name = Fonts.main
         run.font.size = Pt(Sizes.body_pt)
-        run.bold = True
+        if underlined:
+            run.underline = True
 
 
 class _DocxTreeVisitor:
@@ -170,7 +176,10 @@ class _DocxTreeVisitor:
         if node.get("type") == NODE_TYPE_TABLE:
             # Узел-таблица: только заголовок, без нумерации (не пункт).
             # Прикреплённой к пункту таблице заголовком служит сам пункт.
-            self._fmt._add_table_title(self._doc, node)
+            self._fmt._add_table_title(
+                self._doc, node,
+                underlined=table_title_underlined(node, ctx.root_section_id),
+            )
         build_table(self._doc, schema)
         # Пустая строка-распорка после любой таблицы.
         add_blank_line(self._doc)
