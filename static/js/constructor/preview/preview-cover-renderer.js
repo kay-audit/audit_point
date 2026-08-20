@@ -11,8 +11,6 @@
  * построчно). Строку «Акт … составлен на N листах» НЕ выводим: NUMPAGES в превью
  * невычислим (осознанно опущено).
  */
-import { SafeHTML } from '../../shared/sanitize.js';
-
 const MONTHS_GENITIVE = [
     'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
     'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
@@ -80,7 +78,7 @@ export class PreviewCoverRenderer {
 
         for (const [label, value] of this._buildRows(m)) {
             table.appendChild(this._createCell('preview-cover-label', label));
-            // Значения могут быть многострочными (состав группы) — \n → <br>.
+            // Значения могут быть многострочными (состав группы) — строка на строку.
             table.appendChild(this._createValueCell(value));
         }
 
@@ -95,12 +93,23 @@ export class PreviewCoverRenderer {
         return cell;
     }
 
-    /** @private Ячейка-значение: многострочный текст с переносами по \n. */
+    /**
+     * @private Ячейка-значение: каждая строка — свой узел.
+     *
+     * В эталоне (_fill_value_cell) многострочное значение раскладывается по
+     * ОТДЕЛЬНЫМ абзацам ячейки, а не по мягким переносам, поэтому между
+     * строками состава группы стоит обычный Normal-интервал. Прежний `<br>`
+     * склеивал их вплотную — состав на экране шёл плотнее, чем в файле.
+     */
     static _createValueCell(value) {
         const cell = document.createElement('div');
         cell.className = 'preview-cover-value';
-        const lines = String(value).split('\n');
-        cell.innerHTML = lines.map(line => SafeHTML.escapeHtml(line)).join('<br>');
+        for (const line of String(value).split('\n')) {
+            const paragraph = document.createElement('div');
+            paragraph.className = 'preview-cover-line';
+            paragraph.textContent = line;
+            cell.appendChild(paragraph);
+        }
         return cell;
     }
 

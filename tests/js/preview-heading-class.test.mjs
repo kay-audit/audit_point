@@ -34,14 +34,36 @@ function renderHeading(child, level) {
 }
 
 test('заголовок пункта получает класс preview-heading на любой глубине', () => {
-  for (const level of [1, 2, 3, 4, 5]) {
+  for (const level of [2, 3, 4, 5]) {
     const heading = renderHeading({ id: 'n', label: 'Пункт', number: '1' }, level);
     assert.equal(heading.className, 'preview-heading', `уровень ${level}`);
   }
 });
 
+test('раздел верхнего уровня рендерится плашкой-рубрикатором', () => {
+  // В Word это таблица 1x2 с заливкой (docx/builders/rubricator.py), а не
+  // строка текста: номер живёт в отдельной узкой ячейке, прижатой вправо, и
+  // печатается обычным начертанием — жирный там только заголовок.
+  const plate = renderHeading({ label: 'Общие сведения', number: '1' }, 1);
+  assert.equal(plate.tagName, 'H2');
+  assert.equal(plate.className, 'preview-heading preview-rubricator');
+
+  const [number, title] = plate.children;
+  assert.equal(number.className, 'preview-rubricator-number');
+  assert.equal(number.textContent, '1.');
+  assert.equal(title.className, 'preview-rubricator-title');
+  assert.equal(title.textContent, 'Общие сведения');
+});
+
+test('раздел без номера оставляет ячейку номера пустой', () => {
+  const plate = renderHeading({ label: 'Без номера' }, 1);
+  assert.equal(plate.children[0].textContent, '');
+  assert.equal(plate.children[1].textContent, 'Без номера');
+});
+
 test('уровень тега растёт с вложенностью и упирается в maxHeadingLevel', () => {
   const max = AppConfig.preview.maxHeadingLevel;
+  // Уровень 1 — плашка, но тег у неё тот же H2 (см. тест выше).
   assert.equal(renderHeading({ label: 'Раздел' }, 1).tagName, 'H2');
   assert.equal(renderHeading({ label: 'Подпункт' }, 2).tagName, 'H3');
   assert.equal(renderHeading({ label: 'Глубже' }, 3).tagName, `H${max}`);
@@ -60,7 +82,7 @@ test('номер рубрикатора остаётся в тексте заг�
 });
 
 test('оформление не уезжает в инлайн-стиль — им заведует CSS', () => {
-  const heading = renderHeading({ label: 'Раздел', number: '1' }, 1);
+  const heading = renderHeading({ label: 'Пункт', number: '1.1' }, 2);
   assert.equal(heading.style.fontSize, undefined, 'кегль выставлен инлайном');
   assert.equal(heading.style.fontWeight, undefined, 'начертание выставлено инлайном');
 });

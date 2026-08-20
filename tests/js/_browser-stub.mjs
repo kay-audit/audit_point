@@ -27,7 +27,10 @@ function makeStubElement(tag) {
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     addEventListener() {},
     removeEventListener() {},
-    appendChild() {},
+    // Дети запоминаются: составные элементы (плашка-рубрикатор, блок подписи)
+    // складываются из нескольких узлов, и проверить их состав иначе нечем.
+    children: [],
+    appendChild(child) { this.children.push(child); return child; },
     removeChild() {},
     remove() {},
     setAttribute() {},

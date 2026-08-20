@@ -62,6 +62,30 @@
     font-size: var(--doc-font-size-small);
 }
 
+/* Геометрия ячейки — вордовская, и прицел у неё тот же (корень рендера).
+   Поля: по бокам 5.4pt — дефолт OOXML `w:tblCellMar` (108 твипов); ни билдер,
+   ни шаблон python-docx его не переопределяют, поэтому питоновской константы
+   под него нет и число живёт здесь. Сверху 0, снизу — интервал абзаца внутри
+   ячейки (Normal, тот же --doc-space-after). Прежние 2pt/4pt подбирались на
+   глаз. По вертикали по центру — WD_CELL_VERTICAL_ALIGNMENT.CENTER в _fill_cell. */
+.preview-table-wrapper .preview-table th,
+.preview-table-wrapper .preview-table td {
+    padding: 0 5.4pt var(--doc-space-after);
+    vertical-align: middle;
+    /* По горизонтали — по центру И у шапки, И у ДАННЫХ: в билдере ветка одна на
+       всех (_fill_cell), is_header управляет только заливкой, жирностью и
+       кеглем. Превью прижимало данные влево, и таблица на экране расходилась
+       с файлом. Исключение — склеенная по горизонтали ячейка, класс ниже. */
+    text-align: center;
+}
+
+/* Склеенная по горизонтали ячейка прижата влево — кроме набора
+   CENTERED_MERGED_HEADER_TEXTS (styles.py ↔ table/header-align.js). Класс
+   вешает PreviewTableRenderer, он же считает правило общим helper'ом. */
+.preview-table-wrapper .preview-table .preview-cell-left {
+    text-align: left;
+}
+
 /* Ячейки таблицы */
 .preview-table th,
 .preview-table td {
@@ -88,10 +112,10 @@
     text-align: center;
 }
 
-/* Объединённые шапки, прижатые влево (совпадение с .docx). */
-.preview-table th.preview-th-left {
-    text-align: left;
-}
+/* Правила про склеенные шапки здесь больше нет: класс вешает только
+   PreviewTableRenderer, а он всегда кладёт таблицу в .preview-table-wrapper —
+   исключение целиком закрыто документным правилом выше. Голая таблица без
+   обёртки бывает лишь у вкладки «Сравнение», и она этот класс не эмитит. */
 
 /* Название таблицы.
 

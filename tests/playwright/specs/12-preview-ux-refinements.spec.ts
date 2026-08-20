@@ -6,7 +6,7 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
  * Покрывает три зоны недавней переработки предпросмотра:
  *  (a) колокольчик «Замечания» — счётчик/бейдж по критичности, выпадающий
  *      список, рамка проблемной таблицы на листе и flash-подсветка при переходе;
- *  (b) объединённая шапка таблицы — прижата влево (preview-th-left), кроме
+ *  (b) объединённая шапка таблицы — прижата влево (preview-cell-left), кроме
  *      текстов из centered-набора (остаются по центру);
  *  (c) модальный предпросмотр (#previewMenu) рендерит тот же лист A4, что и
  *      inline-панель (общий рендерер): светлый холст, индикатор зума, fit-to-width.
@@ -105,10 +105,11 @@ test.describe('Предпросмотр: UX-доработки (колоколь
       window.PreviewManager.forceUpdate();
     }, tid);
 
-    // Первая th листа — объединённая шапка: класс preview-th-left + computed left.
+    // Первая th листа — объединённая шапка: класс preview-cell-left + computed left.
+    // Класс общий для шапки и данных: правило выравнивания в DOCX одно на всех.
     const th = page.locator('#preview .preview-sheet th').first();
     await expect(th).toBeVisible();
-    await expect(th).toHaveClass(/preview-th-left/);
+    await expect(th).toHaveClass(/preview-cell-left/);
     const align = await th.evaluate((el) => getComputedStyle(el).textAlign);
     expect(align).toBe('left');
 
@@ -124,7 +125,7 @@ test.describe('Предпросмотр: UX-доработки (колоколь
 
     const thCentered = page.locator('#preview .preview-sheet th').first();
     await expect(thCentered).toBeVisible();
-    await expect(thCentered).not.toHaveClass(/preview-th-left/);
+    await expect(thCentered).not.toHaveClass(/preview-cell-left/);
     const alignCentered = await thCentered.evaluate(
       (el) => getComputedStyle(el).textAlign
     );

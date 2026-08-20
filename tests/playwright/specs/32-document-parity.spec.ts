@@ -757,3 +757,169 @@ test.describe('Вертикальный ритм листа — Normal-спей�
     expect(after.tableWrapper.bottom).toBeCloseTo(BLANK_LINE_PX, 1);
   });
 });
+
+test.describe('Элементы листа, которых Word печатает иначе, чем рисовало превью', () => {
+  /**
+   * Аудит превью ↔ DOCX выявил несколько мест, где лист не повторял файл:
+   *
+   *  - раздел верхнего уровня в Word — не строка текста, а ПЛАШКА-рубрикатор:
+   *    таблица 1×2 во всю рабочую ширину с заливкой DEEAF6, рамками 0.5pt и
+   *    номером в узкой ячейке справа (docx/builders/rubricator.py);
+   *  - блок подписи «Руководитель аудиторской проверки … ФИО» печатается
+   *    безусловно (build_signature), а превью обрывалось на последнем узле;
+   *  - ячейки таблиц Word ЦЕНТРИРУЕТ — и шапку, и данные (_fill_cell: ветка
+   *    одна на всех), превью же прижимало данные влево;
+   *  - поля ячейки в Word — 5.4pt по бокам (дефолт w:tblCellMar), 0 сверху и
+   *    интервал абзаца снизу; в превью стояли подобранные на глаз 2pt/4pt;
+   *  - content пункта уходит в файл выровненным по ширине и с сохранёнными
+   *    переносами строк (python-docx превращает перевод строки в w:br).
+   */
+  const PX_PER_PT = 4 / 3;
+  /** Заливка плашки — Palette.rubricator_shade (DEEAF6). */
+  const PLATE_SHADE = 'rgb(222, 234, 246)';
+  /** Высота строки плашки — PLATE_ROW_HEIGHT_TWIPS (510 твипов = 0.9 см). */
+  const PLATE_MIN_HEIGHT_PX = 0.9 * 96 / 2.54;
+  /** Узкая ячейка номера — LEFT_CELL_CM (0.8 см). */
+  const PLATE_NUMBER_WIDTH_PX = 0.8 * 96 / 2.54;
+  /** Поле ячейки по бокам — дефолт OOXML w:tblCellMar, 108 твипов. */
+  const CELL_PAD_X_PX = 5.4 * PX_PER_PT;
+  /** Над подписью — пустой абзац (12pt × 1.15) плюс два Normal-интервала. */
+  const SIGNATURE_TOP_PX = 12 * 1.15 * PX_PER_PT + 2 * 3 * PX_PER_PT;
+
+  /** Открывает шаг 1 сеяного акта и дожидается собранного листа. */
+  async function openSheet(page: import('@playwright/test').Page) {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-sheet').waitFor({ state: 'visible', timeout: 5000 });
+  }
+
+  test('раздел верхнего уровня — плашка-рубрикатор, а не строка текста', async ({ page }) => {
+    await openSheet(page);
+    await page.locator('#preview .preview-rubricator').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    const plate = await page.evaluate(() => {
+      const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+      const el = sheet.querySelector('.preview-rubricator') as HTMLElement;
+      const cs = getComputedStyle(el);
+      const num = el.querySelector('.preview-rubricator-number') as HTMLElement;
+      const title = el.querySelector('.preview-rubricator-title') as HTMLElement;
+      const numCs = getComputedStyle(num);
+      const sheetCs = getComputedStyle(sheet);
+      // offsetWidth — раскладочные px, до transform-масштаба листа.
+      const usable = sheet.offsetWidth
+        - parseFloat(sheetCs.paddingLeft) - parseFloat(sheetCs.paddingRight);
+      return {
+        tag: el.tagName,
+        background: cs.backgroundColor,
+        borderWidth: parseFloat(cs.borderTopWidth),
+        minHeight: parseFloat(cs.minHeight),
+        height: el.offsetHeight,
+        firstColumn: parseFloat(cs.gridTemplateColumns.split(' ')[0]),
+        numberAlign: numCs.textAlign,
+        numberWeight: Number(numCs.fontWeight),
+        numberDivider: parseFloat(numCs.borderRightWidth),
+        titleWeight: Number(getComputedStyle(title).fontWeight),
+        widthGap: usable - el.offsetWidth,
+      };
+    });
+
+    expect(plate.tag, 'плашка остаётся заголовком раздела').toBe('H2');
+    expect(plate.background).toBe(PLATE_SHADE);
+    expect(plate.borderWidth, 'рамка плашки 0.5pt').toBeGreaterThan(0);
+    expect(plate.minHeight).toBeCloseTo(PLATE_MIN_HEIGHT_PX, 0);
+    expect(plate.height, 'высота «не меньше» 0.9 см').toBeGreaterThanOrEqual(PLATE_MIN_HEIGHT_PX - 0.5);
+    expect(plate.firstColumn, 'узкая ячейка номера — 0.8 см').toBeCloseTo(PLATE_NUMBER_WIDTH_PX, 0);
+    expect(plate.numberAlign, 'номер прижат вправо, к заголовку').toBe('right');
+    // Жирность метки абзаца в плашке НЕ выставляется (в отличие от пункта):
+    // жирный там только заголовок.
+    expect(plate.numberWeight).toBeLessThan(700);
+    expect(plate.titleWeight).toBeGreaterThanOrEqual(700);
+    expect(plate.numberDivider, 'рамки у каждой ячейки → линия между номером и названием').toBeGreaterThan(0);
+    expect(Math.abs(plate.widthGap), 'плашка во всю рабочую ширину текста').toBeLessThan(1.5);
+  });
+
+  test('лист заканчивается блоком подписи, ФИО — у правого поля', async ({ page }) => {
+    await openSheet(page);
+    await page.locator('#preview .preview-signature').waitFor({ state: 'attached', timeout: 5000 });
+
+    const sig = await page.evaluate(() => {
+      const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+      const el = sheet.querySelector('.preview-signature') as HTMLElement;
+      const fio = el.querySelector('.preview-signature-fio') as HTMLElement;
+      const label = el.querySelector('.preview-signature-label') as HTMLElement;
+      // Плашка растянута на рабочую ширину — сравниваем правые края с ней,
+      // тогда масштаб листа (transform) сокращается сам.
+      const plate = sheet.querySelector('.preview-rubricator') as HTMLElement;
+      return {
+        isLast: sheet.lastElementChild === el,
+        label: label.textContent,
+        fio: fio.textContent || '',
+        marginTop: parseFloat(getComputedStyle(el).marginTop),
+        rightGap: plate.getBoundingClientRect().right - fio.getBoundingClientRect().right,
+        leftGap: fio.getBoundingClientRect().left - label.getBoundingClientRect().right,
+      };
+    });
+
+    expect(sig.isLast, 'подпись — последний элемент листа').toBe(true);
+    expect(sig.label).toBe('Руководитель аудиторской проверки');
+    expect(sig.fio.length, 'ФИО либо прочерк-заглушка, но не пусто').toBeGreaterThan(0);
+    expect(sig.marginTop, 'пустой абзац-воздух перед подписью').toBeCloseTo(SIGNATURE_TOP_PX, 1);
+    // Правый tab-stop билдера стоит ровно на рабочей ширине текста.
+    expect(Math.abs(sig.rightGap)).toBeLessThan(1.5);
+    expect(sig.leftGap, 'между меткой и ФИО — свободное место таба').toBeGreaterThan(0);
+  });
+
+  test('ячейки таблиц: вордовские поля и центрирование данных', async ({ page }) => {
+    await openSheet(page);
+    await page.locator('#preview .preview-sheet .preview-table td').first().waitFor({ state: 'attached', timeout: 5000 });
+
+    const cells = await page.evaluate(() => {
+      const read = (el: HTMLElement) => {
+        const cs = getComputedStyle(el);
+        return {
+          align: cs.textAlign,
+          verticalAlign: cs.verticalAlign,
+          padTop: parseFloat(cs.paddingTop),
+          padLeft: parseFloat(cs.paddingLeft),
+          padBottom: parseFloat(cs.paddingBottom),
+        };
+      };
+      const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+      return {
+        data: read(sheet.querySelector('.preview-table td') as HTMLElement),
+        header: read(sheet.querySelector('.preview-table th') as HTMLElement),
+      };
+    });
+
+    for (const [what, m] of Object.entries(cells)) {
+      // Word центрирует одиночную ячейку независимо от заголовочности.
+      expect(m.align, `${what}: выравнивание по горизонтали`).toBe('center');
+      expect(m.verticalAlign, `${what}: по вертикали`).toBe('middle');
+      expect(m.padLeft, `${what}: поле ячейки по бокам`).toBeCloseTo(CELL_PAD_X_PX, 1);
+      expect(m.padTop, `${what}: сверху поля нет`).toBeCloseTo(0, 1);
+      expect(m.padBottom, `${what}: снизу — интервал абзаца в ячейке`).toBeCloseTo(3 * PX_PER_PT, 1);
+    }
+  });
+
+  test('текст пункта: по ширине и с сохранёнными переносами строк', async ({ page }) => {
+    await openSheet(page);
+
+    // Элемент есть не в каждом акте — меряем каскад на зонде того же класса.
+    const m = await page.evaluate(() => {
+      const sheet = document.querySelector('#preview .preview-sheet') as HTMLElement;
+      const live = sheet.querySelector('.preview-content') as HTMLElement | null;
+      const el = live || document.createElement('div');
+      if (!live) { el.className = 'preview-content'; sheet.appendChild(el); }
+      const cs = getComputedStyle(el);
+      const out = { align: cs.textAlign, whiteSpace: cs.whiteSpace };
+      if (!live) el.remove();
+      return out;
+    });
+
+    expect(m.align, 'в DOCX абзац пункта идёт JUSTIFY').toBe('justify');
+    // python-docx превращает перевод строки в w:br — в Word он виден, а HTML
+    // без pre-wrap схлопывал его в пробел.
+    expect(m.whiteSpace).toBe('pre-wrap');
+  });
+});

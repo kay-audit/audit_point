@@ -10,6 +10,7 @@ import { PreviewTableRenderer } from './preview-table-renderer.js';
 import { PreviewTextBlockRenderer } from './preview-textblock-renderer.js';
 import { PreviewViolationRenderer } from './preview-violation-renderer.js';
 import { PreviewCoverRenderer } from './preview-cover-renderer.js';
+import { PreviewSignatureRenderer } from './preview-signature-renderer.js';
 import { AppState, _unwrap } from '../state/state-core.js';
 import { AppConfig } from '../../shared/app-config.js';
 import { invalidateTableWarningsCache, getCachedTableWarnings } from '../header/notifications-source-tables.js';
@@ -307,6 +308,7 @@ export class PreviewManager {
 
         this._renderTitle(sheet);
         this._renderTree(sheet);
+        this._renderSignature(sheet);
         this._attachPreviewTooltips(sheet);
 
         // B-10: сквозная нумерация сносок по всему листу (как в Word). Атрибут
@@ -372,6 +374,20 @@ export class PreviewManager {
 
         const cover = PreviewCoverRenderer.create(window.actMetadata);
         if (cover) container.appendChild(cover);
+    }
+
+    /**
+     * Рендерит блок подписи в конце листа.
+     *
+     * В DOCX он печатается всегда (build_signature вызывается из
+     * DocxFormatter.format безусловно), поэтому тумблером шапки не
+     * управляется. Метаданных нет → мягкая деградация, ничего не выводим.
+     * @private
+     * @param {HTMLElement} container - Лист, в конец которого встаёт подпись
+     */
+    static _renderSignature(container) {
+        const signature = PreviewSignatureRenderer.create(window.actMetadata);
+        if (signature) container.appendChild(signature);
     }
 
     /**
@@ -499,14 +515,49 @@ export class PreviewManager {
      * (shared/sanitize.js), а такие «чужие» заголовки Word печатает обычным
      * текстом (_BLOCK_TAGS в docx/builders/inline.py — bold не выставляется).
      * Правило по голому тегу задело бы и их.
+     *
+     * Раздел верхнего уровня — исключение по СТРУКТУРЕ, а не по оформлению:
+     * в Word он печатается плашкой-рубрикатором (таблица 1×2 с заливкой,
+     * docx/builders/rubricator.py), поэтому номер и название разъезжаются по
+     * двум ячейкам и рендерятся отдельными узлами.
      * @private
      */
     static _renderHeading(child, container, level) {
+        if (level === 1) return this._renderRubricatorPlate(child, container);
+
         const headingLevel = Math.min(level + 1, AppConfig.preview.maxHeadingLevel);
         const heading = document.createElement(`h${headingLevel}`);
         heading.className = 'preview-heading';
         heading.textContent = child.number ? child.number + '. ' + child.label : child.label;
         container.appendChild(heading);
+    }
+
+    /**
+     * Рендерит плашку-рубрикатор раздела верхнего уровня.
+     *
+     * Эталон — build_rubricator_plate: таблица 1×2 во всю ширину текста,
+     * заливка, рамки, номер в узкой ячейке прижат ВПРАВО и печатается обычным
+     * начертанием (жирность метки абзаца там не выставляется, в отличие от
+     * пункта в _render_item), название — жирным. Тег остаётся h2: плашка —
+     * это по-прежнему заголовок раздела, а `.preview-heading` даёт ей
+     * документные кегль, начертание и ритм.
+     * @private
+     */
+    static _renderRubricatorPlate(child, container) {
+        const plate = document.createElement('h2');
+        plate.className = 'preview-heading preview-rubricator';
+
+        const number = document.createElement('span');
+        number.className = 'preview-rubricator-number';
+        number.textContent = child.number ? child.number + '.' : '';
+
+        const title = document.createElement('span');
+        title.className = 'preview-rubricator-title';
+        title.textContent = child.label;
+
+        plate.appendChild(number);
+        plate.appendChild(title);
+        container.appendChild(plate);
     }
 
     /**

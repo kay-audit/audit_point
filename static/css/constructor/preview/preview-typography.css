@@ -49,6 +49,40 @@ h2.preview-heading {
     margin-bottom: var(--doc-blank-line);
 }
 
+/* ——— Плашка-рубрикатор раздела ———
+   В Word раздел верхнего уровня — не строка текста, а таблица 1×2 во всю
+   рабочую ширину (build_rubricator_plate): заливка DEEAF6, рамки 0.5pt на
+   каждой ячейке (отсюда линия между номером и названием), высота строки
+   «не меньше» 0.9см, обе ячейки по вертикали по центру, узкая левая — 0.8см.
+   Поля ячеек — тот же дефолт OOXML 5.4pt, что и у контентных таблиц.
+   Сетка, а не таблица: ширины фиксированные, содержимого ровно два узла —
+   разметка проще, а h2 остаётся заголовком раздела и держит документные
+   кегль/начертание/ритм из .preview-heading выше. */
+.preview-rubricator {
+    display: grid;
+    grid-template-columns: 0.8cm 1fr;
+    align-items: center;
+    min-height: 0.9cm;
+    box-sizing: border-box;
+    background: #DEEAF6;
+    border: 0.5pt solid #000;
+}
+
+.preview-rubricator-number,
+.preview-rubricator-title {
+    padding: 0 5.4pt;
+    box-sizing: border-box;
+}
+
+/* Номер прижат вправо, к названию, и печатается ОБЫЧНЫМ начертанием: жирность
+   метки абзаца в плашке не выставляется (в отличие от пункта, где её ставит
+   _set_mark_bold) — жирный там только заголовок. */
+.preview-rubricator-number {
+    text-align: right;
+    font-weight: var(--font-weight-normal);
+    border-right: 0.5pt solid #000;
+}
+
 /* ——— Заголовки, пришедшие С КОНТЕНТОМ ———
    Сами редакторы h1–h6 не создают, но allowlist санитайзера их пропускает
    (shared/sanitize.js::ACTS_TAGS_FALLBACK), и с восстановленной версией или из
@@ -137,6 +171,24 @@ h2.preview-heading {
 /* Последний абзац без нижнего отступа */
 .preview-sheet p:last-child {
     margin-bottom: 0;
+}
+
+/* ——— Блок подписи в конце акта ———
+   Эталон — build_signature: пустой абзац-воздух, затем строка «Руководитель
+   аудиторской проверки» с правым tab-stop'ом на всю рабочую ширину, поэтому
+   ФИО стоит ровно у правого поля. flex + space-between повторяет таб.
+   Отступ сверху — высота того самого пустого абзаца (12pt на одинарном
+   интервале) плюс два Normal-интервала: свой у предыдущего абзаца и свой у
+   пустого. Соседние margin'ы CSS схлопывает по максимуму, поэтому сумма
+   выписана целиком. */
+.preview-signature {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--doc-space-after);
+    margin-top: calc(
+        var(--doc-font-size) * var(--doc-line-height) + var(--doc-space-after) * 2
+    );
 }
 
 /* ——— Гарнитура документа ———

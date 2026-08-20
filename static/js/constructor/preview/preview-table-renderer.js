@@ -6,7 +6,7 @@
  */
 import { iterateVisibleCells } from '../table/grid-merges.js';
 import { buildColgroup } from '../table/colgroup.js';
-import { mergedHeaderAlign } from '../table/header-align.js';
+import { mergedCellAlign } from '../table/header-align.js';
 
 export class PreviewTableRenderer {
     /**
@@ -124,10 +124,12 @@ export class PreviewTableRenderer {
 
         if (cellData.isHeader) {
             cell.className = 'preview-table-header';
-            // Объединённые шапки прижимаются влево (как в .docx), кроме centered-набора.
-            if (mergedHeaderAlign(cellData.content, cellData.colSpan || 1, true) === 'left') {
-                cell.classList.add('preview-th-left');
-            }
+        }
+        // Выравнивание — общее для шапки и данных, как в DOCX (_fill_cell):
+        // по центру, а склеенные по горизонтали прижаты влево (кроме
+        // centered-набора). Дефолт «по центру» задаёт CSS, класс — исключение.
+        if (mergedCellAlign(cellData.content, cellData.colSpan || 1) === 'left') {
+            cell.classList.add('preview-cell-left');
         }
 
         this._applyCellSpan(cell, cellData);
