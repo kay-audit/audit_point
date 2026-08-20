@@ -18,6 +18,9 @@
 @import '../shared/notifications/notifications-types.css';
 @import '../shared/notifications/notifications-content.css';
 
+/* Shared: баннер «вышло обновление приложения» */
+@import '../shared/version-banner.css';
+
 /* Shared dialogs */
 @import '../shared/dialog/dialog.css';
 @import '../shared/dialog/dialog-overlay.css';

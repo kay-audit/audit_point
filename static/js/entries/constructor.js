@@ -134,6 +134,9 @@ import { NotificationCenter } from '../shared/notifications-center/notification-
 import { registerTablesSource } from '../constructor/header/notifications-source-tables.js';
 import { registerValidationSource } from '../constructor/header/notifications-source-validation.js';
 
+// Слежение за версией приложения (баннер «вышло обновление»).
+import { startVersionWatcher } from '../shared/version-watcher.js';
+
 // Bootstrap конструктора. Раньше app.js и state-core.js сами вешали
 // DOMContentLoaded на module-level, но shared/api.js косвенно тянет
 // constructor/* на portal-страницы — App.init там стрелял по AppState
@@ -168,6 +171,9 @@ function _bootstrap() {
     // Ctrl+F / Cmd+F — панель поиска/замены по текстблокам (перехватывает
     // браузерный поиск, при необходимости переключает на Step 2).
     FindBar.installHotkey();
+    // Баннер «вышло обновление» — только предложение перезагрузиться:
+    // в конструкторе живёт несохранённый акт, автоматического reload нет.
+    startVersionWatcher();
 }
 
 if (document.readyState === 'loading') {
