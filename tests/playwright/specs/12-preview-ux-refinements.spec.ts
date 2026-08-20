@@ -9,7 +9,11 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
  *  (b) объединённая шапка таблицы — прижата влево (preview-cell-left), кроме
  *      текстов из centered-набора (остаются по центру);
  *  (c) модальный предпросмотр (#previewMenu) рендерит тот же лист A4, что и
- *      inline-панель (общий рендерер): светлый холст, индикатор зума, fit-to-width.
+ *      inline-панель (общий рендерер): светлый холст, индикатор зума, fit-to-width;
+ *  (d) рамка незаполненности — тонкая пастельная линия из палитры, а не яркая
+ *      двойка: неполнота не должна читаться как ошибка;
+ *  (e) однотипные замечания в колокольчике свёрнуты в одну раскрывающуюся
+ *      группу вместо десятка одинаковых строк.
  *
  * SKIP-GUARD: требует поднятого uvicorn (global-setup) + засиженной БД.
  * Включить: RUN_PREVIEW_UX_E2E=1 npx playwright test 12-preview-ux-refinements
@@ -171,5 +175,128 @@ test.describe('Предпросмотр: UX-доработки (колоколь
     await page.locator('#previewMenu').screenshot({
       path: 'test-results/preview-modal-parity.png',
     });
+  });
+
+  test('(d) рамка незаполненности — тонкая и пастельная, цвет из палитры', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+
+    const tid = await page.evaluate(() => Object.keys(window.AppState.tables)[0]);
+    expect(tid).toBeTruthy();
+
+    // Оставляем только строку заголовка → warning «нет данных» → рамка.
+    await page.evaluate((id) => {
+      const t = window.AppState.tables[id];
+      t.grid = [t.grid[0].map((c) => ({ ...c, isHeader: true }))];
+      window.PreviewManager.forceUpdate();
+    }, tid);
+
+    const wrapper = page.locator(`#preview .preview-table-wrapper[data-table-id="${tid}"]`);
+    await expect(wrapper).toHaveClass(/preview-table-wrapper--warning/);
+
+    const m = await page.evaluate((id) => {
+      const el = document.querySelector(
+        `#preview .preview-table-wrapper[data-table-id="${CSS.escape(String(id))}"]`
+      ) as HTMLElement;
+      const cs = getComputedStyle(el);
+      // Токен резолвим зондом: getPropertyValue отдаёт исходный HEX, а computed
+      // outline-color — rgb(); сравниваем одинаково посчитанные браузером значения.
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--warning-light)';
+      document.body.appendChild(probe);
+      const token = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        width: parseFloat(cs.outlineWidth),
+        style: cs.outlineStyle,
+        color: cs.outlineColor,
+        token,
+      };
+    }, tid);
+
+    // Незаполненность — не ошибка: тонкая линия вместо прежней двойки.
+    expect(m.width).toBeLessThanOrEqual(1);
+    expect(m.style).toBe('solid');
+    // Цвет берётся из палитры, а не хардкодится мимо неё.
+    expect(m.color).toBe(m.token);
+  });
+
+  test('(e) однотипные замечания сворачиваются в одну раскрывающуюся группу', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+
+    // Предусловие: у засеянного акта замечаний по таблицам нет — всё, что
+    // появится ниже, породили добавленные таблицы.
+    const before = await page.evaluate(
+      () => window.ValidationTable.collectContentWarnings().length
+    );
+    expect(before).toBe(0);
+
+    // Две свежие таблицы: у обеих есть шапка и нет данных, значит замечание
+    // одного вида приходит дважды — ровно случай группировки.
+    const parentId = await page.evaluate(() => {
+      const firstTableId = Object.keys(window.AppState.tables)[0];
+      const tableNode = window.TreeUtils.findNodeByTableId(firstTableId);
+      return window.AppState.findParentNode(tableNode.id).id;
+    });
+    expect(parentId).toBeTruthy();
+
+    const newTableIds: string[] = await page.evaluate((pid: string) => {
+      const parent = window.AppState.findNodeById(pid);
+      const seen = new Set(parent.children.map((c: any) => c.tableId).filter(Boolean));
+      for (let i = 0; i < 2; i++) {
+        const result = window.AppState.addTableToNode(pid);
+        if (!result.valid) throw new Error('addTableToNode failed: ' + result.message);
+      }
+      window.treeManager.render();
+      window.PreviewManager.forceUpdate();
+      return parent.children
+        .map((c: any) => c.tableId)
+        .filter((id: string) => id && !seen.has(id));
+    }, parentId);
+    expect(newTableIds).toHaveLength(2);
+
+    await page.locator('#notificationsBtn').click();
+    await expect(page.locator('#notificationsMenu')).not.toHaveClass(/\bhidden\b/);
+
+    // Одна строка-группа вместо двух почти одинаковых записей.
+    const group = page.locator('#notificationsBody .notification-group');
+    await expect(group).toHaveCount(1);
+    const head = group.locator('.notification-item--group');
+    await expect(head).toContainText('Нет данных');
+    await expect(head).toContainText('2 таблицы');
+    await expect(head.locator('.notification-item-count')).toHaveText('2');
+
+    // Свёрнута по умолчанию — шума в списке нет.
+    const children = group.locator('.notification-group-children');
+    await expect(children).toBeHidden();
+    await expect(head).toHaveAttribute('aria-expanded', 'false');
+
+    // Клик по шапке раскрывает группу, а не уводит на лист.
+    await head.click();
+    await expect(children).toBeVisible();
+    await expect(head).toHaveAttribute('aria-expanded', 'true');
+    await expect(children.locator('.notification-item--child')).toHaveCount(2);
+
+    // Живой рефреш (любая правка документа) список перерисовывает — раскрытие
+    // не должно схлопываться под курсором.
+    await page.evaluate(() => {
+      document.dispatchEvent(new CustomEvent('preview:content-changed'));
+    });
+    await expect(children).toBeVisible();
+
+    // Подстрока ведёт к своей таблице и подсвечивает её (класс живёт 1.3 с);
+    // переход закрывает колокольчик.
+    const wrapper = page.locator(
+      `#preview .preview-table-wrapper[data-table-id="${newTableIds[0]}"]`
+    );
+    await expect(wrapper).toHaveClass(/preview-table-wrapper--warning/);
+    await children.locator('.notification-item--child').first().click();
+    await expect(wrapper).toHaveClass(/flash/, { timeout: 1000 });
+    await expect(page.locator('#notificationsMenu')).toHaveClass(/\bhidden\b/);
+
+    // Повторное открытие помнит раскрытие; клик по шапке сворачивает обратно.
+    await page.locator('#notificationsBtn').click();
+    await expect(children).toBeVisible();
+    await head.click();
+    await expect(children).toBeHidden();
   });
 });
