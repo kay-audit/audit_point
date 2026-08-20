@@ -164,7 +164,7 @@ CHECK_CONSTRAINT_MESSAGES: dict[str, str] = {
     ),
     "check_chat_agent_messages_bus_status_values": (
         "Недопустимый статус сообщения шины агента. "
-        "Допустимые значения: pending, processing, completed, error, failed"
+        "Допустимые значения: pending, processing, completed, failed, error"
     ),
     # ── chat: chat_message_feedback ──────────────────────────────────────────
     "check_chat_message_feedback_rating_values": (

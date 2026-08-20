@@ -1119,6 +1119,26 @@ class TestGetHistoryMessages:
 
 
 # -------------------------------------------------------------------------
+# _format_block_full / _format_block_shallow
+# -------------------------------------------------------------------------
+
+
+class TestFormatBlock:
+
+    def test_format_block_full_file_size(self):
+        """Размер файла берётся из поля file_size (как в FileBlock), не size."""
+        block = {"type": "file", "filename": "a.xlsx", "file_size": 2 * 1024 * 1024}
+        result = Orchestrator._format_block_full(block)
+        assert "2.0 МБ" in result
+
+    def test_format_block_shallow_file_size(self):
+        """Shallow-режим тоже берёт размер из file_size."""
+        block = {"type": "file", "filename": "a.xlsx", "file_size": 2 * 1024 * 1024}
+        result = Orchestrator._format_block_shallow(block)
+        assert "2.0 МБ" in result
+
+
+# -------------------------------------------------------------------------
 # _fallback_response
 # -------------------------------------------------------------------------
 

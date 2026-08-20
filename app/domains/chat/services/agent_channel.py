@@ -359,8 +359,7 @@ async def materialize_media_entries(
             ))
             continue
         if mime.startswith("image/"):
-            blocks.append({"type": "image", "file_id": file_id, "alt": filename,
-                           "mime_type": mime, "filename": filename})
+            blocks.append({"type": "image", "file_id": file_id, "alt": filename})
         else:
             blocks.append({"type": "file", "file_id": file_id, "filename": filename,
                            "mime_type": mime, "file_size": len(raw)})

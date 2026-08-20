@@ -128,8 +128,13 @@ def test_agent_channel_settings_defaults():
 def test_answer_timeout_default():
     """Дефолт answer_timeout_sec — 30 минут: NanoBot ретраит вопрос до 3 раз.
 
-    Инстанцируем модель напрямую: _load_from_env подсосал бы реальный .env.
+    Прямой пин дефолта — AgentChannelSettings() (обычная BaseModel, без риска
+    подхватить реальный .env); плюс проверка, что вложенное поле в
+    ChatDomainSettings наследует тот же дефолт.
     """
+    from app.domains.chat.settings import AgentChannelSettings
+    assert AgentChannelSettings().answer_timeout_sec == 1800
+
     s = ChatDomainSettings(api_base="x", api_key="k", model="m")
     assert s.agent_channel.answer_timeout_sec == 1800
 

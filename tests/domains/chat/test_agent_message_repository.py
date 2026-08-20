@@ -1,7 +1,7 @@
 """Тесты репозитория chat_agent_messages_bus (bus-таблица канала к внешнему агенту).
 
 Покрывают: insert_question, get_by_uid, set_status, count_pending_before,
-count_active_for_user.
+count_active_for_user, get_media_by_uid, get_status_by_uid.
 Стратегия: mock_conn + autouse-патч get_adapter — идентична
 test_message_repository.py.
 """
