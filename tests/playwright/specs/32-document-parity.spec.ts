@@ -2,7 +2,7 @@ import { test, expect, openAct, SEED_ACTS } from '../fixtures';
 import { createViolation, seedViolationBlocks, violationBlocksSel } from '../violation-helpers';
 
 /**
- * Паритет «конструктор ↔ превью ↔ Word» для двух вещей, которые до сих пор
+ * Паритет «конструктор ↔ превью ↔ Word» для вещей, которые до сих пор
  * жили по интерфейсным правилам, а не по документным.
  *
  * 1. КЕГЛЬ ТАБЛИЦ. Ячейки конструктора считались от --font-size-sm, то есть от
@@ -25,8 +25,17 @@ import { createViolation, seedViolationBlocks, violationBlocksSel } from '../vio
  *    sans — он заметно шире, поэтому строка на экране обрывалась не там, где
  *    оборвётся в Word.
  *
- * Юнит-тестами это не ловится: все три вещи существуют только в каскаде живого
- * движка (вычисленный font-size/font-family, ::marker, геометрия блока).
+ * 4. КЕГЛЬ ТАБЛИЦ ПРЕДПРОСМОТРА ПО ПОВЕРХНОСТЯМ. Таблицы, вышедшие из общего
+ *    рендера, доставали печатные 9pt случайно: базовое правило .preview-table
+ *    стоит на UI-токене --font-size-sm, а тот на портале прибит к 12px
+ *    (portal/layout/density.css) — ровно 9pt. Правка плотности портала увела бы
+ *    таблицы от печатного кегля, а нарушения рядом (честный документный токен)
+ *    остались бы на месте. Кегль переведён на --doc-font-size-small с прицелом
+ *    в корень рендера (.preview-table-wrapper); вкладка «Сравнение» с её голой
+ *    таблицей без обёртки сознательно осталась на интерфейсном кегле.
+ *
+ * Юнит-тестами это не ловится: всё перечисленное существует только в каскаде
+ * живого движка (вычисленный font-size/font-family, ::marker, геометрия блока).
  */
 
 const EDITOR = '.textblock-editor[data-text-block-id="txt-seed-1"]';
@@ -38,10 +47,26 @@ const LIST_INDENT_PX = 48;
 /** Гарнитура документа (Fonts.main в DOCX-стилях, --doc-font-family в CSS). */
 const DOC_FONT = 'Times New Roman';
 
+/**
+ * «Мелкий» печатный кегль документа: 9pt (Sizes.table_data_pt) = 12px.
+ * Токен --doc-font-size-small; равенство CSS ↔ Python сторожит
+ * tests/test_document_typography_tokens.py.
+ */
+const DOC_SMALL_PX = 12;
+
+/** Заведомо «дикое» значение UI-шкалы для фальсификации: 9pt им быть не может. */
+const PROBE_UI_PX = 40;
+
 /** Первое семейство из вычисленного font-family, без кавычек. */
 const FAMILY = (sel: string) => {
   const el = document.querySelector(sel) as HTMLElement | null;
   return el ? getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '').trim() : null;
+};
+
+/** Вычисленный font-size в px. */
+const FONT_PX = (sel: string) => {
+  const el = document.querySelector(sel) as HTMLElement | null;
+  return el ? parseFloat(getComputedStyle(el).fontSize) : null;
 };
 
 async function openStep2(page) {
@@ -377,5 +402,117 @@ test.describe('Гарнитура — документная, а не интер
       [FAMILY.toString(), '.diff-content .diff-textblock'] as const
     );
     expect(diff).not.toBe(DOC_FONT);
+  });
+});
+
+test.describe('Кегль таблиц предпросмотра — по поверхностям', () => {
+  test('лист A4: таблица печатного кегля и за UI-шкалой не идёт', async ({ page }) => {
+    await openAct(page, SEED_ACTS.withContent);
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    await page.locator('.step[data-step="1"]').click();
+    await page.locator('#preview .preview-sheet').waitFor({ state: 'visible', timeout: 5000 });
+
+    const CELL = '#preview .preview-sheet .preview-table td';
+    await page.locator(CELL).first().waitFor({ state: 'attached', timeout: 5000 });
+
+    const before = await page.evaluate(
+      ([probe, sel]) => new Function('sel', 'return (' + probe + ')(sel)')(sel),
+      [FONT_PX.toString(), CELL] as const
+    );
+    expect(before).toBeCloseTo(DOC_SMALL_PX, 1);
+
+    // Фальсификация: уводим UI-шкалу в заведомо чужое значение. Печатный кегль
+    // обязан остаться на месте — он приходит из --doc-font-size-small, а не из
+    // плотности интерфейса.
+    const after = await page.evaluate(
+      ([probe, sel, px]) => {
+        document.documentElement.style.setProperty('--font-size-sm', px + 'px');
+        return new Function('sel', 'return (' + probe + ')(sel)')(sel);
+      },
+      [FONT_PX.toString(), CELL, PROBE_UI_PX] as const
+    );
+    expect(after).toBeCloseTo(DOC_SMALL_PX, 1);
+  });
+
+  test('диалог версий: рендер — документный кегль, вкладка «Сравнение» — интерфейсный', async ({ page }) => {
+    // Портал: корневой font-size 13px против 12px в конструкторе, --font-size-sm
+    // прибит к 12px. Именно здесь совпадение «12px == 9pt» и маскировало протечку.
+    await page.goto('/acts');
+    await page.locator('#versionPreviewTemplate').waitFor({ state: 'attached', timeout: 10000 });
+
+    // Узел БЕЗ id — тот же приём, что у теста списков во вкладке «Сравнение»:
+    // движок диффа не находит его в текущем акте и рендерит СТАРУЮ сторону,
+    // то есть нашу таблицу (в UI-вкладке она рисуется из снимка напрямую).
+    await page.evaluate((actId) => {
+      const cell = (content: string, isHeader = false) => ({
+        content,
+        colSpan: 1,
+        rowSpan: 1,
+        isHeader,
+        isSpanned: false,
+        originRow: null,
+        originCol: null,
+        spanOrigin: null,
+      });
+      const snapshot = {
+        version_number: 1,
+        created_at: new Date().toISOString(),
+        save_type: 'manual',
+        username: 'test',
+        id: 'ver-tbl-size-1',
+        tree_data: {
+          children: [
+            { type: 'table', tableId: 'vp-gone-tbl-1', number: '1', label: 'Таблица', children: [] },
+          ],
+        },
+        tables_data: {
+          'vp-gone-tbl-1': {
+            colWidths: [50, 50],
+            grid: [
+              [cell('Колонка A', true), cell('Колонка B', true)],
+              [cell('Значение A'), cell('Значение B')],
+            ],
+          },
+        },
+      };
+      // @ts-expect-error VersionPreviewOverlay — глобал из version-preview.js
+      window.VersionPreviewOverlay.show(snapshot, 'Тестовый акт', actId);
+    }, SEED_ACTS.withContent);
+
+    const RENDERED = '.version-preview-ui .preview-table-wrapper .preview-table td';
+    const DIFF = '.diff-content table.preview-table td';
+
+    await page.locator(RENDERED).first().waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('.version-preview-toggle .toggle-btn[data-view="diff"]').click();
+    await page.locator(DIFF).first().waitFor({ state: 'visible', timeout: 10000 });
+
+    const measure = () => page.evaluate(
+      ([probe, sels]) => Object.fromEntries(
+        (sels as string[]).map((s) => [s, new Function('sel', 'return (' + probe + ')(sel)')(s)])
+      ),
+      [FONT_PX.toString(), [RENDERED, DIFF]] as const
+    );
+
+    const before = await measure();
+    // Обе поверхности сейчас дают одно и то же число — 12px. У рендера это 9pt,
+    // у вкладки сравнения — интерфейсные 12px портала; различает их только
+    // фальсификация ниже.
+    expect(before[RENDERED]).toBeCloseTo(DOC_SMALL_PX, 1);
+    expect(before[DIFF]).toBeCloseTo(DOC_SMALL_PX, 1);
+
+    await page.evaluate(
+      (px) => document.documentElement.style.setProperty('--font-size-sm', px + 'px'),
+      PROBE_UI_PX
+    );
+    const after = await measure();
+
+    // Ключевая регрессия: пока таблица рендера стояла на --font-size-sm, она
+    // уезжала вместе с плотностью портала — и молча расходилась с 9pt нарушений.
+    expect(after[RENDERED], 'таблица общего рендера обязана держать печатный кегль')
+      .toBeCloseTo(DOC_SMALL_PX, 1);
+    // Вкладка сравнения исключена сознательно: инструмент сверки со своим
+    // интерфейсным кеглем (docs/architecture/textblock-editor-architecture.md §13).
+    expect(after[DIFF], 'вкладка «Сравнение» обязана остаться на интерфейсной шкале')
+      .toBeCloseTo(PROBE_UI_PX, 1);
   });
 });
