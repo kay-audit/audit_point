@@ -233,11 +233,11 @@ test('_renderPreview: непустое значение рендерится р�
     const rows = FormalizerPopover._els.preview.children;
 
     assert.equal(filled, 2);
-    assert.equal(rows.length, 6, 'строка на каждое поле карточки');
-    // Порядок _PREVIEW_FIELDS: violated, established, reasons, …
+    assert.equal(rows.length, 7, 'строка на каждое поле карточки');
+    // Порядок _PREVIEW_FIELDS: violated, established, description, reasons, …
     assert.equal(rows[0].children[1].innerHTML, 'П. 3.1 Регламента');
     assert.equal(
-      rows[2].children[1].innerHTML,
+      rows[3].children[1].innerHTML,
       '<ul><li>отсутствие контроля</li></ul>',
       'список остался списком, а не текстом с тегами',
     );
@@ -296,5 +296,26 @@ test('_accept: применены поля + есть рекомендации �
     assert.ok(!FormalizerPopover._el.classList.contains('hidden'), 'окно не закрыто');
     assert.ok(FormalizerPopover._el.classList.contains('formalizer-applied'));
     assert.equal(FormalizerPopover._els.reject.textContent, 'Закрыть');
+  });
+});
+
+test('_renderPreview: «Описание» — единственное поле со списком метрик', () => {
+  withFakeDom(() => {
+    FormalizerPopover._renderPreview({
+      established: 'Допущена выдача кредита без проверки',
+      description: '<ul><li>сумма 5 млн руб.</li><li>дата 01.02.2025</li></ul>',
+      reasons: 'Отсутствие проверки и контроля лимитов',
+    });
+    const rows = FormalizerPopover._els.preview.children;
+    assert.equal(rows.length, 7);
+    assert.equal(rows[2].children[0].textContent, 'Описание');
+    assert.equal(
+      rows[2].children[1].innerHTML,
+      '<ul><li>сумма 5 млн руб.</li><li>дата 01.02.2025</li></ul>',
+      'метрики остались списком',
+    );
+    // Остальные поля — связный текст, маркеров быть не должно.
+    assert.equal(rows[1].children[1].innerHTML.includes('<ul>'), false);
+    assert.equal(rows[3].children[1].innerHTML.includes('<ul>'), false);
   });
 });

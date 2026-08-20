@@ -4,7 +4,9 @@
  * Перетаскиваемая (за заголовок) и ресайзабельная панель по образцу строки поиска:
  * базовое положение — слева вверху (поиск — справа), позиция/размер персистятся.
  * Два режима обработки (кнопки в шапке): «Исправить ошибки» (орфография/пунктуация)
- * и «Улучшить читаемость» (структура/связность) — оба возвращают диф. При открытии
+ * и «Улучшить читаемость» (улучшайзер «Пиши, сокращай» D17) — оба возвращают диф.
+ * Для режима читаемости над дифом показывается светофор диагностики D17 —
+ * индекс тяжести и уровень до и после правки. При открытии
  * обращения к модели НЕТ: обработка стартует по клику на нужный режим — кнопка режима
  * и есть кнопка запуска (экономит лишний вызов LLM, когда нужен не дефолтный режим).
  * Показывает диф исправленного текста в одном из трёх режимов (в строку / 2 окна /
@@ -39,6 +41,7 @@ export const CorrectorPopover = {
     _range: null,
     _sourceText: '',
     _corrected: '',
+    _readability: null,
     _destructive: false,
     _mode: null,
     _hasRequested: false,
@@ -60,6 +63,7 @@ export const CorrectorPopover = {
         this._range = range;
         this._sourceText = text;
         this._corrected = '';
+        this._readability = null;
         // Ни один режим не выбран заранее — иначе кнопка «Исправить ошибки»
         // горела бы активной ещё до запроса (обработки-то нет). Подсветка
         // появляется по клику на нужный режим.
@@ -82,6 +86,7 @@ export const CorrectorPopover = {
         this._ownerSurface = null;
         this._range = null;
         this._corrected = '';
+        this._readability = null;
         this._destructive = false;
     },
 
@@ -100,6 +105,7 @@ export const CorrectorPopover = {
                 <button type="button" class="corrector-mode" data-mode="fix">Исправить ошибки</button>
                 <button type="button" class="corrector-mode" data-mode="readability">Улучшить читаемость</button>
             </div>
+            <div class="corrector-readability hidden" data-role="readability"></div>
             <div class="corrector-body" data-role="body"></div>
             <div class="corrector-actions">
                 <button type="button" class="corrector-btn corrector-regen" data-role="regen" title="Перегенерировать">↻</button>
@@ -113,6 +119,7 @@ export const CorrectorPopover = {
         this._els = {
             header: el.querySelector('[data-role="header"]'),
             modes: el.querySelector('[data-role="modes"]'),
+            readability: el.querySelector('[data-role="readability"]'),
             body: el.querySelector('[data-role="body"]'),
             accept: el.querySelector('[data-role="accept"]'),
             reject: el.querySelector('[data-role="reject"]'),
@@ -177,6 +184,8 @@ export const CorrectorPopover = {
     // «Принять»/↻ выключены (принимать/перегенерировать пока нечего).
     _renderIdle() {
         this._corrected = '';
+        this._readability = null;
+        this._renderReadability();
         this._els.accept.disabled = true;
         this._els.regen.disabled = true;
         this._els.body.innerHTML =
@@ -198,9 +207,10 @@ export const CorrectorPopover = {
         this._setBusy(true);
         this._els.body.innerHTML = '<div class="corrector-status">Обрабатываю…</div>';
         try {
-            const corrected = await correctText(
+            const { correctedText, readability } = await correctText(
                 this._sourceText, { signal: this._controller.signal, mode: this._mode });
-            this._corrected = corrected;
+            this._corrected = correctedText;
+            this._readability = readability;
             this._render();
             this._setBusy(false);
             this._lastError = false;
@@ -208,6 +218,8 @@ export const CorrectorPopover = {
             if (e && e.name === 'AbortError') return;
             this._lastError = true;
             this._corrected = '';
+            this._readability = null;
+            this._renderReadability();
             this._els.body.innerHTML = '';
             const msg = document.createElement('div');
             msg.className = 'corrector-status corrector-error';
@@ -218,7 +230,69 @@ export const CorrectorPopover = {
         }
     },
 
+    // Класс уровня светофора анализатора D17 — по первому слову уровня
+    // («Зелёный (хорошо)» / «Жёлтый (средне)» / «Красный (тяжело)»).
+    _levelClass(level) {
+        if (!level) return '';
+        if (level.startsWith('Зелёный')) return 'corrector-level-green';
+        if (level.startsWith('Жёлтый')) return 'corrector-level-yellow';
+        return 'corrector-level-red';
+    },
+
+    // Диагностика читаемости «до → после» (анализатор D17). Показывается только
+    // в режиме readability и только когда бэк её прислал: в режиме fix и при
+    // сбое анализатора поле приходит null — тогда блок прячем, а корректура
+    // работает как ни в чём не бывало.
+    _renderReadability() {
+        const box = this._els && this._els.readability;
+        if (!box) return;
+        const r = this._readability;
+        if (this._mode !== 'readability' || !r || !r.before || !r.after) {
+            box.classList.add('hidden');
+            box.textContent = '';
+            return;
+        }
+
+        const deltas = [];
+        const push = (label, from, to) => {
+            if (from === null || from === undefined) return;
+            if (to === null || to === undefined) return;
+            if (from === to) return;
+            deltas.push(`${label} ${from}→${to}`);
+        };
+        push('сущ./глаг.', r.before.noun_verb_ratio, r.after.noun_verb_ratio);
+        push('род. падеж', r.before.longest_genitive_chain.length,
+            r.after.longest_genitive_chain.length);
+        push('слов в предл.', r.before.avg_word_count, r.after.avg_word_count);
+        push('канцеляризмы', r.before.bureaucratic_markers_total,
+            r.after.bureaucratic_markers_total);
+
+        box.textContent = '';
+        const head = document.createElement('div');
+        head.className = 'corrector-readability-head';
+        const from = document.createElement('span');
+        from.className = `corrector-level ${this._levelClass(r.before.level)}`;
+        from.textContent = `${r.before.level} ${r.before.average_penalty}`;
+        const arrow = document.createElement('span');
+        arrow.className = 'corrector-readability-arrow';
+        arrow.textContent = '→';
+        const to = document.createElement('span');
+        to.className = `corrector-level ${this._levelClass(r.after.level)}`;
+        to.textContent = `${r.after.level} ${r.after.average_penalty}`;
+        head.append(from, arrow, to);
+        box.appendChild(head);
+
+        if (deltas.length) {
+            const sub = document.createElement('div');
+            sub.className = 'corrector-readability-deltas';
+            sub.textContent = deltas.join(' · ');
+            box.appendChild(sub);
+        }
+        box.classList.remove('hidden');
+    },
+
     _render() {
+        this._renderReadability();
         const before = this._sourceText;
         const after = this._corrected;
         const ops = diffTokens(before, after);

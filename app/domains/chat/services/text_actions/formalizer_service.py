@@ -1,20 +1,29 @@
 """Фича «Формализация нарушения»: раскладка свободного текста по полям карточки.
 
-4 экстрактора D17 (``formalizer_prompts``) читают один и тот же текст параллельно
-(``asyncio.gather``); результаты складываются в поля нарушения проекта
-(established/violated/reasons/measures/responsible/consequences — «Принятые меры»
-раскладываются в поле карточки под «Причинами»). Структуру JSON получаем
-провайдер-агностично (промпт → JSON → разбор), БЕЗ ``response_format``.
+Конвейер D17 целиком, в две стадии. Первая: 4 экстрактора (``formalizer_prompts``)
+читают один и тот же текст параллельно (``asyncio.gather``). Вторая, тоже
+параллельно: сборщик отчёта (``VIOLATION_SYSTEM``) переписывает извлечённое в
+официально-деловой текст, а промпт рекомендаций считает, чего в описании не
+хватает. Раунда ожидания вторая стадия не добавляет — оба вызова идут разом.
+Структуру JSON получаем провайдер-агностично (промпт → JSON → разбор), БЕЗ
+``response_format``.
 
-После экстракторов — 2-й этап: рекомендации «чего не хватает» (промпт D17 берёт на
-вход уже извлечённые поля). Это дисплей-онли подсказки аналитику — едут в ответе,
-но в карточку/экспорт НЕ пишутся (фронт их не применяет).
+Раскладка по полям карточки: «Нарушено» и «Описание» берутся прямо у экстрактора
+сути (норматив и метрики), остальные пять — у сборщика. Списки применяются ТОЛЬКО
+в «Описании»: метрики побулитно расшифровывают сказанное в «Установлено»; прочие
+поля — связный текст, а пришедшие списком лица склеиваются через «; ».
+
+Рекомендации — дисплей-онли подсказки аналитику: едут в ответе, но в карточку и
+экспорт НЕ пишутся (фронт их не применяет).
 
 Отказ отдельного экстрактора/рекомендаций не роняет формализацию: поле просто
 останется пустым, а список рекомендаций — пустым («что LLM выделила — заполняем,
-что не смогла — пусто»). Но отказ ВСЕХ экстракторов — это не пустой результат, а
-недоступный LLM: такой случай отдаётся ``TextActionUnavailableError`` (503), иначе
-лежащий провайдер неотличим от «модель ничего не нашла».
+что не смогла — пусто»). Отказ сборщика тоже не роняет: поля собираются напрямую
+из экстракторов, в той же строковой форме — оформление карточки не должно зависеть
+от того, повезло ли одному вызову. Но отказ ВСЕХ экстракторов — это не пустой
+результат, а недоступный LLM: такой случай отдаётся
+``TextActionUnavailableError`` (503), иначе лежащий провайдер неотличим от
+«модель ничего не нашла».
 
 Цель вызова (клиент + модель) выбирается по плану доступных маршрутов —
 ``llm_route.resolve_target``, как и в чате: иначе формализатор отказывал бы там,
@@ -37,11 +46,17 @@ from app.domains.chat.services.retry import retry_on_transient
 from app.domains.chat.services.text_actions.llm_route import resolve_target
 from app.domains.chat.services.text_actions.formalizer_prompts import (
     CAUSES_SYSTEM,
+    CAUSES_USER,
     CONSEQUENCES_SYSTEM,
+    CONSEQUENCES_USER,
     ESSENCE_SYSTEM,
+    ESSENCE_USER,
     MEASURES_SYSTEM,
+    MEASURES_USER,
     RECOMMENDATIONS_SYSTEM,
-    RECOMMENDATIONS_USER_TEMPLATE,
+    RECOMMENDATIONS_USER,
+    VIOLATION_SYSTEM,
+    VIOLATION_USER,
 )
 from app.domains.chat.services.text_actions.llm_utils import run_json_call
 from app.domains.chat.settings import ChatDomainSettings
@@ -81,6 +96,16 @@ class MeasuresParsed(BaseModel):
     measures: list[str] = Field(default_factory=list)
 
 
+class ViolationParsed(BaseModel):
+    """Разобранный вывод сборщика D17 (зеркало ViolationParser из их schema.py)."""
+
+    violations: str = ""
+    causes: str = ""
+    consequences: str = ""
+    measures: str = ""
+    persons: list[str] = Field(default_factory=list)
+
+
 class RecommendationsParsed(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
@@ -110,12 +135,15 @@ def _text_to_html(value: str) -> str:
     return _NEWLINE_RE.sub("<br>", html.escape(cleaned))
 
 
-def _established_from(essence: EssenceParsed) -> str:
-    """«Установлено» = суть (текст) + метрики (HTML-список, если есть).
+def _join_to_html(items: list[str]) -> str:
+    """Список D17 → строка поля карточки (склейка через «; »).
 
-    Склейка БЕЗ разделителя: `<ul>` — блочный элемент, он и так начинается с
-    новой строки, а голый `\\n` между ними переносом не стал бы."""
-    return _text_to_html(essence.essence) + _list_to_html(essence.metrics)
+    Списки в карточке применяются только в «Описании» — остальные поля связный
+    текст, поэтому массив от модели склеивается детерминированно. Это НЕ то же
+    самое, что чинить пустоту постобработкой: склейка от формулировок модели не
+    зависит, а «пусто или не пусто» зависит — и потому чинится в промпте."""
+    cleaned = [s.strip() for s in items if s and s.strip()]
+    return _text_to_html("; ".join(cleaned)) if cleaned else ""
 
 
 class ViolationFormalizerService:
@@ -163,23 +191,23 @@ class ViolationFormalizerService:
             raise TextActionUnavailableError(_UNAVAILABLE_MESSAGE)
         client, model = target
         extractors = (
-            (EssenceParsed, ESSENCE_SYSTEM),
-            (CausesParsed, CAUSES_SYSTEM),
-            (ConsequencesParsed, CONSEQUENCES_SYSTEM),
-            (MeasuresParsed, MEASURES_SYSTEM),
+            (EssenceParsed, ESSENCE_SYSTEM, ESSENCE_USER),
+            (CausesParsed, CAUSES_SYSTEM, CAUSES_USER),
+            (ConsequencesParsed, CONSEQUENCES_SYSTEM, CONSEQUENCES_USER),
+            (MeasuresParsed, MEASURES_SYSTEM, MEASURES_USER),
         )
         # return_exceptions=True: сбой одного экстрактора не отменяет остальные —
         # разбираем результаты ниже, чтобы отличить пустой разбор от отказа вызова.
         results = await asyncio.gather(
             *(
-                self._extract(client, model, schema_cls, system, text)
-                for schema_cls, system in extractors
+                self._extract(client, model, schema_cls, system, user, text)
+                for schema_cls, system, user in extractors
             ),
             return_exceptions=True,
         )
         parsed = []
         failed = 0
-        for (schema_cls, _), result in zip(extractors, results):
+        for (schema_cls, _, _u), result in zip(extractors, results):
             if isinstance(result, BaseException):
                 failed += 1
                 logger.warning(
@@ -196,33 +224,117 @@ class ViolationFormalizerService:
             )
             raise TextActionUnavailableError(_UNAVAILABLE_MESSAGE)
         essence, causes, consequences, measures = parsed
-        recommendations = await self._recommend(
-            client, model, essence, causes, consequences, measures,
+        # 2-я стадия целиком параллельна: сборщик и рекомендации независимы,
+        # поэтому раунда ожидания против прежнего конвейера не добавляется.
+        violation, recommendations = await asyncio.gather(
+            self._build_violation(
+                client, model, essence, causes, consequences, measures,
+            ),
+            self._recommend(
+                client, model, essence, causes, consequences, measures,
+            ),
         )
+        return self._response(
+            essence, causes, consequences, measures, violation, recommendations,
+        )
+
+    def _response(
+        self,
+        essence: EssenceParsed,
+        causes: CausesParsed,
+        consequences: ConsequencesParsed,
+        measures: MeasuresParsed,
+        violation: "ViolationParsed | None",
+        recommendations: list[str],
+    ) -> FormalizeResponse:
+        """Раскладка результата по полям карточки.
+
+        «Нарушено» и «Описание» всегда из экстрактора сути: норматив сборщик по
+        нашему контракту в текст не вписывает, а метрики — единственный список,
+        который карточка показывает побулитно. Остальные пять полей берутся у
+        сборщика, а при его сбое — напрямую у экстракторов, в той же строковой
+        форме, чтобы оформление не зависело от везения одного вызова."""
+        if violation is not None:
+            established = _text_to_html(violation.violations)
+            reasons = _text_to_html(violation.causes)
+            consequences_html = _text_to_html(violation.consequences)
+            measures_html = _text_to_html(violation.measures)
+            responsible = _join_to_html(violation.persons)
+        else:
+            established = _text_to_html(essence.essence)
+            reasons = _join_to_html(causes.causes)
+            consequences_html = _text_to_html(consequences.consequences)
+            measures_html = _join_to_html(measures.measures)
+            responsible = _join_to_html(causes.persons)
         return FormalizeResponse(
             violated=_text_to_html(essence.norm_doc),
-            established=_established_from(essence),
-            reasons=_list_to_html(causes.causes),
-            responsible=_list_to_html(causes.persons),
-            consequences=_text_to_html(consequences.consequences),
-            measures=_list_to_html(measures.measures),
+            established=established,
+            description=_list_to_html(essence.metrics),
+            reasons=reasons,
+            measures=measures_html,
+            responsible=responsible,
+            consequences=consequences_html,
             recommendations=recommendations,
         )
 
-    async def _extract(self, client, model: str, schema_cls, system: str, text: str):
-        """Один экстрактор: JSON-вызов + валидация. Сбой вызова/разбора отдаётся
-        исключением — решение «пустое поле или авария» принимает ``formalize``,
-        которому видно, упал ли один экстрактор или все сразу."""
+    async def _extract(
+        self, client, model: str, schema_cls, system: str, user: str, text: str,
+    ):
+        """Один экстрактор: JSON-вызов + валидация.
+
+        Раскладка turn'ов — как у D17: входной текст подставляется в system
+        (плейсхолдер ``{query}``), в user остаётся короткий приказ со статической
+        формой JSON. Сбой вызова/разбора отдаётся исключением — решение «пустое
+        поле или авария» принимает ``formalize``, которому видно, упал ли один
+        экстрактор или все сразу."""
         raw = await run_json_call(
             client,
             model=model,
             temperature=self._temperature,
-            system=system,
-            user=text,
+            system=system.format(query=text),
+            user=user,
             retry_call=self._retry_call,
             timeout=self._timeout,
         )
         return schema_cls.model_validate(raw)
+
+    async def _build_violation(
+        self,
+        client,
+        model: str,
+        essence: EssenceParsed,
+        causes: CausesParsed,
+        consequences: ConsequencesParsed,
+        measures: MeasuresParsed,
+    ) -> ViolationParsed | None:
+        """2-я стадия: сборка полей карточки в официально-деловой текст (D17).
+
+        Идёт параллельно рекомендациям, поэтому раунда ожидания не добавляет.
+        Сбой не роняет формализацию — вернём ``None``, и ``_response`` соберёт
+        поля напрямую из экстракторов."""
+        system = VIOLATION_SYSTEM.format(
+            essence=essence.essence,
+            doc_ref=essence.norm_doc,
+            metrics=essence.metrics,
+            causes=causes.causes,
+            persons=causes.persons,
+            consequences=consequences.consequences,
+            measures=measures.measures,
+        )
+        try:
+            raw = await run_json_call(
+                client,
+                model=model,
+                temperature=self._temperature,
+                system=system,
+                user=VIOLATION_USER,
+                retry_call=self._retry_call,
+                timeout=self._timeout,
+            )
+            return ViolationParsed.model_validate(raw)
+        except Exception as e:  # noqa: BLE001 — есть фолбэк на сырые экстракторы
+            logger.warning("Сборка отчёта не выполнена, фолбэк на экстракторы: %s", e)
+            return None
 
     async def _recommend(
         self,
@@ -233,12 +345,12 @@ class ViolationFormalizerService:
         consequences: ConsequencesParsed,
         measures: MeasuresParsed,
     ) -> list[str]:
-        """2-й этап: подсказки аналитику «чего не хватает» по извлечённым полям.
+        """2-я стадия: подсказки аналитику «чего не хватает» по извлечённым полям.
 
         Дисплей-онли — в карточку/экспорт не идут (фронт их не применяет). Сбой не
         роняет формализацию: возвращаем пустой список. Отсекаем пустые и режем до
         ``_MAX_RECOMMENDATIONS``."""
-        user = RECOMMENDATIONS_USER_TEMPLATE.format(
+        system = RECOMMENDATIONS_SYSTEM.format(
             essence=essence.essence,
             norm_doc=essence.norm_doc,
             metrics=essence.metrics,
@@ -252,8 +364,8 @@ class ViolationFormalizerService:
                 client,
                 model=model,
                 temperature=self._temperature,
-                system=RECOMMENDATIONS_SYSTEM,
-                user=user,
+                system=system,
+                user=RECOMMENDATIONS_USER,
                 retry_call=self._retry_call,
                 timeout=self._timeout,
             )

@@ -32,7 +32,7 @@ async def test_correct_calls_llm_with_corrector_prompt():
     ):
         out = await TextCorrectorService(_settings()).correct("исходый тект")
 
-    assert out == "исправлено"
+    assert out.corrected_text == "исправлено"
     kwargs = fake.chat.completions.create.call_args.kwargs
     assert kwargs["temperature"] == 0.1  # корректорская температура
     assert "корректор" in kwargs["messages"][0]["content"]
@@ -53,12 +53,12 @@ async def test_correct_readability_mode_uses_readability_prompt():
     ):
         out = await TextCorrectorService(_settings()).correct("текст", mode="readability")
 
-    assert out == "улучшено"
+    assert out.corrected_text == "улучшено"
     kwargs = fake.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.3  # температура режима читаемости
-    system = kwargs["messages"][0]["content"].lower()
-    assert "читаемость" in system  # промпт улучшения читаемости, не корректорский
-    assert "корректор банковских документов" not in system
+    assert kwargs["temperature"] == 0.1  # температура улучшайзера D17
+    system = kwargs["messages"][0]["content"]
+    assert "Пиши, сокращай" in system  # промпт улучшайзера, не корректорский
+    assert "корректор банковских документов" not in system.lower()
 
 
 async def test_correct_rejects_unknown_mode():
@@ -108,3 +108,61 @@ async def test_correct_uses_model_from_resolved_route():
         await TextCorrectorService(_settings()).correct("текст")
 
     assert fake.chat.completions.create.call_args.kwargs["model"] == "fallback-model"
+
+
+def _llm(content: str):
+    """Мок LLM-клиента, отдающего заданный текст."""
+    fake = AsyncMock()
+    msg = AsyncMock()
+    msg.content = content
+    resp = AsyncMock()
+    resp.choices = [AsyncMock(message=msg)]
+    fake.chat.completions.create = AsyncMock(return_value=resp)
+    return fake
+
+
+_HEAVY = (
+    "В ходе проведения проверки соблюдения порядка ведения бухгалтерского учёта "
+    "организацией не было обеспечено представление подтверждающих документов "
+    "(за 2 квартал 2024 года), в связи с чем следует отметить, что надлежащий "
+    "контроль со стороны соответствующих подразделений весьма затруднён."
+)
+
+
+async def test_fix_mode_has_no_readability_report():
+    """Анализатор меряет канцелярит — к правке букв он отношения не имеет."""
+    with patch(
+        "app.domains.chat.services.text_actions.corrector_service.resolve_target",
+        AsyncMock(return_value=(_llm("исправлено"), "m")),
+    ):
+        out = await TextCorrectorService(_settings()).correct("текст", mode="fix")
+
+    assert out.readability is None
+
+
+async def test_readability_mode_reports_before_and_after():
+    with patch(
+        "app.domains.chat.services.text_actions.corrector_service.resolve_target",
+        AsyncMock(return_value=(_llm("Организация не представила документы."), "m")),
+    ):
+        out = await TextCorrectorService(_settings()).correct(_HEAVY, mode="readability")
+
+    assert out.readability is not None
+    assert out.readability.before.level == "Красный (тяжело)"
+    assert out.readability.after.level == "Зелёный (хорошо)"
+    assert out.readability.before.average_penalty > out.readability.after.average_penalty
+
+
+async def test_readability_report_is_optional_on_analyzer_failure():
+    """Сбой анализатора не роняет корректуру — текст важнее диагностики."""
+    with patch(
+        "app.domains.chat.services.text_actions.corrector_service.resolve_target",
+        AsyncMock(return_value=(_llm("улучшено"), "m")),
+    ), patch(
+        "app.domains.chat.services.text_actions.corrector_service.analyze_for_api",
+        side_effect=RuntimeError("словарь не поднялся"),
+    ):
+        out = await TextCorrectorService(_settings()).correct("текст", mode="readability")
+
+    assert out.corrected_text == "улучшено"
+    assert out.readability is None
