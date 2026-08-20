@@ -79,6 +79,21 @@ test('_resolveFileUrl: http-ссылка (не https) — тоже passthrough',
 });
 
 // ---------------------------------------------------------------------
+// _isPassthroughUrl — общий предикат для _renderImage и _openFileViewer
+// ---------------------------------------------------------------------
+
+test('_isPassthroughUrl: http(s)-ссылка агента — true', () => {
+    assert.equal(ChatRenderer._isPassthroughUrl('https://example.org/f.pdf'), true);
+    assert.equal(ChatRenderer._isPassthroughUrl('http://example.org/f.pdf'), true);
+});
+
+test('_isPassthroughUrl: UUID / data-URL / falsy — false', () => {
+    assert.equal(ChatRenderer._isPassthroughUrl('3fa85f64-5717-4562-b3fc-2c963f66afa6'), false);
+    assert.equal(ChatRenderer._isPassthroughUrl('data:text/plain;base64,QQ=='), false);
+    assert.equal(ChatRenderer._isPassthroughUrl(undefined), false);
+});
+
+// ---------------------------------------------------------------------
 // _renderImage — inline=true только для backend-адреса
 // ---------------------------------------------------------------------
 
@@ -107,6 +122,32 @@ test('_renderImage: явный block.url приоритетнее file_id', () =
         file_id: uuid,
     }));
     assert.equal(img.src, 'https://cdn.example/x.png');
+});
+
+// ---------------------------------------------------------------------
+// _openFileViewer — та же развилка inline=true, симметрично _renderImage
+// (регрессия: ревью нашло, что _openFileViewer строил inlineUrl только по
+// resolved.isDataUrl и приклеивал ?inline=true к http(s)-ссылке агента)
+// ---------------------------------------------------------------------
+
+test('_openFileViewer: UUID backend-адрес (image) получает ?inline=true', () => {
+    const uuid = '3fa85f64-5717-4562-b3fc-2c963f66afa6';
+    const img = withCapturedImg(() => ChatRenderer._openFileViewer({
+        file_id: uuid,
+        mime_type: 'image/png',
+        filename: 'f.png',
+    }));
+    assert.equal(img.src, `http://test/api/v1/chat/files/${uuid}?inline=true`);
+});
+
+test('_openFileViewer: http(s)-ссылка агента (image) остаётся без inline=true (passthrough)', () => {
+    const link = 'https://example.org/f.png';
+    const img = withCapturedImg(() => ChatRenderer._openFileViewer({
+        file_id: link,
+        mime_type: 'image/png',
+        filename: 'f.png',
+    }));
+    assert.equal(img.src, link);
 });
 
 // ---------------------------------------------------------------------

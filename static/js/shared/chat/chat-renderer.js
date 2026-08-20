@@ -869,9 +869,7 @@ export const ChatRenderer = {
         let imgUrl = block.url || '';
         if (!imgUrl && block.file_id) {
             const resolved = this._resolveFileUrl(block.file_id);
-            const isPassthrough = typeof block.file_id === 'string'
-                && (block.file_id.startsWith('http://') || block.file_id.startsWith('https://'));
-            imgUrl = (resolved.isDataUrl || isPassthrough)
+            imgUrl = (resolved.isDataUrl || this._isPassthroughUrl(block.file_id))
                 ? resolved.url
                 : resolved.url + (resolved.url.includes('?') ? '&' : '?') + 'inline=true';
         }
@@ -1029,6 +1027,23 @@ export const ChatRenderer = {
     // ========================================================
 
     /**
+     * Признак http(s)-ссылки агента в ``file_id`` (passthrough, см.
+     * ``_resolveFileUrl``) — в отличие от backend-UUID и data-URL, к такой
+     * ссылке нельзя приписывать query-параметры (``?inline=true``): это чужой
+     * URL, для него нет гарантий формата (например, подписанный URL).
+     * Используется и в ``_renderImage``, и в ``_openFileViewer``, чтобы не
+     * дублировать условие.
+     *
+     * @param {string} fileId — ``file_id`` блока чата
+     * @returns {boolean}
+     * @private
+     */
+    _isPassthroughUrl(fileId) {
+        return typeof fileId === 'string'
+            && (fileId.startsWith('http://') || fileId.startsWith('https://'));
+    },
+
+    /**
      * Распознаёт data-URL в ``file_id`` и возвращает подходящий URL.
      *
      * Внешний бот (nanobot / nanobot-ai) может передавать вложения в шину
@@ -1050,7 +1065,7 @@ export const ChatRenderer = {
         if (typeof fileId === 'string' && fileId.startsWith('data:')) {
             return { url: fileId, isDataUrl: true };
         }
-        if (typeof fileId === 'string' && (fileId.startsWith('http://') || fileId.startsWith('https://'))) {
+        if (this._isPassthroughUrl(fileId)) {
             // Ссылка от агента (NanoBot кладёт http(s)-URL в file_id как есть) —
             // отдаём напрямую, backend-эндпоинт для неё вернул бы 404.
             return { url: fileId, isDataUrl: false };
@@ -1383,11 +1398,13 @@ export const ChatRenderer = {
         // Удаляем предыдущий просмотрщик, если он есть
         ChatRenderer._closeFileViewer();
 
-const resolved = ChatRenderer._resolveFileUrl(block.file_id);
+        const resolved = ChatRenderer._resolveFileUrl(block.file_id);
         const fileUrl = resolved.url;
         // ``inline=true`` валиден только для backend-эндпоинта — для data-URL
-        // добавлять query нельзя (это часть base64-payload'а, она не парсится).
-        const inlineUrl = resolved.isDataUrl
+        // и http(s)-ссылки агента (passthrough, см. _isPassthroughUrl)
+        // добавлять query нельзя: для data-URL это часть base64-payload'а, для
+        // внешней ссылки — риск сломать её (например, подписанный URL).
+        const inlineUrl = (resolved.isDataUrl || ChatRenderer._isPassthroughUrl(block.file_id))
             ? fileUrl
             : fileUrl + (fileUrl.includes('?') ? '&' : '?') + 'inline=true';
         const mime = (block.mime_type || '').toLowerCase();
@@ -1472,11 +1489,18 @@ const resolved = ChatRenderer._resolveFileUrl(block.file_id);
                 pre.textContent = 'Загрузка...';
                 body.appendChild(pre);
 
+                // http(s)-ссылка агента (passthrough) — чужой URL: не приписываем
+                // ?inline=true (риск сломать URL) и не шлём туда наши auth-заголовки
+                // (риск утечки токена на внешний хост).
+                const isPassthrough = ChatRenderer._isPassthroughUrl(block.file_id);
                 const fetchOpts = {};
-                if (typeof AuthManager !== 'undefined' && AuthManager.getAuthHeaders) {
+                if (!isPassthrough && typeof AuthManager !== 'undefined' && AuthManager.getAuthHeaders) {
                     fetchOpts.headers = AuthManager.getAuthHeaders();
                 }
-                fetch(resolvedForText.url + '?inline=true', fetchOpts)
+                const fetchUrl = isPassthrough
+                    ? resolvedForText.url
+                    : resolvedForText.url + '?inline=true';
+                fetch(fetchUrl, fetchOpts)
                     .then(r => r.text())
                     .then(text => { pre.textContent = text; })
                     .catch(() => { pre.textContent = 'Ошибка загрузки файла'; });
