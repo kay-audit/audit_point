@@ -273,7 +273,7 @@ DISTRIBUTED BY (chat_id);                              -- на GP; см. greenpl
 
 ### 6.1. Протокол обмена
 
-- Строка-**вопрос** от AW: `role='user'`, `status='pending'`, `reply_to=NULL`, `buttons=[]`, `media={}` или `[]`. `id` = UUID, который AW сохраняет в `chat_messages.agent_ref`.
+- Строка-**вопрос** от AW: `role='user'`, `status='pending'`, `reply_to=NULL`, `buttons=[]`, `media=[]` (AW всегда пишет пустой массив, не `{}` — `insert_question`, Task 5). `id` = UUID, который AW сохраняет в `chat_messages.agent_ref`.
 - Строка-**ответ** от агента: `role='assistant'`, `reply_to = id строки-вопроса`, `content` = финальный текст, `status` переходит `processing → completed` (или `failed`).
 - Агент **обязан** переводить `pending → processing` при взятии в работу. Без этого поллер AW считает, что агент не работает (`phase='pending'`, `claim_timeout_sec=1800`).
 - Агент **обязан** обновлять `updated_at` на каждой дельте (`metadata.reasoning` стримится). Без этого поллер решит, что агент завис (`phase='processing'`, `answer_timeout_sec=1800`).
@@ -288,7 +288,7 @@ DISTRIBUTED BY (chat_id);                              -- на GP; см. greenpl
 - `error` — **повторяемая** ошибка: агент вернёт вопрос в пул и переобработает его (счётчик `retry_count` в `metadata`, до `max_stuck_retries` раз на стороне агента), удалив свою строку-ответ. AW при виде `status='error'` без строки-ответа просто ждёт — не финализирует draft (`_BUS_PENDING_STATUSES` в `AgentChannelService.poll_once` включает `error`).
 - `failed` — терминальная ошибка, ответ не пишется. AW финализирует draft-сообщение error-блоком.
 
-Возврат вопроса `processing → pending` (reclaim истёкшего lease агента либо повторяемая ошибка) для AW — признак жизни: он продлевает answer-таймер, но не более `_MAX_PENDING_REVERSIONS` (3) эпизодов подряд на одну подписку — счёт идёт по эпизодам смены статуса, а не по тикам (`AgentChannelPoller`). После исчерпания кап дальнейшие reclaim'ы окно уже не продлевают — защита от бесконечного продления флаппингом чужой таблицы.
+Возврат вопроса `processing → pending` (reclaim истёкшего lease агента либо повторяемая ошибка) для AW — признак жизни: он продлевает answer-таймер, но не более `_MAX_PENDING_REVERSIONS` (3) эпизодов за всю жизнь подписки — счёт идёт по эпизодам смены статуса, а не по тикам (`AgentChannelPoller`), и не сбрасывается. После исчерпания кап дальнейшие reclaim'ы окно уже не продлевают — защита от бесконечного продления флаппингом чужой таблицы.
 
 ### 6.3. `media` — массив/объект файлов (входящие от агента)
 
@@ -317,7 +317,8 @@ DISTRIBUTED BY (chat_id);                              -- на GP; см. greenpl
 
 **Что уходит в блок чата** (`_entry_to_block` для `kind` ≠ `data`; `kind='data'` материализуется — см. §6.3.1):
 
-- `kind='data'` (после материализации) или `kind='uuid'`/`kind='http'` с непустым `mime_type`, начинающимся на `image/`: `{"type":"image","file_id":...,"alt":filename}` — **без** `mime_type`/`filename` в самом блоке (схема `ImageBlock` их не знает).
+- `kind='data'` (после материализации) или `kind='uuid'` с непустым `mime_type`, начинающимся на `image/`: `{"type":"image","file_id":...,"alt":filename}` — **без** `mime_type`/`filename` в самом блоке (схема `ImageBlock` их не знает).
+- `kind='http'` — **всегда** `{"type":"file",...}`, даже при `mime_type` `image/*`: CSP ПРОМа (`img-src 'self' data: blob:`, enforce) блокирует `<img src>` на внешний http(s)-хост, картинка была бы гарантированно битой. Внешняя ссылка агента отображается карточкой файла без inline-предпросмотра, скачивание — прямым переходом по ссылке.
 - Прочий `mime_type` (или `kind='data'` без картинки): `{"type":"file","file_id":...,"filename":...,"mime_type":...,"file_size":...}`.
 - `kind='other'`/`'empty'`: карточка **без** `file_id` — фронт не рисует кнопок «Предпросмотр»/«Скачать» (битый путь агента не превращается в 404-ссылку).
 
