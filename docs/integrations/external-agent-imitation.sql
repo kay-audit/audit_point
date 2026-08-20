@@ -30,7 +30,7 @@
 --                        НА СТРОКЕ-ОТВЕТЕ — наличие ответа с
 --                        reply_to=<id вопроса> и есть сигнал «ответ готов»
 --    • role            = 'user' (вопрос от AW) | 'assistant' (ответ агента)
---                        | 'system'; CHECK владельца роль 'tool' НЕ допускает
+--                        | 'system' | 'tool' (служебные сообщения цикла агента)
 --    • metadata        = JSONB: у вопроса ключи {mode, kb} (mode = agent_mode
 --                        запроса: 'adaptive' | 'always'; kb по умолчанию 'oarb');
 --                        у ответа ключ
@@ -41,10 +41,16 @@
 --    • media           = JSONB: [{file_id, filename, mime_type, file_size}];
 --                        file_id — либо id строки в chat_files, либо инлайн
 --                        data-URL `data:<mime>;base64,<...>` (так отдаёт
---                        nanobot); filename необязателен, см. сценарий 3
---    • status          = pending | processing | completed | failed
---                        (CHECK владельца, подтверждённая спека; 'timeout'
---                        и 'error' ЗАПРЕЩЕНЫ — записи статуса от AW best-effort)
+--                        nanobot); data-URL AW материализует в chat_files на
+--                        финализации ответа (лимит
+--                        CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE, дефолт
+--                        512 МБ); filename рекомендован явным — см. сценарий 3
+--    • status          = pending | processing | completed | error | failed
+--                        (словарь NanoBot 2.3; 'timeout' ЗАПРЕЩЁН — записи
+--                        статуса от AW best-effort). 'error' — ПОВТОРЯЕМАЯ
+--                        ошибка: агент вернёт вопрос в пул и переобработает
+--                        его, удалив свою строку-ответ. Терминален только
+--                        'failed'
 --    У владельца на колонках есть DEFAULT'ы (id, status, таймстемпы, JSONB),
 --    но AW на них не полагается и передаёт значения явно.
 --
@@ -62,13 +68,24 @@
 --       «В очереди: впереди N запросов» — N = число pending-вопросов всех пользователей (включая свои) с created_at раньше.
 --    Признаки жизни, продлевающие claim-таймер (30 мин idle для pending):
 --       уменьшение N, переход pending→processing.
---    Признаки жизни, продлевающие answer-таймер (10 мин idle для processing):
---       рост metadata.reasoning на строке-ответа, изменение её updated_at.
+--    Признаки жизни, продлевающие answer-таймер (30 мин idle для processing):
+--       рост metadata.reasoning на строке-ответа, изменение её updated_at,
+--       возврат вопроса в 'pending'/'error' с удалением ответа (reclaim,
+--       не более 3 ЭПИЗОДОВ; залипший статус кап не расходует).
 --    Сообщения одного chat_id агент НЕ обрабатывает параллельно — ждёт
 --    завершения активного, затем берёт следующее из той же беседы.
+--    Повторяемая ошибка и reclaim: при сбое агент ставит вопросу
+--    status='error' (retry_count/error в metadata) и удаляет строку-ответ —
+--    через error_retry_delay задача вернётся в пул. Если у воркера истёк
+--    lease (public.agent_worker_claims, см. раздел 12), вопрос точно так же
+--    возвращается в 'pending' с удалением ответа. Для AW и то и другое —
+--    признак жизни: подписка живёт, idle-таймер сбрасывается (откат фазы
+--    processing → pending засчитывается не более 3 ЭПИЗОДОВ — на смене
+--    статуса, а не каждый тик залипшего 'error').
 --    Idle-таймауты двухфазные, отсчёт от последнего признака жизни:
 --    30 мин для pending (CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800) и
---    10 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600);
+--    30 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800 —
+--    покрывает 3 ретрая NanoBot с backoff'ом);
 --    по истечении AW сам закрывает зависший draft в chat_messages и
 --    best-effort ставит вопросу status='failed'.
 --
@@ -89,6 +106,8 @@
 --                              metadata.reasoning, фронт допечатывает дельты; финализация
 --   11. ВИТРИНА MARKDOWN   — ответ со всеми основными md-элементами (заголовки,
 --                              списки, таблица, код, цитата) для проверки рендера
+--   12. АРЕНДА ЗАДАЧ        — DDL public.agent_worker_claims и имитация reclaim'а
+--                              по истёкшему lease (вопрос возвращается в pending)
 --
 --  ВАЖНО — GP-ограничения (Greenplum 6.x = PostgreSQL 9.4):
 --    БЕЗ ON CONFLICT DO UPDATE, БЕЗ gen_random_uuid(), БЕЗ jsonb_set,
@@ -121,15 +140,19 @@ LIMIT 20;
 --   pending     — вопрос вставлен AW, агент ещё не взял.
 --   processing  — агент claim'ит вопрос и работает над ответом.
 --   completed   — агент вставил ответ (reply_to=<id вопроса> НА ОТВЕТЕ) и закрыл вопрос.
---   failed      — агент зафиксировал ошибку; этим же статусом AW best-effort
---                 закрывает вопрос по таймауту (слот лимита дополнительно
---                 страхует отсечка по возрасту в count_active_for_user).
+--   error       — ПОВТОРЯЕМАЯ ошибка: агент снёс свою строку-ответ и вернёт
+--                 задачу в пул через error_retry_delay (metadata.retry_count /
+--                 metadata.error). AW НЕ закрывает draft — продолжает ждать.
+--   failed      — терминальная ошибка (retry_count исчерпан); этим же статусом
+--                 AW best-effort закрывает вопрос по таймауту (слот лимита
+--                 дополнительно страхует отсечка по возрасту в
+--                 count_active_for_user).
 --
--- Для наблюдения «всё, что в работе»:
+-- Для наблюдения «всё, что в работе» ('error' тоже в работе — агент повторит):
 SELECT id, chat_id, content, status, created_at
 FROM chat_agent_messages_bus
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
 ORDER BY created_at DESC
 LIMIT 20;
 
@@ -236,22 +259,17 @@ END$$;
 --      иначе GET /api/v1/chat/files/{file_id} вернёт 404. Вариант для файлов,
 --      которые агент действительно кладёт в хранилище (блок ниже).
 --   Б. инлайн data-URL `data:<mime>;base64,<payload>` — так отдаёт файлы
---      nanobot. В chat_files ничего не пишется, AW подставляет data-URL в
---      href/src напрямую и в files-эндпоинт не ходит (вариант 3Б в конце
+--      nanobot. AW материализует его в chat_files на финализации ответа
+--      (см. materialize_media_entries): в блок чата уходит UUID из chat_files,
+--      история беседы data-URL'ами не раздувается (вариант 3Б в конце
 --      раздела).
 --
--- filename НЕобязателен. Если его нет, AW восстанавливает имя по цепочке:
--- имя файла, упомянутое в тексте ответа (сопоставление с media по порядку
--- следования) → mime_type → mime из самого data-URL → «Файл» без расширения.
---
--- ВНИМАНИЕ, два ограничения распознавания имени из текста:
---   • только ЛАТИНИЦА и цифры — регулярка построена на \w без флага `u`,
---     кириллическое «отчёт.txt» в тексте НЕ распознаётся;
---   • работает только для истории (перезагрузка страницы). В живом ответе
---     блоки печатаются через typeOutBlocks/typeOutSingleBlock, куда подсказка
---     имени не передаётся — там имя берётся сразу из mime_type.
--- Практический вывод для агента: если имя важно (особенно кириллическое) —
--- передавай filename в media явно, не рассчитывай на текст.
+-- filename рекомендован явным. Если его нет/пустой/"."/".." — AW синтезирует
+-- «file_<idx><ext>», где ext подобран по mime_type (mimetypes.guess_extension);
+-- никакого распознавания имени из текста ответа не происходит — это
+-- единственный фолбэк. MIME входящих файлов агента whitelist'ом не
+-- ограничивается (в отличие от аплоада через UI): скачивание в любом случае
+-- отдаётся как application/octet-stream + X-Content-Type-Options: nosniff.
 --
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 -- Блок сам заливает реально скачиваемый TXT-файл в chat_files и связывает его
@@ -312,10 +330,12 @@ END$$;
 
 -- ── 3Б. Тот же сценарий, но файл инлайном в data-URL (формат nanobot) ───────
 --
--- Ничего не пишется в chat_files: содержимое едет прямо в file_id. Здесь же
--- проверяется восстановление имени — filename в media НЕ передан, имя
--- «report.txt» AW возьмёт из текста ответа. Имя латиницей намеренно: см.
--- ограничения распознавания выше.
+-- Содержимое едет прямо в file_id (data-URL). AW материализует его в
+-- chat_files на финализации ответа (materialize_media_entries) —
+-- content-блок уходит в БД уже с UUID, а не с инлайн-base64. filename
+-- передан явно ('report.txt') — рекомендуемый способ; без него AW
+-- синтезировал бы «file_0.txt» по mime_type (никакого распознавания имени
+-- из текста ответа не происходит, см. пояснение к сценарию 3 выше).
 -- Замени ТОЛЬКО <QUESTION_ID>.
 
 DO $$
@@ -324,9 +344,10 @@ DECLARE
     a_id     uuid := md5(random()::text || clock_timestamp()::text)::uuid;
     -- Без пробела после ';' — data-URL не допускает пробелов в заголовке.
     f_mime   text := 'text/plain;charset=utf-8';
+    f_name   text := 'report.txt';
     f_body   bytea := convert_to(
                   'Сводный отчёт по КМ-12-32141.' || E'\n' ||
-                  'Файл доставлен инлайном, без chat_files.', 'UTF8');
+                  'Файл доставлен инлайном, материализуется в chat_files при финализации.', 'UTF8');
     v_chat   text;
     v_user   text;
 BEGIN
@@ -338,13 +359,14 @@ BEGIN
         (id, chat_id, user_id, role,
          content, media, reply_to, status, created_at, updated_at)
     VALUES (a_id, v_chat, v_user, 'assistant',
-            'Сформировал отчёт, прикладываю report.txt:',
+            'Сформировал отчёт, прикладываю ' || f_name || ':',
             jsonb_build_array(
                 jsonb_build_object(
                     -- replace(): encode() в PG переносит строку каждые 76
                     -- символов, в data-URL переносы не нужны
                     'file_id',   'data:' || f_mime || ';base64,'
                                  || replace(encode(f_body, 'base64'), E'\n', ''),
+                    'filename',  f_name,
                     'mime_type', f_mime,
                     'file_size', octet_length(f_body)
                 )
@@ -357,9 +379,11 @@ BEGIN
     WHERE id = q_id;
 END$$;
 
--- Проверка в UI: иконка текстового документа, «Скачать» отдаёт файл без
--- обращения к /api/v1/chat/files/. Имя карточки: в живом ответе «file.txt»
--- (из mime_type), после перезагрузки страницы — «report.txt» (из текста).
+-- Проверка в UI: иконка текстового документа, имя «report.txt», «Скачать»
+-- уходит через GET /api/v1/chat/files/{file_id} — на finalize AW уже
+-- материализовал data-URL в chat_files.
+-- SELECT filename, mime_type, file_size FROM t_db_oarb_audit_act_chat_files
+-- ORDER BY created_at DESC LIMIT 1;  -- проверить материализованную запись
 
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -369,6 +393,7 @@ END$$;
 -- Можно вставить строку-ответ со status='failed' и текстом ошибки, либо просто
 -- закрыть вопрос со status='failed' без ответа — AW в обоих случаях покажет
 -- error-блок (во втором — стандартный текст «Внешний агент вернул ошибку»).
+-- ВНИМАНИЕ: терминален только 'failed'. Для ПОВТОРЯЕМОЙ ошибки — вариант В.
 -- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
 
 -- Вариант А — только закрыть вопрос (AW покажет стандартное сообщение об ошибке):
@@ -403,6 +428,35 @@ BEGIN
 END$$;
 
 
+-- Вариант В — ПОВТОРЯЕМАЯ ошибка (status='error'): агент сносит свою
+-- строку-ответ и вернёт задачу в пул через error_retry_delay. AW черновик НЕ
+-- закрывает — подписка живёт, idle-таймер сбрасывается, в логах появляется
+-- «вопрос … в состоянии 'error' … ждём повторной обработки агентом».
+-- Проверка: после этого блока завершить сценарием 1 — ответ доедет до UI.
+DO $$
+DECLARE
+    q_id  uuid := '<QUESTION_ID>';   -- ← подставь сюда
+    v_try int;
+BEGIN
+    -- Агент удаляет свою строку-ответ (если успел её создать).
+    DELETE FROM chat_agent_messages_bus WHERE reply_to = q_id AND role = 'assistant';
+
+    SELECT COALESCE((metadata->>'retry_count')::int, 0) + 1 INTO v_try
+    FROM chat_agent_messages_bus WHERE id = q_id;
+
+    -- jsonb_set и оператор `jsonb || jsonb` — PG 9.5+, в GP 6.x их нет:
+    -- пересобираем metadata вопроса целиком из текстового литерала.
+    UPDATE chat_agent_messages_bus
+    SET status     = 'error',
+        metadata   = ('{"mode": "'  || COALESCE(metadata->>'mode', 'always')
+                   || '", "kb": "'  || COALESCE(metadata->>'kb', 'oarb')
+                   || '", "retry_count": ' || v_try
+                   || ', "error": "dispatch_error"}')::jsonb,
+        updated_at = now()
+    WHERE id = q_id;
+END$$;
+
+
 -- ────────────────────────────────────────────────────────────────────────────
 -- 5. СЦЕНАРИЙ "агент думает" (промежуточный статус)
 -- ────────────────────────────────────────────────────────────────────────────
@@ -432,13 +486,13 @@ FROM chat_agent_messages_bus
 GROUP BY role, status
 ORDER BY role, status;
 
--- Самые старые pending (потенциально зависшие):
-SELECT id, chat_id, user_id, content,
+-- Самые старые незавершённые вопросы (потенциально зависшие):
+SELECT id, chat_id, user_id, content, status,
        now() - created_at AS age,
        created_at
 FROM chat_agent_messages_bus
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
 ORDER BY created_at ASC
 LIMIT 20;
 
@@ -492,18 +546,21 @@ WHERE status IN ('completed', 'failed')
 -- (PG обычно справляется автовакуумом, но не помешает):
 -- VACUUM ANALYZE chat_agent_messages_bus;
 
--- Зависшие processing/pending дольше 2 часов — ручное закрытие:
+-- Зависшие pending/processing/error дольше 2 часов — ручное закрытие:
 -- (AW закрывает draft в chat_messages сам по idle-таймауту —
 -- 30 мин для pending (CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC=1800),
--- 10 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=600) —
+-- 30 мин для processing (CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC=1800) —
 -- и best-effort ставит вопросу 'failed';
--- если запись не прошла, строки остаются в pending —
--- закрываем вручную тем же 'failed' из словаря CHECK'а владельца.)
+-- если запись не прошла, строки остаются в исходном статусе —
+-- закрываем вручную 'failed' из словаря владельца.
+-- 'error' в фильтре обязателен: он НЕ терминальный (агент собирался повторить
+-- задачу), поэтому залипшие error-строки без него остались бы невидимы для
+-- ручной уборки и висели бы в шине вечно.)
 UPDATE chat_agent_messages_bus
 SET status     = 'failed',
     updated_at = now()
 WHERE role = 'user'
-  AND status IN ('pending', 'processing')
+  AND status IN ('pending', 'processing', 'error')
   AND created_at < now() - INTERVAL '2 hours';
 
 
@@ -612,7 +669,7 @@ WHERE id     = '<QUESTION_ID>'
 
 -- ── После этого UPDATE фронт покажет «Агент работает над ответом…»
 -- ── вместо строки с позицией в очереди. Поллер зафиксировал переход
--- ── pending→processing как признак жизни и продлил answer-таймер (10 мин idle).
+-- ── pending→processing как признак жизни и продлил answer-таймер (30 мин idle).
 -- ── Далее — сценарий 10 (порционный reasoning) или 1/2/3 (сразу ответить).
 
 
@@ -623,7 +680,7 @@ WHERE id     = '<QUESTION_ID>'
 -- Цель: наблюдать, как фронт допечатывает рассуждения агента по мере их роста.
 -- AW поллит строку-ответ (role='assistant', reply_to=<id вопроса>) и при каждом
 -- обновлении updated_at / росте metadata.reasoning отображает новый фрагмент.
--- Изменение updated_at — признак жизни, продлевающий answer-таймер (10 мин idle).
+-- Изменение updated_at — признак жизни, продлевающий answer-таймер (30 мин idle).
 --
 -- ВАЖНО: сценарий рассчитан на PostgreSQL (dev-имитация). jsonb_set() недоступен
 -- в Greenplum 6.x — но шина в проде принадлежит агенту и это не нужно там руками.
@@ -817,3 +874,78 @@ END$$;
 -- ── чекбоксы ☑/☐, таблица в пузыре, fenced-код с цветной подсветкой hljs
 -- ── (кнопки «Копировать» нет — это код внутри text-блока, а не отдельный
 -- ── code-блок), цитата, линия. Reasoning над ответом — тоже с markdown.
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 12. АРЕНДА ЗАДАЧ ВОРКЕРАМИ (public.agent_worker_claims) и reclaim
+-- ────────────────────────────────────────────────────────────────────────────
+--
+-- Таблица принадлежит стороне агента (NanoBot, класс PostgresChannel) и
+-- приложением НЕ создаётся и НЕ читается — она лежит здесь, чтобы дев-стенд
+-- можно было поднять целиком и воспроизвести reclaim по истёкшему lease.
+-- Схема в DDL ниже — `public` (как у владельца); на GP подставь схему
+-- имитации (значение DATABASE__GP__SCHEMA, в .env.dev —
+-- s_grnplm_ld_audit_da_project_4).
+--
+-- Инвариант: задача обрабатывается воркером (status='processing')  ⇔
+--            существует ровно одна claim-запись для task_id (с живым lease).
+-- PK (task_id) — жёсткая гарантия эксклюзивности: два INSERT'а с одним
+-- task_id невозможны (второй падает на unique-индексе), поэтому одна задача
+-- физически не может быть захвачена двумя воркерами.
+-- Индексов сверх PK НЕТ сознательно (решение владельца — в долг).
+
+CREATE TABLE IF NOT EXISTS public.agent_worker_claims (
+    task_id     UUID NOT NULL PRIMARY KEY,   -- = chat_agent_messages_bus.id
+    worker_id   TEXT NOT NULL,               -- идентификатор воркера ({host}:{pid}:{rand})
+    claimed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until TIMESTAMPTZ NOT NULL,        -- продлевается heartbeat'ом воркера
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+-- Клауза только для Greenplum; на PostgreSQL строку ниже удалить,
+-- а точку с запятой перенести на закрывающую скобку.
+DISTRIBUTED BY (task_id);
+
+COMMENT ON TABLE  public.agent_worker_claims IS 'Аренда задач воркерами PostgresChannel. PK(task_id) гарантирует, что одна задача обрабатывается ровно одним воркером; lease_until продлевается heartbeat воркера и по истечении возвращает задачу в пул.';
+COMMENT ON COLUMN public.agent_worker_claims.task_id     IS 'PK — ID задачи (= chat_agent_messages_bus.id). Два INSERT с одним task_id невозможны.';
+COMMENT ON COLUMN public.agent_worker_claims.worker_id   IS 'Идентификатор воркера, держащего аренду ({hostname}:{pid}:{rand8}).';
+COMMENT ON COLUMN public.agent_worker_claims.claimed_at  IS 'Момент захвата аренды.';
+COMMENT ON COLUMN public.agent_worker_claims.lease_until IS 'Срок жизни аренды; продлевается heartbeat воркера; после истечения задача возвращается в пул (reclaim).';
+COMMENT ON COLUMN public.agent_worker_claims.created_at  IS 'Время создания записи аренды.';
+
+-- ── Имитация claim'а: воркер взял вопрос в работу на 5 минут.
+-- Замени ТОЛЬКО <QUESTION_ID> (id строки-вопроса из запроса 0).
+INSERT INTO public.agent_worker_claims (task_id, worker_id, claimed_at, lease_until, created_at)
+VALUES ('<QUESTION_ID>', 'devhost:1234:ab12cd34', now(), now() + interval '5 minutes', now());
+
+UPDATE chat_agent_messages_bus
+SET status     = 'processing',
+    updated_at = now()
+WHERE id = '<QUESTION_ID>';
+
+-- ── Имитация RECLAIM'а: lease истёк, воркер не отозвался. NanoBot удаляет
+-- ── claim-запись и свою строку-ответ, возвращая вопрос в пул ('pending').
+-- ── Для AW это ПРИЗНАК ЖИЗНИ: подписка живёт, фаза откатывается
+-- ── processing → pending, idle-таймер сбрасывается. Засчитывается не более
+-- ── 3 ЭПИЗОДОВ (_MAX_PENDING_REVERSIONS в agent_channel_poller.py) —
+-- ── защита от бесконечного продления флаппингом чужой таблицы.
+DO $$
+DECLARE
+    q_id uuid := '<QUESTION_ID>';   -- ← подставь сюда
+BEGIN
+    DELETE FROM public.agent_worker_claims WHERE task_id = q_id;
+    DELETE FROM chat_agent_messages_bus WHERE reply_to = q_id AND role = 'assistant';
+
+    UPDATE chat_agent_messages_bus
+    SET status     = 'pending',
+        updated_at = now()
+    WHERE id = q_id;
+END$$;
+
+-- ── Диагностика аренд: кто что держит и не протух ли lease.
+SELECT c.task_id, c.worker_id, c.claimed_at, c.lease_until,
+       (c.lease_until < now()) AS lease_expired,
+       b.status AS question_status
+FROM public.agent_worker_claims c
+LEFT JOIN chat_agent_messages_bus b ON b.id = c.task_id
+ORDER BY c.claimed_at DESC
+LIMIT 50;

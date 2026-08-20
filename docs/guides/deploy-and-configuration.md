@@ -260,7 +260,7 @@ settings = get_settings()
 settings.app_title                    # "Audit Workstation"
 settings.database.type                # "postgresql"
 settings.server.host                  # "0.0.0.0"
-settings.security.max_request_size    # 10485760
+settings.security.max_request_size    # 545259520
 # Доменные настройки чата (через settings_registry)
 from app.core.settings_registry import get as get_domain_settings
 from app.domains.chat.settings import ChatDomainSettings
@@ -289,7 +289,7 @@ DATABASE__PASSWORD=secret_password
 REDIS__HOST=127.0.0.1
 REDIS__PORT=6379
 
-SECURITY__MAX_REQUEST_SIZE=10485760
+SECURITY__MAX_REQUEST_SIZE=545259520
 SECURITY__RATE_LIMIT_PER_MINUTE=1024
 
 # AI-чат (опционально)
@@ -523,7 +523,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 
 | Переменная | Тип | По умолчанию | Описание |
 |-----------|-----|-------------|----------|
-| `SECURITY__MAX_REQUEST_SIZE` | int | `10485760` | Макс. размер запроса (байт) |
+| `SECURITY__MAX_REQUEST_SIZE` | int | `545259520` | Макс. размер запроса (байт), 520 МБ — согласован с лимитом вложения чата (512 МБ) плюс запас на multipart-обвязку |
 | `SECURITY__RATE_LIMIT_PER_MINUTE` | int | `1024` | Лимит запросов/мин на IP |
 | `SECURITY__MAX_TRACKED_IPS` | int | `100` | Макс. отслеживаемых IP |
 | `SECURITY__RATE_LIMIT_TTL` | int | `120` | TTL метрик (сек) |
@@ -647,8 +647,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__AGENT_CHANNEL__POLL_MAX_INTERVAL_SEC` | float | `10.0` | Максимальный интервал polling (при тишине от агента) |
 | `CHAT__AGENT_CHANNEL__POLL_BACKOFF_MULTIPLIER` | float | `1.5` | Шаг роста интервала при пустом тике (> 1.0) |
 | `CHAT__AGENT_CHANNEL__CLAIM_TIMEOUT_SEC` | int | `1800` | Idle-таймаут фазы `pending` (агент ещё не взял вопрос в работу); по истечении `mark_timeout(reason='claim')` |
-| `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` | int | `600` | Idle-таймаут фазы `processing` (агент взял, но ответ не пришёл); по истечении `mark_timeout(reason='answer')` |
+| `CHAT__AGENT_CHANNEL__ANSWER_TIMEOUT_SEC` | int | `1800` | Idle-таймаут фазы `processing` (агент взял, но ответ не пришёл); по истечении `mark_timeout(reason='answer')` |
 | `CHAT__AGENT_CHANNEL__MAX_BLOCK_TEXT_SIZE` | int | `262144` | Лимит размера текста блока (`reasoning`/`text`) от агента в UTF-8 байт. Превышение → блок обрезается с маркером `…[обрезано]` + WARNING-лог. Защищает БД / фронт от malicious-агента |
+| `CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE` | int | `536870912` | Лимит размера файла-вложения шины (512 МБ), обе стороны: входящее data-URL от агента материализуется в `chat_files` только если укладывается в лимит (иначе error-блок про конкретный файл), исходящее вложение из `chat_files` в `bus.media` пропускается с warning'ом при превышении |
 
 > **Удалён** прежний неймспейс `CHAT__AGENT_BRIDGE__*` (старая 3-табличная шина). Если переменные остались в `.env` — игнорируются без ошибки (модели Settings используют `extra="ignore"`).
 
@@ -658,9 +659,9 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 |-----------|-----|-------------|----------|
 | `CHAT__RATE_LIMIT_MESSAGES_PER_MINUTE_PER_USER` | int | `10` | Лимит POST `/messages` на пользователя в минуту (sliding window 60 сек) |
 | `CHAT__MAX_PARALLEL_STREAMS_PER_USER` | int | `3` | Макс. одновременных запросов к внешнему агенту на пользователя. При превышении `submit` бросает `ChatLimitError` → HTTP 422 |
-| `CHAT__MAX_FILE_SIZE` | int | `10485760` | Макс. размер файла (байт) |
+| `CHAT__MAX_FILE_SIZE` | int | `536870912` | Макс. размер файла (байт), 512 МБ — согласован с `CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE` |
 | `CHAT__MAX_FILES_PER_MESSAGE` | int | `5` | Макс. файлов в сообщении |
-| `CHAT__MAX_TOTAL_FILE_SIZE` | int | `31457280` | Макс. суммарный размер файлов в сообщении (байт) |
+| `CHAT__MAX_TOTAL_FILE_SIZE` | int | `536870912` | Макс. суммарный размер файлов в сообщении (байт), 512 МБ |
 | `CHAT__ALLOWED_MIME_TYPES` | JSON-list | (см. §9.4.2) | Whitelist точных MIME-типов; подстановки `*` запрещены |
 | `CHAT__MAX_CONVERSATIONS_PER_USER` | int | `100` | Макс. разговоров на пользователя |
 | `CHAT__MAX_MESSAGES_PER_CONVERSATION` | int | `500` | Макс. сообщений в разговоре |

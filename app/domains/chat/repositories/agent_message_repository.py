@@ -1,5 +1,6 @@
 """Репозиторий bus-таблицы chat_agent_messages_bus (канал к внешнему агенту)."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -13,6 +14,14 @@ logger = logging.getLogger("audit_workstation.domains.chat.repo.agent_message")
 
 # Поля, хранящиеся как JSONB и требующие десериализации при чтении.
 _JSONB_FIELDS = ("media", "metadata", "buttons")
+
+# C1: колонки строки шины БЕЗ media. media может нести base64-вложение в
+# сотни МБ и читается отдельным разовым get_media_by_uid при финализации —
+# в горячий опрос (поллер каждые 2-10 с, браузер каждые 1.5 с) не попадает.
+_ROW_COLUMNS_NO_MEDIA = (
+    "id, chat_id, user_id, role, content, metadata, reply_to, buttons, "
+    "status, created_at, updated_at"
+)
 
 
 class AgentMessageRepository(BaseRepository):
@@ -76,18 +85,19 @@ class AgentMessageRepository(BaseRepository):
 
         ``id`` — uid сообщения-вопроса (его же хранит ``chat_messages.agent_ref``).
         created_at/updated_at передаются явно: таблица чужая, DEFAULT'ы на её
-        стороне не гарантированы, а колонки NOT NULL. media/buttons на
-        стороне владельца тоже NOT NULL без DEFAULT — вместо SQL NULL
-        передаём пустой JSON-объект. Для ``media`` это ещё и соответствие
-        формату колонки: ``map_answer_to_blocks`` (agent_channel.py) уже умеет
-        разворачивать единичный JSON-объект в список — колонка на стороне
-        владельца хранит и объект, и массив вперемешку, не строго массив
-        (``buttons`` у вопроса всегда пуст, кнопки бывают только в ответе
-        агента, и там колонка строго массив — но пустой объект тоже валиден
-        для NOT NULL).
+        стороне не гарантированы, а колонки NOT NULL. ``media`` на стороне
+        владельца — ``JSONB DEFAULT '[]'::jsonb`` (массив): без вложений
+        передаём пустой массив, не SQL NULL. Большой media (base64-вложения)
+        сериализуется в worker-потоке, не в event loop. ``buttons`` у вопроса
+        всегда пуст (кнопки бывают только в ответе агента) — тоже пустой
+        JSON-массив вместо NULL.
 
         Возвращает вставленную запись со всеми колонками.
         """
+        media_json = (
+            await asyncio.to_thread(json.dumps, media, ensure_ascii=False)
+            if media else "[]"
+        )
         row = await self.conn.fetchrow(
             f"""
             INSERT INTO {self.table}
@@ -101,34 +111,49 @@ class AgentMessageRepository(BaseRepository):
             chat_id,
             user_id,
             content,
-            json.dumps(media or {}, ensure_ascii=False),
+            media_json,
             json.dumps(metadata or {}, ensure_ascii=False),
             json.dumps([], ensure_ascii=False),
         )
         return self._parse_row(row)
 
     async def get_by_uid(self, uid: str) -> dict | None:
-        """Возвращает строку по id (uid одного сообщения шины)."""
+        """Возвращает строку по id (uid одного сообщения шины) БЕЗ media."""
         row = await self.conn.fetchrow(
-            f"SELECT * FROM {self.table} WHERE id = $1",
+            f"SELECT {_ROW_COLUMNS_NO_MEDIA} FROM {self.table} WHERE id = $1",
             uid,
         )
         return self._parse_row(row)
 
     async def get_answer_for_question(self, question_uid: str) -> dict | None:
-        """Возвращает строку-ответ агента на вопрос ``question_uid``.
+        """Возвращает строку-ответ агента на вопрос ``question_uid`` БЕЗ media.
 
         Протокол владельца шины: агент вставляет строку-ответ
         (role='assistant') и проставляет ``reply_to`` НА ОТВЕТЕ, указывая на
         id вопроса. Берём самый свежий ответ (агент может ретраить).
         """
         row = await self.conn.fetchrow(
-            f"SELECT * FROM {self.table} "
+            f"SELECT {_ROW_COLUMNS_NO_MEDIA} FROM {self.table} "
             f"WHERE reply_to = $1 AND role = 'assistant' "
             f"ORDER BY created_at DESC LIMIT 1",
             question_uid,
         )
         return self._parse_row(row)
+
+    async def get_media_by_uid(self, uid: str) -> list | dict | None:
+        """Разовое чтение media строки шины (тяжёлая колонка — только при финализации)."""
+        row = await self.conn.fetchrow(
+            f"SELECT media FROM {self.table} WHERE id = $1", uid,
+        )
+        parsed = self._parse_row(row)
+        return parsed.get("media") if parsed else None
+
+    async def get_status_by_uid(self, uid: str) -> dict | None:
+        """Узкий запрос для отображения очереди: только status и created_at."""
+        row = await self.conn.fetchrow(
+            f"SELECT status, created_at FROM {self.table} WHERE id = $1", uid,
+        )
+        return dict(row) if row else None
 
     async def set_status(self, *, uid: str, status: str) -> None:
         """Обновляет статус строки по id (uid сообщения)."""
@@ -169,6 +194,11 @@ class AgentMessageRepository(BaseRepository):
           answer_timeout_sec по updated_at: агент стримит reasoning, обновляя
           updated_at; если updated_at не менялся дольше answer_timeout_sec —
           агент завис, слот освобождаем.
+        - error живёт по той же отсечке, что processing: в словаре NanoBot 2.3
+          это ПОВТОРЯЕМАЯ ошибка — вопрос вернётся в пул и будет переобработан,
+          подписка AW жива, значит слот занят. `_mark_failed` на стороне агента
+          обновляет updated_at, поэтому залипшая error-строка старше
+          answer_timeout_sec слот не съедает.
 
         role='user' — только строки-вопросы от AW (ответы агента не занимают
         слот лимита параллельных запросов). Отсечки защищают от утечки слотов:
@@ -180,7 +210,7 @@ class AgentMessageRepository(BaseRepository):
             SELECT COUNT(*) FROM {self.table}
             WHERE user_id = $1 AND role = 'user' AND (
                 (status = 'pending' AND created_at > $2)
-                OR (status IN ('processing', 'in_progress') AND updated_at > $3)
+                OR (status IN ('processing', 'in_progress', 'error') AND updated_at > $3)
             )
             """,
             user_id, pending_created_after, processing_updated_after,

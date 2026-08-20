@@ -17,7 +17,7 @@ retention-чистку, мониторинг, ёмкости, troubleshooting.
 
 Пока черновик в `streaming` и привязан к шине (`chat_messages.agent_ref`),
 GET-поллинг дополнительно отдаёт `status_details: {bus_status, queue_ahead}`
-(`AgentChannelService.get_queue_details`, `app/domains/chat/services/agent_channel.py:403`):
+(`AgentChannelService.get_queue_details` в `app/domains/chat/services/agent_channel.py`):
 `bus_status` — статус вопроса в шине, `queue_ahead` — сколько вопросов
 стоит перед ним (считается только для `pending`). Это первый диагностический
 сигнал при жалобе «ассистент завис»: `pending` с растущим `queue_ahead` —
@@ -122,13 +122,15 @@ SQL-операцию (SELECT шины, финализирующая транза
 | `TABLE_NAME` | `chat_agent_messages_bus` | Имя bus-таблицы целиком, без app-префикса (в `.env.prod` — `agent_conversation_messages`) |
 | `SCHEMA_NAME` | `""` | Схема bus-таблицы; пусто → схема чата → основная схема адаптера |
 | `CLAIM_TIMEOUT_SEC` | 1800 (30 мин) | Сколько ждать, пока агент возьмёт вопрос в работу (фаза `pending` → `processing`). После — `mark_timeout(reason='claim')` |
-| `ANSWER_TIMEOUT_SEC` | 600 (10 мин) | Сколько ждать ответ агента (фаза `processing`). После — `mark_timeout(reason='answer')`, черновик финализируется error-блоком |
+| `ANSWER_TIMEOUT_SEC` | 1800 (30 мин) | Сколько ждать ответ агента (фаза `processing`). После — `mark_timeout(reason='answer')`, черновик финализируется error-блоком |
 | `POLL_MIN_INTERVAL_SEC` | 2.0 | Минимум между SELECT'ами поллера (старт adaptive backoff) |
 | `POLL_MAX_INTERVAL_SEC` | 10.0 | Максимум после backoff'а на пустых тиках |
 | `POLL_BACKOFF_MULTIPLIER` | 1.5 | Множитель backoff'а |
 | `MAX_BLOCK_TEXT_SIZE` | 262144 | Потолок размера текста блока при маппинге ответа |
 
-Worst case: 10 минут от форварда до timeout. На практике — секунды для
+Worst case: 30 минут от форварда до timeout (окно `ANSWER_TIMEOUT_SEC` — с
+запасом покрывает до 3 ретраев NanoBot при повторяемой ошибке
+`status='error'` с backoff'ом между попытками). На практике — секунды для
 коротких ответов, до нескольких минут для длинных reasoning-chain'ов
 вроде RAG-агента.
 
@@ -151,7 +153,7 @@ Worst case: 10 минут от форварда до timeout. На практи�
 | `chat_tool_metrics` | Latency / status / username вызовов ChatTool — медленные tools, спайки validation_error |
 | `admin_http_metrics` | Latency / status HTTP-запросов — медленные эндпоинты, спайки 5xx |
 | `chat_audit_log` | Жизненный цикл бесед: created / deleted / message_sent и т.п. |
-| `chat_agent_messages_bus.status` | Распределение `pending`/`processing`/`completed`/`failed` — алёрт на залипшие |
+| `chat_agent_messages_bus.status` | Распределение `pending`/`processing`/`completed`/`failed`/`error` — алёрт на залипшие |
 
 ### 3.2. Алерты (рекомендации)
 

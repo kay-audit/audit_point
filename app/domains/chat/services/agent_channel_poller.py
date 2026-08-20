@@ -8,7 +8,8 @@ agent_ref IS NOT NULL) и финализирует их, когда внешни
   pending   — вопрос ждёт взятия в работу; лимит claim_timeout_sec.
   processing — агент пишет ответ; лимит answer_timeout_sec.
 Отсчёт в обеих фазах ведётся от последнего ПРИЗНАКА ЖИЗНИ агента:
-смены фазы, роста reasoning, изменения answer.updated_at (начиная со
+смены фазы (в обе стороны — возврат вопроса в пул по истёкшему lease тоже
+признак жизни), роста reasoning, изменения answer.updated_at (начиная со
 второго наблюдения), уменьшения числа pending-вопросов впереди.
 
 Adaptive backoff: при активности интервал сбрасывается в min_interval;
@@ -41,6 +42,14 @@ logger = logging.getLogger("audit_workstation.domains.chat.services.agent_channe
 # bus-таблицы), которые иначе ретраились бы вечно, оставляя draft в
 # 'streaming' до рестарта. При backoff 2-10 сек порог ≈ 1-5 минут сбоев.
 _MAX_CONSECUTIVE_ENTRY_ERRORS = 30
+
+# Сколько ЭПИЗОДОВ возврата вопроса processing → pending (reclaim NanoBot при
+# истёкшем lease либо повторяемая ошибка после claim'а) считается признаком
+# жизни и возвращает claim-окно. Счёт именно по эпизодам, а не по тикам:
+# откат случается на смене статуса, а залипший статус кап не расходует.
+# = max_stuck_retries NanoBot; дальше фаза остаётся processing — защита от
+# бесконечного продления флаппингом чужой таблицы.
+_MAX_PENDING_REVERSIONS = 3
 
 
 class AgentChannelPoller:
@@ -116,6 +125,9 @@ class AgentChannelPoller:
           last_answer_updated_at — timestamp ответа при последнем наблюдении;
                            первое ненулевое значение — baseline (не activity),
                            каждое последующее изменение — activity.
+          pending_reversions   — сколько раз фаза откатилась processing →
+                           pending по reclaim'у агента (кап
+                           _MAX_PENDING_REVERSIONS).
         """
         if question_uid in self._subscriptions:
             logger.debug(
@@ -137,6 +149,9 @@ class AgentChannelPoller:
             # Ошибок обработки подряд; сбрасывается успешным тиком. По
             # достижении _MAX_CONSECUTIVE_ENTRY_ERRORS подписка снимается.
             "consecutive_errors": 0,
+            # Сколько раз фаза откатывалась processing → pending (reclaim
+            # NanoBot). Кап — _MAX_PENDING_REVERSIONS.
+            "pending_reversions": 0,
         }
         logger.info(
             "agent_channel_poller: подписан question_uid=%s, message_id=%s (всего=%d)",
@@ -163,9 +178,11 @@ class AgentChannelPoller:
         Не падает при ошибке одной подписки — оборачивает каждую в try/except.
 
         Liveness и idle-таймауты по фазам:
-          Признаки жизни агента: смена фазы pending → processing, рост
-          reasoning_len, изменение answer_updated_at (начиная со второго
-          наблюдения), уменьшение queue_ahead.
+          Признаки жизни агента: смена фазы pending → processing, откат
+          processing → pending по reclaim'у агента (не более
+          _MAX_PENDING_REVERSIONS раз), рост reasoning_len, изменение
+          answer_updated_at (начиная со второго наблюдения), уменьшение
+          queue_ahead.
           Пока фаза 'pending' — лимит cfg.claim_timeout_sec от last_activity.
           Пока фаза 'processing' — лимит cfg.answer_timeout_sec от last_activity.
           Таймаут: mark_timeout(reason='claim'|'answer'), unsubscribe.
@@ -205,16 +222,47 @@ class AgentChannelPoller:
 
                 # ── Признаки жизни агента ──
                 alive = False
-                # Фаза монотонна: только pending → processing. Откат строки
-                # шины назад (владелец удалил ответ / вернул pending) НЕ
-                # возвращает claim-окно и НЕ считается признаком жизни —
-                # иначе флаппинг чужой таблицы продлевал бы ожидание вечно.
+                # Прямой переход pending → processing. 'error' наблюдением
+                # processing НЕ считается: в словаре NanoBot 2.3 это вопрос,
+                # выброшенный обратно в пул до следующего ретрая, то есть та же
+                # фаза ожидания claim'а, что и 'pending'. Считай его иначе —
+                # залипший 'error' поднимал бы фазу каждым тиком, обратный блок
+                # тут же опускал бы её, и кап эпизодов выгорал бы за три тика.
                 observed_processing = (
                     res["answer_exists"]
-                    or res["question_status"] not in (None, "pending")
+                    or res["question_status"] not in (None, "pending", "error")
                 )
                 if entry["phase"] == "pending" and observed_processing:
                     entry["phase"] = "processing"
+                    alive = True
+                # Обратный переход processing → pending. Фаза больше НЕ
+                # монотонна: NanoBot при истёкшем lease возвращает вопрос в пул
+                # ('pending') либо фиксирует повторяемую ошибку уже после
+                # claim'а ('error'), в обоих случаях удаляя свою строку-ответ —
+                # это reclaim, признак жизни, а не тишина. Срабатывает РОВНО
+                # ОДИН РАЗ на эпизод: после отката фаза 'pending', и пока
+                # статус не сменится на рабочий, ни этот блок (фаза не
+                # processing), ни прямой (для 'pending'/'error' он молчит)
+                # больше не двигают её. Порядок «прямой → обратный» держит
+                # инвариант «тик заканчивается фазой, соответствующей
+                # наблюдаемому статусу». Число эпизодов ограничено
+                # _MAX_PENDING_REVERSIONS — иначе флаппинг чужой таблицы
+                # продлевал бы ожидание вечно.
+                if (
+                    entry["phase"] == "processing"
+                    and not res["answer_exists"]
+                    and res["question_status"] in ("pending", "error")
+                    and entry["pending_reversions"] < _MAX_PENDING_REVERSIONS
+                ):
+                    entry["pending_reversions"] += 1
+                    entry["phase"] = "pending"
+                    # Строка-ответ снесена: следующая будет новой, и старые
+                    # baseline'ы к ней не относятся. Без сброса reasoning
+                    # повторной попытки не доехал бы до черновика, пока не
+                    # перерастёт длину прерванной (poll_once сравнивает с
+                    # last_reasoning_len).
+                    entry["last_answer_updated_at"] = None
+                    entry["last_reasoning_len"] = 0
                     alive = True
                 if res["reasoning_len"] > entry["last_reasoning_len"]:
                     entry["last_reasoning_len"] = res["reasoning_len"]

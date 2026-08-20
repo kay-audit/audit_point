@@ -37,7 +37,7 @@ WHERE reply_to IN (... agent_ref из шага 1 ...);
 
 **Recovery.**
 
-1. **Не торопиться.** Если процесс жив и `chat.agent_channel_poller` запущен (`/admin/diagnostics`), а внешний агент ещё работает — поллер догонит ответ. Двухфазные таймауты: `CLAIM_TIMEOUT_SEC` (1800 = 30 мин, фаза `pending`) и `ANSWER_TIMEOUT_SEC` (600 = 10 мин, фаза `processing`). По истечении `mark_timeout` сам пометит черновик `failed`. Дать сработать.
+1. **Не торопиться.** Если процесс жив и `chat.agent_channel_poller` запущен (`/admin/diagnostics`), а внешний агент ещё работает — поллер догонит ответ. Двухфазные таймауты: `CLAIM_TIMEOUT_SEC` (1800 = 30 мин, фаза `pending`) и `ANSWER_TIMEOUT_SEC` (1800 = 30 мин, фаза `processing`). По истечении `mark_timeout` сам пометит черновик `failed`. Дать сработать.
 2. **Если рестартовали uvicorn** — `AgentChannelPoller.reconcile()` в startup-hook восстанавливает подписки из всех `streaming`-черновиков с непустым `agent_ref` (`app/domains/chat/services/agent_channel_poller.py:311`). Дождаться, пока поллер сделает первые тики.
 3. **Forcibly закрыть.** Если ответа от агента нет и автоматика не помогает — пометить черновик и вопрос вручную:
    ```sql

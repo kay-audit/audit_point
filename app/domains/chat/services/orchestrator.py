@@ -195,7 +195,7 @@ class Orchestrator:
             return f"```{lang}\n{block.get('content', '')}\n```"
         if block_type == "file":
             fname = block.get("filename", "файл")
-            size = block.get("size")
+            size = block.get("file_size")
             if size:
                 try:
                     size_mb = int(size) / (1024 * 1024)
@@ -224,7 +224,7 @@ class Orchestrator:
             return f"```{lang}\n{block.get('content', '')}\n```"
         if block_type in ("file", "image"):
             fname = block.get("filename", "файл" if block_type == "file" else "изображение")
-            size = block.get("size")
+            size = block.get("file_size")
             if size:
                 try:
                     size_mb = int(size) / (1024 * 1024)

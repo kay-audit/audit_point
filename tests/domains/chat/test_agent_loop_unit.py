@@ -333,3 +333,73 @@ async def test_tool_block_feeds_summary_to_llm_not_raw_json():
     assert tool_msgs[-1]["content"] == "<выполнено: chat.notify>", (
         f"в LLM ушёл сырой результат вместо summary: {tool_msgs[-1]['content']}"
     )
+
+
+async def test_forward_terminal_encodes_media_before_get_db():
+    """_handle_forward_terminal: конверсия file_blocks → bus_media
+    (build_bus_media_for_submit) выполняется ДО входа в get_db() — соединение
+    пула не удерживается на время base64-кодирования вложений (внутри
+    контекста остаётся только channel.submit)."""
+    from app.domains.chat.services.agent_loop import _handle_forward_terminal
+
+    orch = _make_orch()
+
+    mock_poller = MagicMock()
+    mock_poller.subscribe = MagicMock()
+
+    mock_channel = AsyncMock()
+    mock_channel.submit = AsyncMock(return_value="question-uid-order")
+
+    mock_conn = AsyncMock()
+    mock_db_ctx = AsyncMock()
+    mock_db_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_db_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    # Общий MagicMock-менеджер: фиксирует относительный порядок вызовов
+    # build_bus_media_for_submit и get_db через mock_calls.
+    manager = MagicMock()
+    mock_build_bus_media = AsyncMock(return_value=[{
+        "file_id": "data:text/plain;base64,eA==",
+        "filename": "a.txt",
+        "mime_type": "text/plain",
+        "file_size": 1,
+    }])
+    mock_get_db = MagicMock(return_value=mock_db_ctx)
+    manager.attach_mock(mock_build_bus_media, "build_bus_media_for_submit")
+    manager.attach_mock(mock_get_db, "get_db")
+
+    with (
+        patch("app.db.connection.get_db", mock_get_db),
+        patch(
+            "app.domains.chat.services.agent_channel.build_bus_media_for_submit",
+            mock_build_bus_media,
+        ),
+        patch(
+            "app.domains.chat.services.agent_channel.AgentChannelService",
+            return_value=mock_channel,
+        ),
+        patch(
+            "app.domains.chat.deps.get_agent_channel_poller",
+            return_value=mock_poller,
+        ),
+    ):
+        result = await _handle_forward_terminal(
+            orch=orch,
+            conversation_id="conv-1",
+            user_message="Вопрос",
+            message_id="msg-order-1",
+            user_id="user1",
+            file_blocks=[{"file_id": "uuid-1", "filename": "a.txt"}],
+            arguments={"question": "Вопрос с файлом"},
+            sources=[],
+            token_usage={},
+        )
+
+    assert result.get("forwarded") is True
+    mock_build_bus_media.assert_awaited_once()
+    mock_get_db.assert_called_once()
+    call_names = [c[0] for c in manager.mock_calls if c[0]]
+    assert (
+        call_names.index("build_bus_media_for_submit")
+        < call_names.index("get_db")
+    )

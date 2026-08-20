@@ -107,6 +107,10 @@ END$$;
 -- ссылка на id вопроса. CHECK'и по role/status зеркалят подтверждённую спеку
 -- владельца (у него DEFAULT'ы тоже есть, но AW на них не полагается и передаёт
 -- status/created_at/updated_at явно).
+-- Словарь NanoBot 2.3: role — user | assistant | system | tool;
+-- status — pending | processing | completed | error | failed, где 'error'
+-- ПОВТОРЯЕМАЯ ошибка (агент вернёт вопрос в пул и переобработает его, удалив
+-- свою строку-ответ), а терминален только 'failed'.
 -- Директива адаптеру: таблица внешняя — если она уже существует (создана
 -- владельцем), её «спутники» (CREATE INDEX / COMMENT ON) пропускаются.
 -- @external-table: {BUS_SCHEMA_Q}{BUS_TABLE}
@@ -116,7 +120,7 @@ CREATE TABLE IF NOT EXISTS {BUS_SCHEMA_Q}{BUS_TABLE} (
     user_id     TEXT,
     role        TEXT NOT NULL
                 CONSTRAINT check_chat_agent_messages_bus_role_values
-                CHECK (role IN ('user','assistant','system')),
+                CHECK (role IN ('user','assistant','system','tool')),
     content     TEXT NOT NULL,
     media       JSONB,
     metadata    JSONB,
@@ -124,7 +128,7 @@ CREATE TABLE IF NOT EXISTS {BUS_SCHEMA_Q}{BUS_TABLE} (
     buttons     JSONB,
     status      TEXT NOT NULL
                 CONSTRAINT check_chat_agent_messages_bus_status_values
-                CHECK (status IN ('pending','processing','completed','failed')),
+                CHECK (status IN ('pending','processing','completed','failed','error')),
     created_at  TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at  TIMESTAMP WITH TIME ZONE NOT NULL
 );

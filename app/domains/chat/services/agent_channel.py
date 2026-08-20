@@ -10,22 +10,35 @@
         upsert'ит частичный reasoning-блок пока ответ нетерминальный; финализирует
         draft, когда статус ответа терминальный.
 
-Словарь status владельца (CHECK на его таблице): pending | processing |
-completed | failed; role: user | assistant | system. Записи статуса от AW —
-best-effort: CheckViolation логируется и глотается, финализацию/таймаут это
-не ломает (защита от смены словаря владельцем).
+Словарь status владельца (NanoBot 2.3): pending | processing | completed |
+error | failed; role: user | assistant | system | tool. 'error' —
+ПОВТОРЯЕМАЯ ошибка: агент вернёт вопрос в пул и переобработает его (до
+max_stuck_retries раз), удалив свою строку-ответ; терминален только 'failed'.
+Записи статуса от AW — best-effort: CheckViolation логируется и глотается,
+финализацию/таймаут это не ломает (защита от смены словаря владельцем).
 
-bus.media: AW пишет сюда в формате Nanobot — массив
-``{file_id, filename, mime_type, file_size}``, где ``file_id`` это
-``data:<mime>;base64,<payload>`` (inline-payload). Агент-читатель
-(map_answer_to_blocks) извлекает данные из data:URL напрямую, не ходя в
-chat_files. Блок формата chat_messages.content ({type:"file", file_id:<UUID>,
-...}) сюда НЕ подходит — лишний ``type``, и file_id это UUID, а не data:URL.
-Хелпер ``build_bus_media_from_file_blocks`` приводит формат к спеке шины.
+bus.media: транспорт — массив ``{file_id, filename, mime_type, file_size}``
+в формате Nanobot, где ``file_id`` это ``data:<mime>;base64,<payload>``
+(inline-payload). Блок формата chat_messages.content ({type:"file",
+file_id:<UUID>, ...}) сюда НЕ подходит — лишний ``type``, и file_id это UUID,
+а не data:URL.
+
+Транспорт отделён от хранения в обе стороны:
+  исходящее — ``build_bus_media_from_file_blocks`` читает байты из chat_files
+    по UUID и кодирует их в data-URL (вложение сверх max_media_file_size
+    пропускается с warning);
+  входящее — ``parse_media_items`` классифицирует каждый элемент
+    (data/http/uuid/other/empty), ``materialize_media_entries`` сохраняет
+    data-URL в chat_files и отдаёт блоки чата с UUID. История беседы
+    data-URL'ами не раздувается, скачивание идёт через защищённый эндпоинт.
 """
 
+import asyncio
 import base64
+import binascii
 import logging
+import mimetypes
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -48,11 +61,15 @@ _TRIM_MARKER_BYTES = len(_TRIM_MARKER.encode("utf-8"))
 # агентом — финализировать рано. Словарь владельца: 'processing' (агент создаёт
 # строку-ответ сразу при claim'е и стримит reasoning-дельты в metadata, пока не
 # запишет финальный content); 'in_progress' — legacy-синоним для старых dev-строк.
+# 'error' — повторяемая ошибка NanoBot 2.3 (_mark_failed: пока
+# retry_count < max_stuck_retries задача вернётся в пул через
+# error_retry_delay; assistant-строка при этом удаляется). Терминальным
+# остаётся только 'failed'.
 # Любой другой статус при наличии строки-ответа считаем терминальным.
-_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress")
+_BUS_PENDING_STATUSES = ("pending", "processing", "in_progress", "error")
 
-# Терминальные статусы ошибки: 'failed' — словарь владельца, 'error' — legacy.
-_BUS_ERROR_STATUSES = ("failed", "error")
+# Терминальный статус ошибки — словарь владельца шины.
+_BUS_ERROR_STATUSES = ("failed",)
 
 
 # ── Pure-функции ─────────────────────────────────────────────────────────────
@@ -102,13 +119,272 @@ def _normalize_button(btn: dict, idx: int) -> dict:
     }
 
 
-def map_answer_to_blocks(row: dict, max_block_text_size: int = 262144) -> list[dict]:
+_DATA_URL_HEAD_RE = re.compile(r"^data:([^;,]*)(?:;[^,]*)*,", re.DOTALL)
+
+
+def _classify_file_id(value) -> str:
+    """Вид file_id: 'data' | 'http' | 'uuid' | 'other' | 'empty'."""
+    if not value or not isinstance(value, str):
+        return "empty"
+    if value.startswith("data:"):
+        return "data"
+    if value.startswith(("http://", "https://")):
+        return "http"
+    try:
+        uuid.UUID(value)
+        return "uuid"
+    except (ValueError, AttributeError, TypeError):
+        return "other"
+
+
+def _data_url_mime_and_size(data_url: str) -> tuple[str, int]:
+    """(mime, приблизительный размер байт) из data-URL без декодирования payload.
+
+    Размер оценивается как len(base64)*3/4 — точность достаточна для
+    отображения и лимитов, а декодировать сотни МБ ради длины не нужно.
+    """
+    m = _DATA_URL_HEAD_RE.match(data_url)
+    mime = (m.group(1).strip().lower() if m else "") or "application/octet-stream"
+    comma = data_url.find(",")
+    payload_len = max(len(data_url) - comma - 1, 0) if comma >= 0 else 0
+    return mime, payload_len * 3 // 4
+
+
+def parse_media_items(media) -> list[dict]:
+    """Нормализует bus.media в список записей единой формы (best-effort).
+
+    Принимает список/одиночный объект/строку; элемент — dict схемы NanoBot
+    ({file_id|url, filename|name, mime_type, file_size}) либо строка-data-URL
+    (runtime-формат NanoBot). Кривой элемент пропускается с warning — один
+    битый файл не должен ронять весь ответ (H3 аудита).
+    """
+    if media is None:
+        return []
+    if isinstance(media, (dict, str)):
+        media = [media]
+    if not isinstance(media, list):
+        logger.warning("parse_media_items: media неожиданного типа %s — пропускаем", type(media).__name__)
+        return []
+    out: list[dict] = []
+    for i, item in enumerate(media):
+        try:
+            if isinstance(item, str):
+                if not item.startswith("data:"):
+                    logger.warning("parse_media_items: строковый элемент media[%d] не data-URL — пропускаем", i)
+                    continue
+                mime, size = _data_url_mime_and_size(item)
+                out.append({"file_id": item, "filename": "", "mime_type": mime,
+                            "file_size": size, "kind": "data"})
+                continue
+            if not isinstance(item, dict):
+                logger.warning("parse_media_items: элемент media[%d] типа %s — пропускаем", i, type(item).__name__)
+                continue
+            file_id = item.get("file_id") or item.get("url") or ""
+            kind = _classify_file_id(file_id)
+            mime = str(item.get("mime_type") or "")
+            try:
+                size = int(item.get("file_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if kind == "data" and (not mime or not size):
+                d_mime, d_size = _data_url_mime_and_size(file_id)
+                mime = mime or d_mime
+                size = size or d_size
+            out.append({
+                "file_id": file_id if isinstance(file_id, str) else "",
+                "filename": str(item.get("filename") or item.get("name") or ""),
+                "mime_type": mime,
+                "file_size": size,
+                "kind": kind,
+            })
+        except Exception:
+            logger.warning("parse_media_items: не удалось разобрать media[%d] — пропускаем", i, exc_info=True)
+    return out
+
+
+def _entry_to_block(entry: dict) -> dict:
+    """Запись parse_media_items → блок чата (без материализации).
+
+    kind='other'/'empty' → карточка без file_id (фронт не рисует кнопок —
+    битые пути агента не превращаются в 404-ссылки, M2 аудита).
+
+    kind='http' ВСЕГДА даёт file-блок (карточка со скачиванием), даже при
+    mime image/*: CSP ПРОМа (`img-src 'self' data: blob:`, enforce) блокирует
+    `<img src>` на внешний http(s)-хост — картинка была бы гарантированно
+    битой, а inline-предпросмотр во вьюере файлов заблокирован тем же
+    правилом. image-блок остаётся только для kind='data'/'uuid': оба отдаются
+    через свой домен (data:-URL или GET /chat/files/{id}), CSP их пропускает.
+    """
+    file_id = entry["file_id"] if entry["kind"] in ("data", "http", "uuid") else ""
+    if entry["kind"] != "http" and entry["mime_type"].startswith("image/") and file_id:
+        return {"type": "image", "file_id": file_id, "alt": entry["filename"]}
+    block = {
+        "type": "file",
+        "filename": entry["filename"],
+        "mime_type": entry["mime_type"],
+        "file_size": entry["file_size"],
+    }
+    if file_id:
+        block["file_id"] = file_id
+    return block
+
+
+def _sanitize_agent_filename(name: str, mime: str, idx: int) -> str:
+    """Имя входящего файла агента: без разделителей пути и null-byte.
+
+    Те же правила, что FileService.validate_file для аплоада; пустое или
+    служебное имя заменяется на file_<idx> с расширением по MIME.
+
+    Имя обрезается до 500 символов — ширина колонки chat_files.filename.
+    Переполнение уронило бы INSERT, и весь ответ агента дошёл бы до
+    пользователя только по таймауту (тот же класс отказа, что H3).
+    """
+    name = (name or "").strip()
+    for ch in ("/", "\\", "\x00"):
+        name = name.replace(ch, "_")
+    if name in ("", ".", ".."):
+        ext = mimetypes.guess_extension(mime or "") or ""
+        name = f"file_{idx}{ext}"
+    return name[:500]
+
+
+def _file_error_block(code: str, message: str) -> dict:
+    """Error-блок про конкретное вложение агента (остальные блоки не страдают)."""
+    return {"type": "error", "code": code, "message": message}
+
+
+def _decode_base64_payload(payload: str) -> bytes:
+    """Декодирует payload data-URL. Исполняется в потоке — вызов блокирующий.
+
+    Строгий режим (validate=True): при ленивом декодировании «лишние» символы
+    молча выбрасываются, и пользователь получил бы обрезанный файл вместо
+    честной ошибки. Пробелы и переводы строк вычищаются заранее — агенты
+    вполне могут переносить base64 по строкам, такой payload валиден.
+    """
+    return base64.b64decode("".join(payload.split()), validate=True)
+
+
+async def materialize_media_entries(
+    entries: list[dict],
+    *,
+    answer_uid: str,
+    conversation_id: str,
+    message_id: str,
+    file_repo: FileRepository,
+    max_size: int,
+) -> list[dict]:
+    """Материализует входящие data-URL вложения агента в chat_files (H2, вариант A).
+
+    Транспорт (base64 в шине) отделяется от хранения: в блок чата уходит UUID
+    из chat_files, историю беседы data-URL больше не раздувает, скачивание идёт
+    через GET /chat/files/{id} (octet-stream + nosniff).
+
+    Идемпотентность ретраев финализации: id файла детерминирован —
+    uuid5(NAMESPACE_URL, "agent-media:{answer_uid}:{idx}"); повторный INSERT
+    падает UniqueViolation и просто переиспользует существующую запись.
+
+    MIME не проверяется по whitelist аплоада (решение владельца): файл всё
+    равно отдаётся только как application/octet-stream. Размер сверяется с
+    max_size по оценке из САМОГО payload (len*3//4) — объявленному агентом
+    file_size страж не верит. Превышение лимита, битый/пустой base64 и любой
+    сбой записи в chat_files дают error-блок про конкретный файл; остальные
+    вложения и текст ответа при этом целы.
+    """
+    blocks: list[dict] = []
+    for idx, entry in enumerate(entries):
+        kind = entry["kind"]
+        if kind != "data":
+            blocks.append(_entry_to_block(entry))
+            if kind in ("other", "empty"):
+                logger.warning(
+                    "materialize_media_entries: file_id вида %r (media[%d] ответа %s) — карточка без кнопок",
+                    kind, idx, answer_uid,
+                )
+            continue
+        filename = _sanitize_agent_filename(entry["filename"], entry["mime_type"], idx)
+        payload = entry["file_id"].partition(",")[2]
+        # Страж считает размер по САМОМУ payload, а не по объявленному агентом
+        # file_size: тот приходит с чужой стороны и может врать в обе стороны —
+        # «1 байт» при гигабайтном data-URL пустил бы гиганта в декодирование
+        # и в INTEGER-колонку file_size, а завышенное объявление дало бы ложный
+        # too_large на крошечном файле. Объявленный размер остаётся только
+        # метаданными карточки.
+        estimated_size = len(payload) * 3 // 4
+        if estimated_size > max_size:
+            logger.warning(
+                "materialize_media_entries: файл %r (~%d байт по payload) превышает лимит %d — error-блок",
+                filename, estimated_size, max_size,
+            )
+            blocks.append(_file_error_block(
+                "agent_file_too_large",
+                f"Файл «{filename}» от агента превышает лимит {max_size // (1024 * 1024)} МБ и не был сохранён.",
+            ))
+            continue
+        try:
+            raw = await asyncio.to_thread(_decode_base64_payload, payload)
+        except (binascii.Error, ValueError):
+            logger.warning("materialize_media_entries: битый base64 в media[%d] ответа %s", idx, answer_uid)
+            blocks.append(_file_error_block(
+                "agent_file_invalid",
+                f"Файл «{filename}» от агента повреждён и не был сохранён.",
+            ))
+            continue
+        if not raw:
+            # chat_files.file_size под CHECK (> 0), как и аплоад («Файл пуст»).
+            # Без этой ветки пустое вложение уронило бы всю финализацию
+            # CheckViolation'ом, и ответ агента дошёл бы только по таймауту.
+            logger.warning(
+                "materialize_media_entries: пустое вложение %r (media[%d] ответа %s)",
+                filename, idx, answer_uid,
+            )
+            blocks.append(_file_error_block(
+                "agent_file_invalid",
+                f"Файл «{filename}» от агента пуст и не был сохранён.",
+            ))
+            continue
+        mime = entry["mime_type"] or "application/octet-stream"
+        file_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agent-media:{answer_uid}:{idx}"))
+        try:
+            await file_repo.create(
+                id=file_id, conversation_id=conversation_id, filename=filename,
+                mime_type=mime, file_size=len(raw), file_data=raw, message_id=message_id,
+            )
+        except asyncpg.exceptions.UniqueViolationError:
+            logger.info("materialize_media_entries: файл %s уже сохранён (ретрай финализации)", file_id)
+        except Exception:
+            # Принцип «один битый файл не роняет ответ» распространяется и на
+            # запись: любая другая ошибка БД (исчезнувшая беседа, переполнение
+            # колонки) иначе вылетела бы из poll_once, и текст ответа дошёл бы
+            # до пользователя только по таймауту.
+            logger.warning(
+                "materialize_media_entries: не удалось сохранить файл %s (media[%d] ответа %s) — error-блок",
+                file_id, idx, answer_uid, exc_info=True,
+            )
+            blocks.append(_file_error_block(
+                "agent_file_invalid",
+                f"Файл «{filename}» от агента не удалось сохранить.",
+            ))
+            continue
+        if mime.startswith("image/"):
+            blocks.append({"type": "image", "file_id": file_id, "alt": filename})
+        else:
+            blocks.append({"type": "file", "file_id": file_id, "filename": filename,
+                           "mime_type": mime, "file_size": len(raw)})
+    return blocks
+
+
+def map_answer_to_blocks(
+    row: dict, max_block_text_size: int = 262144, media_blocks: list[dict] | None = None
+) -> list[dict]:
     """Маппит строку-ответ chat_agent_messages_bus в блоки чата.
 
     Порядок: reasoning (metadata.reasoning, legacy metadata.thinking) →
     text (content) → buttons → media.
     block_id кнопок и reasoning: ``f"{row['id']}:btn:0"`` / ``f"{row['id']}:reasoning:0"``.
     Тексты обрезаются через _trim_text_if_oversized.
+    ``media_blocks`` — готовые блоки от материализатора (Task 4); при
+    ``None`` секция media строится best-effort из ``row["media"]`` через
+    ``parse_media_items`` (passthrough, как раньше).
     """
     row_id = row.get("id", "unknown")
     blocks: list[dict] = []
@@ -152,33 +428,12 @@ def map_answer_to_blocks(row: dict, max_block_text_size: int = 262144) -> list[d
             "block_id": f"{row_id}:btn:0",
         })
 
-    # 4. media
-    media = row.get("media")
-    if media is not None:
-        # Одиночный объект → оборачиваем в список.
-        if isinstance(media, dict):
-            media = [media]
-        if isinstance(media, list):
-            for item in media:
-                if not isinstance(item, dict):
-                    continue
-                mime = item.get("mime_type", "")
-                file_id = item.get("file_id", item.get("url", ""))
-                filename = item.get("filename", item.get("name", ""))
-                if mime.startswith("image/"):
-                    blocks.append({
-                        "type": "image",
-                        "file_id": file_id,
-                        "alt": filename,
-                    })
-                else:
-                    blocks.append({
-                        "type": "file",
-                        "file_id": file_id,
-                        "filename": filename,
-                        "mime_type": mime,
-                        "file_size": int(item.get("file_size", 0)),
-                    })
+    # 4. media: готовые блоки от материализатора (Task 4) либо passthrough.
+    if media_blocks is not None:
+        blocks.extend(media_blocks)
+    else:
+        for entry in parse_media_items(row.get("media")):
+            blocks.append(_entry_to_block(entry))
 
     return blocks
 
@@ -188,6 +443,7 @@ async def build_bus_media_from_file_blocks(
     *,
     conversation_id: str,
     file_repo: FileRepository,
+    max_size: int,
 ) -> list[dict] | None:
     """Преобразует file_blocks (UUID-формат chat_messages.content) в bus.media.
 
@@ -200,9 +456,9 @@ async def build_bus_media_from_file_blocks(
     file_id должен быть data-URL, иначе агент-читатель потеряет payload.
 
     Каждый файл подтягивается из chat_files по ``file_id`` UUID и его байты
-    кодируются в base64. Если file_block без ``file_id`` или запись не
-    найдена — пропускается (best-effort: потеря одного файла не должна
-    ронять вопрос целиком).
+    кодируются в base64. Если file_block без ``file_id``, запись не найдена
+    или файл больше ``max_size`` — пропускается (best-effort: потеря одного
+    файла не должна ронять вопрос целиком).
 
     Возвращает ``None`` при пустом входе — это формальный «нет файлов»
     для insert_question и совпадает с поведением caller'ов, которые
@@ -230,7 +486,14 @@ async def build_bus_media_from_file_blocks(
             continue
         mime = row["mime_type"]
         raw = bytes(row["file_data"])
-        encoded = base64.b64encode(raw).decode("ascii")
+        if len(raw) > max_size:
+            logger.warning(
+                "build_bus_media_from_file_blocks: файл %s (%d байт) превышает "
+                "лимит вложения шины %d — не отправляем агенту",
+                file_id, len(raw), max_size,
+            )
+            continue
+        encoded = (await asyncio.to_thread(base64.b64encode, raw)).decode("ascii")
         out.append({
             "file_id": f"data:{mime};base64,{encoded}",
             "filename": row["filename"],
@@ -238,6 +501,30 @@ async def build_bus_media_from_file_blocks(
             "file_size": len(raw),
         })
     return out or None
+
+
+async def build_bus_media_for_submit(
+    file_blocks: list[dict] | None,
+    *,
+    conversation_id: str,
+    max_size: int,
+) -> list[dict] | None:
+    """Единая точка конверсии file_blocks → bus.media для messages.py и agent_loop.py.
+
+    Работает на DbExecutor (соединение на операцию): чтение байт из chat_files
+    не удерживает соединение на время base64-кодирования. Без файлов — None
+    без обращений к БД.
+    """
+    if not file_blocks:
+        return None
+    from app.db.executor import get_executor
+
+    return await build_bus_media_from_file_blocks(
+        file_blocks,
+        conversation_id=conversation_id,
+        file_repo=FileRepository(get_executor()),
+        max_size=max_size,
+    )
 
 
 def _extract_reasoning(answer: dict) -> str:
@@ -339,8 +626,9 @@ class AgentChannelService:
         # могут оба пройти проверку на границе. Это защита от злоупотребления,
         # а не строгий инвариант — небольшое превышение допустимо.
         # Двухфазные отсечки: pending живёт в окне claim_timeout_sec по
-        # created_at; processing — в окне answer_timeout_sec по updated_at
-        # (агент обновляет updated_at, стримя reasoning).
+        # created_at; processing и error — в окне answer_timeout_sec по
+        # updated_at (агент обновляет updated_at, стримя reasoning и фиксируя
+        # повторяемую ошибку).
         limit = self._settings.max_parallel_streams_per_user
         now = datetime.now(timezone.utc)
         active = await self._agent_repo().count_active_for_user(
@@ -476,7 +764,7 @@ class AgentChannelService:
         позиция в очереди не имеет смысла.
         """
         agent_repo = self._agent_repo()
-        question = await agent_repo.get_by_uid(question_uid)
+        question = await agent_repo.get_status_by_uid(question_uid)
         if not question:
             return None
         status = question.get("status")
@@ -527,6 +815,15 @@ class AgentChannelService:
 
         answer = await agent_repo.get_answer_for_question(question_uid)
         if not answer:
+            if question.get("status") == "error":
+                meta = question.get("metadata") or {}
+                logger.info(
+                    "poll_once: вопрос %s в состоянии 'error' (retry %s, причина=%s) — "
+                    "ждём повторной обработки агентом",
+                    question_uid,
+                    meta.get("retry_count") if isinstance(meta, dict) else None,
+                    meta.get("error") if isinstance(meta, dict) else None,
+                )
             # Агент мог закрыть вопрос со status='failed' без строки-ответа.
             if question.get("status") in _BUS_ERROR_STATUSES:
                 failed = await message_repo.mark_failed(
@@ -613,9 +910,25 @@ class AgentChannelService:
         if answer.get("buttons"):
             answer["buttons"] = await translate_buttons(answer["buttons"])
 
+        # C1: media не пришла в узкой проекции get_answer_for_question —
+        # подкладываем разовым чтением ровно на финализации. data-URL из шины
+        # сразу материализуем в chat_files: в блоки уходят UUID, а не base64.
+        media_entries = parse_media_items(
+            await agent_repo.get_media_by_uid(str(answer["id"]))
+        )
+        media_blocks = await materialize_media_entries(
+            media_entries,
+            answer_uid=str(answer["id"]),
+            conversation_id=str(question.get("chat_id") or ""),
+            message_id=assistant_message_id,
+            file_repo=FileRepository(self._conn),
+            max_size=self._settings.agent_channel.max_media_file_size,
+        )
+
         blocks = map_answer_to_blocks(
             answer,
             max_block_text_size=self._settings.agent_channel.max_block_text_size,
+            media_blocks=media_blocks,
         )
         finalized = await message_repo.finalize(
             message_id=assistant_message_id,

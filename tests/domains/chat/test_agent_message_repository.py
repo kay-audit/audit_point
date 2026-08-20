@@ -1,7 +1,7 @@
 """Тесты репозитория chat_agent_messages_bus (bus-таблица канала к внешнему агенту).
 
 Покрывают: insert_question, get_by_uid, set_status, count_pending_before,
-count_active_for_user.
+count_active_for_user, get_media_by_uid, get_status_by_uid.
 Стратегия: mock_conn + autouse-патч get_adapter — идентична
 test_message_repository.py.
 """
@@ -133,18 +133,16 @@ async def test_insert_question_media_serialized(mock_conn):
     assert json.loads(params[4]) == media
 
 
-async def test_insert_question_no_media_passes_empty_object(mock_conn):
-    """Если media не передан, в параметр идёт пустой JSON-объект, не NULL.
+async def test_insert_question_media_default_is_empty_list(mock_conn):
+    """Если media не передан, в параметр идёт пустой JSON-массив, не NULL.
 
-    Владелец шины держит media/buttons NOT NULL без DEFAULT — SQL NULL
-    в этих колонках роняет INSERT. Пустой объект (не массив) — потому что
-    колонка media на стороне владельца хранит и объект, и массив вперемешку
-    (map_answer_to_blocks разворачивает единичный объект в список).
+    Владелец шины держит media NOT NULL без DEFAULT (``media JSONB DEFAULT
+    '[]'::jsonb`` — массив) — SQL NULL в этой колонке роняет INSERT.
     """
     mock_conn.fetchrow.return_value = {
         "id": "m", "chat_id": "c", "user_id": "u",
         "role": "user", "content": "x",
-        "media": "{}", "metadata": "{}", "buttons": "[]", "status": "pending",
+        "media": "[]", "metadata": "{}", "buttons": "[]", "status": "pending",
     }
     repo = AgentMessageRepository(mock_conn)
     await repo.insert_question(
@@ -152,7 +150,8 @@ async def test_insert_question_no_media_passes_empty_object(mock_conn):
     )
     _, *params = mock_conn.fetchrow.call_args.args
     assert params[4] is not None
-    assert json.loads(params[4]) == {}  # media
+    assert mock_conn.fetchrow.call_args[0][5] == "[]"
+    assert json.loads(params[4]) == []  # media
 
 
 async def test_insert_question_buttons_always_empty_list(mock_conn):
@@ -282,6 +281,50 @@ async def test_get_answer_for_question_not_found(mock_conn):
     assert await repo.get_answer_for_question("q-uid") is None
 
 
+# ── C1: узкие проекции колонок ─────────────────────────────────────────────
+
+
+class TestColumnProjection:
+    """C1: горячий опрос не тянет media. Ratchet на текст SQL."""
+
+    async def test_get_by_uid_does_not_select_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = None
+        repo = AgentMessageRepository(mock_conn)
+        await repo.get_by_uid("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "SELECT *" not in sql
+        assert "media" not in sql
+
+    async def test_get_answer_for_question_does_not_select_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = None
+        repo = AgentMessageRepository(mock_conn)
+        await repo.get_answer_for_question("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "SELECT *" not in sql
+        assert "media" not in sql
+
+    async def test_get_media_by_uid_selects_only_media(self, mock_conn):
+        mock_conn.fetchrow.return_value = {
+            "media": '[{"file_id": "data:text/plain;base64,QQ=="}]'
+        }
+        repo = AgentMessageRepository(mock_conn)
+        media = await repo.get_media_by_uid("a-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert sql.strip().lower().startswith("select media")
+        assert media == [{"file_id": "data:text/plain;base64,QQ=="}]
+
+    async def test_get_status_by_uid_narrow(self, mock_conn):
+        mock_conn.fetchrow.return_value = {
+            "status": "pending",
+            "created_at": datetime(2026, 6, 10, 10, 0, tzinfo=timezone.utc),
+        }
+        repo = AgentMessageRepository(mock_conn)
+        row = await repo.get_status_by_uid("q-uid")
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "media" not in sql and "content" not in sql
+        assert row["status"] == "pending"
+
+
 # ── set_status ───────────────────────────────────────────────────────────
 
 
@@ -328,7 +371,36 @@ async def test_count_active_for_user_two_phase_cutoffs(mock_conn):
     assert n == 1
     sql = mock_conn.fetchval.call_args.args[0]
     assert "status = 'pending' AND created_at > $2" in sql
-    assert "status IN ('processing', 'in_progress') AND updated_at > $3" in sql
+    assert "status IN ('processing', 'in_progress', 'error') AND updated_at > $3" in sql
+
+
+async def test_count_active_for_user_counts_error_by_updated_at_window(mock_conn):
+    """Вопрос со status='error' занимает слот и считается по окну updated_at.
+
+    NanoBot 2.3: 'error' — ПОВТОРЯЕМАЯ ошибка, вопрос вернётся в пул и будет
+    переобработан, подписка AW жива → слот параллельных запросов занят.
+    Отсечка — та же, что у processing: `_mark_failed` обновляет updated_at,
+    поэтому error-строка в окне answer_timeout_sec учитывается, а залипшая
+    (updated_at старше окна) слот не съедает.
+
+    Стратегия файла — проверка SQL-контракта на mock_conn (реального db_conn в
+    тестах нет), поэтому ассертим ветку запроса, а не результат COUNT.
+    """
+    repo = AgentMessageRepository(mock_conn)
+    mock_conn.fetchval.return_value = 1
+    now = datetime.now(timezone.utc)
+    await repo.count_active_for_user(
+        "77123", pending_created_after=now, processing_updated_after=now,
+    )
+    sql = mock_conn.fetchval.call_args.args[0]
+
+    # 'error' — в ветке updated_at ($3), вместе с processing/in_progress.
+    assert "status IN ('processing', 'in_progress', 'error') AND updated_at > $3" in sql
+    # ...и НЕ в ветке created_at ($2) — иначе залипшая error-строка жила бы по
+    # claim-окну и занимала слот дольше положенного.
+    pending_branch = sql.split("OR (")[0]
+    assert "'error'" not in pending_branch
+    assert "status = 'pending' AND created_at > $2" in pending_branch
 
 
 async def test_count_active_for_user_returns_count(mock_conn):

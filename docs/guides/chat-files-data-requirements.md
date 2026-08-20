@@ -1,6 +1,6 @@
 # Бизнес-требования к данным чата в Greenplum (ПРОМ)
 
-**Версия:** для `app/__init__.py:__version__ = 15.1.0`.
+**Версия:** для `app/__init__.py:__version__ = 15.4.1`.
 **Область:** домен `chat` (`app/domains/chat/`) и шина канала к внешнему ИИ-агенту (`CHAT__AGENT_CHANNEL__TABLE_NAME`).
 **Цель:** гарантировать, что файл-блоки, приходящие в чат, отрисовываются на фронте с иконками «Предпросмотр» и «Скачать», а сами файлы доступны для просмотра и скачивания.
 
@@ -50,7 +50,7 @@
 
 ### 2.3. JSONB-валидность
 
-Колонки `chat_messages.content`, `chat_files.*` (нет JSONB), `chat_conversations.context`, `bus.media`, `bus.metadata`, `bus.buttons`, `chat_tool_metrics.token_usage` (нет такого — `chat_messages.token_usage`), `chat_message_feedback.reasons` — **должны парситься как JSON**. Битый JSON AW трактует как пустой массив/объект (см. `_content_list`, `message_repository.py:36-49`) и теряет блоки тихо. На стороне AW это означает, что любой write-tool в Greenplum, формирующий эти колонки, должен класть туда валидный JSON.
+Колонки `chat_messages.content`, `chat_files.*` (нет JSONB), `chat_conversations.context`, `bus.media`, `bus.metadata`, `bus.buttons`, `chat_tool_metrics.token_usage` (нет такого — `chat_messages.token_usage`), `chat_message_feedback.reasons` — **должны парситься как JSON**. Битый JSON AW трактует как пустой массив/объект (см. `MessageRepository._content_list`) и теряет блоки тихо. На стороне AW это означает, что любой write-tool в Greenplum, формирующий эти колонки, должен класть туда валидный JSON.
 
 ### 2.4. Согласованность chat_id ↔ conversation_id ↔ agent_ref
 
@@ -61,7 +61,7 @@
 - `bus.reply_to` (на строке-ответе) = `bus.id` соответствующей строки-вопроса
 - `chat_messages.agent_ref` = `bus.id` строки-вопроса
 
-Любое расхождение → поллер AW не найдёт ответ (см. `get_answer_for_question`, `agent_message_repository.py:118-129`), и фронт зависнет на «Агент работает над ответом…» либо на «В очереди: вы следующий».
+Любое расхождение → поллер AW не найдёт ответ (см. `AgentMessageRepository.get_answer_for_question`), и фронт зависнет на «Агент работает над ответом…» либо на «В очереди: вы следующий».
 
 ---
 
@@ -129,13 +129,13 @@ image/webp
 
 Запрещено:
 
-- Любые `*/*`, `text/*` и прочие wildcard-значения (валидатор AW их режет — `_no_wildcards_in_mime_types`, `settings.py:246-260`).
-- MIME с параметрами: `"text/html; charset=utf-8"`, `"image/png; profile=foo"` — сравнение жёсткое, посимвольное (`file_service.py:72-77`).
+- Любые `*/*`, `text/*` и прочие wildcard-значения (валидатор AW их режет — `_no_wildcards_in_mime_types` в `app/domains/chat/settings.py`).
+- MIME с параметрами: `"text/html; charset=utf-8"`, `"image/png; profile=foo"` — сравнение жёсткое, посимвольное (`FileService.validate_file`).
 - Пустая строка.
 
 ### 4.2. `filename` — без служебных символов
 
-Запрещены (валидация `file_service.py:50-58`):
+Запрещены (валидация `FileService.validate_file`):
 
 - пустая строка,
 - `"/"`, `"\\"`, `"\x00"` в любой позиции,
@@ -146,19 +146,19 @@ image/webp
 ### 4.3. `file_size`
 
 - `INTEGER NOT NULL CHECK (file_size > 0)`.
-- Значение `0` запрещено (валидатор `file_service.py:61-64` отвергает пустые/нулевые файлы).
+- Значение `0` запрещено (`FileService.validate_file` отвергает пустые/нулевые файлы).
 - Должно **точно** равняться `length(file_data)` в байтах.
-- Превышение `CHAT__MAX_FILE_SIZE` (по умолчанию 10 МБ) при загрузке через UI → отказ на API; при прямой записи в БД — файл скачается, но загрузить повторно через UI тот же `id` уже не выйдет.
+- Превышение `CHAT__MAX_FILE_SIZE` (по умолчанию 512 МБ) при загрузке через UI → отказ на API; при прямой записи в БД — файл скачается, но загрузить повторно через UI тот же `id` уже не выйдет.
 
 ### 4.4. `file_data`
 
 - `BYTEA NOT NULL` — сырой бинарь без перекодирования.
-- На скачивание AW возвращает `Content-Type: application/octet-stream` + `X-Content-Type-Options: nosniff` независимо от `mime_type` (см. `files.py:56-67`). Браузер скачивает как blob, MIME не влияет на безопасность.
+- На скачивание AW возвращает `Content-Type: application/octet-stream` + `X-Content-Type-Options: nosniff` независимо от `mime_type` (см. `download_file` в `app/domains/chat/api/files.py`). Браузер скачивает как blob, MIME не влияет на безопасность.
 - На предпросмотр AW возвращает тот же blob + `inline=true` query, фронт сам решает, как рендерить по `block.mime_type`.
 
 ### 4.5. `message_id`
 
-- Может быть `NULL` в момент создания файла (файл прикреплён к сообщению, которое ещё не создано — типично для user-uploaded файлов). Заполняется постфактум через `link_to_message` (`file_repository.py:81-91`).
+- Может быть `NULL` в момент создания файла (файл прикреплён к сообщению, которое ещё не создано — типично для user-uploaded файлов). Заполняется постфактум через `FileRepository.link_to_message`.
 - **Для иконок и скачивания `message_id` не нужен** — фронт использует только `id`. Значение важно только для очистки (orphan-файлы после удаления сообщения) и для аудита.
 
 ### 4.6. `id` (= `file_id`)
@@ -207,7 +207,7 @@ DISTRIBUTED BY (id);
 
 **Жёсткие правила:**
 
-1. `file_id` — **обязательное** поле. Без него (`null`, отсутствует, пустая строка) карточка отрисуется, но кнопок «Предпросмотр» и «Скачать» не будет (`if (block.file_id)` ложно, `chat-renderer.js:843-867`).
+1. `file_id` — **обязательное** поле. Без него (`null`, отсутствует, пустая строка) карточка отрисуется, но кнопок «Предпросмотр» и «Скачать» не будет (`if (block.file_id)` ложно, `ChatRenderer._renderFile`).
 2. `file_id` обязан быть **либо** валидным UUID строки из `chat_files`, **либо** data-URL с префиксом `data:`. Промежуточные варианты (голый base64, http-ссылка) не поддержаны фронтом.
 3. `mime_type` и `file_size` рекомендованы заполненными (для иконки по расширению, для текста размера). Пустые/нулевые допустимы — карточка отрисуется без них.
 
@@ -223,18 +223,18 @@ DISTRIBUTED BY (id);
 
 **Жёсткие правила:**
 
-1. `file_id` **обязателен** для кликабельности (открытие в просмотрщике) и для `<img src>` (см. `_renderImage`, `chat-renderer.js:876-901`).
+1. `file_id` **обязателен** для кликабельности (открытие в просмотрщике) и для `<img src>` (см. `ChatRenderer._renderImage`).
 2. `mime_type` берётся из блока; если не задан, для image-блока подставляется `image/png` при открытии в viewer.
 3. `alt` рекомендован заполненным (a11y).
 
 #### 5.1.3. Другие типы блоков (контекст)
 
-`text`, `reasoning`, `code`, `plan`, `buttons`, `client_action`, `error` — описаны в `chat-renderer.js:370-380` и `docs/architecture/chat-frontend-architecture.md`. На появление file-иконок не влияют, но находятся в том же массиве `content` — структурно должны быть валидным JSON-массивом.
+`text`, `reasoning`, `code`, `plan`, `buttons`, `client_action`, `error` — описаны в `ChatRenderer.renderBlock` (`static/js/shared/chat/chat-renderer.js`) и `docs/architecture/chat-frontend-architecture.md`. На появление file-иконок не влияют, но находятся в том же массиве `content` — структурно должны быть валидным JSON-массивом.
 
 ### 5.2. `status` и жизненный цикл
 
 - `user`-сообщения: всегда создаются со `status='complete'` (дефолт).
-- `assistant`-сообщения: пишутся как `streaming` → материализуются блоками через `append_block`/`upsert_block` → переводятся в `complete` через `finalize` (`message_repository.py:232-287`) либо в `failed` через `mark_failed` (`message_repository.py:289-314`).
+- `assistant`-сообщения: пишутся как `streaming` → материализуются блоками через `append_block`/`upsert_block` → переводятся в `complete` через `MessageRepository.finalize` либо в `failed` через `MessageRepository.mark_failed`.
 - `agent_ref` заполняется только у `assistant`-сообщений, обрабатываемых через шину.
 - **Снаружи AW напрямую писать в `chat_messages` нельзя**, кроме случаев seed/backfill: при ручном INSERT нужно выставить `status='complete'` сразу, иначе поллер AW будет считать сообщение черновиком и финализировать его.
 
@@ -257,14 +257,14 @@ CREATE TABLE {bus_schema}.{BUS_TABLE} (   -- например agent_conversation
     chat_id     TEXT,                                  -- = chat_messages.conversation_id
     user_id     TEXT,
     role        TEXT NOT NULL
-                CHECK (role IN ('user','assistant','system')),
+                CHECK (role IN ('user','assistant','system','tool')),
     content     TEXT NOT NULL,
     media       JSONB,                                 -- см. §6.3
     metadata    JSONB,
     reply_to    UUID,                                  -- на строке-ответе → id вопроса
     buttons     JSONB,                                 -- на строке-ответе, см. §6.4
     status      TEXT NOT NULL
-                CHECK (status IN ('pending','processing','completed','failed')),
+                CHECK (status IN ('pending','processing','completed','failed','error')),
     created_at  TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at  TIMESTAMP WITH TIME ZONE NOT NULL
 )
@@ -273,48 +273,75 @@ DISTRIBUTED BY (chat_id);                              -- на GP; см. greenpl
 
 ### 6.1. Протокол обмена
 
-- Строка-**вопрос** от AW: `role='user'`, `status='pending'`, `reply_to=NULL`, `buttons=[]`, `media={}` или `[]`. `id` = UUID, который AW сохраняет в `chat_messages.agent_ref`.
+- Строка-**вопрос** от AW: `role='user'`, `status='pending'`, `reply_to=NULL`, `buttons=[]`, `media=[]` (AW всегда пишет пустой массив, не `{}` — `insert_question`, Task 5). `id` = UUID, который AW сохраняет в `chat_messages.agent_ref`.
 - Строка-**ответ** от агента: `role='assistant'`, `reply_to = id строки-вопроса`, `content` = финальный текст, `status` переходит `processing → completed` (или `failed`).
 - Агент **обязан** переводить `pending → processing` при взятии в работу. Без этого поллер AW считает, что агент не работает (`phase='pending'`, `claim_timeout_sec=1800`).
-- Агент **обязан** обновлять `updated_at` на каждой дельте (`metadata.reasoning` стримится). Без этого поллер решит, что агент завис (`phase='processing'`, `answer_timeout_sec=600`).
+- Агент **обязан** обновлять `updated_at` на каждой дельте (`metadata.reasoning` стримится). Без этого поллер решит, что агент завис (`phase='processing'`, `answer_timeout_sec=1800`).
 
 ### 6.2. `status`
 
+Словарь владельца (NanoBot 2.3): `pending` / `processing` / `completed` / `error` / `failed`; синоним legacy — `in_progress` вместо `processing`.
+
 - `pending` — AW только что положил вопрос, агент ещё не взял.
-- `processing` (синоним legacy — `in_progress`) — агент взял и пишет ответ.
+- `processing` — агент взял и пишет ответ.
 - `completed` — ответ финализирован, в `content` финальный текст.
-- `failed` — ошибка, ответ не пишется. AW финализирует draft-сообщение error-блоком.
+- `error` — **повторяемая** ошибка: агент вернёт вопрос в пул и переобработает его (счётчик `retry_count` в `metadata`, до `max_stuck_retries` раз на стороне агента), удалив свою строку-ответ. AW при виде `status='error'` без строки-ответа просто ждёт — не финализирует draft (`_BUS_PENDING_STATUSES` в `AgentChannelService.poll_once` включает `error`).
+- `failed` — терминальная ошибка, ответ не пишется. AW финализирует draft-сообщение error-блоком.
 
-### 6.3. `media` — массив/объект файлов
+Возврат вопроса `processing → pending` (reclaim истёкшего lease агента либо повторяемая ошибка) для AW — признак жизни: он продлевает answer-таймер, но не более `_MAX_PENDING_REVERSIONS` (3) эпизодов за всю жизнь подписки — счёт идёт по эпизодам смены статуса, а не по тикам (`AgentChannelPoller`), и не сбрасывается. После исчерпания кап дальнейшие reclaim'ы окно уже не продлевают — защита от бесконечного продления флаппингом чужой таблицы.
 
-**Это ключевое поле для отображения файлов от агента.** Структура (см. `agent_channel.py:145-171`, `map_answer_to_blocks`):
+### 6.3. `media` — массив/объект файлов (входящие от агента)
+
+**Это ключевое поле для отображения файлов от агента.** Разбор — best-effort, мягкое приведение: один битый элемент не должен ронять весь ответ (`parse_media_items` в `app/domains/chat/services/agent_channel.py`).
 
 ```json
 [
   {
-    "file_id": "<UUID ИЛИ data:...>",
-    "filename": "<string>",
-    "mime_type": "<из whitelist §4.1>",
-    "file_size": <целое > 0>,
-    "url": "<string, опционально, fallback>"
+    "file_id": "<UUID ИЛИ data:<mime>;base64,<payload> ИЛИ http(s)-ссылка>",
+    "filename": "<string, опционально>",
+    "mime_type": "<string, опционально>",
+    "file_size": <целое, опционально>,
+    "url": "<string, опционально, fallback вместо file_id>"
   }
 ]
 ```
 
-**Жёсткие правила:**
+**Фактическое поведение `parse_media_items`:**
 
-1. Элемент `file_id` — приоритетное поле. Если его нет, AW берёт `item.get("file_id", item.get("url", ""))` — то есть `url` как фолбэк, **но только если `url` начинается с `data:`** (иначе фронт покажет иконки, а скачивание вернёт 404).
-2. Для **image**-файлов (`mime_type` начинается с `image/`): блок рендерится как `{"type":"image","file_id":...,"alt":filename}`.
-3. Для всех прочих MIME: блок рендерится как `{"type":"file","file_id":...,"filename":...,"mime_type":...,"file_size":...}`.
-4. Если `media=null` или `media=[]` — файл-блоков в ответе не будет, кнопок на фронте не появится, что бы ни писал агент в `content` текстом.
-5. Допустимы как JSON-объект-одиночка, так и JSON-массив — AW разворачивает одиночный объект в список автоматически (`agent_channel.py:148-150`).
+1. `media` принимает JSON-объект-одиночку, строку-data-URL или массив — одиночное значение оборачивается в список автоматически. Любое другое (`int`, `bool`, …) даёт пустой список с warning'ом.
+2. Элемент-**строка**: принимается, только если начинается с `data:` (`mime_type`/`file_size` вычисляются из самого data-URL); прочие строки — warning + пропуск.
+3. Элемент-**объект**: `file_id = item.get("file_id") or item.get("url") or ""` — `url` работает как фолбэк независимо от префикса. Значение классифицируется (`_classify_file_id`) на `data` / `http` / `uuid` / `other` (не UUID и не URL) / `empty` (пусто).
+4. `mime_type`/`file_size` приводятся мягко: нечисловой/отсутствующий `file_size` → `0`, не роняя элемент. Для `kind='data'` при пустых `mime_type`/`file_size` они доопределяются из самого data-URL.
+5. Любой элемент не-dict и не-`data:`-строка, либо исключение при разборе конкретного элемента — `logger.warning` + пропуск именно этого элемента, остальные элементы и текст ответа не страдают.
+6. Если `media=null` или `media=[]` — файл-блоков в ответе не будет, кнопок на фронте не появится, что бы ни писал агент в `content` текстом.
 
-#### 6.3.1. Запись в `bus.media` со стороны AW
+**Что уходит в блок чата** (`_entry_to_block` для `kind` ≠ `data`; `kind='data'` материализуется — см. §6.3.1):
 
-AW web-ui (HTTP `POST /api/v1/chat/conversations/{cid}/messages` в режиме `always` или `adaptive` + forward-тул) **пишет в `bus.media`** (строка-вопрос) данные в формате, который ожидает владелец шины: элементы `{file_id, filename, mime_type, file_size}` **без поля `type`**, и `file_id` это `data:<mime>;base64,<payload>` (байты подтянуты из `chat_files` и закодированы инлайном). Это формат `chat_messages.content`-блока **`минус`** дискриминатор `type` и **с заменой** UUID на inline data-URL.
+- `kind='data'` (после материализации) или `kind='uuid'` с непустым `mime_type`, начинающимся на `image/`: `{"type":"image","file_id":...,"alt":filename}` — **без** `mime_type`/`filename` в самом блоке (схема `ImageBlock` их не знает).
+- `kind='http'` — **всегда** `{"type":"file",...}`, даже при `mime_type` `image/*`: CSP ПРОМа (`img-src 'self' data: blob:`, enforce) блокирует `<img src>` на внешний http(s)-хост, картинка была бы гарантированно битой. Внешняя ссылка агента отображается карточкой файла без inline-предпросмотра, скачивание — прямым переходом по ссылке.
+- Прочий `mime_type` (или `kind='data'` без картинки): `{"type":"file","file_id":...,"filename":...,"mime_type":...,"file_size":...}`.
+- `kind='other'`/`'empty'`: карточка **без** `file_id` — фронт не рисует кнопок «Предпросмотр»/«Скачать» (битый путь агента не превращается в 404-ссылку).
 
-- До фикса (web-ui передавал `file_blocks` `chat_messages.content`-формата as-is) `bus.media` содержал лишнее поле `type` и `file_id` UUID, а не data-URL — агенту payload доставался не всегда в inline-форме.
-- Сейчас конверсия — единая точка `services/agent_channel.py:186` `build_bus_media_from_file_blocks(file_blocks, *, conversation_id, file_repo)`; вызывается перед `AgentChannelService.submit` в `api/messages.py:177` (режим `always`) и в `services/agent_loop.py:115` (режим `adaptive` + forward-тул).
+#### 6.3.1. Модель хранения входящих файлов
+
+Входящие вложения агента (`kind='data'`, инлайн base64) **материализуются в `chat_files`** — транспорт (base64 в шине) отделён от хранения:
+
+- Материализация — `materialize_media_entries` (`app/domains/chat/services/agent_channel.py`), вызывается ровно один раз, **на финализации** ответа в `AgentChannelService.poll_once` (не на каждом тике опроса).
+- Идемпотентность ретраев финализации: `file_id` детерминирован — `uuid5(NAMESPACE_URL, "agent-media:{answer_uid}:{idx}")`; повторный `INSERT` при ретрае финализации падает `UniqueViolationError` и просто переиспользует существующую запись.
+- Лимит размера — `CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE` (`AgentChannelSettings.max_media_file_size`, дефолт **512 МБ**), сверяется по оценке размера из самого base64-payload'а (`len(payload) * 3 // 4`), а не по объявленному агентом `file_size` (тот приходит с чужой стороны и может врать в обе стороны). Тот же порядок величины и на исходящей стороне (`FileRepository`/`CHAT__MAX_FILE_SIZE`, тоже 512 МБ) — единый потолок вложения для обоих направлений.
+- MIME **не** сверяется с whitelist §4.1 (в отличие от пользовательского аплоада) — файл от агента всё равно отдаётся только как `application/octet-stream` + `X-Content-Type-Options: nosniff` (см. §4.4), поэтому проверка MIME на входе не даёт защитного эффекта.
+- Превышение лимита, битый/пустой base64 и любой сбой записи в `chat_files` дают error-блок про конкретный файл (`_file_error_block`); остальные вложения и текст ответа при этом целы.
+- `filename` рекомендован явным от агента; при отсутствии/пустом/`"."`/`".."` AW синтезирует `"file_<idx><ext>"` по `mime_type` (`_sanitize_agent_filename`) — распознавания имени из текста ответа больше нет (снята фронтовая эвристика, ранее сопоставлявшая имена из `text`-блока файловым карточкам по порядку появления).
+- **`media` не читается горячим опросом.** Строка bus-таблицы читается узкими проекциями без колонки `media` (поллер каждые 2-10 с, фронт — раз в 1.5 с); полное содержимое (потенциально сотни МБ base64) подтягивается только разово на финализации через `AgentMessageRepository.get_media_by_uid`.
+
+> **Организационная фиксация (M5 аудита):** полный бинарный контент аудиторских документов теперь целиком уезжает в bus-таблицу — таблицу владельца шины (внешний агент), а не остаётся исключительно в `chat_files` AW. Это согласовано с командой аудита (закрытый контур), не является дефектом реализации. Срок хранения строк шины — ручная чистка `docs/integrations/agent-channel-cleanup.sql`, выполняется на стороне эксплуатации; приложение её не запускает.
+
+#### 6.3.2. Запись в `bus.media` со стороны AW (исходящее)
+
+AW web-ui (HTTP `POST /api/v1/chat/conversations/{cid}/messages` в режиме `always` или `adaptive` + forward-тул) **пишет в `bus.media`** (строка-вопрос) данные в формате, который ожидает владелец шины: элементы `{file_id, filename, mime_type, file_size}` **без поля `type`**, и `file_id` это `data:<mime>;base64,<payload>` (байты подтянуты из `chat_files` и закодированы инлайном). Это формат `chat_messages.content`-блока **минус** дискриминатор `type` и **с заменой** UUID на inline data-URL.
+
+- Конверсия — `build_bus_media_from_file_blocks(file_blocks, *, conversation_id, file_repo, max_size)` в `app/domains/chat/services/agent_channel.py`; единая точка входа для вызывающих — `build_bus_media_for_submit` (та же сигнатура минус `file_repo`, сама открывает `FileRepository` через `DbExecutor`, соединение не удерживается на время base64-кодирования). Вызывается перед `AgentChannelService.submit` в `api/messages.py` (режим `always`) и в `services/agent_loop.py` (режим `adaptive` + forward-тул).
+- Файл из `chat_files`, превышающий `max_size` (тот же `CHAT__AGENT_CHANNEL__MAX_MEDIA_FILE_SIZE`), в `bus.media` не попадает — пропускается с warning (best-effort: потеря одного вложения не должна ронять вопрос целиком).
 - Сам файл по-прежнему хранится в `chat_files` (UUID нужен фронту для иконок/скачивания); в `chat_messages.content` для истории чата блок сохраняется **исходным** `chat_messages.content`-форматом — UI не разъезжается.
 
 ### 6.4. `buttons`
@@ -340,7 +367,7 @@ JSON-массив кнопок на строке-ответе (на строке
 ### 6.7. `id` ↔ `chat_messages.agent_ref`
 
 - `bus.id` — UUID, **генерируется той стороной, которая пишет строку**.
-- AW генерирует `id` для строки-вопроса (`agent_channel.py:294` — `str(uuid.uuid4())`) и сохраняет его же в `chat_messages.agent_ref`. Это и есть способ join'а.
+- AW генерирует `id` для строки-вопроса (`AgentChannelService.submit` — `str(uuid.uuid4())`) и сохраняет его же в `chat_messages.agent_ref`. Это и есть способ join'а.
 - Агент при ответе пишет свой `id` (любой UUID), но обязательно проставляет `reply_to = id_вопроса`.
 
 ---
@@ -358,7 +385,7 @@ JSON-массив кнопок на строке-ответе (на строке
 | 5 | `chat_files.file_size > 0` и равен `length(file_data)` | консистентно |
 | 6 | `chat_files.conversation_id` → JOIN с `chat_conversations` под владельца-пользователя | возвращает 1 строку |
 | 7 | (опц.) `chat_messages.status='complete'` | да (для финальных сообщений) |
-| 8 | Если блок пришёл из шины: `bus.media[i].file_id` валиден | UUID или data-URL |
+| 8 | Если блок пришёл из шины: `bus.media[i].file_id` классифицируется как `data`/`http`/`uuid` (`_classify_file_id`) | не `other`/`empty` — иначе карточка без кнопок (код это обеспечивает сам, ручная проверка не нужна) |
 | 9 | Если блок пришёл из шины: `bus.id` строки-вопроса = `chat_messages.agent_ref` ответа | совпадает |
 | 10 | Если блок пришёл из шины: `bus.reply_to` строки-ответа = `bus.id` строки-вопроса | совпадает |
 
@@ -376,11 +403,11 @@ JSON-массив кнопок на строке-ответе (на строке
 
 | Симптом на фронте | Вероятная причина в данных |
 |---|---|
-| Карточка с именем/размером есть, кнопок нет | `block.file_id` пустой/`null` |
-| Кнопка «Скачать» есть, файл не скачивается (404) | `file_id` — строка не-UUID-не-data-URL, либо строки нет в `chat_files` |
+| Карточка с именем/размером есть, кнопок нет | `block.file_id` пустой/`null`; для блоков из шины — `kind='other'`/`'empty'` (`_entry_to_block` не проставил `file_id`) |
+| Кнопка «Скачать» есть, файл не скачивается (404) | `file_id` — UUID-строка, которой нет в `chat_files` (для http(s)-ссылок и data-URL 404 такого рода не бывает — они не идут через `/api/v1/chat/files/`) |
 | Карточки нет вообще, только текст с упоминанием файла | В `content` нет объекта `{"type":"file",...}`, только `text`-блок; агент описал файл словами |
-| Иконка «глаз» есть, viewer показывает «Не удалось декодировать» | data-URL битый, `payload` после запятой не base64/url-encoded |
-| Скачивание работает, но viewer показывает «Предпросмотр недоступен» | `mime_type` блока не `image/*`, не `application/pdf`, не `text/*`, не `application/json`, не `application/xml` (ветки в `_openFileViewer`, `chat-renderer.js:1432-1487`) |
+| Иконка «глаз» есть, viewer показывает «Не удалось декодировать» | data-URL битый, `payload` после запятой не base64/url-encoded; для входящих файлов агента это же ловит `materialize_media_entries` на финализации (error-блок `agent_file_invalid`) |
+| Скачивание работает, но viewer показывает «Предпросмотр недоступен» | `mime_type` блока не `image/*`, не `application/pdf`, не `text/*`, не `application/json`, не `application/xml` (ветки в `ChatRenderer._openFileViewer`) |
 
 ---
 
@@ -391,16 +418,17 @@ JSON-массив кнопок на строке-ответе (на строке
 3. **Переиспользовать `chat_files.id`** для разных файлов — старые блоки в `content` старых сообщений будут показывать новый файл.
 4. **Удалять `chat_messages` со ссылкой `agent_ref` без удаления соответствующей строки в шине** — поллер AW при старте подхватит осиротевший streaming-draft и подпишется на несуществующий `bus.id`.
 5. **Писать в `chat_messages` напрямую со `status='streaming'` и пустым `content`**, минуя `create_streaming` — приложение не сможет нормально финализировать (нужен был `agent_ref`).
-6. **Менять `chat_id` шины после создания строки-вопроса** — `get_answer_for_question` ищет по `reply_to`, не по `chat_id`, но `count_pending_before` и reconcile смотрят на `created_at` именно этой строки.
-7. **Заполнять `bus.buttons` на строке-вопросе** — кнопки рендерятся только в строке-ответе (`agent_channel.py:86-92` молча игнорирует).
+6. **Менять `chat_id` шины после создания строки-вопроса** — `AgentMessageRepository.get_answer_for_question` ищет по `reply_to`, не по `chat_id`, но `count_pending_before` и reconcile смотрят на `created_at` именно этой строки.
+7. **Заполнять `bus.buttons` на строке-вопросе** — кнопки рендерятся только в строке-ответе; `AgentMessageRepository.insert_question` пишет вопросу всегда пустой `buttons`, параметра для их передачи в вопрос у него нет.
 
 ---
 
 ## 10. Сводка инвариантов в одну строку
 
-- `chat_files.id` (UUID) — единственный допустимый «не-data» значение `file_id` в блоках.
-- `block.file_id` обязан начинаться с `data:` или быть UUID из `chat_files`.
-- `mime_type` — строго из whitelist §4.1, без параметров и wildcard'ов.
+- `chat_files.id` (UUID) — единственный допустимый «не-data»/«не-http» значение `file_id` в блоках, идущих через `/api/v1/chat/files/`.
+- `block.file_id` обязан начинаться с `data:`, быть http(s)-ссылкой, либо UUID из `chat_files` — классификация (`_classify_file_id`) и отсутствие кнопок для `other`/`empty` обеспечены кодом, не требуют ручной проверки.
+- `mime_type` в `chat_files` — строго из whitelist §4.1, без параметров и wildcard'ов **для пользовательского аплоада**; для файлов, материализованных из ответа агента (§6.3.1), whitelist не применяется — скачивание в любом случае идёт как `application/octet-stream`.
 - `file_size > 0`, `file_data` — реальные байты той же длины.
 - `bus.id ↔ chat_messages.agent_ref ↔ bus.reply_to` — согласованная троица.
 - `bus.media` не NULL и не пустой массив — обязательное условие появления файловых блоков от агента.
+- `bus.media` в горячий опрос не попадает — только узкие проекции (`AgentMessageRepository`); полное содержимое читается разово при финализации через `get_media_by_uid`.
