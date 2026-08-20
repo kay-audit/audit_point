@@ -17,7 +17,7 @@ retention-чистку, мониторинг, ёмкости, troubleshooting.
 
 Пока черновик в `streaming` и привязан к шине (`chat_messages.agent_ref`),
 GET-поллинг дополнительно отдаёт `status_details: {bus_status, queue_ahead}`
-(`AgentChannelService.get_queue_details`, `app/domains/chat/services/agent_channel.py:403`):
+(`AgentChannelService.get_queue_details` в `app/domains/chat/services/agent_channel.py`):
 `bus_status` — статус вопроса в шине, `queue_ahead` — сколько вопросов
 стоит перед ним (считается только для `pending`). Это первый диагностический
 сигнал при жалобе «ассистент завис»: `pending` с растущим `queue_ahead` —
@@ -128,7 +128,9 @@ SQL-операцию (SELECT шины, финализирующая транза
 | `POLL_BACKOFF_MULTIPLIER` | 1.5 | Множитель backoff'а |
 | `MAX_BLOCK_TEXT_SIZE` | 262144 | Потолок размера текста блока при маппинге ответа |
 
-Worst case: 10 минут от форварда до timeout. На практике — секунды для
+Worst case: 30 минут от форварда до timeout (окно `ANSWER_TIMEOUT_SEC` — с
+запасом покрывает до 3 ретраев NanoBot при повторяемой ошибке
+`status='error'` с backoff'ом между попытками). На практике — секунды для
 коротких ответов, до нескольких минут для длинных reasoning-chain'ов
 вроде RAG-агента.
 

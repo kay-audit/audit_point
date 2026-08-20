@@ -8,7 +8,7 @@
 --   Удаляются ТОЛЬКО завершённые строки (status IN ('completed','failed') —
 --   словарь CHECK'а владельца таблицы); активные (pending/processing) НИКОГДА
 --   не трогаются — даже если «зависли»: AW сам закроет draft по idle-таймауту
---   (30 мин для pending / 10 мин для processing, от последнего признака
+--   (30 мин для pending / 30 мин для processing, от последнего признака
 --   жизни), а при рестарте uvicorn lifespan reconcile подхватит оставшиеся.
 --
 --   Видимая пользователю история ЧАТА живёт в {PREFIX}chat_messages.
@@ -78,7 +78,7 @@ COMMIT;
 --   VACUUM ANALYZE {SCHEMA}.{BUS_TABLE};
 
 -- ── Опционально: закрыть зависшие pending/processing старше 2 часов ─────────
--- AW закрывает draft сам по idle-таймауту (30 мин pending / 10 мин processing,
+-- AW закрывает draft сам по idle-таймауту (30 мин pending / 30 мин processing,
 -- best-effort ставит вопросу 'failed'), но при долгом даунтайме uvicorn
 -- строки могут остаться.
 -- Запускать ОТДЕЛЬНО (не в основной транзакции выше), только осознанно:
