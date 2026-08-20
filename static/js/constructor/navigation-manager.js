@@ -107,8 +107,8 @@ export class NavigationManager {
             return;
         }
 
-        // Предупреждения о незаполненности (пустые таблицы, ТБ) — всегда,
-        // не блокируют (#8: WIP-акт сохраняется в БД как есть).
+        // Предупреждения о незаполненности (ТБ) — всегда, не блокируют
+        // (#8: WIP-акт сохраняется в БД как есть).
         this._showContentWarnings();
 
         // Экспорт в файл требует валидной структуры: сломанная структура даёт
@@ -253,19 +253,17 @@ export class NavigationManager {
     }
 
     /**
-     * Показывает НЕблокирующие предупреждения о незаполненности (пустые
-     * таблицы, не назначенные ТБ). Сохранение не прерывается.
+     * Показывает НЕблокирующие предупреждения о незаполненности (не назначенные
+     * ТБ). Сохранение не прерывается.
+     *
+     * Про таблицы без данных здесь НЕ предупреждаем: то же самое считает бэк
+     * (`table_no_data`) и показывает единым тостом «Работа не закончена: …»
+     * после ответа на сохранение (`api.js`). Два тоста на одно нажатие
+     * «Сохранить» — дубль; оставлен серверный, он источник истины статуса акта.
+     * Аналога проверки ТБ на бэке нет, поэтому она остаётся клиентской.
      * @private
      */
     static _showContentWarnings() {
-        const dataCheckResult = ValidationTable.validateData();
-        if (dataCheckResult.isWarning) {
-            Notifications.show(
-                dataCheckResult.message,
-                'warning',
-                AppConfig.notifications.duration.warning
-            );
-        }
         const tbCheckResult = ValidationAct.validateTb();
         if (tbCheckResult.isWarning) {
             Notifications.show(

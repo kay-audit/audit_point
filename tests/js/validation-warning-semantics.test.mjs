@@ -9,7 +9,9 @@
  *  - ValidationAct.validateTb() находит раздел 5 по id (а не по number —
  *    до генерации нумерации поиск по number молча пропускал проверку);
  *  - NavigationManager._showContentWarnings() показывает предупреждения уровнем
- *    'warning' (не 'info') и НЕ блокирует сохранение (#8: WIP сохраняется).
+ *    'warning' (не 'info') и НЕ блокирует сохранение (#8: WIP сохраняется);
+ *  - и показывает ТОЛЬКО то, чего нет у сервера: про таблицу без данных
+ *    предупреждает серверный тост в api.js, клиентский дубль убран.
  */
 import './_browser-stub.mjs';
 import { test, beforeEach } from 'node:test';
@@ -17,6 +19,7 @@ import assert from 'node:assert/strict';
 import { AppState } from '../../static/js/constructor/state/state-core.js';
 import { ValidationCore } from '../../static/js/constructor/validation/validation-core.js';
 import { ValidationAct } from '../../static/js/constructor/validation/validation-act.js';
+import { ValidationTable } from '../../static/js/constructor/validation/validation-table.js';
 import { NavigationManager } from '../../static/js/constructor/navigation-manager.js';
 import { Notifications } from '../../static/js/shared/notifications.js';
 
@@ -149,7 +152,11 @@ test('_showContentWarnings: tb-предупреждение показывает
     }
 });
 
-test('_showContentWarnings: таблица без данных → предупреждение уровнем warning', () => {
+test('_showContentWarnings: таблица без данных НЕ даёт клиентского тоста (о ней предупреждает сервер)', () => {
+    // Дедупликация тостов: про таблицу без данных бэк присылает `table_no_data`
+    // и api.js показывает единый тост «Работа не закончена: …». Клиентский тост
+    // был вторым предупреждением на одно нажатие «Сохранить».
+    AppState.treeData = { id: 'root', label: 'Акт', children: [] };
     AppState.tables = {
         t1: {
             id: 't1',
@@ -160,18 +167,21 @@ test('_showContentWarnings: таблица без данных → предуп�
             colWidths: [100],
         },
     };
+    AppState._rebuildNodeIndex();
 
     const shown = [];
     const originalShow = Notifications.show;
     Notifications.show = (message, type) => { shown.push({ message, type }); return 'id'; };
     try {
         NavigationManager._showContentWarnings();
-        assert.equal(shown.length, 1);
-        assert.equal(shown[0].type, 'warning');
-        assert.match(shown[0].message, /без данных/);
+        assert.deepEqual(shown, [], 'клиентский тост о таблице без данных показываться не должен');
     } finally {
         Notifications.show = originalShow;
     }
+});
+
+test('ValidationTable: построитель текста validateData удалён (осиротел вместе с тостом)', () => {
+    assert.equal(typeof ValidationTable.validateData, 'undefined');
 });
 
 // ──────────────────────────────────────────────────────────────────────────
