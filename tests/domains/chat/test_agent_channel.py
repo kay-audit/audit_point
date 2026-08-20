@@ -596,6 +596,84 @@ class TestMaterializeMediaEntries:
         assert blocks[1]["type"] == "file"
         assert mock_file_repo.create.await_count == 1
 
+    async def test_declared_file_size_does_not_fool_the_guard(self, mock_file_repo):
+        """Страж считает размер по payload: объявленный агентом file_size=1 не пропускает гиганта.
+
+        Иначе полный b64decode без потолка и INTEGER-колонка file_size с
+        NumericValueOutOfRange — исключение из poll_once и ответ по таймауту.
+        """
+        entries = parse_media_items([{
+            "file_id": _data_url("application/pdf", b"x" * 3000),
+            "filename": "lying.pdf",
+            "mime_type": "application/pdf",
+            "file_size": 1,
+        }])
+        assert entries[0]["file_size"] == 1  # агент объявил именно так
+
+        with patch(
+            "app.domains.chat.services.agent_channel._decode_base64_payload"
+        ) as decode:
+            blocks = await materialize_media_entries(
+                entries,
+                answer_uid="a1",
+                conversation_id="c1",
+                message_id="m1",
+                file_repo=mock_file_repo,
+                max_size=1000,
+            )
+
+        assert blocks[0]["type"] == "error"
+        assert blocks[0]["code"] == "agent_file_too_large"
+        decode.assert_not_called()
+        mock_file_repo.create.assert_not_awaited()
+
+    async def test_declared_file_size_does_not_cause_false_too_large(self, mock_file_repo):
+        """Обратный случай: завышенное объявление не даёт ложный too_large на крошечном файле."""
+        entries = parse_media_items([{
+            "file_id": "data:text/plain;base64,0J/RgNC40LLQtdGC",
+            "filename": "tiny.txt",
+            "mime_type": "text/plain",
+            "file_size": 10 ** 9,
+        }])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=1000,
+        )
+
+        assert blocks[0]["type"] == "file"
+        assert mock_file_repo.create.call_args.kwargs["file_size"] == len("Привет".encode("utf-8"))
+
+    async def test_db_failure_on_create_becomes_error_block(self, mock_file_repo):
+        """Сбой записи (не UniqueViolation) → error-блок, остальные вложения целы."""
+        mock_file_repo.create.side_effect = [
+            asyncpg.PostgresError("boom"),
+            {"id": "saved"},
+        ]
+        entries = parse_media_items([
+            {"file_id": _data_url("text/plain", b"first"), "filename": "bad.txt"},
+            {"file_id": _data_url("text/plain", b"second"), "filename": "good.txt"},
+        ])
+
+        blocks = await materialize_media_entries(
+            entries,
+            answer_uid="a1",
+            conversation_id="c1",
+            message_id="m1",
+            file_repo=mock_file_repo,
+            max_size=512 * 1024 * 1024,
+        )
+
+        assert blocks[0]["type"] == "error"
+        assert blocks[0]["code"] == "agent_file_invalid"
+        assert "bad.txt" in blocks[0]["message"]
+        assert blocks[1]["type"] == "file"
+        assert blocks[1]["filename"] == "good.txt"
+
     async def test_broken_base64_becomes_error_block(self, mock_file_repo):
         """Битый payload → error-блок agent_file_invalid, в chat_files ничего не пишем."""
         entries = parse_media_items([

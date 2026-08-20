@@ -241,9 +241,20 @@ def _sanitize_agent_filename(name: str, mime: str, idx: int) -> str:
     return name[:500]
 
 
-def _file_error_block(code: str, filename: str, message: str) -> dict:
+def _file_error_block(code: str, message: str) -> dict:
     """Error-блок про конкретное вложение агента (остальные блоки не страдают)."""
     return {"type": "error", "code": code, "message": message}
+
+
+def _decode_base64_payload(payload: str) -> bytes:
+    """Декодирует payload data-URL. Исполняется в потоке — вызов блокирующий.
+
+    Строгий режим (validate=True): при ленивом декодировании «лишние» символы
+    молча выбрасываются, и пользователь получил бы обрезанный файл вместо
+    честной ошибки. Пробелы и переводы строк вычищаются заранее — агенты
+    вполне могут переносить base64 по строкам, такой payload валиден.
+    """
+    return base64.b64decode("".join(payload.split()), validate=True)
 
 
 async def materialize_media_entries(
@@ -266,11 +277,11 @@ async def materialize_media_entries(
     падает UniqueViolation и просто переиспользует существующую запись.
 
     MIME не проверяется по whitelist аплоада (решение владельца): файл всё
-    равно отдаётся только как application/octet-stream. Превышение max_size
-    или битый base64 → error-блок про конкретный файл, остальные блоки целы.
-    Декодирование строгое (validate=True) — лениво отброшенные «лишние»
-    символы дали бы пользователю молча обрезанный файл вместо честной ошибки;
-    перенос строк в payload при этом допускается (агенты переносят base64).
+    равно отдаётся только как application/octet-stream. Размер сверяется с
+    max_size по оценке из САМОГО payload (len*3//4) — объявленному агентом
+    file_size страж не верит. Превышение лимита, битый/пустой base64 и любой
+    сбой записи в chat_files дают error-блок про конкретный файл; остальные
+    вложения и текст ответа при этом целы.
     """
     blocks: list[dict] = []
     for idx, entry in enumerate(entries):
@@ -284,23 +295,30 @@ async def materialize_media_entries(
                 )
             continue
         filename = _sanitize_agent_filename(entry["filename"], entry["mime_type"], idx)
-        if entry["file_size"] > max_size:
+        payload = entry["file_id"].partition(",")[2]
+        # Страж считает размер по САМОМУ payload, а не по объявленному агентом
+        # file_size: тот приходит с чужой стороны и может врать в обе стороны —
+        # «1 байт» при гигабайтном data-URL пустил бы гиганта в декодирование
+        # и в INTEGER-колонку file_size, а завышенное объявление дало бы ложный
+        # too_large на крошечном файле. Объявленный размер остаётся только
+        # метаданными карточки.
+        estimated_size = len(payload) * 3 // 4
+        if estimated_size > max_size:
             logger.warning(
-                "materialize_media_entries: файл %r (%d байт) превышает лимит %d — error-блок",
-                filename, entry["file_size"], max_size,
+                "materialize_media_entries: файл %r (~%d байт по payload) превышает лимит %d — error-блок",
+                filename, estimated_size, max_size,
             )
             blocks.append(_file_error_block(
-                "agent_file_too_large", filename,
+                "agent_file_too_large",
                 f"Файл «{filename}» от агента превышает лимит {max_size // (1024 * 1024)} МБ и не был сохранён.",
             ))
             continue
-        payload = "".join(entry["file_id"].partition(",")[2].split())
         try:
-            raw = await asyncio.to_thread(base64.b64decode, payload, validate=True)
+            raw = await asyncio.to_thread(_decode_base64_payload, payload)
         except (binascii.Error, ValueError):
             logger.warning("materialize_media_entries: битый base64 в media[%d] ответа %s", idx, answer_uid)
             blocks.append(_file_error_block(
-                "agent_file_invalid", filename,
+                "agent_file_invalid",
                 f"Файл «{filename}» от агента повреждён и не был сохранён.",
             ))
             continue
@@ -313,7 +331,7 @@ async def materialize_media_entries(
                 filename, idx, answer_uid,
             )
             blocks.append(_file_error_block(
-                "agent_file_invalid", filename,
+                "agent_file_invalid",
                 f"Файл «{filename}» от агента пуст и не был сохранён.",
             ))
             continue
@@ -326,6 +344,20 @@ async def materialize_media_entries(
             )
         except asyncpg.exceptions.UniqueViolationError:
             logger.info("materialize_media_entries: файл %s уже сохранён (ретрай финализации)", file_id)
+        except Exception:
+            # Принцип «один битый файл не роняет ответ» распространяется и на
+            # запись: любая другая ошибка БД (исчезнувшая беседа, переполнение
+            # колонки) иначе вылетела бы из poll_once, и текст ответа дошёл бы
+            # до пользователя только по таймауту.
+            logger.warning(
+                "materialize_media_entries: не удалось сохранить файл %s (media[%d] ответа %s) — error-блок",
+                file_id, idx, answer_uid, exc_info=True,
+            )
+            blocks.append(_file_error_block(
+                "agent_file_invalid",
+                f"Файл «{filename}» от агента не удалось сохранить.",
+            ))
+            continue
         if mime.startswith("image/"):
             blocks.append({"type": "image", "file_id": file_id, "alt": filename,
                            "mime_type": mime, "filename": filename})
