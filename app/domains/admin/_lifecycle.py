@@ -258,7 +258,7 @@ async def on_startup(app: FastAPI) -> None:
     from app.core.settings_registry import get as get_domain_settings
     from app.db.connection import get_db
     from app.domains.admin.services.admin_service import AdminService
-    from app.domains.admin.settings import AdminSettings
+    from app.domains.admin.settings import AdminSettings, parse_admin_logins
 
     settings = get_domain_settings("admin", AdminSettings)
 
@@ -267,7 +267,7 @@ async def on_startup(app: FastAPI) -> None:
             service = AdminService(conn=conn, settings=settings)
             await service.seed_initial_roles(
                 branch_filter=settings.user_directory.branch_filter,
-                default_admin=settings.user_directory.default_admin,
+                default_admins=parse_admin_logins(settings.user_directory.default_admins),
             )
     except Exception:
         logger.exception("Ошибка начального заполнения ролей")

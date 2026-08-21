@@ -17,7 +17,13 @@ class UserDirectorySettings(BaseModel):
     schema_name: str = Field(default="", alias="schema")
     table: str = "t_db_oarb_ua_user"
     branch_filter: str = "Отдел аудита розничного бизнеса"
-    default_admin: str = "22494524"
+    # Логины через запятую (как CHAT__PROFILE) — parse_admin_logins() разбирает в список.
+    default_admins: str = "22494524"
+
+
+def parse_admin_logins(value: str) -> list[str]:
+    """Разбирает список логинов админов по умолчанию (через запятую)."""
+    return [p.strip() for p in (value or "").split(",") if p.strip()]
 
 
 class DbPoolMonitorSettings(BaseModel):

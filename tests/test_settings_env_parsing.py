@@ -205,7 +205,7 @@ class TestAdminSettingsEnvParsing:
                 ADMIN__USER_DIRECTORY__SCHEMA=s_grnplm_ld_audit_da_project_34
                 ADMIN__USER_DIRECTORY__TABLE=v_db_oarb_ua_user
                 ADMIN__USER_DIRECTORY__BRANCH_FILTER=Тестовый отдел
-                ADMIN__USER_DIRECTORY__DEFAULT_ADMIN=99999999
+                ADMIN__USER_DIRECTORY__DEFAULT_ADMINS=99999999,88888888
             """),
             encoding="utf-8",
         )
@@ -214,7 +214,7 @@ class TestAdminSettingsEnvParsing:
 
         assert result.user_directory.table == "v_db_oarb_ua_user"
         assert result.user_directory.branch_filter == "Тестовый отдел"
-        assert result.user_directory.default_admin == "99999999"
+        assert result.user_directory.default_admins == "99999999,88888888"
         assert result.user_directory.schema_name == "s_grnplm_ld_audit_da_project_34", (
             f"SCHEMA из .env не применился: '{result.user_directory.schema_name}'"
         )
@@ -244,3 +244,11 @@ class TestAdminSettingsEnvParsing:
 
         assert result.user_directory.schema_name == "s_grnplm_ld_audit_da_project_34"
         assert result.user_directory.table == "t_db_oarb_ua_user"  # дефолт
+
+    def test_parse_admin_logins_splits_and_trims(self):
+        from app.domains.admin.settings import parse_admin_logins
+
+        assert parse_admin_logins("22494524, 18284771 ,") == ["22494524", "18284771"]
+        assert parse_admin_logins("22494524") == ["22494524"]
+        assert parse_admin_logins("") == []
+        assert parse_admin_logins(None) == []

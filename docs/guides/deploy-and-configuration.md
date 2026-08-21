@@ -99,14 +99,14 @@ AUTH__COOKIE_SECURE=false
 
 **Две схемы GP на ПРОМе — это норма, а не рассинхрон.** `DATABASE__GP__SCHEMA` =
 `s_grnplm_ld_audit_da_project_34` — там живут **собственные таблицы приложения**
-(acts, chat, admin, шина агента). Внешние по отношению к приложению данные лежат
-в `s_grnplm_ld_audit_da_project_4` и адресуются своими настройками:
-`UA_DATA__SCHEMA_NAME` (справочники UA), `CK_FIN_RES__SCHEMA_NAME` /
-`CK_CLIENT_EXP__SCHEMA_NAME` (таблицы и вью ЦК),
-`ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` (реестр Hive-таблиц фактур),
-`ADMIN__USER_DIRECTORY__SCHEMA` (каталог пользователей). «Выравнивать» `_project_34`
-под `_project_4` (или наоборот) нельзя — сломается либо доступ к своим таблицам,
-либо к справочникам.
+(acts, chat, admin, шина агента, включая каталог пользователей —
+`ADMIN__USER_DIRECTORY__SCHEMA` пустой, то есть тоже указывает на основную схему).
+Внешние по отношению к приложению данные лежат в `s_grnplm_ld_audit_da_project_4`
+и адресуются своими настройками: `UA_DATA__SCHEMA_NAME` (справочники UA),
+`CK_FIN_RES__SCHEMA_NAME` / `CK_CLIENT_EXP__SCHEMA_NAME` (таблицы и вью ЦК),
+`ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` (реестр Hive-таблиц фактур). «Выравнивать»
+`_project_34` под `_project_4` (или наоборот) для этих настроек нельзя —
+сломается либо доступ к своим таблицам, либо к справочникам.
 
 **LLM на ПРОМе** — через Redis-мост (`CHAT__PROFILE=redis-bridge,gigachat`): с SDP
 нет прямого сетевого доступа к площадке, где стоит модель, поэтому запросы
@@ -502,7 +502,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `DATABASE__GP__HOST` | str | `gp_dns_pkap1123_audit.gp.df.sbrf.ru` | Хост GP |
 | `DATABASE__GP__PORT` | int | `5432` | Порт GP |
 | `DATABASE__GP__DATABASE` | str | `capgp3` | Имя БД GP |
-| `DATABASE__GP__SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема GP для **собственных таблиц приложения** (alias для поля `schema_name`). На ПРОМе — `s_grnplm_ld_audit_da_project_34`; это не опечатка: справочники UA/ЦК, реестр фактур и каталог пользователей живут в `_project_4` и задаются своими переменными (`UA_DATA__SCHEMA_NAME`, `CK_*__SCHEMA_NAME`, `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA`, `ADMIN__USER_DIRECTORY__SCHEMA`). См. §9.2 |
+| `DATABASE__GP__SCHEMA` | str | `s_grnplm_ld_audit_da_project_4` | Схема GP для **собственных таблиц приложения** (alias для поля `schema_name`). На ПРОМе — `s_grnplm_ld_audit_da_project_34`; это не опечатка: справочники UA/ЦК и реестр фактур живут в `_project_4` и задаются своими переменными (`UA_DATA__SCHEMA_NAME`, `CK_*__SCHEMA_NAME`, `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA`). Каталог пользователей (`ADMIN__USER_DIRECTORY__SCHEMA`) — исключение из этой группы: пустой, то есть следует за основной схемой. См. §9.2 |
 
 #### Redis
 
@@ -733,7 +733,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `ADMIN__USER_DIRECTORY__SCHEMA` | str | `""` | Схема справочника пользователей (пустая — основная GP) |
 | `ADMIN__USER_DIRECTORY__TABLE` | str | `t_db_oarb_ua_user` | Таблица пользователей |
 | `ADMIN__USER_DIRECTORY__BRANCH_FILTER` | str | `Отдел аудита...` | Фильтр отделения |
-| `ADMIN__USER_DIRECTORY__DEFAULT_ADMIN` | str | `22494524` | Админ по умолчанию |
+| `ADMIN__USER_DIRECTORY__DEFAULT_ADMINS` | str | `22494524` | Логины админов по умолчанию через запятую (`parse_admin_logins`) — каждый, кто есть в каталоге пользователей, получает роль «Админ» при начальном заполнении ролей |
 | `ADMIN__HTTP_METRICS_ENABLED` | bool | `False` | Запись HTTP-метрик в БД (через MetricsBatcher) |
 | `ADMIN__DB_POOL_MONITOR__ENABLED` | bool | `True` | Фоновая задача `admin.db_pool_monitor`: раз в интервал снимает `pool.get_size()`/`get_idle_size()` и пишет WARNING при перегрузке пула. Своей таблицы нет — только логи |
 | `ADMIN__DB_POOL_MONITOR__CHECK_INTERVAL_SEC` | float | `30.0` | Интервал замеров (≥5.0) |
@@ -860,7 +860,7 @@ HTTP metrics middleware **выключен по умолчанию** (в обо�
 }
 ```
 
-**Защита.** Endpoint требует роль `Админ` через `Depends(require_domain_access("admin"))`. Дефолтного админа задаёт `ADMIN__USER_DIRECTORY__DEFAULT_ADMIN`.
+**Защита.** Endpoint требует роль `Админ` через `Depends(require_domain_access("admin"))`. Дефолтных админов задаёт `ADMIN__USER_DIRECTORY__DEFAULT_ADMINS`.
 
 **API реестра** (`observability_registry.py`):
 
