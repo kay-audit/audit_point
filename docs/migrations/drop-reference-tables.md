@@ -110,8 +110,14 @@ DROP TABLE IF EXISTS t_db_oarb_ua_hadoop_tables;  -- ACTS__INVOICE__HIVE_REGISTR
 
 ## 2. Greenplum (тестовая среда, перенаполняемая ETL)
 
-> Схема `s_grnplm_ld_audit_da_project_4` — значение справочных настроек из таблицы выше,
-> **не** `DATABASE__GP__SCHEMA`; сверь со своим `.env`.
+> Схема `s_grnplm_ld_audit_da_project_4` ниже — это **два разных случая**, не путать:
+> для `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` / `CK_FIN_RES__SCHEMA_NAME` /
+> `CK_CLIENT_EXP__SCHEMA_NAME` она захардкожена (`_4` в любом окружении, включая
+> ПРОМ — **не** `DATABASE__GP__SCHEMA`); для `UA_DATA__SCHEMA_NAME` /
+> `ADMIN__USER_DIRECTORY__SCHEMA` (обе по умолчанию пустые) значение `_4` — это
+> просто основная GP-схема **этого конкретного** dev/test-окружения
+> (`DATABASE__GP__SCHEMA`), в другом тест-стенде она может быть другой. Сверь со
+> своим `.env` перед запуском.
 > **Только для тест-среды, которую вы намеренно перезаполняете** — на боевом GP это
 > данные ETL.
 
@@ -126,6 +132,8 @@ DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ck_cs_validation;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ck_validation_reestr_metric;
 
 -- Справочники и факты UA_DATA (дочерние → родительские)
+-- UA_DATA__SCHEMA_NAME по умолчанию пуст (основная схема адаптера) — как и у
+-- t_db_oarb_ua_user ниже, сверьте фактическую схему со своим .env этой среды.
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_violation_ior_metric;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_violation_mkr_metric;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_violation_cs_metric;
@@ -169,6 +177,9 @@ SELECT tablename FROM pg_tables
 WHERE schemaname = 's_grnplm_ld_audit_da_project_4'
   AND (tablename LIKE 't_db_oarb_ua_%' OR tablename LIKE 't_db_oarb_ck_%')
 ORDER BY tablename;
+-- Если DATABASE__GP__SCHEMA твоей тест-среды не _project_4 (UA_DATA/user
+-- следуют за ней), замени схему в фильтре — иначе проверка тихо покажет
+-- 0 строк, даже если DROP ушёл не в ту схему.
 ```
 
 После дропа справочники пересоздаются: на dev-PG — при следующем старте `uvicorn`
