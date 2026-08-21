@@ -31,12 +31,12 @@
 
 **Схема для GP — не одна.** У каждой группы таблиц она берётся из своей настройки,
 и это **не обязательно** `DATABASE__GP__SCHEMA` (на ПРОМе тот равен
-`s_grnplm_ld_audit_da_project_34`, тогда как справочники живут в `_4`):
+`s_grnplm_ld_audit_da_project_34`, тогда как часть справочников живёт в `_4`):
 
 | Таблицы | Настройка | Значение в `.env.prod` |
 |---|---|---|
 | `t_db_oarb_ua_*` (словари и факты) | `UA_DATA__SCHEMA_NAME` | пусто → основная схема адаптера (`DATABASE__GP__SCHEMA`) |
-| `t_db_oarb_ua_user` | `ADMIN__USER_DIRECTORY__SCHEMA` | `s_grnplm_ld_audit_da_project_4` |
+| `t_db_oarb_ua_user` | `ADMIN__USER_DIRECTORY__SCHEMA` | пусто → основная схема адаптера (`DATABASE__GP__SCHEMA`, `_project_34`) |
 | `t_db_oarb_ua_hadoop_tables` | `ACTS__INVOICE__HIVE_REGISTRY_SCHEMA` | `s_grnplm_ld_audit_da_project_4` |
 | `t_db_oarb_ck_fr_validation` + вью | `CK_FIN_RES__SCHEMA_NAME` | `s_grnplm_ld_audit_da_project_4` |
 | `t_db_oarb_ck_cs_validation` + вью | `CK_CLIENT_EXP__SCHEMA_NAME` | `s_grnplm_ld_audit_da_project_4` |
@@ -147,6 +147,8 @@ DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_terbank_dict;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_process_dict;
 
 -- Реплики справочников из других доменов
+-- t_db_oarb_ua_user: ADMIN__USER_DIRECTORY__SCHEMA по умолчанию пуст (основная
+-- схема адаптера) — сверьте фактическую схему со своим .env этой среды.
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_user;
 DROP TABLE IF EXISTS s_grnplm_ld_audit_da_project_4.t_db_oarb_ua_hadoop_tables;
 ```

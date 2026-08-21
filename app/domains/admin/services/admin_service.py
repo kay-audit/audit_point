@@ -137,7 +137,7 @@ class AdminService:
         total = await self.repo.count_search_users(query, branch)
         return items, total
 
-    async def seed_initial_roles(self, branch_filter: str, default_admin: str) -> None:
+    async def seed_initial_roles(self, branch_filter: str, default_admins: list[str]) -> None:
         """Начальное заполнение ролей при первом запуске."""
         count = await self.repo.count_user_roles()
         if count > 0:
@@ -179,8 +179,9 @@ class AdminService:
             for role in default_roles
         ]
 
-        if default_admin in usernames:
-            assignments.append((default_admin, admin_role["id"], "system"))
+        for admin_username in default_admins:
+            if admin_username in usernames:
+                assignments.append((admin_username, admin_role["id"], "system"))
 
         assigned_count = await self.repo.bulk_assign_roles(assignments)
         logger.info(
