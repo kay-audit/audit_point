@@ -1,13 +1,17 @@
 /**
  * Валидация таблиц
  *
- * Проверяет заполненность заголовков, наличие строк данных,
- * корректность структуры таблиц.
+ * Проверяет заполненность заголовков и корректность структуры таблиц.
+ *
+ * Отдельной проверки «таблица без данных» здесь больше нет: тост о ней при
+ * сохранении дублировал серверный (`table_no_data` → «Работа не закончена: …»
+ * в `api.js`), а для колокольчика её считает чистое ядро через
+ * `collectContentWarnings`.
  */
 import { AppState } from '../state/state-core.js';
 import { TreeUtils } from '../tree/tree-utils.js';
 import { ValidationCore } from './validation-core.js';
-import { hasEmptyHeaders, hasDataRows, countHeaderRows, collectTableWarnings } from './validation-table-core.js';
+import { hasEmptyHeaders, countHeaderRows, collectTableWarnings } from './validation-table-core.js';
 
 export const ValidationTable = {
     /**
@@ -58,42 +62,12 @@ export const ValidationTable = {
     },
 
     /**
-     * Проверяет наличие данных в таблицах.
-     *
-     * Учитывает многострочную шапку (E5): данными считается всё ниже всех
-     * подряд идущих сверху строк-заголовков, поэтому вторая строка двухстрочной
-     * шапки больше не засчитывается как данные.
-     *
-     * @returns {Object} Результат проверки (предупреждение)
-     */
-    validateData() {
-        const emptyDataTables = [];
-
-        for (const tableId in AppState.tables) {
-            const table = AppState.tables[tableId];
-
-            if (!this._hasValidGrid(table)) continue;
-
-            if (!hasDataRows(table.grid)) {
-                const tableName = this._getTableName(tableId);
-                emptyDataTables.push(`- ${tableName}`);
-            }
-        }
-
-        if (emptyDataTables.length > 0) {
-            const message = `⚠️ Найдены таблицы без данных:\n${emptyDataTables.join('\n')}\nВы можете продолжить сохранение.`;
-            return ValidationCore.warning(message);
-        }
-
-        return ValidationCore.success();
-    },
-
-    /**
      * Собирает контентные/структурные замечания по всем таблицам (E3).
      *
      * Возвращает плоский список проблем без блокировки. Критичность — в поле
-     * severity: 'error' (нарушена структура сетки) или 'warning' (нет шапки E6,
-     * пустые заголовки, нет данных E5). Делегирует чистому ядру
+     * severity: 'error' (нарушена структура сетки, нет шапки E6, пустые
+     * заголовки — паритет с серверными `table_no_header`/`table_empty_header`)
+     * или 'warning' (нет данных E5). Делегирует чистому ядру
      * collectTableWarnings; здесь только подстановка AppState.tables и резолвера
      * имени таблицы.
      *
