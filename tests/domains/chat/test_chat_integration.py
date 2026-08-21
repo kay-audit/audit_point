@@ -44,7 +44,7 @@ def test_chat_settings_load():
     from app.domains.chat.settings import ChatDomainSettings
 
     s = ChatDomainSettings()
-    assert s.model == "gpt-4o"
+    assert s.model == ""
     assert s.max_file_size == 512 * 1024 * 1024
 
 

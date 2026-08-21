@@ -335,12 +335,11 @@ GigaChat-proxy частично OpenAI-совместим. Различия (`to
 
 ```env
 CHAT__PROFILE=redis-bridge,gigachat                 # или redis-bridge,openai
-CHAT__MODEL=GigaChat-3-Ultra
 CHAT__REQUEST_TIMEOUT=180                           # дедлайн общий для очереди в Redis + вызова LLM
 CHAT__REDIS_BRIDGE__KEY_PREFIX=llm:bridge:          # дефолт, менять не нужно
 ```
 
-`CHAT__API_BASE`/`CHAT__API_KEY` для `redis-bridge,*` не нужны — реальный URL и токен цели знает только воркер (`scripts/llm_redis_worker.ipynb`, переменные `GIGACHAT_API_URL`/`JPY_API_TOKEN` или `OPENAI_API_URL`/`OPENAI_API_KEY` на стороне DataLab). Важно: этих переменных на SDP нет и быть не должно — ссылка `CHAT__API_KEY=${JPY_API_TOKEN}` там резолвится в пустую строку. Токен DataLab к тому же меняется при каждом запуске контейнера, поэтому зафиксировать его в `.env` приложения нельзя в принципе: воркер читает его из своего окружения при старте. Разбор «какая переменная где живёт» — §8 в [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md). Подключение к Redis у моста — общий блок `REDIS__*` приложения, отдельного адреса у моста нет; `CHAT__REDIS_BRIDGE__KEY_PREFIX` задаёт только префикс ключей (`{prefix}requests`, `{prefix}resp:{id}`, `{prefix}worker:alive`). Протокол, запуск воркера и smoke-чеклист — [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md).
+`CHAT__API_BASE`/`CHAT__API_KEY` для `redis-bridge,*` не нужны — реальный URL и токен цели знает только воркер (`scripts/llm_redis_worker.ipynb`, переменные `GIGACHAT_API_URL`/`JPY_API_TOKEN` или `OPENAI_API_URL`/`OPENAI_API_KEY` на стороне DataLab; на DataLab `OPENAI_API_URL`/`OPENAI_API_KEY` из коробки нет — их вписывают вручную в ячейку «Переменные окружения» ноутбука). Важно: этих переменных на SDP нет и быть не должно — ссылка `CHAT__API_KEY=${JPY_API_TOKEN}` там резолвится в пустую строку. Токен DataLab к тому же меняется при каждом запуске контейнера, поэтому зафиксировать его в `.env` приложения нельзя в принципе: воркер читает его из своего окружения при старте. `CHAT__MODEL` тоже опциональна для этого маршрута: если её не задать (закомментировать), в тело запроса уйдёт `"model": ""`, и воркер подставит свой дефолт — `GIGACHAT_MODEL`/`OPENAI_MODEL` из той же ячейки; если ни SDP, ни воркер модель не назвали, воркер печатает подсказку в лог и отправляет запрос как есть (бэкенд, скорее всего, его отклонит). Разбор «какая переменная где живёт» — §8 в [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md). Подключение к Redis у моста — общий блок `REDIS__*` приложения, отдельного адреса у моста нет; `CHAT__REDIS_BRIDGE__KEY_PREFIX` задаёт только префикс ключей (`{prefix}requests`, `{prefix}resp:{id}`, `{prefix}worker:alive`). Протокол, запуск воркера и smoke-чеклист — [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md).
 
 **Fallback-маршрут.** Маршруты пробуются не вслепую: перед вызовом строится план из **реально доступных** (для `redis-bridge,*` — цель заявлена живым воркером в heartbeat'е; для HTTP — заданы `API_BASE`/`API_KEY`), см. §6b в [`../integrations/redis-llm-bridge.md`](../integrations/redis-llm-bridge.md). Поэтому `CHAT__FALLBACK_PROFILE=redis-bridge,openai` при воркере, поднятом только под GigaChat, больше не даёт заведомо провальную попытку — маршрут просто не попадает в план (в логе будет `fallback redis-bridge,openai — воркер не заявляет цель 'openai'`). И наоборот: если доступен только fallback, запрос уйдёт сразу на него, без «сбоя primary». Если не доступен ни один маршрут — запрос не отправляется, пользователь получает 503 `chat-llm-unavailable`.
 
@@ -348,7 +347,7 @@ CHAT__REDIS_BRIDGE__KEY_PREFIX=llm:bridge:          # дефолт, менять
 
 ```env
 CHAT__FALLBACK_PROFILE=redis-bridge,openai
-CHAT__FALLBACK_MODEL=Qwen3-8B
+# CHAT__FALLBACK_MODEL=Qwen3-8B — опционально, как CHAT__MODEL (см. выше)
 # CHAT__FALLBACK_API_BASE= / CHAT__FALLBACK_API_KEY= — нужны только HTTP-маршрутам
 ```
 
@@ -571,7 +570,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__PROFILE` | str | `openai` | Маршрут LLM: `gigachat` \| `openai` \| `redis-bridge,gigachat` \| `redis-bridge,openai` (валидируется `parse_route`). `.env.prod` — `redis-bridge,gigachat`, `.env.dev` — `redis-bridge,openai`. См. §9.4.1 и §7.1a в [`ai-assistant.md`](ai-assistant.md) |
 | `CHAT__API_BASE` | str | (пусто) | Базовый URL LLM API (без `/chat/completions` — SDK добавит сам). Не нужен для маршрутов `redis-bridge,*` |
 | `CHAT__API_KEY` | SecretStr | (пусто) | API-ключ. Не нужен для маршрутов `redis-bridge,*` |
-| `CHAT__MODEL` | str | `gpt-4o` | Модель |
+| `CHAT__MODEL` | str | (пусто) | Модель. Обязательна для прямых HTTP-маршрутов. Для `redis-bridge,*` опциональна — пусто → воркер (`scripts/llm_redis_worker.ipynb`) подставит свой дефолт (`GIGACHAT_MODEL`/`OPENAI_MODEL`) |
 | `CHAT__TEMPERATURE` | float | `0.1` | Температура (0-2) |
 | `CHAT__MAX_TOOL_ROUNDS` | int | `5` | Макс. раундов tool-calling |
 | `CHAT__REQUEST_TIMEOUT` | int | `60` | Timeout запроса к LLM (сек) |
@@ -597,7 +596,7 @@ pydantic-settings их подхватывает), но в `.env.dev` / `.env.pro
 | `CHAT__FALLBACK_PROFILE` | str | (пусто) | Маршрут fallback-провайдера (тот же формат, что `CHAT__PROFILE`); **пусто = fallback отключён**. ПРОМ — `redis-bridge,openai` |
 | `CHAT__FALLBACK_API_BASE` | str | (пусто) | Base URL fallback-провайдера. Не нужен для маршрутов `redis-bridge,*` |
 | `CHAT__FALLBACK_API_KEY` | SecretStr | (пусто) | API-ключ fallback-провайдера. Не нужен для маршрутов `redis-bridge,*` |
-| `CHAT__FALLBACK_MODEL` | str | (пусто) | Модель fallback |
+| `CHAT__FALLBACK_MODEL` | str | (пусто) | Модель fallback. Та же опциональность, что у `CHAT__MODEL`: для `redis-bridge,*` пусто → дефолт воркера |
 | `CHAT__FALLBACK_EXTRA_HEADERS` | JSON | `{}` | Доп. заголовки для fallback |
 | `CHAT__CIRCUIT_BREAKER_FAILURE_THRESHOLD` | int | `2` | Подряд ошибок primary до размыкания circuit (≥1) |
 | `CHAT__CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SEC` | int | `60` | Сек до пробного запроса в primary (half-open; ≥10) |

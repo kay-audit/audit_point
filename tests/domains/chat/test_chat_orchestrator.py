@@ -36,6 +36,7 @@ def settings():
     return ChatDomainSettings(
         api_base="http://test-llm:8000/v1",
         api_key="test-key",
+        model="gpt-4o",
         max_tool_rounds=3,
         tool_execution_timeout=5,
     )

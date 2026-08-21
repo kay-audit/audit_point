@@ -140,7 +140,10 @@ class ChatDomainSettings(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     # LLM
-    model: str = "gpt-4o"
+    # Обязательна для прямых HTTP-маршрутов. Для redis-bridge опциональна:
+    # пусто → в тело запроса уходит "model": "", и воркер (llm_redis_worker.ipynb)
+    # подставляет свой дефолт (GIGACHAT_MODEL/OPENAI_MODEL).
+    model: str = ""
     api_base: str = ""
     # Можно не хранить сам секрет в .env, а сослаться на переменную окружения:
     # CHAT__API_KEY=${JPY_API_TOKEN}. .env читается через python-dotenv (интерполяция
