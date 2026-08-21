@@ -14,6 +14,7 @@ from app.domains.chat.exceptions import (
     TextActionUnavailableError,
     TextActionValidationError,
 )
+from app.domains.chat.services.text_actions import budget as B
 from app.domains.chat.services.text_actions.formalizer_service import (
     ViolationFormalizerService,
 )
@@ -379,3 +380,17 @@ async def test_formalize_uses_model_from_resolved_route():
     assert client.chat.completions.create.call_count == 6
     for call in client.chat.completions.create.call_args_list:
         assert call.kwargs["model"] == "route-model"
+
+
+async def test_formalize_sets_output_budget_on_every_call():
+    """Каждый вызов уходит с max_tokens профиля extract и таймаутом не ниже настройки."""
+    source = "текст нарушения. " * 500
+    client = _client_by_prompt()
+    with _run(client):
+        await ViolationFormalizerService(_settings()).formalize(source)
+
+    expected = B.output_budget_tokens(len(source), profile=B.PROFILE_EXTRACT)
+    assert client.chat.completions.create.call_count == 6
+    for call in client.chat.completions.create.call_args_list:
+        assert call.kwargs["max_tokens"] == expected
+        assert call.kwargs["timeout"] >= 60.0

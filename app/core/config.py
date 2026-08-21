@@ -111,14 +111,22 @@ class DatabaseSettings(BaseModel):
 
 class SecuritySettings(BaseModel):
     """Лимиты безопасности."""
-    # 520 МБ: 512 МБ файлов чата (CHAT__MAX_TOTAL_FILE_SIZE) + запас на
+    # 1 ГБ: 512 МБ файлов чата (CHAT__MAX_TOTAL_FILE_SIZE) + запас на
     # multipart-оверхед и текст сообщения. Лимит глобальный (режет ЛЮБОЙ
     # запрос до доменной валидации), согласован с потолком вложений шины
     # агента — иначе поднятые лимиты чата были бы недостижимы: аплоад
     # отбивался бы 413 в RequestSizeLimitMiddleware.
-    max_request_size: int = Field(default=545259520, gt=0)
-    rate_limit_per_minute: int = Field(default=1024, gt=0)
-    max_tracked_ips: int = 100
+    max_request_size: int = Field(default=1073741824, gt=0)
+    # Лимит НЕ считает статику: `/static/*` выведен из-под счётчика в
+    # RateLimitMiddleware. Страница конструктора тянет ~230 ES-модулей и CSS
+    # без бандлера — при подсчёте статики бюджет съедали 4 жёстких
+    # перезагрузки. Оставшийся расход — API-вызовы и поллеры, десятки в минуту.
+    rate_limit_per_minute: int = Field(default=2048, gt=0)
+    # Ёмкость TTLCache со счётчиками. Клиент — опознанный пользователь либо IP
+    # (см. RateLimitMiddleware), поэтому «clients», а не «ips». При превышении
+    # LRU вытесняет счётчики, то есть лимит начинает пропускать — держать
+    # заведомо выше числа одновременных клиентов.
+    max_tracked_clients: int = 256
     rate_limit_ttl: int = 120
     # TTL «stale» singleton-lock'а в секундах. Если строка старше — старый
     # воркер считается мёртвым, новый перезаписывает блокировку.
@@ -157,6 +165,17 @@ class SecuritySettings(BaseModel):
     frame_options: Literal["DENY", "SAMEORIGIN"] = "SAMEORIGIN"
     # Referrer не отправляется на cross-origin, но шлётся в полном виде для same-origin.
     referrer_policy: str = "strict-origin-when-cross-origin"
+    # === Кеширование версионированной статики ===
+    # Вечный кеш (`immutable`) на путях `/static/v<версия>/...`. На ПРОМе нужен:
+    # адрес меняется с релизом, поэтому revalidation-запросы на ~230 ES-модулей
+    # графа конструктора — чистые накладные расходы. На DEV вреден: версия в
+    # пути не меняется при правке .js, и обычный F5 отдаёт файл из кеша —
+    # «я же поправил, а не применилось».
+    # Дефолт выключен сознательно. Цена забытого флага несимметрична: на ПРОМе
+    # это только лишние 304-ответы (деградация производительности, поведение
+    # корректно), а на DEV — молча неверная картина мира, отладка того, чего в
+    # коде уже нет. Опасное поведение включается явно, безопасное — по умолчанию.
+    static_immutable: bool = False
     # Минимально разрешающий Permissions-Policy: всё блокируется по умолчанию.
     permissions_policy: str = (
         "camera=(), microphone=(), geolocation=(), payment=(), "
@@ -211,7 +230,7 @@ class RedisSettings(BaseModel):
     db: int = Field(default=0, ge=0, le=15)
     password: SecretStr = SecretStr("")
     max_connections: int = Field(
-        default=10, gt=0, description="Максимум соединений в пуле клиента Redis"
+        default=64, gt=0, description="Максимум соединений в пуле клиента Redis"
     )
     socket_timeout: float = Field(
         default=5.0, gt=0, description="Таймаут операций сокета Redis, сек"

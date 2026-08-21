@@ -23,10 +23,7 @@ import { ViolationManager } from './violation-core.js';
 import { ValidationCore } from '../validation/validation-core.js';
 import { Notifications } from '../../shared/notifications.js';
 import { AppConfig } from '../../shared/app-config.js';
-import { AppState } from '../state/state-core.js';
 import {
-    estimateActImageBytes,
-    estimateDataUrlBytes,
     getImageLimits,
     validateImageType,
     validateImageBytes,
@@ -34,6 +31,7 @@ import {
 import { BLOCK_TYPES, BLOCK_TYPE_META, createImageBlock } from './violation-block-types.js';
 import { sniffImageMagic, RECOGNIZED_IMAGE_FORMATS } from './violation-file-reading.js';
 import { downscaleImage, resolveActualFilename } from './violation-image-resize.js';
+import { getImageActContext, uploadActImage } from './violation-image-api.js';
 import { DialogManager } from '../../shared/dialog/dialog-confirm.js';
 import { EscapeStack } from '../../shared/escape-stack.js';
 import { isEditableTarget } from '../../shared/editable-target.js';
@@ -729,16 +727,22 @@ Object.assign(ViolationManager.prototype, {
     },
 
     /**
-     * Читает, пережимает и вставляет пачку картинок (порядок выбора — violation-4).
+     * Сжимает, ЗАГРУЖАЕТ НА СЕРВЕР и вставляет пачку картинок (порядок выбора —
+     * violation-4).
      *
-     * Конвейер на каждый файл (порядок пачки сохранён через Promise.all):
-     *  1. magic-байты (#26) — тип по содержимому ДО ресайза; мусор пропускаем;
-     *  2. ресайз (#25) — downscaleImage по выбранному режиму (JPEG-сжатие;
-     *     GIF/прозрачные PNG/original — оригинал);
-     *  3. размерный гейт (#2) — per-file + накопительный суммарный лимит акта
-     *     по УЖАТЫМ байтам dataUrl; over-budget пропускаем с warning'ом.
+     * Конвейер на каждый файл:
+     *  1. magic-байты (#26) — тип по содержимому ДО сжатия; мусор пропускаем;
+     *  2. сжатие (#25) — downscaleImage по выбранному режиму ('high'/'medium'
+     *     → WebP; 'original' → перекодирование в СВОЙ формат, результат
+     *     принимается только если легче оригинала; GIF едет как есть);
+     *  3. размерный гейт (#2) — per-file, по реальным байтам отправки;
+     *  4. загрузка POST /acts/{id}/images → image_id; блок хранит только его.
      * Затем bulk-вставка: одна перерисовка. Лимит числа (#4) и read-only (#1)
      * — внутри _insertBlocksBulk.
+     *
+     * Файлы обрабатываются ПОСЛЕДОВАТЕЛЬНО: у ПРОМ-учётки жёсткий потолок
+     * соединений с БД, и пачка из десяти параллельных POST'ов упёрлась бы в
+     * пул на ровном месте. Порядок пачки при этом сохраняется естественно.
      *
      * @param {Object} violation - Объект нарушения
      * @param {string} fieldKey - Ключ поля реестра
@@ -748,59 +752,69 @@ Object.assign(ViolationManager.prototype, {
      * @param {string} [mode='high'] - Режим качества ('high'|'medium'|'original')
      */
     async insertImageFilesInOrder(violation, fieldKey, container, insertIndex, files, mode = 'high') {
+        // Режим просмотра (#1) — ДО сети: грузить байты, которые всё равно не
+        // попадут в акт, незачем (остались бы мусором в act_images). Сообщение
+        // — то же, что у общего гейта _insertBlocksBulk.
+        if (ValidationCore.requireWrite('cannotAddContent')) return;
+
         const lim = getImageLimits();
-
-        // #26 + ресайз параллельно, порядок пачки сохраняется (violation-4).
-        const processed = await Promise.all(files.map(async (file) => {
-            try {
-                const okMagic = await sniffImageMagic(file, lim.allowedMimeTypes);
-                if (!okMagic) return { ok: false, file, reason: 'magic' };
-                const url = await downscaleImage(file, { mode });
-                return { ok: true, file, url };
-            } catch (error) {
-                return { ok: false, file, reason: 'read', error };
-            }
-        }));
-
-        // #2 размерный гейт ПОСЛЕ ресайза — по ужатым байтам, накопительно.
-        let runningBytes = estimateActImageBytes(AppState.violations);
-        const blocks = [];
-        for (const result of processed) {
-            if (!result.ok) {
-                if (result.reason === 'magic') {
-                    // Список форматов — из RECOGNIZED_IMAGE_FORMATS (то, что sniffer реально
-                    // умеет подтвердить), а не хардкод: если настройка разрешит формат вне
-                    // этого набора, сообщение честно назовёт проверяемые форматы, а не соврёт.
-                    Notifications.warning(
-                        `Файл «${result.file.name}» не удалось распознать как изображение поддерживаемого формата `
-                        + `(${RECOGNIZED_IMAGE_FORMATS.join('/')}) и он не добавлен.`,
-                    );
-                } else {
-                    console.error('Ошибка при чтении файла:', result.file.name, result.error);
-                    Notifications.error(`Ошибка при чтении ${result.file.name}`);
-                }
-                continue;
-            }
-
-            const bytes = estimateDataUrlBytes(result.url);
-            const sizeCheck = validateImageBytes(bytes, {
-                existingTotalBytes: runningBytes,
-                name: result.file.name,
-                limits: lim,
-            });
-            if (!sizeCheck.ok) {
-                Notifications.warning(sizeCheck.reason);
-                continue;
-            }
-
-            runningBytes += bytes;
-            blocks.push(createImageBlock({
-                url: result.url,
-                // #12: имя должно отражать факт (downscaleImage мог молча
-                // перекодировать непрозрачный PNG в JPEG).
-                filename: resolveActualFilename(result.file, result.url),
-            }));
+        const actId = getImageActContext();
+        if (!actId) {
+            Notifications.error('Не удалось определить акт — изображения не загружены');
+            return;
         }
+
+        // Загрузка сетевая и занимает секунды: держим ОДИН sticky-тост на всю
+        // пачку, чтобы пользователь не смотрел в неподвижный экран.
+        const progressId = Notifications.show(
+            files.length === 1
+                ? 'Загрузка изображения…'
+                : `Загрузка изображений: ${files.length}…`,
+            'info',
+            0,
+        );
+
+        const blocks = [];
+        const failures = [];
+        try {
+            for (const file of files) {
+                const failed = (reason) => failures.push({ name: file.name || '', reason });
+                try {
+                    const okMagic = await sniffImageMagic(file, lim.allowedMimeTypes);
+                    if (!okMagic) {
+                        // Список форматов — из RECOGNIZED_IMAGE_FORMATS (то, что sniffer реально
+                        // умеет подтвердить), а не хардкод: если настройка разрешит формат вне
+                        // этого набора, сообщение честно назовёт проверяемые форматы, а не соврёт.
+                        failed('Не удалось распознать как изображение поддерживаемого формата '
+                            + `(${RECOGNIZED_IMAGE_FORMATS.join('/')}).`);
+                        continue;
+                    }
+
+                    const prepared = await downscaleImage(file, { mode });
+                    const sizeCheck = validateImageBytes(prepared.size, { limits: lim });
+                    if (!sizeCheck.ok) {
+                        failed(sizeCheck.reason);
+                        continue;
+                    }
+
+                    // #12: имя должно отражать факт (downscaleImage мог молча
+                    // перекодировать картинку в WebP).
+                    const filename = resolveActualFilename(file, prepared);
+                    const uploaded = await uploadActImage(actId, prepared, filename);
+                    blocks.push(createImageBlock({ image_id: uploaded.image_id, filename }));
+                } catch (error) {
+                    // Отказ сервера (нет лока, превышен бюджет акта, нет прав)
+                    // приходит человеческим текстом в envelope — показываем его,
+                    // своей формулировки поверх не сочиняем.
+                    console.error('Не удалось загрузить изображение:', file.name, error);
+                    failed(error?.message || 'Не удалось загрузить изображение.');
+                }
+            }
+        } finally {
+            Notifications.hide(progressId);
+        }
+
+        this._reportImageFailures(failures);
 
         // Bulk-вставка: одна перерисовка. Лимит (#4) и read-only (#1) — внутри
         // _insertBlocksBulk. addedCount отражает реально вставленное: при
@@ -812,6 +826,42 @@ Object.assign(ViolationManager.prototype, {
                 ? 'Изображение добавлено'
                 : `Добавлено изображений: ${addedCount}`;
             Notifications.success(message);
+        }
+    },
+
+    /**
+     * Сообщает об отказах пачки: по ОДНОМУ тосту на причину, а не на файл.
+     * Пять картинок, отклонённых одним и тем же «акт заблокирован», дают одно
+     * уведомление со списком имён (длинный список усекается).
+     *
+     * Причина — законченная фраза с заглавной буквы (текст сервера либо наш
+     * гейт), имя файла подставляется здесь: иначе одинаковые по сути отказы не
+     * склеились бы в один тост.
+     *
+     * @param {{name: string, reason: string}[]} failures - Отказы в порядке файлов
+     * @private
+     */
+    _reportImageFailures(failures) {
+        if (!failures.length) return;
+
+        const MAX_LISTED = 3;
+        const byReason = new Map();
+        for (const failure of failures) {
+            if (!byReason.has(failure.reason)) byReason.set(failure.reason, []);
+            byReason.get(failure.reason).push(failure.name);
+        }
+
+        for (const [reason, names] of byReason) {
+            if (names.length === 1) {
+                Notifications.warning(`Файл «${names[0]}» не добавлен. ${reason}`);
+                continue;
+            }
+            const listed = names.slice(0, MAX_LISTED).map(name => `«${name}»`).join(', ');
+            const rest = names.length - MAX_LISTED;
+            Notifications.warning(
+                `${reason} Не добавлены файлы (${names.length}): `
+                + `${listed}${rest > 0 ? ` и ещё ${rest}` : ''}.`,
+            );
         }
     },
 
@@ -854,8 +904,8 @@ Object.assign(ViolationManager.prototype, {
 
         const result = await DialogManager.show({
             title: 'Качество изображений',
-            message: 'Выберите режим для вставляемых картинок. Сжатие уменьшает вес акта; '
-                + 'GIF и прозрачные PNG не пережимаются.',
+            message: 'Выберите режим для вставляемых картинок. Сжатие уменьшает вес акта '
+                + 'без потери чёткости текста на скриншотах; GIF не пережимается (сохраняем анимацию).',
             icon: '🖼️',
             type: 'info',
             hideConfirm: true,

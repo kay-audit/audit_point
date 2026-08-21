@@ -286,6 +286,34 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_violations (
 COMMENT ON TABLE {SCHEMA}.{PREFIX}act_violations IS 'Нарушения, выявленные в ходе проверки';
 
 -- ============================================================================
+-- ТАБЛИЦА КАРТИНОК НАРУШЕНИЙ
+-- ============================================================================
+
+-- Бинарь картинок нарушений вынесен из JSONB-полей act_violations: блок
+-- image хранит только image_id, байты живут здесь. Мотив — снимки версий
+-- (act_content_versions, до 50 штук) больше не множат объём картинок, а
+-- PUT /content не гоняет мегабайты base64 при каждом автосохранении.
+-- Дедупликация — в пределах ОДНОГО акта (UNIQUE (act_id, content_hash)):
+-- глобальный дедуп дал бы одну строку на два акта, и пользователь без
+-- доступа ко второму получил бы её содержимое через первый.
+CREATE TABLE IF NOT EXISTS {SCHEMA}.{PREFIX}act_images (
+    id VARCHAR(36) PRIMARY KEY,
+    act_id INTEGER NOT NULL REFERENCES {SCHEMA}.{PREFIX}acts(id) ON DELETE CASCADE,
+    content_hash VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    byte_size INTEGER NOT NULL
+        CONSTRAINT check_act_images_byte_size_positive
+        CHECK (byte_size > 0),
+    data BYTEA NOT NULL,
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (act_id, content_hash)
+);
+
+COMMENT ON TABLE {SCHEMA}.{PREFIX}act_images IS 'Байты картинок нарушений; блок image ссылается на id';
+
+-- ============================================================================
 -- ТАБЛИЦА ФАКТУР
 -- ============================================================================
 
@@ -476,6 +504,10 @@ CREATE INDEX IF NOT EXISTS idx_{PREFIX}act_violations_act_id
 CREATE INDEX IF NOT EXISTS idx_{PREFIX}act_violations_node_number
     ON {SCHEMA}.{PREFIX}act_violations(act_id, node_number)
     WHERE node_number IS NOT NULL;
+
+-- Индексы на act_images
+CREATE INDEX IF NOT EXISTS idx_{PREFIX}act_images_act_id
+    ON {SCHEMA}.{PREFIX}act_images(act_id);
 
 -- Индексы на act_invoices
 CREATE INDEX IF NOT EXISTS idx_{PREFIX}act_invoices_act_id

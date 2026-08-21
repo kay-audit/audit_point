@@ -1,13 +1,13 @@
 /**
- * Клиентский даунскейл картинок перед вставкой (#25).
+ * Клиентское сжатие картинок перед загрузкой (#25).
  *
- * Тестируется ЧИСТАЯ логика: выбор maxDim/quality по режиму, предикат
- * пережатия (JPEG/PNG — да; GIF/original — нет), пересчёт размеров с
- * сохранением аспекта, детекция альфы по RGBA-буферу (hasTransparentPixels),
- * и skip/degrade-ветки downscaleImage (original/GIF → оригинал по типу; PNG в
- * node без canvas → оригинал через catch-деградацию). Сам canvas-конвейер
- * (createImageBitmap/toBlob/getImageData) в node без DOM не исполняется — это
- * LIVE-проверка (см. task-13-report).
+ * Тестируется ЧИСТАЯ логика (выбор maxDim/quality по режиму, предикат
+ * пережатия, пересчёт размеров, детекция альфы, синхронизация имени файла) и
+ * сам конвейер downscaleImage на подставном canvas: WebP-путь для high/medium,
+ * честный фолбэк на JPEG в браузере без WebP-энкодера, сохранение
+ * прозрачности, размерный гейт и mode=original (перекодирует в СВОЙ MIME,
+ * гейт строго «легче — иначе оригинал»). Результат конвейера — Blob для
+ * отправки на сервер (байты в содержимом акта больше не живут).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,39 +21,86 @@ import {
     resolveActualFilename,
 } from '../../static/js/constructor/violation/violation-image-resize.js';
 
+/**
+ * Подставной canvas-конвейер: createImageBitmap + document.createElement.
+ * Браузер без WebP-энкодера молча отдаёт PNG — стенд это воспроизводит.
+ */
+function installCanvasStub({
+    bitmap = { width: 3000, height: 2000 },
+    webpSupported = true,
+    blobSize = 1000,
+    pixels = null,
+    failEncode = false,
+} = {}) {
+    const encodeCalls = [];
+    let drawnSize = null;
+
+    globalThis.createImageBitmap = async () => ({
+        width: bitmap.width,
+        height: bitmap.height,
+        close() {},
+    });
+    globalThis.document = {
+        createElement: () => {
+            const canvas = {
+                width: 0,
+                height: 0,
+                getContext: () => ({
+                    drawImage: (_bmp, _x, _y, w, h) => { drawnSize = { width: w, height: h }; },
+                    getImageData: () => ({
+                        data: pixels || new Uint8ClampedArray([1, 2, 3, 255]),
+                    }),
+                }),
+                toBlob: (cb, type, quality) => {
+                    encodeCalls.push({ type, quality });
+                    if (failEncode) { cb(null); return; } // энкодер упал — toBlob(null)
+                    const actual = (type === 'image/webp' && !webpSupported) ? 'image/png' : type;
+                    cb({ type: actual, size: blobSize });
+                },
+            };
+            return canvas;
+        },
+    };
+
+    return { encodeCalls, drawn: () => drawnSize };
+}
+
+function uninstallCanvasStub() {
+    delete globalThis.createImageBitmap;
+    delete globalThis.document;
+}
+
 // --- resolveResizeMode ---
 
-test('resolveResizeMode: high → 1600/0.8, medium → 1200/0.7', () => {
-    assert.deepEqual(resolveResizeMode('high'), { maxDim: 1600, quality: 0.8 });
-    assert.deepEqual(resolveResizeMode('medium'), { maxDim: 1200, quality: 0.7 });
+test('resolveResizeMode: high → 1920/0.9, medium → 1400/0.8, original → 4096/0.95', () => {
+    assert.deepEqual(resolveResizeMode('high'), { maxDim: 1920, quality: 0.9 });
+    assert.deepEqual(resolveResizeMode('medium'), { maxDim: 1400, quality: 0.8 });
+    assert.deepEqual(resolveResizeMode('original'), { maxDim: 4096, quality: 0.95 });
     // Пресеты доступны и как таблица.
-    assert.equal(RESIZE_PRESETS.high.maxDim, 1600);
-    assert.equal(RESIZE_PRESETS.medium.quality, 0.7);
+    assert.equal(RESIZE_PRESETS.high.maxDim, 1920);
+    assert.equal(RESIZE_PRESETS.medium.quality, 0.8);
+    assert.equal(RESIZE_PRESETS.original.quality, 0.95);
 });
 
-test('resolveResizeMode: original / неизвестный режим → null', () => {
-    assert.equal(resolveResizeMode('original'), null);
+test('resolveResizeMode: неизвестный режим → null', () => {
     assert.equal(resolveResizeMode('zzz'), null);
     assert.equal(resolveResizeMode(undefined), null);
 });
 
-// --- shouldDownscale (ветка пропуска GIF/original; PNG теперь пережимается) ---
+// --- shouldDownscale (ветка пропуска GIF; 'original' теперь тоже пережимает) ---
 
-test('shouldDownscale: JPEG и PNG пережимаются в high и medium', () => {
-    assert.equal(shouldDownscale('image/jpeg', 'high'), true);
-    assert.equal(shouldDownscale('image/jpeg', 'medium'), true);
-    assert.equal(shouldDownscale('image/png', 'high'), true);
-    assert.equal(shouldDownscale('image/png', 'medium'), true);
+test('shouldDownscale: JPEG, PNG и WebP пережимаются во всех трёх режимах', () => {
+    for (const mode of ['high', 'medium', 'original']) {
+        assert.equal(shouldDownscale('image/jpeg', mode), true);
+        assert.equal(shouldDownscale('image/png', mode), true);
+        assert.equal(shouldDownscale('image/webp', mode), true);
+    }
 });
 
-test('shouldDownscale: режим original — никогда не пережимаем', () => {
-    assert.equal(shouldDownscale('image/jpeg', 'original'), false);
-    assert.equal(shouldDownscale('image/png', 'original'), false);
-});
-
-test('shouldDownscale: GIF в сжатии НЕ пережимается (анимация)', () => {
+test('shouldDownscale: GIF НЕ пережимается ни в одном режиме (анимация)', () => {
     assert.equal(shouldDownscale('image/gif', 'high'), false);
     assert.equal(shouldDownscale('image/gif', 'medium'), false);
+    assert.equal(shouldDownscale('image/gif', 'original'), false);
 });
 
 // --- hasTransparentPixels (чистая проверка альфа-канала по RGBA-буферу) ---
@@ -105,75 +152,205 @@ test('computeScaledSize: вырожденные размеры → возвра�
     assert.deepEqual(computeScaledSize(0, 0, 1600), { width: 0, height: 0 });
 });
 
-// --- downscaleImage: skip/degrade-ветки (без canvas) ---
+// --- downscaleImage: skip-ветки (без canvas) ---
 
-test('downscaleImage: mode=original не трогает байты — читает оригинал', async () => {
-    let readArg = null;
-    const fakeReader = (f) => { readArg = f; return Promise.resolve('data:orig'); };
-    const file = { type: 'image/jpeg', name: 'p.jpg' };
-
-    const url = await downscaleImage(file, { mode: 'original', readAsDataUrl: fakeReader });
-
-    assert.equal(url, 'data:orig');
-    assert.equal(readArg, file, 'прочитан именно оригинальный файл, canvas не задействован');
+test('downscaleImage: GIF в сжатии → оригинал (перекодировка убила бы анимацию)', async () => {
+    const file = { type: 'image/gif', name: 'a.gif', size: 5000 };
+    assert.equal(await downscaleImage(file, { mode: 'high' }), file);
 });
 
-test('downscaleImage: GIF в сжатии → оригинал (JPEG убил бы анимацию)', async () => {
-    const file = { type: 'image/gif', name: 'a.gif' };
-    const url = await downscaleImage(file, { mode: 'high', readAsDataUrl: () => Promise.resolve('data:gif') });
-    assert.equal(url, 'data:gif');
+test('downscaleImage: GIF в режиме original тоже не пережимается (анимация)', async () => {
+    const file = { type: 'image/gif', name: 'a.gif', size: 5000 };
+    assert.equal(await downscaleImage(file, { mode: 'original' }), file);
 });
 
-// PNG больше не пропускается по типу до декодирования (shouldDownscale теперь
-// true) — в node нет createImageBitmap/document, поэтому конвейер падает в
-// catch и деградирует к оригиналу так же, как любой другой сбой canvas.
-// Настоящая проверка альфы (hasTransparentPixels) — LIVE, в браузере.
-test('downscaleImage: PNG в сжатии в node (без canvas) → оригинал через catch-деградацию', async () => {
+test('downscaleImage: сбой canvas (нет createImageBitmap) → оригинал', async () => {
     const file = { type: 'image/png', name: 'a.png', size: 5000 };
-    const url = await downscaleImage(file, { mode: 'high', readAsDataUrl: () => Promise.resolve('data:png') });
-    assert.equal(url, 'data:png');
+    assert.equal(await downscaleImage(file, { mode: 'high' }), file);
+});
+
+test('downscaleImage: mode=original — сбой canvas (нет createImageBitmap) → оригинал', async () => {
+    const file = { type: 'image/jpeg', name: 'p.jpg', size: 5000 };
+    assert.equal(await downscaleImage(file, { mode: 'original' }), file);
+});
+
+// --- downscaleImage: конвейер на подставном canvas ---
+
+test('downscaleImage: PNG-скриншот перекодируется в WebP с качеством режима', async (t) => {
+    const stub = installCanvasStub({ bitmap: { width: 3000, height: 2000 }, blobSize: 300 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'shot.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'high' });
+
+    assert.equal(result.type, 'image/webp');
+    assert.deepEqual(stub.encodeCalls, [{ type: 'image/webp', quality: 0.9 }]);
+    // Длинная сторона ужата до maxDim пресета high.
+    assert.deepEqual(stub.drawn(), { width: 1920, height: 1280 });
+});
+
+test('downscaleImage: прозрачный PNG в WebP-пути перекодируется (альфу WebP держит)', async (t) => {
+    const transparent = new Uint8ClampedArray([1, 2, 3, 0]);
+    installCanvasStub({ bitmap: { width: 800, height: 600 }, blobSize: 100, pixels: transparent });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'logo.png', size: 5000 };
+    const result = await downscaleImage(file, { mode: 'high' });
+
+    assert.equal(result.type, 'image/webp', 'прозрачность больше не повод отдавать оригинал');
+});
+
+test('downscaleImage: браузер без WebP → честный фолбэк на JPEG', async (t) => {
+    const stub = installCanvasStub({
+        bitmap: { width: 3000, height: 2000 }, webpSupported: false, blobSize: 300,
+    });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'shot.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'medium' });
+
+    assert.equal(result.type, 'image/jpeg');
+    assert.deepEqual(
+        stub.encodeCalls,
+        [{ type: 'image/webp', quality: 0.8 }, { type: 'image/jpeg', quality: 0.8 }],
+        'сначала пробуем WebP, затем JPEG — по ФАКТИЧЕСКОМУ типу blob, а не по аргументу',
+    );
+});
+
+test('downscaleImage: браузер без WebP + прозрачный PNG → оригинал (JPEG схлопнул бы альфу)', async (t) => {
+    const transparent = new Uint8ClampedArray([1, 2, 3, 10]);
+    const stub = installCanvasStub({
+        bitmap: { width: 3000, height: 2000 },
+        webpSupported: false,
+        blobSize: 100,
+        pixels: transparent,
+    });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'logo.png', size: 5000 };
+    const result = await downscaleImage(file, { mode: 'high' });
+
+    assert.equal(result, file);
+    assert.deepEqual(stub.encodeCalls, [{ type: 'image/webp', quality: 0.9 }], 'до JPEG не дошли');
+});
+
+test('downscaleImage: размер в пикселях не менялся и результат тяжелее → оригинал', async (t) => {
+    installCanvasStub({ bitmap: { width: 800, height: 600 }, blobSize: 9000 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'icon.png', size: 4000 };
+    assert.equal(await downscaleImage(file, { mode: 'high' }), file);
+});
+
+test('downscaleImage: картинка реально ужата — берём перекодированную даже если она тяжелее', async (t) => {
+    installCanvasStub({ bitmap: { width: 5000, height: 4000 }, blobSize: 9000 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/jpeg', name: 'photo.jpg', size: 4000 };
+    const result = await downscaleImage(file, { mode: 'high' });
+
+    assert.equal(result.type, 'image/webp', 'пиксельный размер важнее последнего килобайта');
+});
+
+// --- downscaleImage: mode=original (свой формат, строгий гейт «легче — иначе оригинал») ---
+
+test('downscaleImage: mode=original перекодирует PNG в СВОЙ MIME (не WebP)', async (t) => {
+    const stub = installCanvasStub({ bitmap: { width: 3000, height: 2000 }, blobSize: 300 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'shot.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'original' });
+
+    assert.equal(result.type, 'image/png');
+    assert.deepEqual(stub.encodeCalls, [{ type: 'image/png', quality: 0.95 }]);
+    // 3000×2000 укладывается в предохранительный cap 4096 — без ресемпла.
+    assert.deepEqual(stub.drawn(), { width: 3000, height: 2000 });
+});
+
+test('downscaleImage: mode=original перекодирует JPEG в СВОЙ MIME (не WebP)', async (t) => {
+    const stub = installCanvasStub({ bitmap: { width: 1000, height: 800 }, blobSize: 500 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/jpeg', name: 'photo.jpg', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'original' });
+
+    assert.equal(result.type, 'image/jpeg');
+    assert.deepEqual(stub.encodeCalls, [{ type: 'image/jpeg', quality: 0.95 }]);
+});
+
+test('downscaleImage: mode=original — результат легче оригинала → перекодированное принимается', async (t) => {
+    installCanvasStub({ bitmap: { width: 3000, height: 2000 }, blobSize: 100 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'shot.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'original' });
+
+    assert.equal(result.type, 'image/png');
+    assert.equal(result.size, 100);
+});
+
+test('downscaleImage: mode=original — результат НЕ легче оригинала → оригинал, даже если пиксели ужаты', async (t) => {
+    // Холст больше cap'а 4096 — реальный ресемпл произойдёт, но перекодированный
+    // PNG всё равно тяжелее исходника: гейт в original строгий безусловно.
+    installCanvasStub({ bitmap: { width: 8000, height: 6000 }, blobSize: 900001 });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'scan.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'original' });
+
+    assert.equal(result, file, 'scaled=false в original — факт ресемпла гейт не смягчает');
+});
+
+test('downscaleImage: mode=original — сбой перекодирования (toBlob→null) → оригинал', async (t) => {
+    installCanvasStub({ bitmap: { width: 3000, height: 2000 }, blobSize: 300, failEncode: true });
+    t.after(uninstallCanvasStub);
+
+    const file = { type: 'image/png', name: 'shot.png', size: 900000 };
+    const result = await downscaleImage(file, { mode: 'original' });
+
+    assert.equal(result, file);
 });
 
 // --- resolveActualFilename (#12: имя файла должно отражать факт перекодирования) ---
 
-test('resolveActualFilename: непрозрачный PNG перекодирован в JPEG → расширение .jpg', () => {
+test('resolveActualFilename: PNG перекодирован в WebP → расширение .webp', () => {
     const file = { type: 'image/png', name: 'screenshot.png' };
-    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
-    assert.equal(name, 'screenshot.jpg');
+    assert.equal(resolveActualFilename(file, { type: 'image/webp' }), 'screenshot.webp');
 });
 
 test('resolveActualFilename: базовое имя с точками сохраняется, меняется только расширение', () => {
     const file = { type: 'image/png', name: 'screenshot.v2.final.png' };
-    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
-    assert.equal(name, 'screenshot.v2.final.jpg');
+    assert.equal(resolveActualFilename(file, { type: 'image/webp' }), 'screenshot.v2.final.webp');
 });
 
-test('resolveActualFilename: имя без расширения → просто добавляется .jpg', () => {
+test('resolveActualFilename: имя без расширения → просто добавляется .webp', () => {
     const file = { type: 'image/png', name: 'screenshot' };
-    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
-    assert.equal(name, 'screenshot.jpg');
+    assert.equal(resolveActualFilename(file, { type: 'image/webp' }), 'screenshot.webp');
 });
 
-test('resolveActualFilename: прозрачный PNG остался PNG → имя не тронуто', () => {
+test('resolveActualFilename: JPEG-фолбэк → расширение .jpg', () => {
     const file = { type: 'image/png', name: 'screenshot.png' };
-    const name = resolveActualFilename(file, 'data:image/png;base64,AAAA');
-    assert.equal(name, 'screenshot.png');
+    assert.equal(resolveActualFilename(file, { type: 'image/jpeg' }), 'screenshot.jpg');
 });
 
-test('resolveActualFilename: JPEG-оригинал (пережат, формат не изменился) → имя не тронуто', () => {
+test('resolveActualFilename: перекодировки не было (тот же MIME) → имя не тронуто', () => {
     const file = { type: 'image/jpeg', name: 'photo.jpg' };
-    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
-    assert.equal(name, 'photo.jpg');
+    assert.equal(resolveActualFilename(file, { type: 'image/jpeg' }), 'photo.jpg');
 });
 
-test('resolveActualFilename: режим original (PNG не пережат, url = исходный PNG) → имя не тронуто', () => {
+test('resolveActualFilename: режим original (вернулся сам файл) → имя не тронуто', () => {
     const file = { type: 'image/png', name: 'screenshot.png' };
-    const name = resolveActualFilename(file, 'data:image/png;base64,AAAA');
-    assert.equal(name, 'screenshot.png');
+    assert.equal(resolveActualFilename(file, file), 'screenshot.png');
 });
 
-test('resolveActualFilename: PNG-файл с уже .jpeg-именем (нетипично) → не переименовывается повторно', () => {
-    const file = { type: 'image/png', name: 'mislabeled.jpeg' };
-    const name = resolveActualFilename(file, 'data:image/jpeg;base64,AAAA');
-    assert.equal(name, 'mislabeled.jpeg');
+test('resolveActualFilename: имя уже с верным расширением → не переименовывается повторно', () => {
+    const png = { type: 'image/png', name: 'mislabeled.jpeg' };
+    assert.equal(resolveActualFilename(png, { type: 'image/jpeg' }), 'mislabeled.jpeg');
+    const jpeg = { type: 'image/jpeg', name: 'already.webp' };
+    assert.equal(resolveActualFilename(jpeg, { type: 'image/webp' }), 'already.webp');
+});
+
+test('resolveActualFilename: неизвестный MIME результата → имя не тронуто', () => {
+    const file = { type: 'image/png', name: 'screenshot.png' };
+    assert.equal(resolveActualFilename(file, { type: 'application/octet-stream' }), 'screenshot.png');
 });

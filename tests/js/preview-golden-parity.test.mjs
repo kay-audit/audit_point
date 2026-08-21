@@ -23,16 +23,16 @@ import { iterateVisibleCells } from '../../static/js/constructor/table/grid-merg
 
 // --- Фикстура: зеркало fixture_act.py (нарушение блочной модели + таблица) ---
 
-const GOLDEN_PNG_DATA_URL =
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
-    'AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+// Байты картинки живут в act_images — фикстура держит только ссылку (зеркало
+// GOLDEN_IMAGE_ID в fixture_act.py).
+const GOLDEN_IMAGE_ID = 'golden-image-0001';
 
 const text = (id, content) => ({ id, type: 'text', content });
 
 const goldenImageBlock = {
     id: 'vb9',
     type: 'image',
-    url: GOLDEN_PNG_DATA_URL,
+    image_id: GOLDEN_IMAGE_ID,
     caption: 'GOLDEN_V_IMG_CAPTION',
     filename: 'golden_image.png',
     width: 50,
@@ -178,10 +178,10 @@ test('golden: table-блок попадает в модель строк тип�
     assert.deepEqual(tableLine.table.colWidths, [120, 80]);
 });
 
-test('golden: image-блок попадает в модель строк целиком (url/caption/filename/width)', () => {
+test('golden: image-блок попадает в модель строк целиком (image_id/caption/filename/width)', () => {
     const image = collectViolationLines(goldenViolation).find(l => l.type === 'image');
     assert.ok(image, 'image-строка отсутствует');
-    assert.equal(image.item.url, GOLDEN_PNG_DATA_URL);
+    assert.equal(image.item.image_id, GOLDEN_IMAGE_ID);
     assert.equal(image.item.caption, 'GOLDEN_V_IMG_CAPTION');
     assert.equal(image.item.filename, 'golden_image.png');
     assert.equal(image.item.width, 50);

@@ -22,7 +22,9 @@ from app.domains.acts.exceptions import (
 from app.domains.acts.formatters.docx import DocxFormatter, ExportContext
 from app.domains.acts.formatters.markdown_formatter import MarkdownFormatter
 from app.domains.acts.formatters.text_formatter import TextFormatter
+from app.domains.acts.repositories.act_image import ActImageRepository
 from app.domains.acts.schemas.act_content import ActDataSchema, ActSaveResponse
+from app.domains.acts.services.act_image_service import collect_image_ids
 from app.domains.acts.services.storage_service import StorageService
 from app.domains.acts.settings import ActsSettings
 from app.domains.acts._lifecycle import get_format_thread_pool
@@ -49,11 +51,16 @@ class ExportService:
         acts_settings: ActsSettings,
         act_crud_service: "ActCrudService | None" = None,
         act_content_service: "ActContentService | None" = None,
+        image_repository: ActImageRepository | None = None,
     ):
         self.storage = storage
         self.settings = settings
         self.act_crud_service = act_crud_service
         self.act_content_service = act_content_service
+        # Репозиторий картинок нарушений: байты подгружаются ОДНИМ запросом
+        # ДО построения документа (форматеры крутятся в пуле потоков и в БД
+        # не ходят). None — картинки уйдут плейсхолдерами (юнит-тесты).
+        self.image_repository = image_repository
 
         # Кэшируем экземпляры форматеров (они stateless и thread-safe)
         self._formatters = {
@@ -62,6 +69,20 @@ class ExportService:
             "docx": DocxFormatter(settings, acts_settings),
         }
         logger.debug("ExportService инициализирован с кэшированными форматерами")
+
+    async def _load_images(self, act_id: int, content: ActDataSchema) -> dict:
+        """Байты картинок нарушений акта одним запросом (``image_id → строка``).
+
+        Соединение берётся ровно на один SELECT и отпускается: рендер
+        документа идёт дальше без него. Репозиторий не задан (юнит-тесты) или
+        картинок в акте нет — пустая карта, рендер уходит в плейсхолдеры.
+        """
+        if self.image_repository is None:
+            return {}
+        image_ids = collect_image_ids(content.violations)
+        if not image_ids:
+            return {}
+        return await self.image_repository.get_many(act_id, image_ids)
 
     async def save_act(
         self,
@@ -110,10 +131,17 @@ class ExportService:
                 violations=raw_content.get("violations", {}),
             )
 
+            # Картинки нарушений — одним запросом до рендера (нет N+1 и нет
+            # захвата соединения внутри форматера). TXT картинки не выводит,
+            # поэтому байты ему не нужны.
+            images = await self._load_images(act_id, content) if fmt != "txt" else {}
+
             loop = asyncio.get_running_loop()
             try:
                 if fmt == "docx":
-                    ctx = ExportContext(metadata=metadata, content=content)
+                    ctx = ExportContext(
+                        metadata=metadata, content=content, images=images,
+                    )
                     formatted_content = await loop.run_in_executor(
                         get_format_thread_pool(),
                         self._formatters["docx"].format,
@@ -122,6 +150,7 @@ class ExportService:
                 else:
                     data_dict = content.model_dump(mode="python")
                     data_dict["metadata"] = metadata.model_dump(mode="python")
+                    data_dict["images"] = images
                     formatted_content = await loop.run_in_executor(
                         get_format_thread_pool(),
                         self._formatters[fmt].format,

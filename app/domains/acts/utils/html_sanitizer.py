@@ -9,7 +9,7 @@ image-блока несут реальный HTML, который рендери
 sanitize_html (bleach), блоки полей нарушения — sanitize_rich_html (nh3,
 см. его докстринг).
 
-Plain-text поля image-блока (url/filename) через этот модуль НЕ чистятся:
+Plain-text поля image-блока (image_id/filename) через этот модуль НЕ чистятся:
 нигде не рендерятся как innerHTML (DOCX — add_run литерально), поэтому
 bleach/nh3 там не нужны и вредны — портили бы текст («&» → «&amp;») и
 могли терять его часть («a<b» трактовался как начало тега). Ячейки
@@ -423,9 +423,9 @@ def sanitize_tree_nodes(node: dict) -> None:
 #    в tests/security/test_xss_act_content_backend.py): все потребители
 #    рендерят ячейку как текст (textContent/add_run), а не как HTML, поэтому
 #    санитизация была бы не нужна и вредна (портила бы легитимные "<", "&");
-#  - ``url``/``filename`` image-блока — plain-текст, нигде не рендерятся как
-#    innerHTML (DOCX — add_run литерально), формат url валидирует схема;
-#    санитайзер исказил бы base64-данные.
+#  - ``image_id``/``filename`` image-блока — plain-текст, нигде не рендерятся как
+#    innerHTML (DOCX — add_run литерально); ``image_id`` — ссылка на строку
+#    act_images, сама картинка проверена на загрузке.
 _RICH_ATTR_BY_BLOCK_TYPE = {"text": "content", "image": "caption"}
 
 
@@ -490,7 +490,7 @@ def _sanitize_violation_obj(v) -> None:
     Реестр-driven обход VIOLATION_FIELDS: по всем 10 полям (единая форма
     ``{enabled, blocks}``) → по блокам поля → text.content и image.caption
     через sanitize_rich_html. table-блоки не трогаются (ячейки хранятся
-    дословно, см. докстринг _sanitize_block). image.url/filename — plain,
+    дословно, см. докстринг _sanitize_block). image.image_id/filename — plain,
     не трогаются (см. докстринг sanitize_act_data). Семантика обхода — в
     _sanitize_violation_common (единый источник для обеих форм, см. её
     докстринг).
@@ -520,11 +520,11 @@ def sanitize_act_data(data) -> None:
       text-блока content, у image-блока caption — через sanitize_rich_html
       (см. _sanitize_violation_obj).
 
-    Plain-text поля image-блока (url/filename) СОЗНАТЕЛЬНО не трогаются:
+    Plain-text поля image-блока (image_id/filename) СОЗНАТЕЛЬНО не трогаются:
     нигде не рендерятся как innerHTML, bleach/nh3 там только портили бы
-    текст и теряли его часть (см. модульный docstring). url валидирует
-    ViolationImageBlockSchema (data:image-whitelist + лимит длины) —
-    санитайзер исказил бы base64-данные.
+    текст и теряли его часть (см. модульный docstring). image_id — ссылка на
+    строку act_images, формат и размер самой картинки проверяются один раз
+    на загрузке (ActImageService.upload).
 
     Ячейки table-блока тоже не трогаются — тот же инвариант, что у больших
     таблиц акта (B8, см. докстринг _sanitize_block).

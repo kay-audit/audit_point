@@ -1939,7 +1939,8 @@ mount-time слушатель опоздал бы на drop в несфокус�
 ставится до read-only-ветки — RO-поля тоже ищутся), `focus → mount`
 (`:218`), `drop → handleSurfaceDrop`. Rich — не поле, а ТИП БЛОКА: `content`
 любого text-блока и `caption` любого image-блока, в любом из 10 полей
-реестра. Plain остались: `filename`, `url` (data:image-URL), `width` картинки,
+реестра. Plain остались: `filename`, `image_id` (ссылка на `act_images`),
+`width` картинки,
 ячейки table-блока (verbatim, как у больших таблиц), чекбоксы, метки. Канон
 состава типов блоков — дискриминированный union в `act_content.py`
 (`ViolationTextBlockSchema`/`ViolationImageBlockSchema`/

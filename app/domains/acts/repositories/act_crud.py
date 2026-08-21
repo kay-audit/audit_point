@@ -787,14 +787,23 @@ class ActCrudRepository(BaseRepository):
     # УДАЛЕНИЕ
     # -------------------------------------------------------------------------
 
-    # Порядок важен: сначала зависимые таблицы, потом родительская
+    # Порядок важен: сначала зависимые таблицы, потом родительская.
+    # Список обязан совпадать с набором таблиц, у которых в PG-схеме стоит
+    # REFERENCES acts(id) ON DELETE CASCADE: на PG удаление уносит их само, на
+    # GP referential actions не enforce-ятся и чистить нужно явно. Страж —
+    # tests/domains/acts/test_act_delete_cascade.py.
+    # Лог-таблиц (audit_log, act_editor_telemetry) здесь нет сознательно: FK на
+    # acts у них не объявлен ни в одной схеме, они переживают удаление акта и
+    # на PG тоже.
     _CHILD_TABLES = [
+        "act_images",
         "act_invoices",
         "act_violations",
         "act_textblocks",
         "act_tables",
         "act_tree",
         "act_directives",
+        "act_content_versions",
         "audit_team_members",
     ]
 

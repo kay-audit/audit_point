@@ -26,6 +26,7 @@ import {
     getOrderedFieldKeys,
 } from '../violation/violation-fields.js';
 import { buildImagePlaceholder, renderImageWithFallback } from '../violation/violation-image-render.js';
+import { resolveBlockImageSrc } from '../violation/violation-image-api.js';
 import { PreviewTableRenderer } from './preview-table-renderer.js';
 
 /** Высота листа A4 в мм (Б-1.6). */
@@ -315,8 +316,9 @@ export class PreviewViolationRenderer {
         const placeholderText = `Изображение: ${item.filename || ''}`;
         const placeholderClassName = 'preview-violation-line preview-violation-line--small';
 
-        if (!item.url) {
-            // Пустой url (черновик) → плейсхолдер, как в DOCX/MD/TXT.
+        const src = resolveBlockImageSrc(item);
+        if (!src) {
+            // Пустой image_id (черновик) → плейсхолдер, как в DOCX/MD/TXT.
             wrap.appendChild(buildImagePlaceholder(placeholderText, placeholderClassName));
             container.appendChild(wrap);
             this._appendCaption(container, item);
@@ -327,7 +329,7 @@ export class PreviewViolationRenderer {
         // #27: onerror ДО src + текст-плейсхолдер при битой картинке — общее
         // ядро с редактором (violation-rendering.js).
         renderImageWithFallback(wrap, {
-            src: item.url,
+            src,
             alt: item.caption || item.filename || '',
             imgClassName: 'preview-violation-image',
             placeholderText,

@@ -150,7 +150,7 @@ class TestListDictionaries:
         await service.list_metrics()
         kwargs = service._invoice.list_metric_dict.await_args.kwargs
         # Дефолт InvoiceSettings.hive_registry_schema
-        assert kwargs["registry_schema"] == "s_grnplm_ld_audit_project_4"
+        assert kwargs["registry_schema"] == "s_grnplm_ld_audit_da_project_4"
 
 
 # -------------------------------------------------------------------------

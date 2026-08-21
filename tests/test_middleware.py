@@ -27,12 +27,20 @@ def _make_size_app(max_size: int) -> FastAPI:
     return app
 
 
-def _make_rate_app(rate_limit: int) -> FastAPI:
+def _identify_by_header(scope) -> str | None:
+    """Тестовый резолвер личности: username берётся из заголовка X-Test-User."""
+    for name, value in scope.get("headers", []):
+        if name == b"x-test-user":
+            return value.decode() or None
+    return None
+
+
+def _make_rate_app(rate_limit: int, identify=None) -> FastAPI:
     """Создает FastAPI с RateLimitMiddleware."""
     from unittest.mock import MagicMock
 
     mock_settings = MagicMock()
-    mock_settings.security.max_tracked_ips = 100
+    mock_settings.security.max_tracked_clients = 100
     mock_settings.security.rate_limit_ttl = 120
 
     app = FastAPI()
@@ -40,10 +48,15 @@ def _make_rate_app(rate_limit: int) -> FastAPI:
         RateLimitMiddleware,
         rate_limit=rate_limit,
         settings=mock_settings,
+        identify=identify,
     )
 
     @app.get("/test")
     async def test_endpoint():
+        return {"ok": True}
+
+    @app.get("/static/{path:path}")
+    async def static_endpoint(path: str):
         return {"ok": True}
 
     return app
@@ -93,6 +106,81 @@ class TestRateLimitMiddleware:
                 resp = await client.get("/test")
                 statuses.append(resp.status_code)
             assert 429 in statuses
+
+    async def test_static_is_exempt(self):
+        """Статика не тратит бюджет лимита: без бандлера страница тянет сотни файлов."""
+        app = _make_rate_app(rate_limit=3)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(20):
+                resp = await client.get("/static/js/entries/constructor.js")
+                assert resp.status_code == 200
+
+    async def test_static_does_not_consume_budget_for_api(self):
+        """После сотни запросов к статике API-бюджет остаётся нетронутым."""
+        app = _make_rate_app(rate_limit=3)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for i in range(100):
+                assert (await client.get(f"/static/css/{i}.css")).status_code == 200
+            for _ in range(3):
+                assert (await client.get("/test")).status_code == 200
+            assert (await client.get("/test")).status_code == 429
+
+    async def test_users_have_separate_budgets(self):
+        """Опознанные пользователи считаются раздельно, а не общей кучей по IP."""
+        app = _make_rate_app(rate_limit=2, identify=_identify_by_header)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(2):
+                resp = await client.get("/test", headers={"X-Test-User": "ivanov"})
+                assert resp.status_code == 200
+            # Иванов исчерпал бюджет...
+            spent = await client.get("/test", headers={"X-Test-User": "ivanov"})
+            assert spent.status_code == 429
+            # ...а Петров с того же IP — нет.
+            fresh = await client.get("/test", headers={"X-Test-User": "petrov"})
+            assert fresh.status_code == 200
+
+    async def test_anonymous_falls_back_to_ip(self):
+        """Без опознания счёт идёт по IP — поток до входа тоже ограничен."""
+        app = _make_rate_app(rate_limit=2, identify=_identify_by_header)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(2):
+                assert (await client.get("/test")).status_code == 200
+            assert (await client.get("/test")).status_code == 429
+
+    async def test_user_key_does_not_collide_with_ip_key(self):
+        """Префиксы u:/ip: разводят username, совпавший с текстом адреса."""
+        app = _make_rate_app(rate_limit=2, identify=_identify_by_header)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(2):
+                assert (await client.get("/test")).status_code == 200
+            assert (await client.get("/test")).status_code == 429
+            # Пользователь, чьё имя равно адресу пира, получает свой счётчик.
+            named = await client.get("/test", headers={"X-Test-User": "127.0.0.1"})
+            assert named.status_code == 200
+
+    async def test_identify_failure_falls_back_to_ip(self):
+        """Сбой резолвера не роняет запрос — лимит продолжает работать по IP."""
+
+        def _broken(scope):
+            raise RuntimeError("резолвер сломался")
+
+        app = _make_rate_app(rate_limit=2, identify=_broken)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(2):
+                assert (await client.get("/test")).status_code == 200
+            assert (await client.get("/test")).status_code == 429
 
 
 def _make_security_app(security: SecuritySettings) -> FastAPI:

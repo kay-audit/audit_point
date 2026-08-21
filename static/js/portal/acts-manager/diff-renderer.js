@@ -9,9 +9,10 @@ import { BLOCK_TYPES, BLOCK_TYPE_META } from '../../constructor/violation/violat
 import { DiffEngine } from './diff-engine.js';
 import { INVOICE_FIELD_LABELS } from './invoice-diff-fields.js';
 import { renderImageWithFallback, buildImagePlaceholder } from '../../constructor/violation/violation-image-render.js';
+import { resolveBlockImageSrc } from '../../constructor/violation/violation-image-api.js';
 
-// Подписи изменённых атрибутов блоков (картинка и таблица). url в списке нет
-// намеренно — смена картинки показывается превью «Было/Стало», а не текстом.
+// Подписи изменённых атрибутов блоков (картинка и таблица). image_id в списке
+// нет намеренно — смена картинки показывается превью «Было/Стало», а не uuid'ом.
 const BLOCK_ATTR_LABELS = Object.freeze({
     caption: 'Подпись',
     filename: 'Файл',
@@ -722,8 +723,8 @@ export class DiffRenderer {
         }
 
         const fields = entry.fields || {};
-        if (fields.url) {
-            // url — многомегабайтный data-URL: показываем факт смены двумя
+        if (fields.image_id) {
+            // image_id — непрозрачный uuid: показываем факт смены двумя
             // превью, а не текстом «было → стало».
             this._appendSublabel(itemDiv, 'Было:');
             this._appendImagePreview(itemDiv, entry.oldBlock);
@@ -765,18 +766,20 @@ export class DiffRenderer {
 
     /**
      * Превью картинки нарушения с fallback на текстовый плейсхолдер (общее ядро
-     * с превью/редактором — violation-image-render.js). Пустой url → плейсхолдер.
+     * с превью/редактором — violation-image-render.js). Пустой image_id →
+     * плейсхолдер; висячий (картинка удалена из акта) — тоже, через onerror.
      */
     static _appendImagePreview(container, block) {
         const wrap = document.createElement('div');
         wrap.className = 'diff-violation-image';
         const placeholderText = `Изображение: ${(block && block.filename) || ''}`;
         const placeholderClassName = 'diff-violation-image-placeholder';
-        if (!block || !block.url) {
+        const src = resolveBlockImageSrc(block);
+        if (!src) {
             wrap.appendChild(buildImagePlaceholder(placeholderText, placeholderClassName));
         } else {
             renderImageWithFallback(wrap, {
-                src: block.url,
+                src,
                 alt: block.caption || block.filename || '',
                 imgClassName: 'diff-violation-image-img',
                 placeholderText,

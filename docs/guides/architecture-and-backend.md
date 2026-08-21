@@ -39,7 +39,7 @@
   - [14.2 Pagination limits и UI-паттерн Load More](#142-pagination-limits-и-ui-паттерн-load-more)
   - [14.3 Error envelope](#143-error-envelope)
   - [14.4 Kerberos handler — special-case](#144-kerberos-handler--special-case)
-  - [14.5 Acts: `GET /limits` и `SaveContentResponse`](#145-acts-get-limits-и-savecontentresponse)
+  - [14.5 Acts: `GET /limits`, картинки нарушений и `SaveContentResponse`](#145-acts-get-limits-картинки-нарушений-и-savecontentresponse)
 
 ---
 
@@ -1160,7 +1160,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 Причина: UI показывает пользователю пошаговую инструкцию по `kinit` (массив `instructions`), формат жёстко завязан на этот UX и шире, чем `{detail, code, extra}`. Менять Kerberos-формат «ради консистентности» нельзя — сломается шаблон ошибки. Если добавляешь новый infra-handler с похожей UX-нагрузкой (инструкции для админа) — рассмотри тот же приём, но **не** распространяй его на доменные ошибки: для них envelope `{detail, code, extra}` обязателен.
 
-### 14.5 Acts: `GET /limits` и `SaveContentResponse`
+### 14.5 Acts: `GET /limits`, картинки нарушений и `SaveContentResponse`
 
 **`GET /api/v1/acts/limits`** (`app/domains/acts/api/limits.py`) — единый источник лимитов конструктора для фронта. Отдаёт пять секций плюс скаляр, читаемые из настроек (`ACTS__IMAGES__*`/`ACTS__TABLES__*`/`ACTS__TEXTBLOCKS__*`/`ACTS__VIOLATIONS__*`/`ACTS__SANITIZER__*`):
 
@@ -1178,6 +1178,13 @@ class PaginatedResponse(BaseModel, Generic[T]):
 ```
 
 Секции **реально читаются** фронтом: картинки — в `violation-image-validator.js`, лимиты `per_node` таблиц/текстблоков/нарушений — рантайм-перекрытие фронт-гейтов дерева, санитайзер — `applyActsAllowlist` в `shared/sanitize.js` (синхронизация DOMPurify с бэком), `editor_telemetry_enabled` — kill-switch телеметрии редактора. Те же настройки питают Pydantic-валидаторы схемы, так что env-лимит меняется по всей цепочке (полная таблица переменных — §9.5 в [`deploy-and-configuration.md`](deploy-and-configuration.md)).
+
+**Картинки нарушений — `POST`/`GET /api/v1/acts/{act_id}/images`** (`app/domains/acts/api/images.py`). Блок-картинка нарушения хранит в контенте только `image_id`; байты живут в таблице `act_images` и ездят отдельными запросами.
+
+- `POST /api/v1/acts/{act_id}/images` — `multipart/form-data`, поле `file`. Ответ `{image_id, byte_size, mime_type, width, height}`. Права: редактирование акта **и** владение блокировкой (как у `PUT /content`). Ошибки: `403 access-denied` / `403 insufficient-rights`, `409 act-locked`, `422 act-image-validation` (не картинка, формат вне allowlist, превышен размер файла или бюджет акта). MIME определяется по байтам (Pillow), заявленный `Content-Type` игнорируется. Повторная загрузка того же файла в тот же акт возвращает существующий `image_id` (дедуп по sha256).
+- `GET /api/v1/acts/{act_id}/images/{image_id}` — байты. Права: доступ к акту. Ошибки: `403 access-denied`, `404 act-image-not-found`. Заголовки ответа: `Content-Type` — реальный MIME, но только из `ACTS__IMAGES__ALLOWED_MIME_TYPES` (иначе `application/octet-stream`), `X-Content-Type-Options: nosniff`, `Cache-Control: public, max-age=31536000, immutable`.
+
+Модель данных, дедуп-констрейнт, сборка мусора и путь экспорта — раздел «Картинки нарушений» в [`data-model-acts.md`](../architecture/data-model-acts.md).
 
 **`ActDataSchema`** (тело `PUT /api/v1/acts/{id}/content`) принимает необязательное `expected_content_version` — эхо серверного счётчика, полученного клиентом при загрузке акта или в ответе прошлого PUT (**optimistic concurrency**). Если поле передано и не совпадает с текущим `acts.content_version`, запись отклоняется с **409 `content-conflict`** (`ContentConflictError`, extra: `current_content_version`, `last_edited_by`, `last_edited_at`) — контент акта успел изменить кто-то другой, и слепая перезапись не выполняется. Поле опущено (или `null`) — проверка не делается. Счётчик `content_version` инкрементируется ровно в одном месте — `ActContentRepository._update_edit_timestamp` (запись **содержимого**); правки метаданных и сохранение соседней части КМ его не трогают.
 

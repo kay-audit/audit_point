@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.domains.chat.exceptions import TextActionUnavailableError
 from app.domains.chat.services.text_actions import llm_utils as U
 
 
@@ -92,12 +93,67 @@ async def test_run_text_call_returns_content_and_passes_params():
 
     out = await U.run_text_call(
         client, model="m", temperature=0.1, system="s", user="u",
-        retry_call=lambda f: f, timeout=5.0,
+        retry_call=lambda f: f, timeout=5.0, max_tokens=1024,
     )
     assert out == "исправлено"
     kwargs = client.chat.completions.create.call_args.kwargs
     assert kwargs["temperature"] == 0.1
     assert kwargs["stream"] is False
     assert kwargs["timeout"] == 5.0
+    assert kwargs["max_tokens"] == 1024
     assert kwargs["messages"][0] == {"role": "system", "content": "s"}
     assert kwargs["messages"][1] == {"role": "user", "content": "u"}
+
+
+def _resp(content: str, finish_reason=None):
+    """Ответ LLM-клиента с заданным content и finish_reason."""
+    msg = AsyncMock()
+    msg.content = content
+    choice = AsyncMock(message=msg)
+    if finish_reason is not None:
+        choice.finish_reason = finish_reason
+    resp = AsyncMock()
+    resp.choices = [choice]
+    return resp
+
+
+async def test_run_text_call_raises_on_length_finish_reason():
+    """finish_reason='length' — ответ оборван, отдавать его пользователю нельзя."""
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_resp("начало текста, а дальше обрыв", finish_reason="length"),
+    )
+
+    with pytest.raises(TextActionUnavailableError):
+        await U.run_text_call(
+            client, model="m", temperature=0.1, system="s", user="u",
+            retry_call=lambda f: f, timeout=5.0, max_tokens=16,
+        )
+
+
+async def test_run_json_call_raises_on_length_finish_reason():
+    """Тот же обрыв в JSON-вызове: битый JSON не должен маскироваться под «пусто»."""
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_resp('{"essence": "нача', finish_reason="length"),
+    )
+
+    with pytest.raises(TextActionUnavailableError):
+        await U.run_json_call(
+            client, model="m", temperature=0.1, system="s", user="u",
+            retry_call=lambda f: f, timeout=5.0, max_tokens=16,
+        )
+
+
+async def test_run_text_call_passes_through_normal_finish_reason():
+    """finish_reason='stop' — обычный ответ, никаких ошибок."""
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_resp("готовый текст", finish_reason="stop"),
+    )
+
+    out = await U.run_text_call(
+        client, model="m", temperature=0.1, system="s", user="u",
+        retry_call=lambda f: f, timeout=5.0, max_tokens=512,
+    )
+    assert out == "готовый текст"

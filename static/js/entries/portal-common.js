@@ -21,6 +21,9 @@ import '../portal/portal-settings.js';
 // Shared-центр уведомлений (без живых источников на портале).
 import { NotificationCenter } from '../shared/notifications-center/notification-center.js';
 
+// Слежение за версией приложения (баннер «вышло обновление»).
+import { startVersionWatcher } from '../shared/version-watcher.js';
+
 // Чат — 12 модулей. chat-event-bus.js первым (остальные подписываются на module-level).
 import '../shared/chat/chat-event-bus.js';
 import '../shared/chat/chat-renderer.js';
@@ -46,8 +49,15 @@ function _initNotificationCenter() {
     window.notificationCenter = center;
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _initNotificationCenter);
-} else {
+/** Бутстрап общих для портала подсистем: колокольчик + слежение за версией. */
+function _bootstrap() {
     _initNotificationCenter();
+    // Без meta-тега версии стартер тихо ничего не делает.
+    startVersionWatcher();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _bootstrap);
+} else {
+    _bootstrap();
 }

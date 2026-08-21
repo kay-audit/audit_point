@@ -26,6 +26,13 @@ from app.domains.chat.schemas.text_actions import (
     ReadabilityReport,
 )
 from app.domains.chat.services.retry import retry_on_transient
+from app.domains.chat.services.text_actions.budget import (
+    PROFILE_REWRITE,
+    call_timeout_sec,
+    looks_truncated,
+    output_budget_tokens,
+    retry_attempts,
+)
 from app.domains.chat.services.text_actions.llm_route import resolve_target
 from app.domains.chat.services.text_actions.llm_utils import run_text_call
 from app.domains.chat.services.text_actions.prompts import (
@@ -40,6 +47,19 @@ from app.domains.chat.settings import ChatDomainSettings
 logger = logging.getLogger("audit_workstation.chat.text_actions.corrector")
 
 CorrectMode = Literal["fix", "readability"]
+
+# Режимы, которые ОБЯЗАНЫ сохранять объём текста. ``fix`` — корректор
+# орфографии: его промпт прямо запрещает сокращать, пересказывать и дописывать,
+# поэтому ответ заметно короче исходника означает обрыв, а не работу. ``readability``
+# («Пиши, сокращай») сокращает по своей природе — к нему проверка доли неприменима,
+# обрыв у него ловится только фактом ``finish_reason="length"`` в транспорте.
+_LENGTH_PRESERVING_MODES = frozenset({"fix"})
+
+# Сообщение при подозрении на обрыв по доле сохранённого объёма.
+_TRUNCATED_MESSAGE = (
+    "ИИ-сервис вернул текст заметно короче исходного — похоже на обрыв ответа. "
+    "Правка не применена: сократите выделение и повторите."
+)
 
 
 class TextCorrectorService:
@@ -65,7 +85,10 @@ class TextCorrectorService:
         self._retry_call = retry_on_transient(
             on_429=r.on_429,
             on_5xx=r.on_5xx,
-            max_attempts=r.max_attempts,
+            # Кап попыток: таймаут вызова теперь растёт с объёмом текста, и
+            # полный цикл повторов сделал бы ожидание пользователя неприличным
+            # (см. budget.MAX_ATTEMPTS_CAP).
+            max_attempts=retry_attempts(r.max_attempts),
             connect_max_attempts=r.connect_max_attempts,
             backoff_base=r.backoff_base_sec,
         )
@@ -74,8 +97,11 @@ class TextCorrectorService:
         """Вернуть обработанный текст и — для режима ``readability`` — диагностику
         читаемости до и после правки. Кидает ``TextActionValidationError`` на
         неизвестный режим, пустой/слишком длинный ввод и
-        ``TextActionUnavailableError``, когда не осталось ни одного доступного
-        LLM-маршрута."""
+        ``TextActionUnavailableError`` в двух случаях: не осталось ни одного
+        доступного LLM-маршрута либо ответ оборвался (модель упёрлась в потолок
+        ``max_tokens`` или вернула текст заметно короче исходного в режиме,
+        который обязан сохранять объём). Обрезанный текст пользователю не
+        отдаётся: в акте он неотличим от готового."""
         if mode not in self._prompts:
             raise TextActionValidationError(f"Неизвестный режим корректора: {mode}")
         if not text or not text.strip():
@@ -92,6 +118,8 @@ class TextCorrectorService:
                 "ИИ-сервис недоступен, повторите попытку позже",
             )
         client, model = target
+        # Бюджет вывода и таймаут — от длины ввода: оба режима переписывают
+        # текст целиком, поэтому профиль «переписывающий» (см. budget.py).
         corrected = await run_text_call(
             client,
             model=model,
@@ -99,8 +127,18 @@ class TextCorrectorService:
             system=self._prompts[mode],
             user=text,
             retry_call=self._retry_call,
-            timeout=self._timeout,
+            timeout=call_timeout_sec(
+                len(text), floor_sec=self._timeout, profile=PROFILE_REWRITE,
+            ),
+            max_tokens=output_budget_tokens(len(text), profile=PROFILE_REWRITE),
         )
+        if mode in _LENGTH_PRESERVING_MODES and looks_truncated(text, corrected):
+            logger.warning(
+                "Корректор (%s): ответ %s символов против %s исходных — "
+                "похоже на обрыв, правка не отдана",
+                mode, len(corrected), len(text),
+            )
+            raise TextActionUnavailableError(_TRUNCATED_MESSAGE)
         return CorrectResponse(
             corrected_text=corrected,
             readability=await self._readability(mode, text, corrected),

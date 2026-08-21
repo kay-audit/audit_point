@@ -21,6 +21,11 @@ import {
 import { VIOLATION_FIELDS, VIOLATION_LABELS, VIOLATION_FIELD_KEYS } from '../../static/js/constructor/violation/violation-fields.js';
 import { createDefaultViolationShape } from '../../static/js/constructor/violation/violation-normalize.js';
 
+// Картинка адресуется парой (act_id, image_id) — превью собирает src через
+// AppConfig.api.getUrl, которому нужны origin и текущий акт.
+globalThis.location = { origin: 'http://test', pathname: '/' };
+window.currentActId = 77;
+
 const LONG = 'Очень длинный текст нарушения, который раньше обрезался превью до пары десятков символов. '.repeat(20);
 
 let _bid = 0;
@@ -54,6 +59,28 @@ function renderImageStyle(imageBlock) {
         document.createElement = origCreate;
     }
     return imgStyle || {};
+}
+
+/**
+ * Рендерит нарушение с одним image-блоком и возвращает src созданного <img>
+ * (null — <img> не создавался, значит показан плейсхолдер).
+ */
+function renderImageSrc(imageBlock) {
+    const origCreate = document.createElement;
+    let img = null;
+    document.createElement = (tag) => {
+        const el = origCreate(tag);
+        if (tag === 'img') img = el;
+        return el;
+    };
+    try {
+        PreviewViolationRenderer.create(makeViolation({
+            additionalContent: { enabled: true, blocks: [imageBlock] },
+        }));
+    } finally {
+        document.createElement = origCreate;
+    }
+    return img ? img.src : null;
 }
 
 // --- Полнота модели строк ---
@@ -99,7 +126,7 @@ test('несколько text-блоков: первый инлайнится с
 });
 
 test('поле, начинающееся с картинки, даёт метку отдельной строкой', () => {
-    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: '', filename: 'x.png', width: 0 };
+    const image = { id: 'image_1', type: 'image', image_id: 'img-1', caption: '', filename: 'x.png', width: 0 };
     const v = makeViolation({
         reasons: { enabled: true, blocks: [image, text('после картинки')] },
     });
@@ -185,7 +212,7 @@ test('labeled=false: политика видимости прежняя — вы
 });
 
 test('labeled=false: поле, начинающееся с картинки, не даёт пустой строки-метки', () => {
-    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: '', filename: 'x.png', width: 0 };
+    const image = { id: 'image_1', type: 'image', image_id: 'img-1', caption: '', filename: 'x.png', width: 0 };
     const v = makeViolation({
         additionalContent: { enabled: true, blocks: [image, text('после картинки')] },
     });
@@ -200,7 +227,7 @@ test('labeled=false: поле, начинающееся с картинки, н�
 });
 
 test('image-блок попадает в модель строк целиком', () => {
-    const image = { id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA', caption: 'Подпись', filename: 'x.png', width: 50 };
+    const image = { id: 'image_1', type: 'image', image_id: 'img-1', caption: 'Подпись', filename: 'x.png', width: 50 };
     const v = makeViolation({
         additionalContent: { enabled: true, blocks: [text('t'), image] },
     });
@@ -314,11 +341,27 @@ test('width=50 → CSS width:50%; width=0 → авто (width не задаёт�
 
 test('DOM: инлайн-стиль картинки применяет width и maxHeight', () => {
     const style = renderImageStyle({
-        id: 'image_1', type: 'image', url: 'data:image/png;base64,AAAA',
+        id: 'image_1', type: 'image', image_id: 'img-1',
         caption: '', filename: 'x.png', width: 50,
     });
     assert.equal(style.width, '50%');
     assert.ok(String(style.maxHeight).endsWith('mm'));
+});
+
+test('DOM: src картинки — ссылка на байты акта, а не data-URL', () => {
+    const src = renderImageSrc({
+        id: 'image_1', type: 'image', image_id: 'img-1',
+        caption: '', filename: 'x.png', width: 0,
+    });
+    assert.equal(src, 'http://test/api/v1/acts/77/images/img-1');
+});
+
+test('DOM: пустой image_id (черновик) → <img> не создаётся, только плейсхолдер', () => {
+    const src = renderImageSrc({
+        id: 'image_1', type: 'image', image_id: '',
+        caption: '', filename: 'x.png', width: 0,
+    });
+    assert.equal(src, null, 'картинки нет — рендерится текстовый плейсхолдер');
 });
 
 // --- #13: splitTopLevelBlocks (паритет с split_block_segments, inline.py) ---

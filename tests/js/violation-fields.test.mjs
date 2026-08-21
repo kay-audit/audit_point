@@ -179,9 +179,11 @@ test('фабрики блоков создают релевантные типу
   assert.equal(text.content, '<p>x</p>');
   assert.ok(text.id.startsWith('text_'));
 
-  const image = createImageBlock({ url: 'data:image/png;base64,AAA', filename: 'a.png', width: 50 });
+  const image = createImageBlock({ image_id: 'img-1', filename: 'a.png', width: 50 });
   assert.equal(image.type, 'image');
-  assert.equal(image.url, 'data:image/png;base64,AAA');
+  // Байты живут в act_images — блок несёт только ссылку.
+  assert.equal(image.image_id, 'img-1');
+  assert.equal('url' in image, false, 'поле url убрано вместе с inline-байтами');
   assert.equal(image.caption, '');
   assert.equal(image.filename, 'a.png');
   assert.equal(image.width, 50);
@@ -240,8 +242,8 @@ test('BLOCK_TYPE_META.create: единая сигнатура create(extraData) 
   assert.equal(text.content, '<p>x</p>');
   assert.equal(BLOCK_TYPE_META[BLOCK_TYPES.TEXT].create().content, '', 'без extraData — пустой текст');
 
-  const image = BLOCK_TYPE_META[BLOCK_TYPES.IMAGE].create({ url: 'data:image/png;base64,AAA', filename: 'a.png' });
-  assert.equal(image.url, 'data:image/png;base64,AAA');
+  const image = BLOCK_TYPE_META[BLOCK_TYPES.IMAGE].create({ image_id: 'img-1', filename: 'a.png' });
+  assert.equal(image.image_id, 'img-1');
   assert.equal(image.filename, 'a.png');
 
   const table = BLOCK_TYPE_META[BLOCK_TYPES.TABLE].create();

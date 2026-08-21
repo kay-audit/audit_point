@@ -43,6 +43,12 @@ from app.domains.chat.exceptions import (
 )
 from app.domains.chat.schemas.text_actions import FormalizeResponse
 from app.domains.chat.services.retry import retry_on_transient
+from app.domains.chat.services.text_actions.budget import (
+    PROFILE_EXTRACT,
+    call_timeout_sec,
+    output_budget_tokens,
+    retry_attempts,
+)
 from app.domains.chat.services.text_actions.llm_route import resolve_target
 from app.domains.chat.services.text_actions.formalizer_prompts import (
     CAUSES_SYSTEM,
@@ -161,7 +167,9 @@ class ViolationFormalizerService:
         self._retry_call = retry_on_transient(
             on_429=r.on_429,
             on_5xx=r.on_5xx,
-            max_attempts=r.max_attempts,
+            # Кап попыток: 6 вызовов × полный цикл повторов на медленном
+            # провайдере — это десятки минут ожидания (см. budget.MAX_ATTEMPTS_CAP).
+            max_attempts=retry_attempts(r.max_attempts),
             connect_max_attempts=r.connect_max_attempts,
             backoff_base=r.backoff_base_sec,
         )
@@ -228,10 +236,10 @@ class ViolationFormalizerService:
         # поэтому раунда ожидания против прежнего конвейера не добавляется.
         violation, recommendations = await asyncio.gather(
             self._build_violation(
-                client, model, essence, causes, consequences, measures,
+                client, model, essence, causes, consequences, measures, len(text),
             ),
             self._recommend(
-                client, model, essence, causes, consequences, measures,
+                client, model, essence, causes, consequences, measures, len(text),
             ),
         )
         return self._response(
@@ -277,6 +285,21 @@ class ViolationFormalizerService:
             recommendations=recommendations,
         )
 
+    def _limits(self, source_chars: int) -> dict:
+        """Таймаут и бюджет вывода одного вызова по длине исходного текста.
+
+        Профиль ``extract``: все вызовы формализатора отдают JSON-выжимку из
+        текста, а не его копию, — полный «переписывающий» бюджет им не нужен
+        (см. budget.py). Настроечный ``per_call_timeout_sec`` остаётся нижней
+        границей ожидания.
+        """
+        return {
+            "timeout": call_timeout_sec(
+                source_chars, floor_sec=self._timeout, profile=PROFILE_EXTRACT,
+            ),
+            "max_tokens": output_budget_tokens(source_chars, profile=PROFILE_EXTRACT),
+        }
+
     async def _extract(
         self, client, model: str, schema_cls, system: str, user: str, text: str,
     ):
@@ -294,7 +317,7 @@ class ViolationFormalizerService:
             system=system.format(query=text),
             user=user,
             retry_call=self._retry_call,
-            timeout=self._timeout,
+            **self._limits(len(text)),
         )
         return schema_cls.model_validate(raw)
 
@@ -306,6 +329,7 @@ class ViolationFormalizerService:
         causes: CausesParsed,
         consequences: ConsequencesParsed,
         measures: MeasuresParsed,
+        source_chars: int,
     ) -> ViolationParsed | None:
         """2-я стадия: сборка полей карточки в официально-деловой текст (D17).
 
@@ -329,7 +353,7 @@ class ViolationFormalizerService:
                 system=system,
                 user=VIOLATION_USER,
                 retry_call=self._retry_call,
-                timeout=self._timeout,
+                **self._limits(source_chars),
             )
             return ViolationParsed.model_validate(raw)
         except Exception as e:  # noqa: BLE001 — есть фолбэк на сырые экстракторы
@@ -344,6 +368,7 @@ class ViolationFormalizerService:
         causes: CausesParsed,
         consequences: ConsequencesParsed,
         measures: MeasuresParsed,
+        source_chars: int,
     ) -> list[str]:
         """2-я стадия: подсказки аналитику «чего не хватает» по извлечённым полям.
 
@@ -367,7 +392,7 @@ class ViolationFormalizerService:
                 system=system,
                 user=RECOMMENDATIONS_USER,
                 retry_call=self._retry_call,
-                timeout=self._timeout,
+                **self._limits(source_chars),
             )
             parsed = RecommendationsParsed.model_validate(raw)
         except Exception as e:  # noqa: BLE001 — подсказки необязательны, не роняем поток

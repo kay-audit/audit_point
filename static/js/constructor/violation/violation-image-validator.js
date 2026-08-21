@@ -1,11 +1,18 @@
 /**
  * Валидатор картинок нарушений (H6).
  *
- * Проверяет файл ДО кодирования в base64 (readAsDataURL) во всех точках
- * приёма: выбор файлов, drag&drop, Ctrl+V. Лимиты подтягиваются один раз
- * с GET /api/v1/acts/limits (паттерн chat-files._loadLimits); до ответа
- * сервера действуют дефолты — зеркало ACTS__IMAGES__* (settings.py),
- * серверная валидация схемы в любом случае прикроет.
+ * Проверяет файл ДО отправки на сервер во всех точках приёма: выбор файлов,
+ * drag&drop, Ctrl+V. Лимиты подтягиваются один раз с GET /api/v1/acts/limits
+ * (паттерн chat-files._loadLimits); до ответа сервера действуют дефолты —
+ * зеркало ACTS__IMAGES__* (settings.py), серверная валидация загрузки в любом
+ * случае прикроет.
+ *
+ * СУММАРНЫЙ вес картинок акта здесь НЕ считается. Байты живут в таблице
+ * act_images, а не в содержимом акта, и обойти контент клиент больше не может:
+ * любая клиентская оценка структурно занижала бы бюджет (не видит картинок,
+ * загруженных, но уже удалённых из блоков и ещё не собранных сборщиком мусора)
+ * и расходилась бы с сервером. Бюджет акта считает и отклоняет ТОЛЬКО сервер
+ * (422 act-image-validation на загрузке) — фронт показывает его текст.
  *
  * Тот же единственный GET наполняет и СТРУКТУРНЫЕ лимиты (таблицы/шрифт,
  * секции tables/textblocks ответа) — getStructureLimits() для гейтов
@@ -15,14 +22,12 @@
 import { AppConfig } from '../../shared/app-config.js';
 import { applyActsAllowlist } from '../../shared/sanitize.js';
 import { formatMb } from '../../shared/format-units.js';
-import { VIOLATION_FIELD_KEYS } from './violation-fields.js';
-import { BLOCK_TYPES } from './violation-block-types.js';
 
 /** Дефолтные лимиты — зеркало ImagesSettings (app/domains/acts/settings.py). */
 export const DEFAULT_IMAGE_LIMITS = {
-    maxFileSize: 4 * 1024 * 1024,
-    maxTotalSizePerAct: 5 * 1024 * 1024,
-    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif'],
+    maxFileSize: 10 * 1024 * 1024,
+    maxTotalSizePerAct: 50 * 1024 * 1024,
+    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     maxItemsPerViolation: 50,
     imageMaxHeightPercent: 40,
 };
@@ -148,43 +153,6 @@ export function resetImageLimitsForTests() {
 }
 
 /**
- * Оценивает размер картинки в байтах по длине base64-payload data-URL
- * (×0.75: 4 символа base64 = 3 байта).
- *
- * @param {string} url - data-URL картинки
- * @returns {number} Приблизительный размер в байтах
- */
-export function estimateDataUrlBytes(url) {
-    if (typeof url !== 'string' || !url.startsWith('data:')) return 0;
-    const comma = url.indexOf(',');
-    const payloadLength = comma >= 0 ? url.length - comma - 1 : url.length;
-    return Math.round(payloadLength * 0.75);
-}
-
-/**
- * Суммарный размер всех картинок акта (по data-URL image-блоков ВСЕХ полей
- * нарушения — блочная модель: картинка может лежать в любом поле реестра).
- *
- * @param {Object} violations - Словарь нарушений (AppState.violations)
- * @returns {number} Суммарный размер в байтах
- */
-export function estimateActImageBytes(violations) {
-    let total = 0;
-    for (const violation of Object.values(violations || {})) {
-        for (const fieldKey of VIOLATION_FIELD_KEYS) {
-            const blocks = violation?.[fieldKey]?.blocks;
-            if (!Array.isArray(blocks)) continue;
-            for (const block of blocks) {
-                if (block && block.type === BLOCK_TYPES.IMAGE && block.url) {
-                    total += estimateDataUrlBytes(block.url);
-                }
-            }
-        }
-    }
-    return total;
-}
-
-/**
  * Абсурдный сырой потолок: не читаем/не декодируем гигантские файлы ДО ресайза.
  * Реальный размерный гейт (#2) работает ПОСЛЕ ресайза по ужатым байтам —
  * validateImageBytes.
@@ -210,10 +178,15 @@ export function validateImageType(file, { itemsCount = 0, limits = null } = {}) 
         return { ok: false, reason: 'Файл не передан' };
     }
     if (!lim.allowedMimeTypes.includes(file.type)) {
+        // Перечень — из ЖИВОГО allowlist (сервер может его сузить/расширить),
+        // а не из хардкода: иначе сообщение соврало бы о разрешённом.
+        const allowed = lim.allowedMimeTypes
+            .map((mime) => mime.replace('image/', '').toUpperCase())
+            .join(', ');
         return {
             ok: false,
             reason: `Недопустимый тип файла «${file.name || ''}» (${file.type || 'неизвестный'}). `
-                + 'Разрешены: JPEG, PNG, GIF.',
+                + `Разрешены: ${allowed}.`,
         };
     }
     if (itemsCount >= lim.maxItemsPerViolation) {
@@ -230,31 +203,26 @@ export function validateImageType(file, { itemsCount = 0, limits = null } = {}) 
 }
 
 /**
- * Проверяет РАЗМЕР картинки ПОСЛЕ ресайза (#2): per-file + накопительный
- * суммарный лимит акта — по УЖАТЫМ байтам dataUrl (estimateDataUrlBytes).
+ * Проверяет РАЗМЕР одного файла ПОСЛЕ сжатия (#2) — по реальным байтам,
+ * которые уйдут на сервер. Смысл проверки — не гонять заведомо отвергаемый
+ * файл по сети; суммарный бюджет акта считает сервер (см. шапку модуля).
  *
- * @param {number} bytes - Размер ужатой картинки в байтах
+ * Причина отказа — БЕЗ имени файла: конвейер приёма группирует отказы пачки по
+ * тексту причины и подставляет имена сам (иначе пять одинаковых отказов дали
+ * бы пять тостов).
+ *
+ * @param {number} bytes - Размер подготовленных байтов картинки
  * @param {Object} [context] - Контекст приёма
- * @param {number} [context.existingTotalBytes=0] - Суммарный размер уже
- *        добавленных картинок акта (включая принятые ранее в этой пачке)
- * @param {string} [context.name] - Имя файла для сообщения об отказе
  * @param {Object} [context.limits] - Явные лимиты (для тестов)
  * @returns {{ok: boolean, reason: string}} Результат с причиной отказа
  */
-export function validateImageBytes(bytes, { existingTotalBytes = 0, name = '', limits = null } = {}) {
+export function validateImageBytes(bytes, { limits = null } = {}) {
     const lim = limits || _limits;
     if (bytes > lim.maxFileSize) {
         return {
             ok: false,
-            reason: `Файл «${name}» слишком большой (${formatMb(bytes)} МБ) даже после сжатия. `
+            reason: `Файл слишком большой (${formatMb(bytes)} МБ) даже после сжатия. `
                 + `Лимит на файл — ${formatMb(lim.maxFileSize)} МБ.`,
-        };
-    }
-    if (existingTotalBytes + bytes > lim.maxTotalSizePerAct) {
-        return {
-            ok: false,
-            reason: `Суммарный размер картинок акта превысит лимит ${formatMb(lim.maxTotalSizePerAct)} МБ. `
-                + `Файл «${name}» не добавлен.`,
         };
     }
     return { ok: true, reason: '' };
@@ -267,6 +235,4 @@ window.ViolationImageValidator = {
     getStructureLimits,
     validateImageType,
     validateImageBytes,
-    estimateDataUrlBytes,
-    estimateActImageBytes,
 };

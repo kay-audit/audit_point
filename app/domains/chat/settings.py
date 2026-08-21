@@ -84,7 +84,11 @@ class TextActionsSettings(BaseModel):
     formalizer_model: str | None = Field(default_factory=lambda: None)
     formalizer_temperature: float = Field(default=0.01, ge=0.0, le=2.0)
     per_call_timeout_sec: float = Field(default=60.0, gt=0.0)
-    max_input_chars: int = Field(default=20000, ge=1)
+    # Согласовано с ``ChatDomainSettings.max_message_content_length``: текст,
+    # который пользователь может отправить в чат, он должен уметь прогнать и
+    # через корректор/формализатор. Расхождение порогов давало бы отказ на
+    # тексте, который чат принял.
+    max_input_chars: int = Field(default=32768, ge=1)
 
 
 def parse_route(route: str) -> tuple[str, str]:
@@ -220,7 +224,7 @@ class ChatDomainSettings(BaseModel):
         "Отвечай на русском языке, кратко и по делу."
     )
     max_history_length: int = Field(default=50, gt=0)
-    max_message_content_length: int = Field(default=10000, gt=0)
+    max_message_content_length: int = Field(default=32768, gt=0)
     tool_execution_timeout: int = Field(default=30, gt=0)
     # Количество последних сообщений истории с полным контентом (включая file/image-блоки).
     # Более старые сообщения получают placeholder вместо бинарного контента.

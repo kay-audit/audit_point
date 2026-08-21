@@ -1,11 +1,12 @@
 /**
  * Валидатор приёма картинок нарушений (H6) — разнесён на тип (ДО чтения) и
- * размер (ПОСЛЕ ресайза, #2/#25).
+ * размер (ПОСЛЕ сжатия, #2/#25).
  *
  * validateImageType: MIME, число элементов, абсурдный сырой потолок.
- * validateImageBytes: per-file и суммарный лимит акта по УЖАТЫМ байтам.
- * Плюс оценка байтов по data-URL. Лимиты передаются явно — fetch /acts/limits
- * в node-тестах не дёргается.
+ * validateImageBytes: ТОЛЬКО per-file лимит по реальным байтам отправки —
+ * суммарный бюджет акта считает сервер (байты живут в act_images, клиент их
+ * не видит). Лимиты передаются явно — fetch /acts/limits в node-тестах не
+ * дёргается.
  */
 import './_browser-stub.mjs';
 import { test } from 'node:test';
@@ -14,8 +15,6 @@ import assert from 'node:assert/strict';
 import {
     ABSURD_RAW_MAX_BYTES,
     DEFAULT_IMAGE_LIMITS,
-    estimateActImageBytes,
-    estimateDataUrlBytes,
     validateImageType,
     validateImageBytes,
 } from '../../static/js/constructor/violation/violation-image-validator.js';
@@ -24,7 +23,7 @@ import { AppConfig } from '../../static/js/shared/app-config.js';
 const LIMITS = {
     maxFileSize: 1000,
     maxTotalSizePerAct: 3000,
-    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif'],
+    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     maxItemsPerViolation: 3,
     imageMaxHeightPercent: 40,
 };
@@ -77,87 +76,46 @@ test('отсутствующий файл → отказ без исключен
     assert.equal(validateImageType(null, { limits: LIMITS }).ok, false);
 });
 
-// --- validateImageBytes (ПОСЛЕ ресайза: per-file + суммарный по акту) ---
+// --- validateImageBytes (ПОСЛЕ сжатия: только per-file) ---
 
 test('ужатый файл больше per-file лимита отклоняется с причиной про размер', () => {
-    const res = validateImageBytes(1001, { name: 'a.jpg', limits: LIMITS });
+    const res = validateImageBytes(1001, { limits: LIMITS });
     assert.equal(res.ok, false);
     assert.match(res.reason, /слишком большой/);
+});
+
+test('причина отказа НЕ несёт имя файла — его подставляет группировщик отказов пачки', () => {
+    const res = validateImageBytes(1001, { limits: LIMITS });
+    assert.equal(res.reason.includes('«'), false);
 });
 
 test('ужатый файл ровно в per-file лимит проходит', () => {
     assert.equal(validateImageBytes(1000, { limits: LIMITS }).ok, true);
 });
 
-test('превышение суммарного лимита акта отклоняется', () => {
-    const res = validateImageBytes(600, { existingTotalBytes: 2500, name: 'a.jpg', limits: LIMITS });
-    assert.equal(res.ok, false);
-    assert.match(res.reason, /Суммарный размер/);
-});
-
-test('суммарный лимит впритык проходит', () => {
-    const res = validateImageBytes(500, { existingTotalBytes: 2500, limits: LIMITS });
+test('суммарный бюджет акта клиентом НЕ проверяется — это забота сервера', () => {
+    // Файл вчетверо больше суммарного лимита акта, но в per-file укладывается:
+    // клиент его пропускает, отказ (422) придёт с сервера при загрузке.
+    const res = validateImageBytes(900, { limits: { ...LIMITS, maxTotalSizePerAct: 100 } });
     assert.equal(res.ok, true);
 });
 
-test('интеграция: existingTotalBytes (estimateActImageBytes) и ужатые байты — одна единица', () => {
-    // base64-payload длиной 2667 символов оценивается в ~2000 сырых байт
-    // (2667 * 0.75 = 2000.25 → округление до 2000). existingTotalBytes и байты
-    // нового файла — обе величины в сырых байтах, единица одна.
-    const url = `data:image/png;base64,${'A'.repeat(2667)}`;
-    const violations = { v1: { additionalContent: { blocks: [{ type: 'image', url }] } } };
-    const existingTotalBytes = estimateActImageBytes(violations);
-    assert.equal(existingTotalBytes, 2000);
-
-    const res = validateImageBytes(900, { existingTotalBytes, limits: LIMITS });
-    assert.equal(res.ok, true);
-});
-
-test('дефолтные лимиты зеркалят ACTS__IMAGES__* (4МБ/5МБ/50)', () => {
-    assert.equal(DEFAULT_IMAGE_LIMITS.maxFileSize, 4 * 1024 * 1024);
-    assert.equal(DEFAULT_IMAGE_LIMITS.maxTotalSizePerAct, 5 * 1024 * 1024);
+test('дефолтные лимиты зеркалят ACTS__IMAGES__* (10МБ/50МБ/50, webp разрешён)', () => {
+    assert.equal(DEFAULT_IMAGE_LIMITS.maxFileSize, 10 * 1024 * 1024);
+    assert.equal(DEFAULT_IMAGE_LIMITS.maxTotalSizePerAct, 50 * 1024 * 1024);
     assert.equal(DEFAULT_IMAGE_LIMITS.maxItemsPerViolation, 50);
     assert.equal(DEFAULT_IMAGE_LIMITS.imageMaxHeightPercent, 40);
     assert.deepEqual(
         DEFAULT_IMAGE_LIMITS.allowedMimeTypes,
-        ['image/jpeg', 'image/png', 'image/gif'],
+        ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     );
 });
 
-// --- Оценка байтов ---
-
-test('estimateDataUrlBytes: 4 символа base64 ≈ 3 байта, префикс не считается', () => {
-    const url = `data:image/png;base64,${'A'.repeat(4000)}`;
-    assert.equal(estimateDataUrlBytes(url), 3000);
-});
-
-test('estimateDataUrlBytes: не-data строка → 0', () => {
-    assert.equal(estimateDataUrlBytes('https://x/y.png'), 0);
-    assert.equal(estimateDataUrlBytes(''), 0);
-    assert.equal(estimateDataUrlBytes(null), 0);
-});
-
-test('estimateActImageBytes суммирует image-блоки ВСЕХ полей всех нарушений', () => {
-    const url1k = `data:image/png;base64,${'A'.repeat(1000)}`;
-    const violations = {
-        v1: {
-            additionalContent: {
-                enabled: true,
-                blocks: [
-                    { type: 'image', url: url1k },
-                    { type: 'text', content: 'не считается' },
-                ],
-            },
-            // Блочная модель: картинка может лежать в любом поле реестра.
-            codeMining: { enabled: true, blocks: [{ type: 'image', url: url1k }] },
-        },
-        v2: { additionalContent: { enabled: false, blocks: [{ type: 'image', url: url1k }] } },
-        v3: {},
-    };
-    assert.equal(estimateActImageBytes(violations), 2250);
-});
-
-test('estimateActImageBytes на пустом/отсутствующем словаре → 0', () => {
-    assert.equal(estimateActImageBytes({}), 0);
-    assert.equal(estimateActImageBytes(null), 0);
+test('перечень разрешённых форматов в отказе берётся из ЖИВОГО allowlist', () => {
+    const res = validateImageType(
+        { name: 'evil.svg', type: 'image/svg+xml', size: 10 },
+        { limits: { ...LIMITS, allowedMimeTypes: ['image/png', 'image/webp'] } },
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /Разрешены: PNG, WEBP\./);
 });

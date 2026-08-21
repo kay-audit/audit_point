@@ -184,20 +184,22 @@ class TestFakeLinkDeadInAllFields:
         assert _FAKE not in out
 
     def test_caption_url_branch(self):
+        # Байты картинки приезжают отдельной картой; b"\x00\x00\x00" → "AAAA".
+        images = {"i1": {"data": b"\x00\x00\x00", "mime_type": "image/png"}}
         lines: list[str] = []
         _md()._add_image(lines, {
-            "type": "image", "url": "http://good.example/i.png",
+            "type": "image", "image_id": "i1",
             "caption": _FAKE, "filename": "f.png",
-        })
+        }, images)
         out = "\n".join(lines)
         assert _FAKE not in out
         # Настоящий url картинки остаётся единственной живой ссылкой.
-        assert "(http://good.example/i.png " in out
+        assert "(data:image/png;base64,AAAA " in out
 
     def test_caption_draft_branch(self):
         lines: list[str] = []
         _md()._add_image(lines, {
-            "type": "image", "url": "", "caption": _FAKE, "filename": "f.png",
+            "type": "image", "image_id": "", "caption": _FAKE, "filename": "f.png",
         })
         out = "\n".join(lines)
         assert _FAKE not in out

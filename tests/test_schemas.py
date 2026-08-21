@@ -13,7 +13,6 @@ from app.domains.acts.schemas.act_metadata import (
 )
 from app.domains.acts.schemas.act_content import (
     VIOLATION_CONTENT_ITEMS_MAX,
-    VIOLATION_IMAGE_URL_MAX_LENGTH,
     ActDataSchema,
     EmbeddedTableSchema,
     TableCellSchema,
@@ -317,60 +316,33 @@ class TestTableSchema:
 # ── Блоки полей нарушения (блочная модель) ──
 
 
-class TestViolationImageBlockUrl:
-    """url блока-картинки: только data:image-URL разрешённых форматов."""
+class TestViolationImageBlockImageId:
+    """Блок-картинка адресует байты через image_id (строка act_images).
 
-    def test_valid_data_image_png_passes(self):
+    Поля url и его валидатора формата/длины больше нет: и whitelist форматов,
+    и лимиты размера проверяются один раз при загрузке
+    (POST /api/v1/acts/{act_id}/images), а не на каждом сохранении контента.
+    """
+
+    def test_image_id_stored_as_is(self):
         block = ViolationImageBlockSchema(
             id="image_1_a", type="image",
-            url="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
+            image_id="8f14e45f-ea0b-4d1e-9c2a-1b2c3d4e5f60",
         )
-        assert block.url.startswith("data:image/png")
+        assert block.image_id == "8f14e45f-ea0b-4d1e-9c2a-1b2c3d4e5f60"
 
-    def test_valid_data_image_jpeg_jpg_gif_pass(self):
-        for mime in ("jpeg", "jpg", "gif"):
-            block = ViolationImageBlockSchema(
-                id="image_1_a", type="image", url=f"data:image/{mime};base64,AAAA",
-            )
-            assert block.url
-
-    def test_webp_rejected(self):
-        # webp исключён из whitelist: python-docx не встраивает его в DOCX,
-        # картинка молча расходилась бы между превью и экспортом.
-        with pytest.raises(ValidationError, match="data:image"):
-            ViolationImageBlockSchema(
-                id="image_1_a", type="image", url="data:image/webp;base64,AAAA",
-            )
-
-    def test_empty_url_allowed(self):
+    def test_empty_image_id_allowed(self):
         # Картинка без содержимого (черновик) — допустима.
-        block = ViolationImageBlockSchema(id="image_1_a", type="image", url="")
-        assert block.url == ""
+        block = ViolationImageBlockSchema(id="image_1_a", type="image")
+        assert block.image_id == ""
 
-    def test_javascript_url_rejected(self):
-        with pytest.raises(ValidationError, match="data:image"):
-            ViolationImageBlockSchema(
-                id="image_1_a", type="image", url="javascript:alert(1)",
-            )
-
-    def test_data_text_html_rejected(self):
-        with pytest.raises(ValidationError, match="data:image"):
+    def test_url_field_is_gone(self):
+        # extra='forbid': старое поле теперь отбивается 422, а не хранится.
+        with pytest.raises(ValidationError, match="url"):
             ViolationImageBlockSchema(
                 id="image_1_a", type="image",
-                url="data:text/html,<script>alert(1)</script>",
+                url="data:image/png;base64,AAAA",
             )
-
-    def test_data_image_svg_rejected(self):
-        # SVG может содержать скрипты — не входит в whitelist форматов.
-        with pytest.raises(ValidationError, match="data:image"):
-            ViolationImageBlockSchema(
-                id="image_1_a", type="image", url="data:image/svg+xml;base64,AAAA",
-            )
-
-    def test_oversized_url_rejected(self):
-        too_long = "data:image/png;base64," + "A" * VIOLATION_IMAGE_URL_MAX_LENGTH
-        with pytest.raises(ValidationError, match="превышает"):
-            ViolationImageBlockSchema(id="image_1_a", type="image", url=too_long)
 
 
 class TestViolationBlockUnion:
@@ -381,7 +353,7 @@ class TestViolationBlockUnion:
             "enabled": True,
             "blocks": [
                 {"id": "text_1_a", "type": "text", "content": "<p>x</p>"},
-                {"id": "image_1_b", "type": "image", "url": ""},
+                {"id": "image_1_b", "type": "image", "image_id": ""},
                 {"id": "table_1_c", "type": "table",
                  "table": {"grid": [[{"content": "A"}]], "colWidths": [100]}},
             ],
@@ -876,18 +848,6 @@ class TestDynamicLimitsFromSettings:
         assert "Достигнут лимит блоков в поле нарушения (2)." in str(exc_info.value)
         # 2 блока проходят
         ViolationFieldSchema.model_validate({"enabled": True, "blocks": blocks[:2]})
-
-    def test_image_mime_whitelist_from_settings(self):
-        """#15: добавленный в настройки MIME принимается схемой url."""
-        from app.domains.acts.settings import ActsSettings, ImagesSettings
-        self._register(ActsSettings(
-            images=ImagesSettings(allowed_mime_types=["image/webp", "image/png"])
-        ))
-        # webp теперь валиден
-        ViolationImageBlockSchema(id="image_1_a", type="image", url="data:image/webp;base64,AAAA")
-        # gif больше не в whitelist -> отвергается
-        with pytest.raises(ValidationError):
-            ViolationImageBlockSchema(id="image_1_b", type="image", url="data:image/gif;base64,AAAA")
 
     def test_table_rows_limit_from_settings(self):
         """#13: потолок строк grid берётся из ACTS__TABLES__MAX_ROWS."""

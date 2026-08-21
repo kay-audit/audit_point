@@ -30,7 +30,7 @@ class TestRedisSettingsDefaults:
         assert redis.db == 0
         assert isinstance(redis.password, SecretStr)
         assert redis.password.get_secret_value() == ""
-        assert redis.max_connections == 10
+        assert redis.max_connections == 64
         assert redis.socket_timeout == 5.0
 
     def test_password_secret_not_leaked_in_repr(self):

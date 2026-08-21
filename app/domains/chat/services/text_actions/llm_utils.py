@@ -1,7 +1,21 @@
 """Нативные хелперы вызова LLM для text-actions (без LangChain)."""
 
 import json
+import logging
 import re
+
+from app.domains.chat.exceptions import TextActionUnavailableError
+
+logger = logging.getLogger("audit_workstation.chat.text_actions.llm")
+
+# Сообщение пользователю, когда модель упёрлась в потолок ответа. Отдельная
+# ошибка вместо тихой подстановки обрезанного текста: в акт аудита нельзя
+# вставлять текст с потерянным хвостом, а отличить его от нормального
+# пользователь не может.
+_TRUNCATED_MESSAGE = (
+    "Ответ ИИ-сервиса оборвался на середине — текст не поместился в ответ "
+    "модели. Сократите выделение и повторите."
+)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -47,6 +61,15 @@ def clean_text_response(text: str) -> str:
     return cleaned.strip()
 
 
+def _finish_reason(resp) -> str | None:
+    """``finish_reason`` первого choice, если провайдер его прислал."""
+    try:
+        reason = resp.choices[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return None
+    return reason if isinstance(reason, str) else None
+
+
 async def _raw_call(
     client,
     *,
@@ -56,12 +79,23 @@ async def _raw_call(
     user: str,
     retry_call,
     timeout: float,
+    max_tokens: int,
 ) -> str:
     """Общий транспорт one-shot вызова LLM — возвращает сырой ``content``.
 
     ``retry_call`` — обёртка ``retry_on_transient`` над вызываемым; она сама
     ретраит transient-ошибки, ``timeout`` ограничивает каждую попытку. Пост-
     обработку (очистка текста / разбор JSON) делают публичные обёртки.
+
+    ``max_tokens`` обязателен: без него действовал дефолтный потолок провайдера,
+    и на длинном тексте ответ обрезался молча. Считается по длине ввода —
+    ``budget.output_budget_tokens``.
+
+    ``finish_reason="length"`` означает, что модель упёрлась в потолок и ответ
+    неполон. Такой результат отдаётся ошибкой (``TextActionUnavailableError``),
+    а не подставляется пользователю: обрезанный текст внешне неотличим от
+    готового. Проверка транспортная — работает для всех действий, включая
+    сокращающие, потому что это факт от провайдера, а не догадка по длине.
     """
     wrapped = retry_call(client.chat.completions.create)
     resp = await wrapped(
@@ -69,11 +103,17 @@ async def _raw_call(
         temperature=temperature,
         stream=False,
         timeout=timeout,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     )
+    if _finish_reason(resp) == "length":
+        logger.warning(
+            "text-action: ответ модели %s оборван по max_tokens=%s", model, max_tokens,
+        )
+        raise TextActionUnavailableError(_TRUNCATED_MESSAGE)
     return resp.choices[0].message.content or ""
 
 
@@ -86,6 +126,7 @@ async def run_text_call(
     user: str,
     retry_call,
     timeout: float,
+    max_tokens: int,
 ) -> str:
     """One-shot вызов LLM ``text → text`` (Фича «Корректор»).
 
@@ -100,6 +141,7 @@ async def run_text_call(
         user=user,
         retry_call=retry_call,
         timeout=timeout,
+        max_tokens=max_tokens,
     )
     return clean_text_response(content)
 
@@ -138,6 +180,7 @@ async def run_json_call(
     user: str,
     retry_call,
     timeout: float,
+    max_tokens: int,
 ) -> dict:
     """One-shot вызов LLM с разбором JSON-ответа (Фича «Формализация»).
 
@@ -153,5 +196,6 @@ async def run_json_call(
         user=user,
         retry_call=retry_call,
         timeout=timeout,
+        max_tokens=max_tokens,
     )
     return extract_json(content)

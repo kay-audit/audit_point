@@ -74,14 +74,15 @@ def _is_block_empty(block: Any) -> bool:
     """Пуст ли один блок поля нарушения (блочная модель text/image/table).
 
     text — HTML-aware проверка видимого содержимого (см. `_is_html_value_empty`);
-    image — пуст, если нет url; table — пуста, если во всех ячейках grid нет
-    непустого content (ячейки хранят plain-текст, не rich-HTML).
+    image — пуст, если нет image_id (ссылки на строку act_images); table —
+    пуста, если во всех ячейках grid нет непустого content (ячейки хранят
+    plain-текст, не rich-HTML).
     """
     block_type = getattr(block, "type", None)
     if block_type == "text":
         return _is_html_value_empty(getattr(block, "content", ""))
     if block_type == "image":
-        return not (getattr(block, "url", "") or "").strip()
+        return not (getattr(block, "image_id", "") or "").strip()
     if block_type == "table":
         grid = getattr(getattr(block, "table", None), "grid", None) or []
         return not any(

@@ -11,6 +11,7 @@ import logging
 
 from app.db.repositories.base import BaseRepository
 from app.db.types import DbConn
+from app.domains.acts.repositories.act_image import ActImageRepository
 
 logger = logging.getLogger("audit_workstation.db.repository.content_version")
 
@@ -60,6 +61,10 @@ class ActContentVersionRepository(BaseRepository):
     def __init__(self, conn: DbConn):
         super().__init__(conn)
         self.versions_table = self.adapter.get_table_name("act_content_versions")
+        # Картинки нарушений живут отдельной таблицей и на снимок версии
+        # попадают ссылкой; вытеснение старых версий — естественная (и уже
+        # ограниченная по частоте) точка сборки их мусора.
+        self._images = ActImageRepository(conn)
 
     async def create_version(
         self,
@@ -217,7 +222,12 @@ class ActContentVersionRepository(BaseRepository):
         return result
 
     async def _cleanup_old_versions(self, act_id: int, max_versions: int) -> int:
-        """Удаляет старые версии, оставляя последние max_versions."""
+        """Удаляет старые версии, оставляя последние max_versions.
+
+        Здесь же собирается мусор картинок нарушений: вытеснение версии могло
+        оборвать последнюю ссылку на картинку, а других регулярных точек, где
+        состав живых ссылок акта уже пересчитывается, в системе нет.
+        """
         result = await self.conn.execute(
             f"""
             DELETE FROM {self.versions_table}
@@ -236,4 +246,28 @@ class ActContentVersionRepository(BaseRepository):
         deleted = int(result.split()[-1]) if result else 0
         if deleted > 0:
             logger.info(f"Удалено {deleted} старых версий акта ID={act_id}")
+
+        await self._collect_image_garbage(act_id)
         return deleted
+
+    async def _collect_image_garbage(self, act_id: int) -> int:
+        """Удаляет картинки акта, на которые больше никто не ссылается.
+
+        Живыми считаются ТОЛЬКО ссылки из актуального контента и из ВСЕХ
+        уцелевших версий (см. ``ActImageRepository.collect_live_image_ids``);
+        вызов идёт после записи контента и после вставки новой версии, иначе
+        свежие ссылки в множество не попадут.
+
+        Консервативность здесь важнее полноты: ошибка стирает картинки из
+        готовых актов. Поэтому картинки моложе ``GC_MIN_AGE_MINUTES`` не
+        трогаются вовсе (загруженная, но ещё не сохранённая в контент картинка
+        неприкосновенна), а разбор JSONB не понимает непонятую структуру как
+        «ссылок нет» — молча пропускает её, не считая картинку мусором.
+
+        Ошибки БД ПРОБРАСЫВАЮТСЯ — по той же причине, что и в
+        ``create_version``: вызов идёт внутри открытой транзакции сохранения,
+        и проглоченное исключение оставило бы её в aborted-состоянии, уронив
+        сам COMMIT уже без внятного объяснения.
+        """
+        live_ids = await self._images.collect_live_image_ids(act_id)
+        return await self._images.delete_unreferenced(act_id, live_ids)

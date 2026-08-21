@@ -24,6 +24,7 @@ from app.domains.acts.formatters.text_formatter import TextFormatter
 from app.domains.acts.settings import ActsSettings
 
 from tests.domains.acts.golden.fixture_act import (
+    GOLDEN_IMAGES,
     LABELS_NEVER_RENDERED,
     MARKER_ATTACHED_TBL_CELL,
     MARKER_FOOTNOTE_TEXT,
@@ -49,7 +50,11 @@ def golden_content():
 @pytest.fixture(scope="module")
 def golden_docx(golden_content):
     """Document, собранный тем же путём, что ExportService (fmt='docx')."""
-    ctx = ExportContext(metadata=build_golden_metadata(), content=golden_content)
+    ctx = ExportContext(
+        metadata=build_golden_metadata(),
+        content=golden_content,
+        images=GOLDEN_IMAGES,
+    )
     return DocxFormatter(settings=None, acts_settings=ActsSettings()).format(ctx)
 
 
@@ -57,6 +62,7 @@ def _data_dict(content) -> dict:
     """Повторяет подготовку данных ExportService для txt/md."""
     data = content.model_dump(mode="python")
     data["metadata"] = build_golden_metadata().model_dump(mode="python")
+    data["images"] = GOLDEN_IMAGES
     return data
 
 

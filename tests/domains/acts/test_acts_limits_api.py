@@ -25,7 +25,6 @@ from app.domains.acts.schemas.act_content import (
     TABLE_MAX_COLS,
     TABLE_MAX_ROWS,
     VIOLATION_CONTENT_ITEMS_MAX,
-    VIOLATION_IMAGE_URL_MAX_LENGTH,
 )
 from app.domains.acts.settings import (
     ActsSettings,
@@ -47,10 +46,10 @@ class TestImagesSettingsDefaults:
 
     def test_defaults(self):
         s = ImagesSettings()
-        assert s.max_file_size == 4 * 1024 * 1024
-        assert s.max_total_size_per_act == 5 * 1024 * 1024
+        assert s.max_file_size == 10 * 1024 * 1024
+        assert s.max_total_size_per_act == 50 * 1024 * 1024
         assert s.allowed_mime_types == [
-            "image/jpeg", "image/png", "image/gif",
+            "image/jpeg", "image/png", "image/gif", "image/webp",
         ]
         assert s.max_items_per_violation == 50
         assert s.image_max_height_percent == 40
@@ -58,53 +57,35 @@ class TestImagesSettingsDefaults:
     def test_acts_settings_includes_images(self):
         s = ActsSettings()
         assert isinstance(s.images, ImagesSettings)
-        assert s.images.max_file_size == 4 * 1024 * 1024
-
-    def test_url_max_length_covers_max_file_size_in_base64(self):
-        """Инвариант согласованности лимитов (fce3e4e ↔ ImagesSettings).
-
-        Серверный потолок длины data-URL (VIOLATION_IMAGE_URL_MAX_LENGTH)
-        обязан быть заведомо выше UX-лимита файла: base64 раздувает байты
-        в ×4/3 плюс префикс data:image/...;base64, — иначе валидный по
-        max_file_size файл отбивался бы схемой.
-        """
-        s = ImagesSettings()
-        base64_len = (s.max_file_size + 2) // 3 * 4
-        prefix_margin = 64  # запас на data:image/jpeg;base64, и подобные
-        assert VIOLATION_IMAGE_URL_MAX_LENGTH > base64_len + prefix_margin
+        assert s.images.max_file_size == 10 * 1024 * 1024
 
     def test_image_budgets_fit_in_http_request_size_limit(self):
-        """Инвариант (#2, КРИТ): base64-раздутый бюджет картинок влезает в лимит запроса.
+        """Инвариант: файл картинки влезает в лимит тела HTTP-запроса.
 
-        Бюджет картинок (ImagesSettings) считается в СЫРЫХ байтах, а на провод
-        внутри JSON акта уходит base64 (+×4/3). RequestSizeLimitMiddleware
-        режет тело запроса по SecuritySettings.max_request_size — если
-        base64-раздутая сумма его превышает, весь акт не сохраняется (413) и
-        правки пользователя теряются. max_request_size — общий с доменом
-        chat лимит, его НЕЛЬЗЯ поднимать под картинки; согласовываем в
-        обратную сторону — бюджет картинок должен быть заведомо меньше.
+        Картинка едет отдельным multipart-запросом (POST /acts/{id}/images),
+        а не внутри JSON акта, поэтому base64-оверхеда ×4/3 больше нет — но
+        сам файл обязан пролезать через RequestSizeLimitMiddleware
+        (SecuritySettings.max_request_size). max_request_size — общий с
+        доменом chat лимит, его НЕЛЬЗЯ поднимать под картинки; согласовываем
+        в обратную сторону.
 
-        1_500_000 байт — резерв на data-URL-префиксы каждой картинки и
-        не-картиночное тело акта (дерево/таблицы/текстблоки).
+        Суммарный бюджет акта (max_total_size_per_act) в лимит запроса не
+        упирается вовсе: он накапливается загрузками по одной.
         """
         images = ImagesSettings()
         security = SecuritySettings()
-        assert (
-            images.max_total_size_per_act * 4 // 3 + 1_500_000
-            <= security.max_request_size
-        )
-        assert images.max_file_size * 4 // 3 <= security.max_request_size
+        assert images.max_file_size <= security.max_request_size
+        assert images.max_total_size_per_act >= images.max_file_size
 
-    def test_mime_whitelist_matches_schema_url_whitelist(self):
-        """MIME-whitelist настроек согласован с regex-whitelist'ом схемы url."""
-        from app.domains.acts.schemas.act_content import _image_data_url_re
-        s = ImagesSettings()
-        rx = _image_data_url_re(tuple(s.allowed_mime_types))
-        for mime in s.allowed_mime_types:
-            subtype = mime.split("/", 1)[1]
-            assert rx.match(f"data:image/{subtype};base64,AAAA"), (
-                f"MIME {mime} разрешён настройками, но отбивается схемой url"
-            )
+    def test_allowed_mime_types_have_no_svg(self):
+        """SVG в whitelist попасть не должен: это XSS.
+
+        Картинка отдаётся с origin'а приложения (GET /acts/{id}/images/{iid})
+        и рендерится в <img src> — SVG со скриптом внутри исполнился бы в
+        контексте приложения.
+        """
+        for mime in ImagesSettings().allowed_mime_types:
+            assert "svg" not in mime
 
 
 # ── Tables/Textblocks settings: дефолты + пин против фолбэк-констант схемы ────
@@ -185,10 +166,10 @@ class TestActsLimitsEndpoint:
         body = resp.json()
 
         assert body["images"] == {
-            "max_file_size": 4 * 1024 * 1024,
-            "max_total_size_per_act": 5 * 1024 * 1024,
+            "max_file_size": 10 * 1024 * 1024,
+            "max_total_size_per_act": 50 * 1024 * 1024,
             "allowed_mime_types": [
-                "image/jpeg", "image/png", "image/gif",
+                "image/jpeg", "image/png", "image/gif", "image/webp",
             ],
             "max_items_per_violation": 50,
             "image_max_height_percent": 40,

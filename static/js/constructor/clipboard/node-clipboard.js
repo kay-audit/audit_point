@@ -15,14 +15,15 @@
  *  - КП-3: защищённые секции 1–5 и закреплённые таблицы (metrics/risk) нельзя
  *    копировать как корень выделения; pinned-дети внутри поддерева пропускаются;
  *  - КП-4: invoice-привязки сбрасываются (фактура принадлежит акту/узлу);
- *  - КП-5: картинки (inline base64) копируются как есть, при вставке —
- *    проверка лимита суммарного размера картинок целевого акта;
+ *  - КП-5: картинка принадлежит акту-источнику (байты в act_images, доступ по
+ *    паре (act_id, image_id)), поэтому при вставке в ДРУГОЙ акт её байты
+ *    перезаливаются туда и блок получает новый image_id;
  *  - КП-6: вставка через штатную валидацию (ValidationTree.canAddChild/maxDepth)
  *    и официальный мутатор insertNodeAt (позиция — после pinned-таблиц).
  *
- * Чистое ядро (serialize/regenerate/filter/reset/limits) — без DOM и без
+ * Чистое ядро (serialize/regenerate/filter/reset) — без DOM и без
  * AppState-зависимостей, покрыто юнит-тестами. Оркестрация (copyNode/pasteInto)
- * ходит через AppState и официальные мутаторы. Установка шортката Ctrl+C/Ctrl+V
+ * ходит через AppState, официальные мутаторы и сеть (перенос картинок). Установка шортката Ctrl+C/Ctrl+V
  * и пунктов меню — side-effect (installHotkey/installMenuItems из entry).
  */
 
@@ -35,11 +36,8 @@ import { isPinnedTable, isRiskTable, isMetricsTable, getTableKind } from '../tab
 import { AppConfig } from '../../shared/app-config.js';
 import { isEditableTarget } from '../../shared/editable-target.js';
 import { Notifications } from '../../shared/notifications.js';
-import { formatMb } from '../../shared/format-units.js';
-import {
-    estimateActImageBytes,
-    getImageLimits,
-} from '../violation/violation-image-validator.js';
+import { BLOCK_TYPES } from '../violation/violation-block-types.js';
+import { fetchActImageBlob, uploadActImage } from '../violation/violation-image-api.js';
 import { MetricsRiskCoordinator } from '../state/metrics-risk-coordinator.js';
 
 /** Версия формата буфера. Несовпадение → буфер игнорируется. */
@@ -205,23 +203,61 @@ export function regenerateIds(payload, gens) {
 }
 
 /**
- * Проверяет, не превысит ли вставка лимит суммарного размера картинок акта
- * (КП-5). Чистая функция.
+ * Собирает image-блоки всех полей всех нарушений фрагмента (КП-5).
  *
- * @param {number} existingBytes - Текущий размер картинок целевого акта
- * @param {number} pastedBytes - Размер картинок вставляемого поддерева
- * @param {number} maxTotalBytes - Лимит суммарного размера на акт
- * @returns {{ok: boolean, reason: string}}
+ * @param {Object} violations - Словарь нарушений фрагмента
+ * @returns {Object[]} Блоки-картинки с непустым image_id (в порядке обхода)
  */
-export function checkImageLimits(existingBytes, pastedBytes, maxTotalBytes) {
-    if (existingBytes + pastedBytes > maxTotalBytes) {
-        return {
-            ok: false,
-            reason: `Вставка превысит лимит суммарного размера картинок акта `
-                + `(${formatMb(maxTotalBytes)} МБ). Скопированное поддерево не вставлено.`,
-        };
+export function collectImageBlocks(violations) {
+    const blocks = [];
+    for (const violation of Object.values(violations || {})) {
+        for (const fieldKey of VIOLATION_FIELD_KEYS) {
+            const fieldBlocks = violation?.[fieldKey]?.blocks;
+            if (!Array.isArray(fieldBlocks)) continue;
+            for (const block of fieldBlocks) {
+                if (block && block.type === BLOCK_TYPES.IMAGE && block.image_id) {
+                    blocks.push(block);
+                }
+            }
+        }
     }
-    return { ok: true, reason: '' };
+    return blocks;
+}
+
+/**
+ * Переносит картинки фрагмента в целевой акт (КП-5): скачивает байты по паре
+ * (акт-источник, image_id) и заводит их в целевом акте, подставляя блокам
+ * новый image_id. Мутирует переданные блоки.
+ *
+ * Один и тот же image_id может встретиться в нескольких блоках (скопировали
+ * блок вместе с его копией) — байты гоняем по сети один раз на id.
+ *
+ * Суммарный бюджет картинок акта проверяет сервер: превышение придёт 422 с
+ * готовым текстом и оборвёт перенос. Уже загруженные к этому моменту картинки
+ * остаются в целевом акте неприкаянными — их подберёт серверный сборщик
+ * мусора (на контент акта они не влияют, вставка не состоялась).
+ *
+ * @param {Object} violations - Словарь нарушений фрагмента (мутируется)
+ * @param {string|number} sourceActId - Акт-источник
+ * @param {string|number} targetActId - Акт-получатель
+ * @param {{fetchBlob?: Function, upload?: Function}} [io] - Точки ввода-вывода (для тестов)
+ * @returns {Promise<number>} Сколько картинок перенесено
+ */
+export async function rehostSubtreeImages(violations, sourceActId, targetActId, io = {}) {
+    const fetchBlob = io.fetchBlob || fetchActImageBlob;
+    const upload = io.upload || uploadActImage;
+
+    const blocks = collectImageBlocks(violations);
+    const remap = new Map();
+    for (const block of blocks) {
+        if (!remap.has(block.image_id)) {
+            const blob = await fetchBlob(sourceActId, block.image_id);
+            const uploaded = await upload(targetActId, blob, block.filename || 'image');
+            remap.set(block.image_id, uploaded.image_id);
+        }
+        block.image_id = remap.get(block.image_id);
+    }
+    return blocks.length;
 }
 
 /**
@@ -275,21 +311,9 @@ export const NodeClipboard = {
             textBlocks: _unwrap(AppState.textBlocks) || {},
             violations: _unwrap(AppState.violations) || {},
         };
+        // act_id источника здесь не «для справки»: по нему вставка в другой акт
+        // находит байты картинок фрагмента (КП-5).
         const payload = serializeSubtree(rawNode, rawDicts, window.currentActId ?? null);
-
-        // КП-5: картинки (inline base64) копируются как есть. Если их суммарный
-        // размер уже превышает лимит акта — вставка всё равно была бы отклонена,
-        // да и буфер вряд ли вместит. Отсекаем заранее с точным сообщением про
-        // размер картинок (а не про абстрактное «переполнение буфера»).
-        const limits = getImageLimits();
-        const imgBytes = estimateActImageBytes(payload.dicts.violations || {});
-        if (imgBytes > limits.maxTotalSizePerAct) {
-            Notifications.error(
-                `Картинки скопированного фрагмента слишком большие для копирования `
-                + `(лимит ${formatMb(limits.maxTotalSizePerAct)} МБ)`
-            );
-            return false;
-        }
 
         try {
             localStorage.setItem(CLIPBOARD_STORAGE_KEY, JSON.stringify(payload));
@@ -340,12 +364,16 @@ export const NodeClipboard = {
     /**
      * Вставляет содержимое буфера дочерним элементом целевого узла.
      * Регенерация id + remap (КП-2), фильтр pinned (КП-3), сброс invoice (КП-4),
-     * проверка лимита картинок (КП-5), штатная валидация + insertNodeAt (КП-6).
+     * перенос картинок в целевой акт (КП-5), штатная валидация + insertNodeAt (КП-6).
+     *
+     * Асинхронна из-за КП-5: перенос картинок — сетевая операция. Вызывающие
+     * стороны (шорткат, пункт меню) результат не ждут — им достаточно того, что
+     * все отказы объясняются уведомлениями.
      *
      * @param {string} targetNodeId - ID узла, в который вставляем (как дочерний)
-     * @returns {boolean} true — вставлено
+     * @returns {Promise<boolean>} true — вставлено
      */
-    pasteInto(targetNodeId) {
+    async pasteInto(targetNodeId) {
         if (AppConfig.readOnlyMode?.isReadOnly) {
             Notifications.warning(AppConfig.readOnlyMode.messages.cannotModifyTree);
             return false;
@@ -442,14 +470,24 @@ export const NodeClipboard = {
             return false;
         }
 
-        // КП-5: лимит суммарного размера картинок целевого акта.
-        const limits = getImageLimits();
-        const existingBytes = estimateActImageBytes(_unwrap(AppState.violations) || {});
-        const pastedBytes = estimateActImageBytes(regenerated.dicts.violations || {});
-        const imgCheck = checkImageLimits(existingBytes, pastedBytes, limits.maxTotalSizePerAct);
-        if (!imgCheck.ok) {
-            Notifications.error(imgCheck.reason);
-            return false;
+        // КП-5: картинки принадлежат акту-источнику — при вставке в другой акт
+        // их байты заводятся в целевом. Шаг последний среди проверок и первый
+        // среди изменений: раньше него ничего в сеть не уходит, а его отказ
+        // (нет лока, превышен бюджет акта) ещё ничего не успел вставить.
+        // Неизвестный источник (буфер снят вне акта) трактуем как тот же акт:
+        // перезаливать нечего, битые ссылки покажутся плейсхолдерами.
+        const targetActId = window.currentActId ?? null;
+        if (payload.sourceActId != null && targetActId != null
+                && String(payload.sourceActId) !== String(targetActId)) {
+            try {
+                await rehostSubtreeImages(
+                    regenerated.dicts.violations, payload.sourceActId, targetActId);
+            } catch (error) {
+                console.error('КП-5: перенос картинок фрагмента не удался:', error);
+                Notifications.error(
+                    error?.message || 'Не удалось перенести картинки — фрагмент не вставлен');
+                return false;
+            }
         }
 
         for (const [dictName, entries] of Object.entries(regenerated.dicts)) {

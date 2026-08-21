@@ -216,7 +216,7 @@ def _make_export_fixture() -> dict:
                         {
                             "id": "image-1",
                             "type": "image",
-                            "url": "data:image/png;base64,AAAA",
+                            "image_id": "img-0001",
                             "caption": "Скриншот",
                             "filename": "screen.png",
                             "width": 50,

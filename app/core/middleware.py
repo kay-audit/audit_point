@@ -17,6 +17,7 @@ import json
 import logging
 import secrets
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from cachetools import TTLCache
@@ -50,21 +51,56 @@ class HTTPSRedirectMiddleware:
         await self.app(scope, receive, send)
 
 
+# Префиксы путей, не участвующие в подсчёте частоты запросов.
+#
+# Фронт собран на Native ES Modules без бандлера: страница конструктора тянет
+# ~230 отдельных файлов (модули + CSS), портальная — около сотни. Считать их
+# наравне с API означает, что бюджет любого разумного лимита съедают несколько
+# жёстких перезагрузок (Ctrl+Shift+R), причём 429 прилетает и на сами модули —
+# страница собирается с дырами вместо внятной ошибки. Статика отдаётся
+# StaticFiles с диска, к БД и LLM не ходит, защищать её лимитом нечего.
+RATE_LIMIT_EXEMPT_PREFIXES: tuple[str, ...] = ("/static/",)
+
+
 class RateLimitMiddleware:
     """
     Middleware для ограничения частоты запросов (rate limiting).
 
     Используется TTLCache вместо defaultdict для автоматической очистки
     старых записей. Thread-safe и без memory leak.
+
+    Ключ — пользователь, если запрос удалось опознать (``identify``), иначе
+    IP TCP-пира. Ключ по пользователю корректен независимо от сетевой
+    топологии: прокси, NAT и общий выход в интернет больше не схлопывают всех
+    в один счётчик, а сменой IP лимит не обходится. Аноним считается по IP —
+    иначе поток на ``/auth/*`` до входа остался бы вообще без ограничения.
+
+    Заголовки прокси (``X-Forwarded-For``) сознательно НЕ читаются: без списка
+    доверенных прокси это дало бы любому клиенту подделать ключ лимита одной
+    строкой. На SDP приложение открыто по IP:порту напрямую — см. §9.5d
+    deploy-and-configuration.md (там же — что придётся доработать, если прокси
+    всё-таки появится).
     """
 
-    def __init__(self, app, rate_limit: int, settings: Settings):
+    def __init__(
+        self,
+        app,
+        rate_limit: int,
+        settings: Settings,
+        exempt_prefixes: tuple[str, ...] = RATE_LIMIT_EXEMPT_PREFIXES,
+        identify: Callable[[dict], str | None] | None = None,
+    ):
         self.app = app
         self.rate_limit = rate_limit
+        self.exempt_prefixes = exempt_prefixes
+        # Резолвер личности внедряется снаружи (из app/main.py), а не
+        # импортируется здесь: core не должен знать про app.auth, а тесты
+        # получают возможность подменить опознание одной функцией.
+        self.identify = identify
 
         # TTLCache автоматически удаляет старые записи.
         self.requests = TTLCache(
-            maxsize=settings.security.max_tracked_ips,
+            maxsize=settings.security.max_tracked_clients,
             ttl=settings.security.rate_limit_ttl
         )
 
@@ -73,7 +109,9 @@ class RateLimitMiddleware:
 
         logger.info(
             f"Rate limiting инициализирован: {rate_limit} запросов/минуту, "
-            f"max_ips={settings.security.max_tracked_ips}, ttl={settings.security.rate_limit_ttl}s"
+            f"max_clients={settings.security.max_tracked_clients}, "
+            f"ttl={settings.security.rate_limit_ttl}s, "
+            f"exempt={list(self.exempt_prefixes)}"
         )
 
     async def __call__(self, scope, receive, send):
@@ -81,22 +119,26 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        client = scope.get("client")
-        client_ip = client[0] if client else "unknown"
+        path = scope.get("path", "")
+        if path.startswith(self.exempt_prefixes):
+            await self.app(scope, receive, send)
+            return
+
+        client_key = self._client_key(scope)
         now = datetime.now()
         cutoff_time = now - timedelta(minutes=1)
 
         async with self.lock:
-            if client_ip not in self.requests:
-                self.requests[client_ip] = []
+            if client_key not in self.requests:
+                self.requests[client_key] = []
 
-            ip_requests = self.requests[client_ip]
+            client_requests = self.requests[client_key]
 
             # Скользящее окно: отбрасываем метки старше 60 секунд
-            recent_requests = [ts for ts in ip_requests if ts > cutoff_time]
+            recent_requests = [ts for ts in client_requests if ts > cutoff_time]
 
             if len(recent_requests) >= self.rate_limit:
-                logger.warning(f"Rate limit превышен для IP: {client_ip}")
+                logger.warning(f"Rate limit превышен для клиента: {client_key}")
                 body = json.dumps({
                     "detail": "Слишком много запросов. Попробуйте позже.",
                     "retry_after": 60,
@@ -116,9 +158,29 @@ class RateLimitMiddleware:
                 return
 
             recent_requests.append(now)
-            self.requests[client_ip] = recent_requests
+            self.requests[client_key] = recent_requests
 
         await self.app(scope, receive, send)
+
+    def _client_key(self, scope) -> str:
+        """Ключ счётчика: опознанный пользователь, иначе IP.
+
+        Префиксы ``u:``/``ip:`` обязательны — без них username, совпавший с
+        текстом адреса, разделил бы счётчик с этим адресом.
+        """
+        if self.identify is not None:
+            try:
+                username = self.identify(scope)
+            except Exception:
+                # Сбой опознания не должен ронять запрос: молча откатываемся
+                # на IP, лимит продолжает работать.
+                logger.warning("Не удалось опознать клиента для rate limit", exc_info=True)
+                username = None
+            if username:
+                return f"u:{username}"
+
+        client = scope.get("client")
+        return f"ip:{client[0]}" if client else "ip:unknown"
 
 
 # Используется raw ASGI middleware вместо BaseHTTPMiddleware, т.к. BaseHTTPMiddleware

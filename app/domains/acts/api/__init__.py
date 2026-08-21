@@ -4,6 +4,7 @@ from app.domains.acts.api.limits import router as limits_router
 from app.domains.acts.api.editor_telemetry import router as editor_telemetry_router
 from app.domains.acts.api.management import router as management_router
 from app.domains.acts.api.content import router as content_router
+from app.domains.acts.api.images import router as images_router
 from app.domains.acts.api.export import router as export_router
 from app.domains.acts.api.invoice import router as invoice_router
 from app.domains.acts.api.audit_log import router as audit_log_router
@@ -22,6 +23,7 @@ def get_api_routers():
         (editor_telemetry_router, "/acts", ["Телеметрия редактора"]),
         (management_router, "/acts", ["Менеджмент актов"]),
         (content_router, "/acts", ["Содержимое актов"]),
+        (images_router, "/acts", ["Картинки нарушений"]),
         (export_router, "/acts/export", ["Операции экспорта"]),
         (invoice_router, "/acts/invoice", ["Фактуры актов"]),
         (audit_log_router, "/acts", ["Аудит-лог актов"]),

@@ -1,6 +1,6 @@
 /**
  * Единый конвейер приёма картинок (paste/drop/upload) + bulk-вставка
- * (находки аудита #28/#29).
+ * (находки аудита #28/#29) на ссылочной модели картинок.
  *
  * #28 — Ctrl+V больше НЕ берёт только последнюю картинку буфера и не читает
  * своим инлайн-FileReader'ом: все image-элементы буфера собираются в File[],
@@ -13,6 +13,11 @@
  * планируется на каждый блок — схлопывает их RAF-дедуп PreviewManager.
  * Единая точка гейта — _insertBlocksBulk — сохраняет лимит #4 (теперь ПО
  * ПОЛЮ) и read-only-guard #1.
+ *
+ * Байты картинки уходят на сервер (POST /acts/{id}/images), в блок ложится
+ * только image_id — поэтому стенд подменяет fetch и проверяет, что именно
+ * ушло и что попало в модель. Отказ загрузки не должен ни ронять пачку, ни
+ * заваливать пользователя пачкой одинаковых тостов.
  *
  * Реальные модули конструктора импортируются под node:test через
  * _browser-stub (см. конвенцию в violation-blocks-limit.test.mjs).
@@ -35,31 +40,63 @@ import {
 let warnings = [];
 let successes = [];
 let errors = [];
+let stickyShown = [];
+let stickyHidden = [];
 let previewCalls = [];
+let uploads = [];
+let failUploads = new Set();
 Notifications.warning = (msg) => warnings.push(msg);
 Notifications.success = (msg) => successes.push(msg);
 Notifications.error = (msg) => errors.push(msg);
+Notifications.show = (msg, type, duration) => {
+    stickyShown.push({ msg, type, duration });
+    return `n${stickyShown.length}`;
+};
+Notifications.hide = (id) => stickyHidden.push(id);
 PreviewManager.updateBlock = (type, id) => previewCalls.push({ type, id });
 
-/** Мини-стаб FileReader — детерминированный data-URL на файл. */
-class FakeFileReader {
-    readAsDataURL(file) {
-        Promise.resolve().then(() => {
-            if (this.onload) this.onload({ target: { result: `data:image/png;base64,${file.name}` } });
-        });
-    }
-}
+/** Тихий console.error: отказ загрузки логируется намеренно. */
+const realConsoleError = console.error;
 
 function reset(maxItemsPerViolation = 50) {
     warnings = [];
     successes = [];
     errors = [];
+    stickyShown = [];
+    stickyHidden = [];
     previewCalls = [];
+    uploads = [];
+    failUploads = new Set();
     AppConfig.readOnlyMode.isReadOnly = false;
     resetImageLimitsForTests();
     getImageLimits().maxItemsPerViolation = maxItemsPerViolation;
-    globalThis.FileReader = FakeFileReader;
     document.activeElement = null;
+    console.error = () => {};
+
+    // Акт-контекст загрузки + база URL (в стабах window.location нет).
+    globalThis.location = { origin: 'http://test', pathname: '/' };
+    AppConfig.api._resetCache();
+    window.currentActId = 7;
+
+    globalThis.fetch = async (url, opts) => {
+        const uploaded = opts.body.get('file');
+        uploads.push({ url, filename: uploaded.name, type: uploaded.type });
+        if (failUploads.has(uploaded.name)) {
+            return {
+                ok: false,
+                status: 409,
+                json: async () => ({
+                    detail: 'Акт заблокирован другим пользователем',
+                    code: 'act-locked',
+                }),
+            };
+        }
+        return { ok: true, json: async () => ({ image_id: `img-${uploaded.name}` }) };
+    };
+}
+
+function restore() {
+    console.error = realConsoleError;
 }
 
 /**
@@ -89,14 +126,18 @@ function makeContainer(violationId = 'v1', fieldKey = FIELD) {
     };
 }
 
-/** Файл-стаб картинки с рабочим slice() (для magic-sniff #26). PNG → ресайз пропускается. */
-function imgFile(name, size = 100) {
-    return {
-        name,
-        type: 'image/png',
-        size,
-        slice: () => new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])]),
-    };
+/** Настоящий PNG-файл (сигнатура для magic-sniff #26 + рабочий slice/размер). */
+function imgFile(name) {
+    const bytes = new Uint8Array([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    ]);
+    return new File([bytes], name, { type: 'image/png' });
+}
+
+/** Файл с картиночным MIME, но мусорным содержимым (magic-sniff отклонит). */
+function fakeImgFile(name) {
+    return new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0, 0, 0, 0, 0, 0, 0, 0])],
+        name, { type: 'image/png' });
 }
 
 /**
@@ -129,8 +170,9 @@ function capturePasteHandler(vm) {
 
 // --- #28: Ctrl+V собирает ВСЕ картинки и гонит их через общий конвейер ---
 
-test('#28 Ctrl+V с несколькими картинками: ВСЕ идут в единый конвейер, не только последняя', async () => {
+test('#28 Ctrl+V с несколькими картинками: ВСЕ идут в единый конвейер, не только последняя', async (t) => {
     reset();
+    t.after(restore);
     const vm = new ViolationManager();
     const violation = makeViolation();
     const container = makeContainer();
@@ -138,7 +180,7 @@ test('#28 Ctrl+V с несколькими картинками: ВСЕ идут
     vm.activeViolations.set('v1', violation);
 
     // Спай конвейера: захватываем, что реально передали (после filterAcceptedImageFiles).
-    // Единая точка входа из paste — promptQualityThenInsertImages (диалог Q3 → ресайз).
+    // Единая точка входа из paste — promptQualityThenInsertImages (диалог Q3 → сжатие).
     let captured = null;
     vm.promptQualityThenInsertImages = (v, key, c, idx, files) => {
         captured = { v, key, c, idx, files };
@@ -156,8 +198,9 @@ test('#28 Ctrl+V с несколькими картинками: ВСЕ идут
     assert.equal(captured.v, violation);
 });
 
-test('#1 read-only: Ctrl+V не запускает конвейер вставки', async () => {
+test('#1 read-only: Ctrl+V не запускает конвейер вставки', async (t) => {
     reset();
+    t.after(restore);
     AppConfig.readOnlyMode.isReadOnly = true;
     const vm = new ViolationManager();
     const violation = makeViolation();
@@ -176,8 +219,9 @@ test('#1 read-only: Ctrl+V не запускает конвейер вставк
     assert.equal(called, false, 'в режиме просмотра конвейер не вызывается');
 });
 
-test('#29 Ctrl+V текста: ровно один updateBlock (нет двойного апдейта превью)', async () => {
+test('#29 Ctrl+V текста: ровно один updateBlock (нет двойного апдейта превью)', async (t) => {
     reset();
+    t.after(restore);
     const vm = new ViolationManager();
     const violation = makeViolation();
     const container = makeContainer();
@@ -196,8 +240,9 @@ test('#29 Ctrl+V текста: ровно один updateBlock (нет двой�
 
 // --- #29: bulk-вставка insertImageFilesInOrder — один render, один updateBlock ---
 
-test('#29 insertImageFilesInOrder: пачка → один renderBlocks на всю пачку', async () => {
+test('#29 insertImageFilesInOrder: пачка → один renderBlocks на всю пачку', async (t) => {
     reset(50);
+    t.after(restore);
     const vm = new ViolationManager();
     const violation = makeViolation();
     const container = makeContainer();
@@ -221,11 +266,59 @@ test('#29 insertImageFilesInOrder: пачка → один renderBlocks на в�
     assert.equal(warnings.length, 0);
 });
 
-test('#4 insertImageFilesInOrder: пачка сверх лимита → вставлено до лимита, один warning, один render', async () => {
+test('картинки уходят на сервер, в блок ложится только image_id', async (t) => {
+    reset(50);
+    t.after(restore);
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    vm.renderBlocks = () => {};
+
+    await vm.insertImageFilesInOrder(violation, FIELD, makeContainer(), 0, [imgFile('a.png')]);
+
+    assert.deepEqual(uploads.map((u) => u.url), ['http://test/api/v1/acts/7/images']);
+    assert.deepEqual(uploads.map((u) => u.filename), ['a.png']);
+    const block = violation[FIELD].blocks[0];
+    assert.equal(block.image_id, 'img-a.png');
+    assert.equal(block.filename, 'a.png');
+    assert.equal('url' in block, false, 'поля url в блоке больше нет — схема его отвергает');
+});
+
+test('на время загрузки висит ОДИН прогресс-тост, снимается по завершении', async (t) => {
+    reset(50);
+    t.after(restore);
+    const vm = new ViolationManager();
+    vm.renderBlocks = () => {};
+
+    await vm.insertImageFilesInOrder(
+        makeViolation(), FIELD, makeContainer(), 0, [imgFile('a.png'), imgFile('b.png')]);
+
+    assert.equal(stickyShown.length, 1, 'один тост на пачку, а не на файл');
+    assert.equal(stickyShown[0].duration, 0, 'тост sticky — живёт, пока идёт загрузка');
+    assert.match(stickyShown[0].msg, /Загрузка изображений: 2/);
+    assert.deepEqual(stickyHidden, ['n1'], 'тост снят после завершения');
+});
+
+test('акт неизвестен → честная ошибка вместо пустых блоков', async (t) => {
+    reset(50);
+    t.after(restore);
+    window.currentActId = null;
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+
+    await vm.insertImageFilesInOrder(violation, FIELD, makeContainer(), 0, [imgFile('a.png')]);
+
+    assert.equal(violation[FIELD].blocks.length, 0);
+    assert.equal(uploads.length, 0, 'без акта в сеть не ходим');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /акт/i);
+});
+
+test('#4 insertImageFilesInOrder: пачка сверх лимита → вставлено до лимита, один warning, один render', async (t) => {
     reset(2);
+    t.after(restore);
     const vm = new ViolationManager();
     const violation = makeViolation([
-        { id: 'x0', type: BLOCK_TYPES.IMAGE, url: 'data:x', filename: 'x0.png' },
+        { id: 'x0', type: BLOCK_TYPES.IMAGE, image_id: 'img-x0', filename: 'x0.png' },
     ]);
     const container = makeContainer();
 
@@ -246,8 +339,9 @@ test('#4 insertImageFilesInOrder: пачка сверх лимита → вст�
     assert.deepEqual(successes, ['Изображение добавлено'], 'тост отражает РЕАЛЬНОЕ число (1)');
 });
 
-test('#1 insertImageFilesInOrder: read-only bulk-guard — ничего не вставлено, render не вызван', async () => {
+test('#1 insertImageFilesInOrder: read-only bulk-guard — ничего не вставлено, render не вызван', async (t) => {
     reset(50);
+    t.after(restore);
     AppConfig.readOnlyMode.isReadOnly = true;
     const vm = new ViolationManager();
     const violation = makeViolation();
@@ -266,44 +360,68 @@ test('#1 insertImageFilesInOrder: read-only bulk-guard — ничего не в�
     assert.deepEqual(successes, [], 'нет ложного success-тоста');
 });
 
-test('#29 insertImageFilesInOrder: нечитаемый файл пропущен, остальные вставлены одним render', async () => {
+test('#29 файл, не прошедший magic-sniff, пропущен — остальные вставлены одним render', async (t) => {
     reset(50);
-    // FileReader, падающий на broken.png.
-    class FailingReader {
-        readAsDataURL(file) {
-            Promise.resolve().then(() => {
-                if (file.name === 'broken.png') {
-                    if (this.onerror) this.onerror(new Error('boom'));
-                } else if (this.onload) {
-                    this.onload({ target: { result: `data:image/png;base64,${file.name}` } });
-                }
-            });
-        }
-    }
-    globalThis.FileReader = FailingReader;
-
+    t.after(restore);
     const vm = new ViolationManager();
     const violation = makeViolation();
-    const container = makeContainer();
 
     let renderCalls = 0;
     vm.renderBlocks = () => {
         renderCalls += 1;
     };
 
-    await vm.insertImageFilesInOrder(violation, FIELD, container, 0, [
+    await vm.insertImageFilesInOrder(violation, FIELD, makeContainer(), 0, [
         imgFile('a.png'),
-        imgFile('broken.png'),
+        fakeImgFile('fake.png'),
         imgFile('c.png'),
     ]);
 
     assert.deepEqual(
         violation[FIELD].blocks.map((b) => b.filename),
         ['a.png', 'c.png'],
-        'битый файл пропущен, порядок остальных сохранён',
+        'мусорный файл пропущен, порядок остальных сохранён',
     );
-    assert.equal(renderCalls, 1, 'один render на успешно прочитанные');
-    assert.equal(errors.length, 1, 'ошибка чтения показана один раз');
-    assert.match(errors[0], /broken\.png/);
+    assert.equal(uploads.length, 2, 'на сервер ушли только распознанные');
+    assert.equal(renderCalls, 1, 'один render на успешные');
+    assert.equal(warnings.length, 1, 'отказ показан один раз');
+    assert.match(warnings[0], /fake\.png/);
+    assert.deepEqual(successes, ['Добавлено изображений: 2']);
+});
+
+test('отказ сервера показывается его текстом; одинаковая причина — ОДИН тост на всю пачку', async (t) => {
+    reset(50);
+    t.after(restore);
+    failUploads = new Set(['a.png', 'b.png', 'c.png', 'd.png']);
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    vm.renderBlocks = () => {};
+
+    await vm.insertImageFilesInOrder(violation, FIELD, makeContainer(), 0, [
+        imgFile('a.png'), imgFile('b.png'), imgFile('c.png'), imgFile('d.png'),
+    ]);
+
+    assert.equal(violation[FIELD].blocks.length, 0, 'блоков без картинки не создаём');
+    assert.equal(warnings.length, 1, 'четыре одинаковых отказа — один тост');
+    assert.match(warnings[0], /Акт заблокирован другим пользователем/, 'текст сервера как есть');
+    assert.match(warnings[0], /«a\.png», «b\.png», «c\.png» и ещё 1/, 'список имён с усечением');
+    assert.deepEqual(successes, [], 'ложного success нет');
+});
+
+test('часть пачки упала — успешные вставлены, отказ объяснён', async (t) => {
+    reset(50);
+    t.after(restore);
+    failUploads = new Set(['b.png']);
+    const vm = new ViolationManager();
+    const violation = makeViolation();
+    vm.renderBlocks = () => {};
+
+    await vm.insertImageFilesInOrder(violation, FIELD, makeContainer(), 0, [
+        imgFile('a.png'), imgFile('b.png'), imgFile('c.png'),
+    ]);
+
+    assert.deepEqual(violation[FIELD].blocks.map((b) => b.image_id), ['img-a.png', 'img-c.png']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /«b\.png»/);
     assert.deepEqual(successes, ['Добавлено изображений: 2']);
 });

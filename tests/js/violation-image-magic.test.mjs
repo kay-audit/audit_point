@@ -1,7 +1,8 @@
 /**
  * Проверка содержимого картинки по магическим байтам (#26).
  *
- * detectImageMagic — чистый матчинг сигнатур PNG/JPEG/GIF по первым байтам.
+ * detectImageMagic — чистый матчинг сигнатур PNG/JPEG/GIF/WebP по первым
+ * байтам (у WebP сигнатура из двух кусков: RIFF + WEBP с 8-го байта).
  * sniffImageMagic — async-обёртка (file.slice(0,12).arrayBuffer()) с фильтром
  * по списку разрешённых типов. Отклоняет мусор и переименованные не-картинки
  * (напр. PDF/EXE с расширением .png).
@@ -22,6 +23,19 @@ function fileWith(bytes, type = 'image/png') {
 
 // --- detectImageMagic ---
 
+/** RIFF <4 байта длины> WEBP — минимальная валидная сигнатура WebP. */
+const WEBP_HEADER = [0x52, 0x49, 0x46, 0x46, 0x10, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50];
+
+test('detectImageMagic: распознаёт WebP по паре RIFF + WEBP', () => {
+    assert.equal(detectImageMagic(WEBP_HEADER), 'image/webp');
+});
+
+test('detectImageMagic: одного RIFF мало — WAV/AVI не проходят как картинка', () => {
+    // RIFF....WAVE — тот же контейнер, но не картинка.
+    const wav = [0x52, 0x49, 0x46, 0x46, 0x10, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45];
+    assert.equal(detectImageMagic(wav), null);
+});
+
 test('detectImageMagic: распознаёт PNG / JPEG / GIF87a / GIF89a', () => {
     assert.equal(detectImageMagic([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]), 'image/png');
     assert.equal(detectImageMagic([0xFF, 0xD8, 0xFF, 0xE0]), 'image/jpeg');
@@ -41,7 +55,8 @@ test('detectImageMagic: принимает и Uint8Array, и обычный ма
 
 // --- sniffImageMagic ---
 
-test('sniffImageMagic: валидные PNG/JPEG/GIF принимаются', async () => {
+test('sniffImageMagic: валидные PNG/JPEG/GIF/WebP принимаются', async () => {
+    assert.equal(await sniffImageMagic(fileWith(WEBP_HEADER, 'image/webp')), true);
     assert.equal(await sniffImageMagic(fileWith([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0])), true);
     assert.equal(await sniffImageMagic(fileWith([0xFF, 0xD8, 0xFF, 0, 0, 0, 0, 0], 'image/jpeg')), true);
     assert.equal(await sniffImageMagic(fileWith([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0], 'image/gif')), true);
@@ -66,21 +81,24 @@ test('sniffImageMagic: сбой чтения (нет slice) → false, без и
 
 // --- производные списки (4A: sniffer — единый источник истины) ---
 
-test('DEFAULT_ALLOWED_IMAGE_MIME производен от сигнатур sniffer\'а (3 формата, без webp)', () => {
+test('DEFAULT_ALLOWED_IMAGE_MIME производен от сигнатур sniffer\'а (4 формата, включая webp)', () => {
     // Список allowed-типов и то, что sniffer умеет подтвердить, не могут разъехаться.
-    assert.deepEqual(DEFAULT_ALLOWED_IMAGE_MIME, ['image/png', 'image/jpeg', 'image/gif']);
+    assert.deepEqual(
+        DEFAULT_ALLOWED_IMAGE_MIME,
+        ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+    );
     // Каждый allowed-тип реально распознаётся sniffer'ом (нет типа без сигнатуры).
+    const sample = {
+        'image/png': [0x89, 0x50, 0x4E, 0x47],
+        'image/jpeg': [0xFF, 0xD8, 0xFF],
+        'image/gif': [0x47, 0x49, 0x46, 0x38],
+        'image/webp': WEBP_HEADER,
+    };
     for (const mime of DEFAULT_ALLOWED_IMAGE_MIME) {
-        assert.equal(
-            detectImageMagic(mime === 'image/png' ? [0x89, 0x50, 0x4E, 0x47]
-                : mime === 'image/jpeg' ? [0xFF, 0xD8, 0xFF]
-                : [0x47, 0x49, 0x46, 0x38]),
-            mime,
-        );
+        assert.equal(detectImageMagic(sample[mime]), mime);
     }
-    assert.equal(DEFAULT_ALLOWED_IMAGE_MIME.includes('image/webp'), false);
 });
 
 test('RECOGNIZED_IMAGE_FORMATS — человекочитаемые ярлыки, производные от сигнатур', () => {
-    assert.deepEqual(RECOGNIZED_IMAGE_FORMATS, ['PNG', 'JPEG', 'GIF']);
+    assert.deepEqual(RECOGNIZED_IMAGE_FORMATS, ['PNG', 'JPEG', 'GIF', 'WEBP']);
 });

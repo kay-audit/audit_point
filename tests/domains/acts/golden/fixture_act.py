@@ -18,15 +18,23 @@ presence-проверки в test_export_parity.py были точными: ма
 """
 from datetime import date, datetime
 
+import base64
+
 from app.domains.acts.schemas.act_content import ActDataSchema
 from app.domains.acts.schemas.act_metadata import ActResponse, AuditTeamMember
 
 # Валидный PNG 1×1 (прозрачный пиксель) — python-docx встраивает его inline shape'ом.
-GOLDEN_PNG_DATA_URL = (
-    "data:image/png;base64,"
+# Байты картинки живут в отдельной таблице act_images, поэтому фикстура держит
+# ссылку (GOLDEN_IMAGE_ID) и карту предзагруженных байт (GOLDEN_IMAGES) — ровно
+# то, что экспорт подкладывает форматтерам.
+GOLDEN_IMAGE_ID = "golden-image-0001"
+GOLDEN_PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
     "AAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
+GOLDEN_IMAGES = {
+    GOLDEN_IMAGE_ID: {"data": GOLDEN_PNG_BYTES, "mime_type": "image/png"},
+}
 
 # --- Маркеры, теряющиеся в части форматов (известные кандидаты из аудита) ---
 
@@ -395,7 +403,7 @@ def build_golden_act_dict() -> dict:
                     {
                         "id": "vb9",
                         "type": "image",
-                        "url": GOLDEN_PNG_DATA_URL,
+                        "image_id": GOLDEN_IMAGE_ID,
                         "caption": MARKER_IMG_CAPTION,
                         "filename": MARKER_IMG_FILENAME,
                         "width": 50,

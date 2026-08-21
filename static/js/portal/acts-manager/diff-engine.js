@@ -564,8 +564,9 @@ export class DiffEngine {
     /**
      * Сравнение пары блоков одного id. Диспетчер по типу НОВОГО блока:
      *  - text  → word-diff по видимому тексту (с перф-гвардом, см. _blockTextDiff);
-     *  - image → атрибуты; url многомегабайтный, сравнивается СТРОКОЙ (только
-     *            факт смены), caption — rich-поле, word-diff;
+     *  - image → атрибуты; image_id — непрозрачная ссылка на act_images,
+     *            сравнивается СТРОКОЙ (только факт смены), caption — rich-поле,
+     *            word-diff;
      *  - table → плоское сравнение ячеек grid по (row, col) + факт смены размера
      *            сетки; содержимое ячеек через LCS/word-diff НЕ гоняется (перф).
      * Смена типа при том же id — повреждённые данные; фиксируем флагом
@@ -594,11 +595,11 @@ export class DiffEngine {
         return { changed: true, detail: this._blockTextDiff(oldContent, newContent) };
     }
 
-    /** Image-блок: url/filename/width строкой, caption — rich-поле с word-diff. */
+    /** Image-блок: image_id/filename/width строкой, caption — rich-поле с word-diff. */
     static _diffImageBlock(oldBlock, newBlock) {
         const fields = {};
         let changed = false;
-        for (const key of ['url', 'filename', 'width']) {
+        for (const key of ['image_id', 'filename', 'width']) {
             const oldVal = (oldBlock && oldBlock[key] != null) ? oldBlock[key] : '';
             const newVal = (newBlock && newBlock[key] != null) ? newBlock[key] : '';
             if (String(oldVal) !== String(newVal)) {

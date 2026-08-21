@@ -45,9 +45,12 @@ export function createTextBlock(content = '') {
 }
 
 /**
- * Блок-картинка: inline data-URL, подпись, имя файла, ширина в % (0 — авто).
+ * Блок-картинка: ссылка на строку act_images, подпись, имя файла, ширина в %
+ * (0 — авто). Байты в блоке НЕ живут: `image_id` — id картинки, загруженной
+ * через POST /api/v1/acts/{act_id}/images. Пустой `image_id` — черновик без
+ * картинки (рендерится плейсхолдером).
  * @param {Object} [extraData]
- * @param {string} [extraData.url]
+ * @param {string} [extraData.image_id]
  * @param {string} [extraData.filename]
  * @param {number} [extraData.width]
  * @returns {Object}
@@ -56,7 +59,7 @@ export function createImageBlock(extraData = {}) {
     return {
         id: generateBlockId(BLOCK_TYPES.IMAGE),
         type: BLOCK_TYPES.IMAGE,
-        url: extraData.url || '',
+        image_id: extraData.image_id || '',
         caption: '',
         filename: extraData.filename || '',
         width: extraData.width || 0,

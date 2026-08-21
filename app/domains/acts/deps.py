@@ -28,6 +28,7 @@ from app.domains.acts.settings import ActsSettings
 from app.domains.admin.interfaces import IUserDirectory
 
 if TYPE_CHECKING:
+    from app.domains.acts.services.act_image_service import ActImageService
     from app.domains.acts.services.audit_log_batcher import ActAuditLogBatcher
     from app.domains.acts.services.audit_log_service import AuditLogService
 
@@ -92,6 +93,17 @@ async def get_invoice_service(
         acts_settings=_get_acts_settings(),
         ua_tables=get_factory("ua_data.invoice_table_names")(),
     )
+
+
+async def get_image_service() -> "ActImageService":
+    """Создаёт ActImageService на исполнителе БД (соединение на операцию).
+
+    Корневые Settings сервису не нужны — лимиты и allowlist картинок живут
+    в доменных ACTS__IMAGES__*.
+    """
+    from app.domains.acts.services.act_image_service import ActImageService
+
+    return ActImageService(conn=get_executor(), acts_settings=_get_acts_settings())
 
 
 async def get_editor_telemetry_repo() -> ActEditorTelemetryRepository:
